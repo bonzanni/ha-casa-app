@@ -40,7 +40,7 @@ from io import BytesIO
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
-from telegram import InputFile, Update
+from telegram import InputFile, ReplyParameters, Update
 from telegram.constants import ChatAction
 from telegram.request import HTTPXRequest
 from telegram.error import (
@@ -2722,6 +2722,11 @@ class TelegramChannel(Channel):
             # the text he typed (or a file's caption), on a reserved key
             # stamped only here, so run admission never reads anything else.
             context["_operator_words"] = content
+            # The address of the message he sent (a caption turn's is the
+            # captioned file), so an answer sent later can reply to it. The
+            # route read above already proved this bot has an id.
+            context["_tg_request"] = self.address(
+                chat_id, int(update.message.message_id)).to_json()
         # #1314: a reply tells the agent what it answered — Casa's note, on a
         # reserved key; the text stays raw.
         reply_note = self._reply_note_for(update, chat_id, ended_task=ended_task)
@@ -5387,6 +5392,41 @@ class TelegramChannel(Channel):
         counts a dropped message as sent."""
         return self._app is not None
 
+    def _reply_parameters(self, context: dict, chat_id: Any,
+                          message: Any = None) -> "ReplyParameters | None":
+        """The reply an answer's first message makes, or ``None`` for a plain
+        message.
+
+        The target is the context's reserved ``_reply_to`` address, which only
+        Casa sets. It counts only when it is a message of this bot in the chat
+        being sent to (*chat_id*): a bot cannot reply to another bot's message,
+        and a reply across chats is not one the reader would see. Anything
+        else, a malformed value included, sends plain. The reply is sent even
+        when the target is gone, so a deleted message never loses the answer.
+        *message* is the text about to be sent; the target is read from
+        *context* alone."""
+        raw = context.get("_reply_to")
+        if raw is None:
+            return None
+        try:
+            target = TgAddress.from_json(raw)
+            chat = int(chat_id)
+        except (AddressError, TypeError, ValueError):
+            logger.warning("reply target is not a message address; sending plain")
+            return None
+        if (target.message_id is None or target.chat_id != chat
+                or not self._own_address(target)):
+            return None
+        return ReplyParameters(message_id=target.message_id,
+                               allow_sending_without_reply=True)
+
+    def _first_message_kw(self, context: dict, chat_id: Any, message: Any) -> dict:
+        """The extra arguments of an answer's first ``send_message``: its
+        reply, when :meth:`_reply_parameters` gives one. Every later message
+        of the same answer is sent without them."""
+        reply = self._reply_parameters(context, chat_id, message)
+        return {"reply_parameters": reply} if reply is not None else {}
+
     async def send(self, message: str, context: dict[str, Any]) -> DeliveryOutcome:
         """Send a complete message (block mode fallback).
 
@@ -5406,11 +5446,14 @@ class TelegramChannel(Channel):
             return DeliveryOutcome.NOT_DELIVERED
 
         outcome = DeliveryOutcome.NOT_DELIVERED
+        first = self._first_message_kw(context, target_chat, message)
         for chunk in _split_message(message):
             await self._app.bot.send_message(
                 chat_id=target_chat,
                 text=chunk,
+                **first,
             )
+            first = {}
             # The head landed. Stamp it where it survives a LATER chunk raising:
             # a raising method returns no enum at all, so the returned value
             # cannot carry this fact (#556 design §2.2).
@@ -5973,6 +6016,9 @@ class TelegramChannel(Channel):
 
             def _landed(sent):
                 self._record_post(target_chat, sent, post)
+            # The reply, when the context names one, rides on the first
+            # physical message only.
+            first = self._first_message_kw(context, target_chat, message)
             if len(pages) == 1:
                 display, entities = pages[0]
                 if entities is None:
@@ -5981,11 +6027,11 @@ class TelegramChannel(Channel):
                         # it here is how a delegation path loses the distinction.
                         return await self.send(_plain(message), context)
                     _landed(await self._app.bot.send_message(
-                        chat_id=target_chat, text=display))
+                        chat_id=target_chat, text=display, **first))
                     context["_delivery_head_sent"] = True
                     return DeliveryOutcome.DELIVERED
                 await self._send_one(target_chat, message, display, entities,
-                                     record=_landed)
+                                     record=_landed, **first)
                 context["_delivery_head_sent"] = True
                 return DeliveryOutcome.DELIVERED
             outcome = DeliveryOutcome.NOT_DELIVERED
@@ -5993,13 +6039,15 @@ class TelegramChannel(Channel):
                 chunks, fell_back = [display], False
                 if entities is None:
                     _landed(await self._app.bot.send_message(
-                        chat_id=target_chat, text=display))
+                        chat_id=target_chat, text=display, **first))
                 else:
                     # #831: the plain retry carries this page's link destinations,
                     # which its marker-free display cannot.
                     chunks = self._plain_fallback_chunks(display, entities)
                     fell_back = await self._send_one(
-                        target_chat, chunks[0], display, entities, record=_landed)
+                        target_chat, chunks[0], display, entities, record=_landed,
+                        **first)
+                first = {}
                 # Page 1 carries the notice: once it lands the delivery counts as
                 # shown, however the remaining pages fare. Stamped BEFORE the
                 # overflow chunks below, so a raising tail cannot erase the fact

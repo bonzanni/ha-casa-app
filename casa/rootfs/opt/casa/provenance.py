@@ -186,6 +186,14 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # the Telegram channel's mark that this turn opens an agent's own chat;
     # stamped only by the channel
     "_chat_opening",
+    # The operator's own inbound Telegram message, as an address
+    # ``[bot_id, chat_id, message_id]``: stamped only by the channel at
+    # ingress, and read wherever Casa answers that message as a reply.
+    "_tg_request",
+    # A reply target Casa chose for a delivery, the same address shape: the
+    # channel sends the answer's first message as a reply to it. A caller
+    # who could set either would aim Casa's answer at a message of its choice.
+    "_reply_to",
     # stamped only by Casa when it continues the configurator after an
     # approval; a caller who could set it would commit under an approval the
     # operator gave for another run

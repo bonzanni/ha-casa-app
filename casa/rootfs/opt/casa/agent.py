@@ -200,6 +200,9 @@ COPIED_CONTEXT_MARKERS = (
     # Browser executor §5.5: the operator's own typed words (Telegram
     # ingress); read only by handoff.operator_words.
     "_operator_words",
+    # The operator's inbound Telegram message, ``[bot_id, chat_id,
+    # message_id]`` (Telegram ingress): what an answer sent later replies to.
+    "_tg_request",
     # A summoned turn's group and its inline message (``provenance.GUEST_KEYS``):
     # read by the guest_access tool and by the keyboard seam that puts the
     # group's message in waiting. Dropped again wherever a run or a turn is

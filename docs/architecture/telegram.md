@@ -33,8 +33,8 @@ back to polling rather than failing.
 receiving route refuses every request when no secret is configured. Registration with the Bot
 API can still succeed and report itself as started, so the failure looks like Telegram not
 delivering rather than like a configuration error. This is deliberate fail-closed behaviour:
-the route would otherwise accept forged updates from anyone who found the URL. Polling is
-unaffected, because it does not use that route.
+the route would otherwise accept forged updates from anyone who found the URL. Polling does
+not use that route.
 
 **Two kinds of inbound message go to different places.** A direct message becomes an ordinary
 turn on the bus. A message a person writes in the optional agent-log group reaches nothing: it
@@ -91,7 +91,7 @@ string parameter still carrying a lone surrogate — a JSON `\ud800` escape in a
 result decodes to one — would raise before any request left the process: the whole reply,
 and the loss classed as unknown so the health notice is not re-offered. The channel therefore installs its own request class on the
 ordinary Bot API pool, below every sender — plain and rich, the draft send, narration, media
-captions — and it replaces each surrogate code point with one U+FFFD, one code point for
+captions — and replaces each surrogate code point with one U+FFFD, one code point for
 one, so entity offsets computed upstream stay valid. Nothing is normalised at the send
 sites, so a new sender cannot forget it. A value nested inside a JSON-encoded parameter (an
 entity address, a button label) is already an ASCII escape by the time it is serialised and
@@ -109,6 +109,9 @@ when it was posted or replaces it with a Casa status; the arrival replies and th
 delivered-link message are outside the contract, and so is the agent log, which is no channel
 method and posts plain text. The contract is INV-OUT-001 in
 [`output-boundary.md`](output-boundary.md), which also records every call site.
+
+**An answer can reply to a message Casa names**, on its first message
+([`telegram-bots.md`](telegram-bots.md)).
 
 **Casa's bot also hears of the bots it manages; an agent's bot passes its lifecycle first.**
 Each endpoint states the update types it wants on every `setWebhook` and `getUpdates`
@@ -139,10 +142,9 @@ lifecycle is [`own-voice-lifecycle.md`](own-voice-lifecycle.md), the rest
 
 **A tap is authorised against the request it answers.** Callback data is versioned and
 carries the namespace and request id; resolution is bound to the operator the request was
-posted for. A tap from someone else is refused. Note that the parser still accepts a legacy
-permission format — but actionability is bounded by process memory: a callback of a broker
-namespace resolves only while its request lives in the current process's broker, so buttons
-from before a restart are rejected as expired however well their format parses. Ahead of
+posted for. A tap from someone else is refused. The parser still accepts a legacy permission
+format, but a broker namespace's callback resolves only while its request lives in this
+process's broker, so a button from before a restart is expired however well it parses. Ahead of
 every namespace's handler, a tap on Casa's bot whose card records an agent that now declares
 its own chat is answered with one line naming that chat (`_refuse_moved_card`, INV-OWN-009). The
 namespaces are `_CALLBACK_NAMESPACES`; `proposal` is

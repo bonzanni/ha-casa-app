@@ -12,6 +12,7 @@
     - casa/rootfs/opt/casa/channels/tg_address.py::scope
     - casa/rootfs/opt/casa/provenance.py::carry_route
     - casa/rootfs/opt/casa/casa_core.py::_build_telegram_transport
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._reply_parameters
   tests:
     - tests/test_tg_address.py
     - tests/test_telegram_transport.py
@@ -23,6 +24,7 @@
     - tests/test_plugin_identities.py
     - tests/test_bot_boundary_invariants.py
     - tests/test_bot_boundary_sites.py
+    - tests/test_telegram_reply_targets.py
   related: [architecture/telegram.md, architecture/telegram-failures.md, architecture/http-surface.md, architecture/persistent-state.md]
   defines_invariants: [INV-TG-017, INV-TG-018, INV-TG-019, INV-TG-020, INV-TG-021, INV-TG-022]
   invariant_tests:
