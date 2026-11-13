@@ -405,9 +405,3 @@ async def test_the_brief_has_no_batch_wording_and_names_the_starter():
 async def test_elapsed_time_reads_like_the_operator_says_it(seconds, text):
     assert bj.format_elapsed(seconds) == text
 
-
-async def test_the_cost_suffix_shows_cost_only_after_a_turn_end():
-    rec = _rec()
-    assert bj.cost_suffix(rec, now=1000.0 + 40 * 60) == " · 40 min"
-    rec.origin["job"]["cost_usd"] = 2.4
-    assert bj.cost_suffix(rec, now=1000.0 + 40 * 60) == " · 40 min · $2.40"

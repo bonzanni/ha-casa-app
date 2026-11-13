@@ -73,7 +73,7 @@
 
 - doc: architecture/background-job-session.md
   summary: How a running background job's session works — the brief and every later write from one writer, the reader and the CLI's take-up echo, continuing, nudging and parking at a turn end, the one resume after a CLI death or a restart, auto-compaction and the job header, and the cost shown to the operator.
-  when_changing: how a job's session is written into or read, the brief or its Started by line, what Casa does when a job's turn ends (continue, nudge, park), how a job resumes after its CLI died or Casa restarted, the compaction window or the job header, or a job's cost and running time on its end line
+  when_changing: how a job's session is written into or read, the brief or its Started by line, what Casa does when a job's turn ends (continue, nudge, park), how a job resumes after its CLI died or Casa restarted, the compaction window or the job header, or a job's cost and running time on its end notice
   covers:
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.submit_operator
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.submit_casa
@@ -90,7 +90,6 @@
     - casa/rootfs/opt/casa/background_jobs.py::job_header
     - casa/rootfs/opt/casa/background_jobs.py::launch_prompt
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_parked
-    - casa/rootfs/opt/casa/background_jobs.py::cost_suffix
     - casa/rootfs/opt/casa/tools.py::_await_completing_turn
     - casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs
   tests:

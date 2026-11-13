@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -758,29 +757,12 @@ def _persist_later(engagement_id: str) -> None:
 
 def format_elapsed(seconds: float) -> str:
     """``40 min``, ``1 h 5 min``, ``2 h`` — the job's running time as the
-    operator reads it on the job's end line."""
+    operator reads it on the job's end notice."""
     minutes = max(1, int(seconds // 60))
     hours, minutes = divmod(minutes, 60)
     if not hours:
         return f"{minutes} min"
     return f"{hours} h {minutes} min" if minutes else f"{hours} h"
-
-
-def cost_suffix(rec: Any, *, now: float | None = None) -> str:
-    """`` · 40 min · $2.40``: the time the job has run (to its end, once it
-    has one) and its exact cost as of its last turn end — absent until a turn
-    has ended. Shown only; nothing reads it to decide anything."""
-    origin = getattr(rec, "origin", None) or {}
-    job = origin.get("job") if isinstance(origin, dict) else None
-    started = getattr(rec, "started_at", None)
-    end = getattr(rec, "completed_at", None) or (now if now is not None else time.time())
-    parts = []
-    if isinstance(started, (int, float)) and started > 0:
-        parts.append(format_elapsed(max(0.0, end - started)))
-    cost = job.get("cost_usd") if isinstance(job, dict) else None
-    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-        parts.append(f"${cost:.2f}")
-    return "".join(f" · {p}" for p in parts)
 
 
 def _title(rec: Any) -> str:

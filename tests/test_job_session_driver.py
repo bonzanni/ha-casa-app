@@ -674,15 +674,14 @@ async def test_a_dead_session_is_resumed_once_then_a_second_death_ends_it(
 
 
 class _PaintChannel:
-    """The channel's end paint, as the real one reads it: the record's posts
-    retired with the outcome, time and cost the record holds at that moment."""
+    """The channel's end paint: the record's keyboard posts retired, noted
+    with the status the record holds at that moment."""
 
     def __init__(self):
         self.painted: list[str] = []
 
     def retire_job_keyboards(self, rec):
-        import background_jobs as bj
-        self.painted.append(rec.status + bj.cost_suffix(rec))
+        self.painted.append(rec.status)
 
 
 async def _completing_job(env, tmp_path, monkeypatch):
@@ -738,8 +737,8 @@ async def _completing_job(env, tmp_path, monkeypatch):
 async def test_a_one_turn_job_s_end_carries_that_turn_s_cost(
         env, tmp_path, monkeypatch):
     """INV-BGJOB-020: a job that completes inside its only turn is torn down
-    only after that turn's ResultMessage, so the end paint and the end notice
-    carry the turn's cost. The tool call itself returns at once: the turn
+    only after that turn's ResultMessage, so the end notice carries the
+    turn's cost, and its keyboards are retired after that turn ends. The tool call itself returns at once: the turn
     cannot end before it has."""
     job = await _completing_job(env, tmp_path, monkeypatch)
     payload = json.loads((await asyncio.wait_for(job.call, 2))["content"][0]["text"])
@@ -750,8 +749,7 @@ async def test_a_one_turn_job_s_end_carries_that_turn_s_cost(
     assert not job.cli.disconnected
     job.cli.result()                        # total_cost_usd=0.01
     await until(lambda: job.channel.painted and job.notices)
-    assert job.channel.painted[0].startswith("completed")
-    assert job.channel.painted[0].endswith(" · $0.01")
+    assert job.channel.painted == ["completed"]
     assert job.notices[0].endswith(" · $0.01")
     assert job.cli.disconnected
 
@@ -759,14 +757,13 @@ async def test_a_one_turn_job_s_end_carries_that_turn_s_cost(
 async def test_a_completing_turn_that_never_ends_finalizes_after_the_bound(
         env, tmp_path, monkeypatch):
     """The completing turn's end is waited for, never required: past the
-    bound the job is torn down and painted with the last cost known (none,
-    for a job whose first turn never ended)."""
+    bound the job is torn down, painted, and told with the last cost known
+    (none, for a job whose first turn never ended)."""
     monkeypatch.setattr(tools, "_COMPLETION_TURN_END_WAIT_S", 0.05)
     job = await _completing_job(env, tmp_path, monkeypatch)
     await asyncio.wait_for(job.call, 2)
     await until(lambda: job.channel.painted and job.notices)
-    assert job.channel.painted[0].startswith("completed")
-    assert "$" not in job.channel.painted[0]
+    assert job.channel.painted == ["completed"]
     assert "$" not in job.notices[0]
     assert job.cli.disconnected
 

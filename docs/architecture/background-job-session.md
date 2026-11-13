@@ -195,7 +195,7 @@ requester's answer to it is the one message the end leaves.
 A job usually finishes from inside a turn: it calls `emit_completion`, and that turn ends only
 after the tool returns. The completion's Casa-owned finalization therefore returns the tool
 result at once, waits for the completing turn's `ResultMessage` (`InCasaDriver.wait_turn_end`,
-at most 30 s), stores the cost it recorded, then closes the session and posts the end line;
+at most 30 s), stores the cost it recorded, then closes the session;
 the registry's terminal observer leaves such a job's keyboards to that step. Past the bound it
 finalizes with the last cost known. Who owns finalization and the completion gate are unchanged
 (INV-ENG-003). Between turn ends the cost shown is the last one: no estimate is made.
@@ -249,7 +249,6 @@ Anything new the header should carry after a compaction belongs in `job_header`.
 - `casa/rootfs/opt/casa/background_jobs.py::job_header`
 - `casa/rootfs/opt/casa/background_jobs.py::launch_prompt`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_parked`
-- `casa/rootfs/opt/casa/background_jobs.py::cost_suffix`
 - `casa/rootfs/opt/casa/tools.py::_await_completing_turn`
 - `casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs`
 
