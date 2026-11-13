@@ -253,3 +253,33 @@ def test_without_a_lifecycle_configured_every_agent_is_not_declared(tmp_path, mo
         assert own_voice.endpoint_for("finance") is None
     finally:
         ovl.install(None)
+
+
+async def test_a_run_whose_install_left_no_bot_tells_the_resident_so(
+        lc, world, monkeypatch):
+    """#1586: the resident hears Casa's current fact beside the run's answer,
+    once, and only while the agent still has no bot."""
+    import tools
+    monkeypatch.setattr(tools, "_bound_persona", lambda slug: None)
+    monkeypatch.setattr(tools, "_display_name_for_role", lambda role: "Alex")
+    token = tools._delegation_quota_key.set("run-1")
+    try:
+        await tools._after_own_chat_change({}, "finance", "on_install_committed", None)
+        await tools._after_own_chat_change({}, "plain", "on_install_committed", None)
+    finally:
+        tools._delegation_quota_key.reset(token)
+    line = tools.OWN_CHAT_OFFER_NOTE.format(name="Alex")
+    assert tools._with_own_chat_offer_note("Installed.", "run-1") == f"Installed.\n\n{line}"
+    assert tools._with_own_chat_offer_note("Installed.", "run-1") == "Installed."
+    # a run outside any delegation records nothing
+    await tools._after_own_chat_change({}, "finance", "on_install_committed", None)
+    assert tools._OFFER_DUE == {}
+    # a bot bound before the answer lands: no line
+    token = tools._delegation_quota_key.set("run-2")
+    try:
+        await tools._after_own_chat_change({}, "finance", "on_install_committed", None)
+    finally:
+        tools._delegation_quota_key.reset(token)
+    await _to(lc, world, "open")
+    assert tools._with_own_chat_offer_note("Installed.", "run-2") == "Installed."
+    assert tools._OFFER_DUE == {}

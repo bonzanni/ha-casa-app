@@ -1248,11 +1248,17 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # where it said "with the Cancel button on its start line", and the
 # job-lives-here paragraph says "its Stop key" where it said "its Cancel
 # button". The eight other carriers byte-identical. No retention claim.
+# MOVED (a holding line that does not say "still"), `assistant:text` only: the
+# pending-delegation sentence says "say only that it is under way, in one short
+# line such as "Alex is on it."" where it said "that it is still running" and
+# "Alex is still on it." (said right after a start, "still" claimed progress
+# that had not happened). The eight other carriers byte-identical. No
+# retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "100940f2e893f33779a8547a9fe36c0e639606789aa6cb0505ff7ad3791d5148",
+        "7ca7a7be2ca937eb6ee88a15274e666201fc1e4439cf2d65c3e630a4a10fbccb",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":
@@ -1902,8 +1908,8 @@ _LATE_ANSWER_DOCTRINE = (
     "on the card I just posted\", is not an answer: the posts have already "
     "reached the person and speak for themselves, so that line is not passed on. "
     "When a delegation comes back pending, the person would otherwise wait in "
-    "silence: say only that it is still running, in one short line such as "
-    "\"Alex is still on it.\", with nothing added: not the task again, not "
+    "silence: say only that it is under way, in one short line such as "
+    "\"Alex is on it.\", with nothing added: not the task again, not "
     "what you have done, not what will happen next. "
     "That line is only for work the person cannot see: when Casa's note "
     "says they are watching it in the delegate's own chat, write nothing "
@@ -1983,6 +1989,7 @@ def test_the_late_answer_eval_fakes_the_production_ask_note():
 @pytest.mark.parametrize("reply, ok", [
     ("", True),
     ("<silent/>", True),
+    ("Alex is on it.", True),
     ("Alex is still on it.", True),
     ("Asked him — he's taking a moment, I'll bring his question back as soon as "
      "it lands.", False),

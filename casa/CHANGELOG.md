@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.372.2] - 2026-11-13
+
+### Fixed
+
+- After you uninstall a specialist that had its own chat and install it again, the assistant now offers it a new chat. Before, she could go by her memory that it still had its old one and offer nothing.
+- When the assistant starts something that takes a while, she now says "Alex is on it." rather than "Alex is still on it." before anything has happened yet.
+
 ## [0.372.0] - 2026-11-13
 
 ### Added

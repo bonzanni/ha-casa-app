@@ -66,7 +66,10 @@ resident's: the tool's description carries the guidance (the role, not the perso
 `Casa<Role><digits>Bot` by default; the operator's pattern and wishes first), and code
 only checks it. An install, upgrade or rollback that leaves a declared agent without a bot
 says `own_chat: "offer_due"` in its result, and the configurator's prompt has it say so,
-so the resident makes the offer; Casa posts none by itself.
+so the resident makes the offer; Casa posts none by itself. The run's answer reaches the
+resident with `OWN_CHAT_OFFER_NOTE` beside it (`tools._with_own_chat_offer_note`) while the
+agent still has no bot, so Casa's current state, not the resident's memory of a bot from
+before an uninstall, decides whether an offer is owed.
 
 **What still waits on a bot.** `own_voice.open_on_bot(role, bot_id)` lists, one short
 phrase per kind in a fixed order, what Casa still holds that waits on an agent's bot; an
@@ -138,7 +141,7 @@ already read there, so the requester closes in a line or two instead of retellin
 (`OWN_CHAT_ANSWER_NOTE`). A delegation still running when its call returns (`async`, or a
 `sync` one past its 60-second wait) carries `own_chat_note` on its `pending` result
 (`OWN_CHAT_PENDING_NOTE`): the person sees the work and will get the answer in that chat,
-so the requester owes no "still on it" line — one written while the answer was landing
+so the requester owes no holding line — one written while the answer was landing
 reached the person after it. That prediction is the post's own rule: an endpoint still serves
 the task's delivery (`tools._task_endpoint`, the lookup the post makes, so an answer whose
 bot was released meanwhile is not called read), and the whole closing message is no
