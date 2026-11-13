@@ -654,6 +654,8 @@ class ToolContract:
     filename: bool = False
     # Browser executor §5.3–§5.6: the entry declares `"callsCasa": true`.
     calls_casa: bool = False
+    # The entry declares `"guest": true`: a guest run may call this tool.
+    guest: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -771,7 +773,8 @@ def result_contract_map(resolution) -> ResultContractMap:
                     delivers=dict(entry.get("delivers") or {}),
                     servers=tuple(origins), wire_name=str(name),
                     transport=transport, filename=bool(entry.get("filename")),
-                    calls_casa=bool(entry.get("calls_casa")))
+                    calls_casa=bool(entry.get("calls_casa")),
+                    guest=bool(entry.get("guest")))
     return ResultContractMap(tools=tools, plugins=plugins)
 
 

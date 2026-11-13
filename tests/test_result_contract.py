@@ -347,3 +347,71 @@ def test_the_new_kinds_keep_every_declaration_rule(manifest):
     with pytest.raises(StoreError) as ei:
         manifest_result_contract({"name": "p", **manifest})
     assert ei.value.reason_code == "result_contract_invalid"
+
+
+# --- `guest`: a tool the author offers to a friend's summoning ----------------
+
+def test_guest_is_normalized_and_carried_on_the_contract(tmp_path):
+    from plugin_grants import result_contract_map
+    tools = {"lookup": {"result": "safe", "guest": True}, "other": {"result": "safe"}}
+    out = manifest_result_contract({"name": "p", **_rc(tools)})["tools"]
+    assert out["lookup"]["guest"] is True
+    assert "guest" not in out["other"]
+    store = tmp_path / "store"
+    e = entry("probe", ["resident:assistant"])
+    mk_artifact(store, "probe", e["artifact_id"], mcp_servers={"api": {}},
+                extra_manifest={"casa": {"resultContract": {"version": 1, "tools": tools}}})
+    _install(tmp_path, [e])
+    m = result_contract_map(resolve_for("resident:assistant"))
+    assert m.tools["mcp__plugin_probe_api__lookup"].guest is True
+    assert m.tools["mcp__plugin_probe_api__other"].guest is False
+
+
+@pytest.mark.parametrize("entry_, why", [
+    ({"result": "safe", "guest": False}, "must be true"),
+    ({"result": "safe", "guest": "yes"}, "must be true"),
+    ({"result": "capability", "provides": ["x"], "guest": True},
+     "capability tool is not offered"),
+    ({"result": "safe", "guest": True, "callsCasa": True}, "calls Casa is not offered"),
+])
+def test_guest_refusals(entry_, why):
+    with pytest.raises(StoreError) as ei:
+        manifest_result_contract({"name": "p", **_rc({"lookup": entry_})})
+    assert ei.value.reason_code == "result_contract_invalid"
+    assert why in str(ei.value)
+
+
+def test_guest_on_the_setup_tool_is_refused():
+    with pytest.raises(StoreError) as ei:
+        manifest_result_contract(_setup_rc({"setup_p": {"result": "safe", "guest": True}}))
+    assert ei.value.reason_code == "result_contract_invalid"
+    assert "setupTool is not offered to guests" in str(ei.value)
+
+
+@pytest.mark.parametrize("protected", [["lookup"], [{"name": "lookup"}]])
+def test_guest_on_a_protected_tool_is_refused(protected):
+    manifest = {"name": "p", "casa": {
+        "protectedTools": protected,
+        "resultContract": {"version": 1, "tools": {
+            "lookup": {"result": "safe", "guest": True}}}}}
+    with pytest.raises(StoreError) as ei:
+        manifest_result_contract(manifest)
+    assert ei.value.reason_code == "result_contract_invalid"
+    assert "protected tool is not offered" in str(ei.value)
+
+
+def test_a_malformed_protected_list_does_not_mask_the_guest_parse():
+    manifest = {"name": "p", "casa": {
+        "protectedTools": [""],
+        "resultContract": {"version": 1, "tools": {
+            "lookup": {"result": "safe", "guest": True}}}}}
+    out = manifest_result_contract(manifest)
+    assert out["tools"]["lookup"]["guest"] is True
+
+
+def test_an_unknown_member_is_still_refused_and_names_guest_as_allowed():
+    with pytest.raises(StoreError) as ei:
+        manifest_result_contract({"name": "p", **_rc({
+            "lookup": {"result": "safe", "gust": True}})})
+    assert ei.value.reason_code == "result_contract_invalid"
+    assert "gust" in str(ei.value) and "callsCasa, guest" in str(ei.value)

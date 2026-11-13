@@ -1619,7 +1619,7 @@ _RC_MAX_TOOLS = 64
 _RC_MAX_SLOTS = 16
 _RC_RESULT_KINDS = ("safe", "capability")
 _RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes", "delivers", "filename",
-                            "callsCasa"})
+                            "callsCasa", "guest"})
 # #1015: the closed vocabulary of delivered-slot kinds. `operator_link` is a
 # URL Casa posts to the operator's chat as one labelled-link message;
 # `operator_message` (S3) a text Casa posts verbatim, as pages headed by the
@@ -1684,6 +1684,11 @@ def manifest_result_contract(manifest: dict) -> dict | None:
         setup_tool = manifest_setup_tool(manifest)
     except StoreError:
         setup_tool = None  # its own verdict reason fires first on every path
+    try:
+        protected = {sanitize_segment(p["name"])
+                     for p in manifest_protected_tools(manifest)}
+    except StoreError:
+        protected = set()  # a malformed protected list has its own verdict
     out: dict = {}
     seen_sanitized: dict[str, str] = {}
     provided: set[str] = set()
@@ -1702,7 +1707,7 @@ def manifest_result_contract(manifest: dict) -> dict | None:
         if unknown:
             raise _rc_error(
                 f"tool {name!r}: unknown member(s) {unknown}; allowed: "
-                "result, provides, consumes, delivers, filename, callsCasa")
+                "result, provides, consumes, delivers, filename, callsCasa, guest")
         kind = entry.get("result")
         if kind not in _RC_RESULT_KINDS:
             raise _rc_error(
@@ -1787,6 +1792,26 @@ def manifest_result_contract(manifest: dict) -> dict | None:
             if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
                 raise _rc_error(f"tool {name!r}: the casa.setupTool cannot call Casa")
             calls_casa = True
+        # `"guest": true` — the author offers this tool to a guest run (a
+        # friend summoning the specialist in a group). The literal true only,
+        # and never on a tool whose result or reach Casa cannot vouch for.
+        guest = False
+        if "guest" in entry:
+            if entry.get("guest") is not True:
+                raise _rc_error(f"tool {name!r}: guest must be true when present")
+            if kind == "capability":
+                raise _rc_error(
+                    f"tool {name!r}: a capability tool is not offered to guests")
+            if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
+                raise _rc_error(
+                    f"tool {name!r}: the casa.setupTool is not offered to guests")
+            if calls_casa:
+                raise _rc_error(
+                    f"tool {name!r}: a tool that calls Casa is not offered to guests")
+            if sanitized in protected:
+                raise _rc_error(
+                    f"tool {name!r}: a protected tool is not offered to guests")
+            guest = True
         if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
             # #1015: a setup tool is either exempt (safe, consumes nothing)
             # or a fully delivered capability (every provided slot delivered,
@@ -1806,7 +1831,8 @@ def manifest_result_contract(manifest: dict) -> dict | None:
                      # present only when declared: an undeclared entry
                      # normalises exactly as before S7a
                      **({"filename": True} if filename else {}),
-                     **({"calls_casa": True} if calls_casa else {})}
+                     **({"calls_casa": True} if calls_casa else {}),
+                     **({"guest": True} if guest else {})}
     delivered_slots = {slot for entry in out.values() for slot in entry["delivers"]}
     for name, entry in out.items():
         for param, slot in entry["consumes"].items():
