@@ -6,8 +6,8 @@ chat) and is routed by who sent it:
 
 * the operator, on a bound bot → a summoned turn, under the operator's own
   rate limit (the same key his direct-chat turns use, whichever group);
-* anyone else, in a group the operator allowed for this specialist → noted,
-  not answered yet;
+* anyone else, in a group the operator allowed for this specialist → a guest
+  run, under the group's rate limit (keyed by the group);
 * everything else → dropped silently, with no Telegram call.
 
 Casa's own bot never asks for these updates and registers no handler for them.
@@ -175,16 +175,41 @@ async def test_the_operators_summons_is_handed_to_the_summoned_turn(world):
     ch._dispatch_summoned_turn.assert_awaited_once_with(update)
 
 
-async def test_a_friend_in_an_allowed_group_is_dropped_in_this_release(world, caplog):
-    ch, bus = _endpoint()
+async def test_a_friend_in_an_allowed_group_is_answered(world):
+    ch, _bus = _endpoint()
     ch._dispatch_summoned_turn = AsyncMock()
+    ch._dispatch_guest_turn = AsyncMock(return_value=True)
     world.allowed = True
-    with caplog.at_level("INFO"):
-        await ch._on_guest_message(_guest(FRIEND), None)
+    update = _guest(FRIEND)
+    await ch._on_guest_message(update, None)
+    ch._dispatch_guest_turn.assert_awaited_once_with(update)
     ch._dispatch_summoned_turn.assert_not_awaited()
-    assert ch._app.bot.mock_calls == []  # no answer_guest_query, nothing sent
+
+
+async def test_a_friend_summons_is_rate_limited_on_the_groups_key(world, caplog):
+    limiter = RateLimiter(capacity=1, window_s=3600)
+    ch, bus = _endpoint(rate_limiter=limiter)
+    ch._dispatch_guest_turn = AsyncMock(return_value=True)
+    world.allowed = True
+    await ch._on_guest_message(_guest(FRIEND), None)
+    with caplog.at_level("DEBUG", logger="channels.telegram"):
+        await ch._on_guest_message(_guest(FRIEND, update_id=4), None)
+    assert ch._dispatch_guest_turn.await_count == 1
+    assert set(limiter._buckets) == {str(GROUP)}
+    assert ch._app.bot.mock_calls == []          # a refusal is not answered in the group
     assert bus.queues["finance"].empty()
-    assert any("outcome=guest_not_answered" in r.getMessage() for r in caplog.records)
+    [line] = [r for r in caplog.records if "outcome=guest_dropped" in r.getMessage()]
+    assert line.levelname == "DEBUG"
+
+
+async def test_a_friend_summons_runs_without_a_limiter(world):
+    ch, _bus = _endpoint()
+    assert ch._rate_limiter is None
+    ch._dispatch_guest_turn = AsyncMock(return_value=True)
+    world.allowed = True
+    for n in range(5):
+        await ch._on_guest_message(_guest(FRIEND, update_id=10 + n), None)
+    assert ch._dispatch_guest_turn.await_count == 5
 
 
 async def test_a_drop_makes_no_telegram_call(world):

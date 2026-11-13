@@ -201,7 +201,9 @@ ORIGIN_SITES = {
     ("origin-builders", "casa_core.py", "notify_config_sync"): (1, RULE_C, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
-    ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (4, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
+    ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
+    ("origin-builders", "channels/telegram.py", "TelegramChannel._open_summons_reply"): (1, NOISE, "a summons reply's log facts (the group it came from), not an origin"),
+    ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_guest_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._on_non_text_message.reply"): (1, OUTBOUND, "a Bot API call on this endpoint's own bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._on_proposal_callback"): (1, INBOUND, "test_endpoint_isolation.py::test_a_proposal_naming_bot_111_is_refused_on_222"),
@@ -245,6 +247,8 @@ ORIGIN_SITES = {
     ("origin-builders", "specialist_registry.py", "origin_from_job"): (2, DERIVED, "delegation_row"),
     ("origin-builders", "tools.py", "JobActor"): (1, NOISE, "a job actor's peer kind"),
     ("origin-builders", "tools.py", "_actor_owns_job"): (1, NOISE, "a job actor's peer kind"),
+    ("origin-builders", "tools.py", "<module>"): (1, NOISE, "guest_access's argument schema (a chat_id property), not an origin"),
+    ("origin-builders", "tools.py", "_guest_list"): (1, NOISE, "a listed group's fields in a tool result, not an origin"),
     ("origin-builders", "tools.py", "_ask_user_scheduled"): (2, PRE_POST, "test_tools_route.py::test_a_scheduled_question_before_casas_bot_has_an_id_touches_nothing"),
     ("origin-builders", "tools.py", "_job_actor_from_origin"): (1, NOISE, "a job actor's peer kind"),
     ("origin-builders", "tools.py", "_new_voice_job"): (1, NOISE, "a voice job's peer kind"),
@@ -604,7 +608,8 @@ IDENTITY_SITE_HITS = {
         "_configurator_step_line._send": 2, "_delegation_scope": 1,
         "_deliver_erasure_outcome": 2, "_dependency_unavailable_message": 1,
         "_episode_sentence": 1, "_erase_gate": 1, "_erase_gate._run": 1,
-        "_erased_everything": 1, "_failure_message": 2, "_guest_chat_of": 3,
+        "_erased_everything": 1, "_failure_message": 2, "_guest_access_from_resident": 1,
+        "_guest_chat_of": 3,
         "_plugin_conversation_blocks": 1,
         "_run_delegated_turn": 2,
         "_scheduled_operator_target": 1, "_settle_setup_from_delegated_results": 1,
@@ -800,6 +805,8 @@ IDENTITY_FUNCTIONS = {
                                                          "written to the store's file"),
     ("tools.py", "_guest_chat_of"): (NOISE, "the summons group's fields, read off the "
                                             "server-stamped origin into a record"),
+    ("tools.py", "_guest_access_from_resident"): (NOISE, "a type check of the revoke call's "
+                                                        "arguments, not a key"),
     ("channels/telegram.py", "_summons_chat_name"): (NOISE, "a chat's display fields (title, "
                                                             "the person's name), not a key"),
     ("action_judgement.py", "_login_item_reply"): (NOISE, "parsing"),
@@ -855,6 +862,7 @@ ROUTE_READERS = {
     ("channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
+    ("channels/telegram.py", "TelegramChannel._dispatch_guest_turn"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel.speak_first"): (1, ROUTE, "stamped with the endpoint's own bot, where its agent's greeting is born"),
     ("channels/telegram_transport.py", "TelegramTransport"): (1, ROUTE, "resolution"),
@@ -905,6 +913,7 @@ BOT_ID_READS = {
     ("channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (2, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (1, RECEIPT, "the endpoint's own bot, where the operator's summons arrived"),
+    ("channels/telegram.py", "TelegramChannel._dispatch_guest_turn"): (1, RECEIPT, "the endpoint's own bot, where a friend's summons arrived"),
     ("channels/telegram.py", "TelegramChannel._guest_reply_note_for"): (1, RECEIPT, "the endpoint's own bot, whose earlier message in the group the summons replied to"),
     ("channels/telegram.py", "TelegramChannel._opening_marker"): (2, RECEIPT, "the endpoint's own bot, whose chat the operator's turn opens"),
     ("channels/telegram.py", "TelegramChannel._dispatch_proposal_tap"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
@@ -1295,6 +1304,8 @@ TURN_CONTEXTS = {
                                                                    "receiving bot",
     ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): "stamped with the "
                                                                          "receiving bot",
+    ("channels/telegram.py", "TelegramChannel._dispatch_guest_turn"): "stamped with the "
+                                                                      "receiving bot",
     ("tools.py", "send_engagement_outcome"): "carries the engagement origin's route",
 }
 

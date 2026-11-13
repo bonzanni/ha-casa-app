@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-22
+last_reviewed: 2026-11-13
 ---
 
 # Hook resolution
@@ -51,6 +51,15 @@ delegated builder, which builds specialists and the configurator, does not carry
 that `path_scope` consults on every Read its readable prefixes deny, so a file granted to a
 task while it runs is readable at once (`agent_inbox.task_file_granted`; INV-OWN-005 in
 [`own-voice.md`](own-voice.md)).
+
+**A guest run's first matcher is a pin, not a resolved bundle.** A friend's summons in a
+group runs on options built apart from the specialist's hooks document
+([`guest-summons.md`](guest-summons.md)): `guest_pin_matcher(allowed)` is the first PreToolUse
+matcher, with no name pattern, and denies every tool whose name is not in the run's
+allow-list — built-ins, Casa's tools and plugin tools alike, "<name> is not available here".
+A stored call's pin lets plugin tools through to the broker; this one does not, and the
+broker judges the same list itself, because the CLI runs matching hooks concurrently and one
+deny does not stop its siblings (INV-GUEST-002).
 
 ## Contracts & invariants
 
@@ -114,6 +123,7 @@ what its runs enforce.
 **Source**
 - `casa/rootfs/opt/casa/hooks.py::resolve_hooks`
 - `casa/rootfs/opt/casa/hooks.py::build_policy_callbacks_from_hooks_yaml`
+- `casa/rootfs/opt/casa/hooks.py::guest_pin_matcher`
 
 **Tests**
 - `tests/test_hooks_policy_param_types.py`

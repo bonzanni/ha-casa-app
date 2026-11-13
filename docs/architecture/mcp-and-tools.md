@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-13
 ---
 
 # The MCP surface and the tool boundary
@@ -41,6 +41,11 @@ its engagement record — so the central tool wrapper every casa tool passes thr
 any casa tool outside the consumer-safe ceiling whenever the bound record is a
 specialist.
 
+**A guest run gets no casa-framework server at all.** A friend's summons of a specialist in
+a group runs on options built apart (`tools._build_guest_options`): `mcp_servers` is empty, so
+no Casa tool exists there, and the only tools offered are the specialist's plugin tools its
+author marked for guests ([`guest-summons.md`](guest-summons.md), INV-GUEST-002).
+
 **One optional MCP server rides on the environment.** Setting `N8N_URL` registers an n8n
 workflow server (bearer-authenticated when `N8N_API_KEY` is set), read by
 `casa_core._maybe_register_n8n`; unset, nothing is registered. No manifest option exposes
@@ -75,7 +80,8 @@ operator it could not work because its progress and completion tools were missin
 
 `guest_access` is granted in code under the same condition as `hand_off`
 (`tools._guest_grants`; [`guest-summons.md`](guest-summons.md)) and the build mounts the
-server for it by the same rule.
+server for it by the same rule. The resident has it from its shipped role files instead, for
+listing and revoking the groups specialists answer in.
 
 What it does not cover: a casa-framework tool the role's own configuration lists while
 declaring no casa-framework server. That pairing is the role's configuration to keep

@@ -49,3 +49,12 @@ class TestBootWiring:
             casa_core.validate_ingress_identity_table
             is ingress_identity.validate_ingress_identity_table
         )
+
+    def test_the_shipped_table_validates_with_the_guest_route(self):
+        # The route a friend's summons arrives on is in the shipped table and
+        # under contract; the check that runs at boot accepts it.
+        import ingress_identity
+
+        assert "telegram_guest" in ingress_identity._INGRESS_IDENTITY
+        assert "telegram_guest" in ingress_identity._ROUTE_CONTRACT
+        ingress_identity.validate_ingress_identity_table()

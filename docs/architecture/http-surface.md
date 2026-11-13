@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-25
+last_reviewed: 2026-11-13
 ---
 
 # The HTTP surface
@@ -175,6 +175,14 @@ Telegram's authentication of its user ids, not an additional Casa-side proof. No
 the namespace check bound what a *peer already recorded in memory* means: peers are the
 key `content_document_id` hashes, so changing how a sender is named re-keys that sender's
 documents rather than migrating them.
+
+**A friend's summons has its own route.** `telegram_guest` is the ingress row of a friend
+summoning a specialist's bot in a group the operator allowed
+([`guest-summons.md`](guest-summons.md)): surface `telegram`, authenticated, the
+`telegram_sender` peer strategy — a person named by their own id, like any Telegram sender —
+and a table clearance of `public`, the floor, so the route reads at public clearance whoever
+sent it, the operator flag included. The route contract carries the same row; what differs
+from `telegram` is the clearance, which the contract does not pin.
 
 **INV-HTTP-007**: On the internal socket, `/admin/*` requests are refused unless the connecting peer is uid 0; an unreadable peer identity is refused, not admitted.
 

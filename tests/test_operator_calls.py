@@ -441,3 +441,43 @@ def test_a_still_escrowed_deposit_reads_pending_only_for_its_owner():
                            store=store)["status"] == "unknown"
     assert outcomes.status(ref, plugin="bank", operator_id=100, artifact_id="2" * 64,
                            store=store)["status"] == "unknown"
+
+
+# -- a guest run's admission ------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_guest_predicate_denies_before_any_side_effect():
+    """On a guest run the admission hook judges the guest list first: a tool
+    outside it is refused before anything is recorded or opened — no call
+    record for a tool that calls Casa, no in-flight call for a capability.
+    A listed tool proceeds as on any other turn; a hook built without the
+    list behaves as today."""
+    FETCH = "mcp__plugin_browser_api__fetch"
+    cmap = ResultContractMap(
+        tools={START: ToolContract(ARTIFACT, "browser", "safe", (), {}, calls_casa=True),
+               FETCH: ToolContract(ARTIFACT, "browser", "capability", ("link",), {}),
+               PLAIN: ToolContract(ARTIFACT, "browser", "safe", (), {}, guest=True)},
+        plugins={"browser": PluginContract(ARTIFACT, True, frozenset())})
+    store = rb.ReferenceStore()
+    hook = rb.make_plugin_admission_hook("browser", cmap, client_id="c1", store=store,
+                                         guest_tools=frozenset({PLAIN}))
+    with _Origin(FIDO_RUN):
+        for name in (START, FETCH):
+            out = await hook(_pre(name), "tu-1", {})
+            assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+            assert out["hookSpecificOutput"]["permissionDecisionReason"] == (
+                f"not executed: {name} is not offered to guests")
+        assert await hook(_pre(PLAIN), "tu-2", {}) == {}
+    assert operator_calls.CALLS.find("c1") == (None, "no_call_in_flight")
+    assert store.inflight_count() == 0
+    # an empty list refuses every plugin tool; no list judges none of them
+    none = rb.make_plugin_admission_hook("browser", cmap, client_id="c2", store=store,
+                                         guest_tools=frozenset())
+    today = rb.make_plugin_admission_hook("browser", cmap, client_id="c3", store=store)
+    with _Origin(FIDO_RUN):
+        assert "not offered to guests" in (await none(_pre(PLAIN), "tu-3", {}))[
+            "hookSpecificOutput"]["permissionDecisionReason"]
+        assert await today(_pre(START), "tu-4", {}) == {}
+    call, err = operator_calls.CALLS.find("c3")
+    assert err is None and call.tool_use_id == "tu-4"
+    assert await hook(_pre("Bash"), "tu-5", {}) == {}      # not a plugin tool: not this hook's

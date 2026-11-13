@@ -201,6 +201,42 @@ class TestTelegramSenderIdentity:
             ingress_identity("telegram", sender_is_operator=True)
 
 
+class TestGuestRoute:
+    """A friend summoning a specialist's bot in a group the operator allowed
+    arrives on its own route: a Telegram person, named by their own sender
+    id, reading at public clearance whatever the handler says about them."""
+
+    def test_the_guest_route_names_a_public_person(self):
+        from ingress_identity import _INGRESS_IDENTITY, ingress_identity
+        from speaker_provenance import UserProvenance
+
+        origin = ingress_identity(
+            "telegram_guest", sender_id="777", sender_display_name="Mara")
+        assert origin.surface == "telegram"
+        assert origin.server_origin.is_authenticated is True
+        assert origin.server_origin.clearance == "public"
+        assert origin.user_peer == "telegram:777"
+        assert origin.authenticated_user.stable_id == "777"
+        assert origin.authenticated_user.configured_display_name == "Mara"
+        assert UserProvenance.from_origin(
+            surface=origin.surface, server_origin=origin.server_origin,
+            authenticated_user=origin.authenticated_user,
+            user_peer=origin.user_peer,
+        ).speaker_kind == "user"
+        # The table's own clearance is public, so even an operator flag
+        # yields public here; the handler passes False regardless.
+        assert _INGRESS_IDENTITY["telegram_guest"].clearance == "public"
+        assert ingress_identity(
+            "telegram_guest", sender_id="100", sender_is_operator=True,
+        ).server_origin.clearance == "public"
+
+    def test_a_guest_turn_without_a_sender_fails_loudly(self):
+        from ingress_identity import IngressIdentityError, ingress_identity
+
+        with pytest.raises(IngressIdentityError, match="sender"):
+            ingress_identity("telegram_guest")
+
+
 class TestExistingRoutesUnchanged:
 
     def test_voice_sse_is_the_anonymous_trusted_speaker(self):
@@ -461,7 +497,8 @@ class TestBootValidatorEnforcesRouteContracts:
             assert _classify(policy, probe) == expected_kind, route
         kinds = {route: contract[4] for route, contract in _ROUTE_CONTRACT.items()}
         assert kinds == {
-            "telegram": "user", "voice_sse": "user", "voice_ws": "user",
+            "telegram": "user", "telegram_guest": "user",
+            "voice_sse": "user", "voice_ws": "user",
             "invoke": "automation", "webhook_trigger": "automation",
         }
 

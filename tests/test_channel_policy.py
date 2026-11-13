@@ -18,3 +18,10 @@ def test_authenticated_channels_write():
 def test_unknown_channel_does_not_write():
     # Leak-safe default: an unrecognised channel is treated as untrusted-to-write.
     assert writes_to_bank("some-future-surface") is False
+
+
+def test_the_guest_channel_does_not_write():
+    # A friend's summons in a group: nothing said there is captured.
+    from guest_run import GUEST_CHANNEL
+    assert GUEST_CHANNEL == "telegram_guest"
+    assert writes_to_bank(GUEST_CHANNEL) is False

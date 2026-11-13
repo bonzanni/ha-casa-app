@@ -186,7 +186,7 @@ def _bundle(text: str) -> CompiledPromptBundle:
                               estimated_tokens=7)
     return CompiledPromptBundle(role_id="resident:assistant",
                                 resolved_model="m", text=proj, voice=proj,
-                                restricted_webhook=proj, binding_digest="d")
+                                restricted_webhook=proj, guest=proj, binding_digest="d")
 
 
 def test_the_block_sits_between_persona_and_doctrine_outside_the_digest():

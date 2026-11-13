@@ -49,7 +49,7 @@
     INV-HTTP-003: [tests/test_pin_http_invariants.py::test_pin_inv_http_003_replay_unbounded_except_timestamped, tests/test_webhook_auth.py::test_timestamped_hmac_stale_rejected]
     INV-HTTP-004: [tests/test_origin_stamping.py::test_invoke_route_is_unspoofable, tests/test_webhook_handler.py::test_payload_context_never_enters_bus_message_context]
     INV-HTTP-005: [tests/test_pin_http_invariants.py::test_pin_inv_http_005_table_contract_disagreement_refused, tests/test_ingress_identity_boot_check.py::test_main_validates_the_table_before_doing_anything_else, tests/test_ingress_identity.py::test_a_machine_route_inside_the_human_namespace_fails_boot, tests/test_ingress_identity.py::test_a_machine_route_wearing_the_telegram_surface_fails_boot, tests/test_ingress_identity.py::test_a_human_route_stripped_of_its_surface_fails_boot]
-    INV-HTTP-006: [tests/test_ingress_identity.py::test_operator_sender_is_named_by_its_own_id_at_private_clearance, tests/test_ingress_identity.py::test_non_operator_sender_gets_its_own_peer, tests/test_ingress_identity.py::test_non_operator_sender_reads_at_public_clearance, tests/test_ingress_identity.py::test_the_operator_is_not_named_by_a_shared_constant, tests/test_ingress_identity.py::test_a_telegram_turn_without_a_sender_fails_loudly]
+    INV-HTTP-006: [tests/test_ingress_identity.py::test_operator_sender_is_named_by_its_own_id_at_private_clearance, tests/test_ingress_identity.py::test_non_operator_sender_gets_its_own_peer, tests/test_ingress_identity.py::test_non_operator_sender_reads_at_public_clearance, tests/test_ingress_identity.py::test_the_operator_is_not_named_by_a_shared_constant, tests/test_ingress_identity.py::test_a_telegram_turn_without_a_sender_fails_loudly, tests/test_ingress_identity.py::TestGuestRoute::test_the_guest_route_names_a_public_person]
     INV-HTTP-007: [tests/test_admin_peercred_gate.py::test_admin_route_rejects_non_root_peer, tests/test_admin_peercred_gate.py::test_admin_route_allows_root_peer, tests/test_admin_peercred_gate.py::test_admin_route_fails_closed_on_unknown_peer, tests/test_admin_peercred_gate.py::test_internal_route_not_gated]
 
 - doc: architecture/jobs-and-delivery.md
@@ -103,6 +103,7 @@
   covers:
     - casa/rootfs/opt/casa/hooks.py::resolve_hooks
     - casa/rootfs/opt/casa/hooks.py::build_policy_callbacks_from_hooks_yaml
+    - casa/rootfs/opt/casa/hooks.py::guest_pin_matcher
   tests:
     - tests/test_hooks_policy_param_types.py
     - tests/test_hooks.py

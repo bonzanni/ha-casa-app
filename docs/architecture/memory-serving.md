@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-13
 ---
 
 # Serving memory: the session's view and the correction note
@@ -130,7 +130,9 @@ awaiting.
 
 What it does not cover: a resident session with no record bound to it gets the pending
 corrections only, since no base says which committed ones it lacks; a turn whose store is
-unavailable carries no note, and logs that it could not read one.
+unavailable carries no note, and logs that it could not read one. Nor a friend's guest run
+in a group: it is no turn of the role's conversation and reads no memory at all
+(INV-GUEST-003 in [`guest-summons.md`](guest-summons.md)).
 
 ## Failure behavior
 

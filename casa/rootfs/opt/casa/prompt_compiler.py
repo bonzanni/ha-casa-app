@@ -59,6 +59,10 @@ _LIMITS = {
     "text": (2000, 12000 + _RESPONSE_SHAPE_TOKEN_RESERVE),
     "voice": (400, 6000 + _RESPONSE_SHAPE_TOKEN_RESERVE),
     "restricted_webhook": (0, 4000 + _RESPONSE_SHAPE_TOKEN_RESERVE),
+    # guest: the persona ceiling of voice (its persona body is the same short
+    # one) under text's total ceiling, so a doctrine admitted on text is never
+    # made unloadable by the new surface.
+    "guest": (400, 12000 + _RESPONSE_SHAPE_TOKEN_RESERVE),
 }
 
 # #355: every projection heading is excluded from any OTHER selected
@@ -66,6 +70,7 @@ _LIMITS = {
 # is always selected explicitly, never inherited through Core's nesting.
 _PROJECTION_HEADINGS = (
     "Text projection", "Voice projection", "Restricted webhook projection",
+    "Guest projection",
 )
 
 
@@ -83,6 +88,7 @@ class CompiledPromptBundle:
     text: CompiledProjection
     voice: CompiledProjection
     restricted_webhook: CompiledProjection
+    guest: CompiledProjection
     binding_digest: str
 
 
@@ -221,6 +227,7 @@ _SURFACE_SECTIONS = {
     "text": ("Core doctrine", "Text projection"),
     "voice": ("Core doctrine", "Voice projection"),
     "restricted_webhook": ("Core doctrine", "Restricted webhook projection"),
+    "guest": ("Core doctrine", "Guest projection"),
 }
 
 
@@ -235,7 +242,7 @@ def compile_projection_set(
     *, role: RoleSlot, persona, platform_frame: str, safety_kernel: str,
 ) -> dict[str, CompiledProjection]:
     projections: dict[str, CompiledProjection] = {}
-    for surface in ("text", "voice", "restricted_webhook"):
+    for surface in ("text", "voice", "restricted_webhook", "guest"):
         persona_body = _persona_body(persona, surface)
         # #355: the shipped doctrines nest all three projection headings
         # under "# Core doctrine", so Core's body would otherwise carry every
@@ -311,7 +318,8 @@ def compile_prompt_bundle(
     return CompiledPromptBundle(
         role_id=role.role_id, resolved_model=role.resolved_model.effective,
         text=projections["text"], voice=projections["voice"],
-        restricted_webhook=projections["restricted_webhook"], binding_digest=binding.binding_digest,
+        restricted_webhook=projections["restricted_webhook"],
+        guest=projections["guest"], binding_digest=binding.binding_digest,
     )
 
 
@@ -330,6 +338,8 @@ def projection_for(
     resume is gated on."""
     if origin_route == "webhook_trigger":
         projection = bundle.restricted_webhook
+    elif channel == "telegram_guest":
+        projection = bundle.guest
     elif channel == "voice":
         projection = bundle.voice
     else:

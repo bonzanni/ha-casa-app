@@ -11,10 +11,17 @@ group's message through the channel's ``guest_finish``; everything else it
 sends goes to its chat with the operator. A question asked in that chat puts the group's
 message in waiting, and a question still open when the turn ends says so.
 
+A friend's summons in a group the operator allowed is a guest turn instead:
+the same placeholder and markers, on the guest channel, with the friend's
+public identity, the group as its chat id and none of the operator's
+markers. A few run at once; the summons past them is answered with the busy
+line and runs nothing.
+
 Bot 222 is the specialist's (``finance``), the operator is 100, the group -5.
 """
 from __future__ import annotations
 
+import asyncio
 import types
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,13 +30,17 @@ import pytest
 
 import agent as agent_mod
 import chat_notes
+import guest_run
 import own_voice
 import provenance
 import tools
 import verdict_broker
 from bus import BusMessage, MessageBus, MessageType
+from channels import DeliveryOutcome
 from channels.guest_reply import GuestReply
 from channels.telegram import REPLY_QUOTE_CHARS, TelegramChannel
+from error_kinds import ErrorKind
+from output_boundary import casa_text
 from output_boundary_testing import admitted
 from specialist_registry import DelegationComplete
 from test_agent_process import FakeClient, _make_agent
@@ -596,3 +607,290 @@ async def test_a_send_message_tool_call_lands_in_the_dm_and_the_text_edits_the_g
     assert [e["text"] for e in w.bot.edits] == ["The rate is 1.08."]
     assert w.bot.edits[0]["inline_message_id"] == "inl-1"
     assert w.ch._guest_replies == {}
+
+
+# ---------------------------------------------------------------------------
+# a friend's summons: a guest turn, a few at a time
+# ---------------------------------------------------------------------------
+
+THINKING = "Judge · thinking…"
+OPERATOR_MARKERS = ("_operator_turn", "_operator_words", "_chat_opening")
+
+
+def _friend(*, first_name="Ada", text="@FinanceBot what is VAT?", update_id=3):
+    update = _guest(FRIEND, text=text, update_id=update_id)
+    update.effective_user.first_name = first_name
+    return update
+
+
+async def _guest_dispatched(ch, bus, update=None):
+    assert await ch._dispatch_guest_turn(update or _friend()) is True
+    [turn] = _turns(bus, "finance")
+    return turn
+
+
+def _answer_texts(bot) -> list[str]:
+    return [a["result"].input_message_content.message_text for a in bot.answers]
+
+
+def _outcomes(caplog) -> list[str]:
+    return [r.getMessage().split("outcome=")[1].split()[0] for r in caplog.records
+            if r.getMessage().startswith("guest summons:")]
+
+
+async def test_a_guest_turn_is_built_on_the_guest_channel(world, opening, names, ticker):
+    ch, bus, bot = _endpoint()
+    turn = await _guest_dispatched(ch, bus)
+    ctx = turn.context
+    assert turn.channel == guest_run.GUEST_CHANNEL == "telegram_guest"
+    assert turn.source == "telegram" and turn.target == "finance"
+    assert turn.type is MessageType.CHANNEL_IN
+    assert turn.content == "@FinanceBot what is VAT?"
+    assert ctx["chat_id"] == str(GROUP) == "-5"
+    assert ctx["user_id"] == FRIEND and ctx["user_name"] == "Ada"
+    assert ctx["message_id"] == "58"
+    assert ctx["_origin_route"] == "telegram_guest" and ctx["_origin_clearance"] == "public"
+    assert ctx["_tg_bot"] == OWN_BOT
+    assert ctx["_guest_chat"] == {"id": GROUP, "title": TITLE, "type": "group"}
+    for marker in OPERATOR_MARKERS:
+        assert marker not in ctx
+    trusted = turn.trusted_user_origin
+    assert trusted.user_peer == f"telegram:{FRIEND}"
+    assert trusted.server_origin.clearance == "public"
+    assert trusted.authenticated_user.configured_display_name == "Ada"
+    key = ctx["_guest_query"]
+    assert key == ctx["cid"]
+    reply = ch._guest_replies[key]
+    assert reply.meta["kind"] == "guest" and reply.meta["caller_id"] == FRIEND
+    assert reply.meta["chat_id"] == GROUP and reply.meta["title"] == TITLE
+    assert reply.name == "Judge" and ticker == [key]
+    assert _answer_texts(bot) == [THINKING]
+
+
+async def test_a_guest_turn_carries_no_operator_markers(world, opening, names):
+    """Even while the specialist's own chat is unopened — where the
+    operator's summons would carry the opening marker — a friend's turn
+    carries none of the operator's markers and opens nothing."""
+    ch, bus, _bot = _endpoint()
+    opening.unopened = True
+    turn = await _guest_dispatched(ch, bus, _friend(first_name=None))
+    for marker in OPERATOR_MARKERS:
+        assert marker not in turn.context
+    assert turn.context["user_name"] == "Someone"
+    assert opening.marks == [] and opening.unopened is True
+    assert "_guest_query" in turn.context
+
+
+async def test_the_guest_placeholder_goes_out_before_the_turn(world, opening, names,
+                                                              monkeypatch):
+    ch, bus, bot = _endpoint()
+    order: list[str] = []
+    real_answer = bot.answer_guest_query
+
+    async def answer(*a, **k):
+        order.append("placeholder")
+        return await real_answer(*a, **k)
+    bot.answer_guest_query = answer
+    real_send = bus.send_checked
+
+    async def send_checked(msg):
+        order.append("queued")
+        return await real_send(msg)
+    monkeypatch.setattr(bus, "send_checked", send_checked)
+    monkeypatch.setattr(GuestReply, "start_ticker", lambda self: order.append("ticker"))
+    assert await ch._dispatch_guest_turn(_friend()) is True
+    assert order == ["placeholder", "ticker", "queued"]
+
+
+async def test_parallel_runs_up_to_the_cap_then_busy(world, opening, names, caplog):
+    """Summonses arrive while every run so far is still working (the agent's
+    handler is blocked): up to the cap each gets a placeholder and a turn the
+    agent is running at once; the next gets the busy line straight away, with
+    no edit and no turn. A run that ends frees its place."""
+    world.allowed = True
+    ch, bus, bot = _endpoint(register=False)
+    release = asyncio.Event()
+    running: list[BusMessage] = []
+
+    async def handler(msg):
+        running.append(msg)
+        await release.wait()
+    bus.register("finance", handler)
+    bus.start_agent_loop("finance")
+    cap = guest_run.GUEST_RUNS_IN_FLIGHT
+    try:
+        with caplog.at_level("INFO", logger="channels.telegram"):
+            for n in range(cap + 1):
+                await ch._on_guest_message(_friend(update_id=10 + n), None)
+                await asyncio.sleep(0)
+            for _ in range(5):
+                await asyncio.sleep(0)
+        assert cap == 3
+        assert len(running) == cap                       # three runs at once
+        assert all(m.channel == "telegram_guest" for m in running)
+        assert _answer_texts(bot) == [THINKING] * cap + [guest_run.BUSY_LINE]
+        assert bot.edits == []
+        assert len(ch._guest_replies) == cap             # the busy reply is never bound
+        assert _outcomes(caplog) == ["guest_busy"]
+
+        # one run ends: its terminal edit frees a place for the next summons
+        assert await ch.guest_finish(admitted("VAT is 21%."), None,
+                                     running[0].context) is DeliveryOutcome.DELIVERED
+        assert [e["text"] for e in bot.edits] == ["VAT is 21%."]
+        await ch._on_guest_message(_friend(update_id=20), None)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(running) == cap + 1
+        assert _answer_texts(bot)[-1] == THINKING
+        assert len(ch._guest_replies) == cap
+    finally:
+        release.set()
+        await bus.unregister_and_wait("finance")
+
+
+class _HeldBot(_Bot):
+    """A bot whose ``answer_guest_query`` waits for the test's word, as a
+    slow Telegram does: summonses handled side by side overlap there."""
+
+    def __init__(self):
+        super().__init__()
+        self.go = asyncio.Event()
+
+    async def answer_guest_query(self, guest_query_id, result):
+        await self.go.wait()
+        return await super().answer_guest_query(guest_query_id, result)
+
+
+async def test_summonses_handled_side_by_side_still_keep_the_cap(world, opening, names):
+    """Summonses arriving together, each still waiting for its placeholder
+    to be answered, count against the cap all the same."""
+    world.allowed = True
+    bot = _HeldBot()
+    ch, bus, _ = _endpoint(bot=bot)
+    cap = guest_run.GUEST_RUNS_IN_FLIGHT
+    handlers = [asyncio.create_task(ch._on_guest_message(_friend(update_id=50 + n), None))
+                for n in range(cap + 2)]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    bot.go.set()
+    await asyncio.gather(*handlers)
+    assert sorted(_answer_texts(bot)) == sorted([THINKING] * cap + [guest_run.BUSY_LINE] * 2)
+    assert len(_turns(bus, "finance")) == cap
+    assert len(ch._guest_replies) == cap
+
+
+async def test_the_cap_is_the_constant(world, opening, names, monkeypatch):
+    world.allowed = True
+    monkeypatch.setattr(guest_run, "GUEST_RUNS_IN_FLIGHT", 1)
+    ch, bus, bot = _endpoint()
+    await ch._on_guest_message(_friend(), None)
+    await ch._on_guest_message(_friend(update_id=4), None)
+    assert _answer_texts(bot) == [THINKING, guest_run.BUSY_LINE]
+    assert len(_turns(bus, "finance")) == 1
+    assert len(ch._guest_replies) == 1
+
+
+async def test_a_busy_line_telegram_refuses_is_logged_as_failed(
+        world, opening, names, monkeypatch, caplog):
+    """Past the cap, a busy line that never reached the group is logged
+    ``guest_failed``, not ``guest_busy``: nothing was said."""
+    world.allowed = True
+    monkeypatch.setattr(guest_run, "GUEST_RUNS_IN_FLIGHT", 1)
+    ch, bus, bot = _endpoint()
+    await ch._on_guest_message(_friend(), None)
+    bot.answer_error = RuntimeError("query expired")
+    with caplog.at_level("INFO", logger="channels.telegram"):
+        await ch._on_guest_message(_friend(update_id=4), None)
+    assert _answer_texts(bot) == [THINKING, guest_run.BUSY_LINE]   # tried, refused
+    assert len(_turns(bus, "finance")) == 1
+    assert _outcomes(caplog) == ["guest_failed"]
+
+
+async def test_the_cap_counts_guest_replies_only(world, opening, names):
+    """The operator's own summonses, however many are live, take no place
+    from his friends."""
+    world.allowed = True
+    ch, bus, bot = _endpoint()
+    for n in range(guest_run.GUEST_RUNS_IN_FLIGHT):
+        await ch._on_guest_message(_guest(OPERATOR, update_id=10 + n), None)
+    assert len(ch._guest_replies) == guest_run.GUEST_RUNS_IN_FLIGHT
+    await ch._on_guest_message(_friend(update_id=20), None)
+    assert _answer_texts(bot) == [THINKING] * (guest_run.GUEST_RUNS_IN_FLIGHT + 1)
+    assert guest_run.BUSY_LINE not in _answer_texts(bot)
+    turns = _turns(bus, "finance")
+    assert [t.channel for t in turns] == ["telegram"] * 3 + ["telegram_guest"]
+
+
+async def test_a_guest_turn_the_queue_refuses_fails_the_reply(world, opening, names, caplog):
+    ch, bus, bot = _endpoint(register=False)
+    with caplog.at_level("INFO", logger="channels.telegram"):
+        assert await ch._dispatch_guest_turn(_friend()) is False
+    assert [e["text"] for e in bot.edits] == [FAIL]
+    assert ch._guest_replies == {}
+    assert "finance" not in bus.queues
+    assert _outcomes(caplog) == ["guest_failed"]
+
+
+async def test_a_refused_guest_placeholder_queues_no_turn(world, opening, names, ticker, caplog):
+    ch, bus, bot = _endpoint()
+    bot.answer_error = RuntimeError("query expired")
+    with caplog.at_level("INFO", logger="channels.telegram"):
+        assert await ch._dispatch_guest_turn(_friend()) is False
+    assert _turns(bus, "finance") == [] and ch._guest_replies == {} and ticker == []
+    assert _outcomes(caplog) == ["guest_failed"]
+
+
+async def test_the_reply_note_names_the_earlier_asker(world, opening, names):
+    ch, bus, _bot = _endpoint()
+    update = _friend(text="@FinanceBot and in euros?")
+    quoted = _quoted(from_id=OWN_BOT, text="The rate is 1.08.")
+    quoted.guest_bot_caller_user = NS(id=OPERATOR, first_name="Bea", is_bot=False)
+    update.guest_message.reply_to_message = quoted
+    turn = await _guest_dispatched(ch, bus, update)
+    assert turn.context["_guest_reply_note"] == (
+        f"You answered earlier in «{TITLE}» (asked by Bea): The rate is 1.08.")
+
+    # the operator's summons reads the same note
+    update = _guest(text="@FinanceBot and in euros?", update_id=4)
+    update.guest_message.reply_to_message = quoted
+    turn = await _dispatched(ch, bus, update)
+    assert turn.context["_guest_reply_note"] == (
+        f"You answered earlier in «{TITLE}» (asked by Bea): The rate is 1.08.")
+
+    # a caller with no first name: the note as before
+    quoted.guest_bot_caller_user = NS(id=FRIEND, first_name=None, is_bot=False)
+    update = _friend(text="@FinanceBot and in euros?", update_id=5)
+    update.guest_message.reply_to_message = quoted
+    turn = await _guest_dispatched(ch, bus, update)
+    assert turn.context["_guest_reply_note"] == (
+        f"You answered earlier in «{TITLE}»: The rate is 1.08.")
+
+
+async def test_operator_and_guest_outcomes_log_through_the_real_logger(
+        caplog, world, opening, names, monkeypatch):
+    """Every terminal path writes its summons line through the real
+    ``_log_summons`` with a meta that carries the kind — the operator's as
+    before, a friend's under its own prefix."""
+    world.allowed = True
+    ch, bus, bot = _endpoint()
+    with caplog.at_level("INFO", logger="channels.telegram"):
+        for dispatch, update in ((ch._dispatch_summoned_turn, _guest),
+                                 (ch._dispatch_guest_turn, _friend)):
+            for n, end in enumerate(("answer", "decline", "fail")):
+                assert await dispatch(update(update_id=30 + n)) is True
+                [turn] = _turns(bus, "finance")
+                ctx = turn.context
+                if end == "answer":
+                    await ch.guest_finish(admitted("done"), None, ctx)
+                elif end == "decline":
+                    ctx["_turn_scope"] = NS(detached_ask=False)
+                    await ch.turn_finished(ctx)
+                else:
+                    await ch.guest_finish(casa_text("Rate limited."), ErrorKind.RATE_LIMIT, ctx)
+        monkeypatch.setattr(guest_run, "GUEST_RUNS_IN_FLIGHT", 0)
+        await ch._on_guest_message(_friend(update_id=40), None)
+    assert _outcomes(caplog) == [
+        "operator_answered", "operator_declined", "operator_failed",
+        "guest_answered", "guest_declined", "guest_failed", "guest_busy"]
+    assert ch._guest_replies == {}
+    assert all("kind" not in r.getMessage() for r in caplog.records)

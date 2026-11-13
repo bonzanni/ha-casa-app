@@ -45,6 +45,7 @@ class _Bot:
         self.answers: list[dict] = []
         self.edits: list[dict] = []
         self.sent: list[dict] = []
+        self.drafts: list[dict] = []
         self.script = list(edits)
         self.answer_error: Exception | None = None
         self._n = 0
@@ -67,6 +68,10 @@ class _Bot:
     async def send_message(self, **kw):
         self.sent.append(kw)
         return NS(message_id=len(self.sent))
+
+    async def send_message_draft(self, **kw):
+        self.drafts.append(kw)
+        return True
 
 
 class _SlowBot(_Bot):
@@ -187,6 +192,40 @@ async def test_open_reports_a_refused_answer(caplog):
     with caplog.at_level(logging.WARNING):
         assert await r.open() is False
     assert r.inline_message_id is None
+    assert len(_warnings(caplog)) == 1
+
+
+async def test_open_final_answers_once_and_is_terminal(monkeypatch):
+    """A reply whose first message is also its last (the busy line): the
+    query is answered with the text itself, no ticker starts, and every
+    terminal call afterwards returns the delivered outcome without an edit."""
+    ticks = _Ticks(monkeypatch)
+    bot = _Bot()
+    r = _reply(bot)
+    assert await r.open_final("Busy right now — ask me again in a moment.") is True
+    assert [a["guest_query_id"] for a in bot.answers] == ["gq-q1"]
+    content = bot.answers[0]["result"].input_message_content
+    assert content.message_text == "Busy right now — ask me again in a moment."
+    assert r.inline_message_id == "inl-1"
+    assert r.terminal is True
+    r.start_ticker()
+    await ticks.tick(3)
+    assert ticks.waits == []                       # no ticker ever slept
+    assert await r.finish(admitted("late")) is DeliveryOutcome.DELIVERED
+    assert await r.decline() is DeliveryOutcome.DELIVERED
+    assert await r.fail() is DeliveryOutcome.DELIVERED
+    await r.waiting()
+    assert bot.edits == []
+    assert len(bot.answers) == 1
+
+
+async def test_open_final_refused_sets_nothing(caplog):
+    bot = _Bot()
+    bot.answer_error = BadRequest("query is too old")
+    r = _reply(bot)
+    with caplog.at_level(logging.WARNING):
+        assert await r.open_final("Busy right now — ask me again in a moment.") is False
+    assert r.inline_message_id is None and r.terminal is False
     assert len(_warnings(caplog)) == 1
 
 

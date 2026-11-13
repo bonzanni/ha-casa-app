@@ -43,9 +43,10 @@ from plugin_grants import (
     declared_tools_for_resolution, env_remediation_hint,
     grants_for_resolution, grants_for_resolved,
     make_fail_closed_can_use_tool, mcp_json_malformed,
-    profile_plan,
-    required_env_vars_for_resolved, sanitized_env_for_paths,
-    sanitized_env_for_resolution,
+    profile_plan, protected_map,
+    required_env_vars_for_resolved, result_contract_map,
+    sanitized_env_for_paths, sanitized_env_for_resolution,
+    withhold_env_unresolved,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
 from handoff import child_chain, operator_words, requester_of
@@ -3499,6 +3500,114 @@ def _build_specialist_options(
         # instead of hanging on an unanswerable CC prompt.
         can_use_tool=make_fail_closed_can_use_tool(
             getattr(cfg, "role", "unknown")),
+    )
+
+
+def _build_guest_options(
+    cfg,
+    *,
+    resolution=None,
+    system_prompt: str,
+) -> ClaudeAgentOptions:
+    """Build the LOCKED-DOWN options of a guest run — a friend's summons of
+    *cfg*'s bot in a group the operator allowed, answered by a bounded turn
+    that reaches only the plugin tools the specialist's author marked for
+    guests.
+
+    A standalone constructor, like the restricted webhook's: nothing of the
+    specialist's own grant set is read — not ``cfg.tools.allowed``, its hooks
+    document, its MCP server list, the hand-off, inbox or job grants. The
+    allow-list is the guest-flagged, non-protected tools of the specialist's
+    resolved plugins, narrowed by its access profile and never widened by it
+    (the intersection is computed last). Two admission layers hold the list
+    independently, because the CLI runs matching PreToolUse hooks
+    concurrently and one deny does not stop its siblings: the guest pin is
+    the first matcher and denies every tool outside the list, plugin tools
+    included; the result broker's admission hook judges the same list as
+    its own first check.
+
+    No built-in tools (``tools=[]``), no skills, no setting source, no
+    ambient ``.mcp.json`` (``setting_sources=[]`` keeps it out; the plugin's
+    own server loads through ``plugins=``, which a strict MCP config would
+    drop), no Casa MCP server (``mcp_servers={}``), no sub-agents, no shell,
+    the CLI's own hooks disabled, every ungranted call denied fast, and no
+    transcript: ``extra_args=ephemeral_extra_args()`` starts a session the
+    CLI never persists, so nothing of the guest conversation is stored."""
+    from guest_run import GUEST_MAX_TURNS, guest_tool_names
+    from hooks import guest_pin_matcher, profile_guard_matcher
+
+    role = getattr(cfg, "role", "unknown")
+    if resolution is None:
+        resolution = _delegated_resolution(cfg)
+    resolution, _withheld = withhold_env_unresolved(
+        resolution, context=f"guest {role} options")
+    _protected = protected_map(resolution)
+    contract_map = result_contract_map(resolution)
+    guest = guest_tool_names(contract_map, _protected)
+    _plan = profile_plan(resolution, target=f"specialist:{role}",
+                         withheld=[rp for rp, _ in _withheld])
+    allowed, _denies = apply_profile_plan(sorted(guest), [], _plan)
+    # the intersection, last: a profile narrows the list, never widens it
+    allowed = [t for t in allowed if t in guest]
+
+    hooks: dict[str, list] = {"PreToolUse": [guest_pin_matcher(frozenset(allowed))]}
+    _profile_guard = profile_guard_matcher(_plan)
+    if _profile_guard is not None:
+        hooks["PreToolUse"].append(_profile_guard)
+    _broker_env: dict[str, str] = {}
+    if resolution.plugins:
+        import result_broker
+        _client_id = result_broker.new_client_id()
+        for _event, _matchers in result_broker.broker_matchers(
+                role, resolution, client_id=_client_id, authz_hook=None,
+                protected=_protected, guest_tools=frozenset(allowed)).items():
+            hooks[_event] = [*hooks.get(_event, []), *_matchers]
+        _broker_env = result_broker.broker_env(_client_id)
+
+    # Every other plugin tool the resolution names (the setup tool included)
+    # is kept out of the model's view as well; the pin and the broker still
+    # refuse it on their own should it be called anyway.
+    _not_offered = sorted(
+        ({*contract_map.tools, *_protected}
+         | {t for p in contract_map.plugins.values() for t in p.setup_tools})
+        - set(allowed) - set(_denies))
+    disallowed_tools = with_cross_session_tools_denied(
+        [*_denies, *_not_offered, "Bash", "Task", "Agent", "ToolSearch", "Skill"])
+    try:
+        logger.info(
+            "agent_capabilities_effective role=%s surface=guest model=%s "
+            "tool_count=%d tools=%s plugins=%s",
+            role, getattr(cfg, "model", "?"), len(allowed), allowed,
+            sorted(rp.name for rp in resolution.plugins),
+        )
+    except Exception:  # noqa: BLE001 — an observability line must never break the build
+        logger.warning("agent_capabilities_effective log failed for role=%s",
+                       role, exc_info=True)
+
+    return ClaudeAgentOptions(
+        model=cfg.model,
+        effort=effort_for(cfg.model),
+        cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
+        system_prompt=system_prompt,
+        allowed_tools=allowed,
+        disallowed_tools=disallowed_tools,
+        permission_mode="dontAsk",
+        max_turns=min(cfg.tools.max_turns, GUEST_MAX_TURNS),
+        mcp_servers={},
+        hooks=hooks,
+        cwd=specialist_cwd(cfg),
+        resume=None,
+        setting_sources=[],
+        skills=[],
+        tools=[],
+        strict_mcp_config=False,
+        plugins=[{"type": "local", "path": rp.path} for rp in resolution.plugins],
+        settings=cli_session_settings({"disableAllHooks": True}),
+        env={**sanitized_env_for_resolution(resolution), **_broker_env},
+        can_use_tool=make_fail_closed_can_use_tool(role),
+        include_partial_messages=False,
+        extra_args=ephemeral_extra_args(),
     )
 
 
@@ -16761,26 +16870,119 @@ def _guest_chat_of(origin: dict):
     return guest_groups.ChatRef(chat_id, title, chat_type)
 
 
+_GUEST_HINT_TIMEOUT_S = 5.0
+
+
+async def _guest_mode_hint(role: str):
+    """Whether Telegram reports guest mode on for *role*'s bot: ``True``,
+    ``False``, or ``"unknown"`` when it cannot be asked. Shown to the
+    operator as a hint only; nothing is decided on it."""
+    import own_voice
+    try:
+        endpoint = own_voice.endpoint_for(role)
+        app = getattr(endpoint, "_app", None) if endpoint is not None else None
+        if app is None:
+            return "unknown"
+        me = await asyncio.wait_for(app.bot.get_me(), _GUEST_HINT_TIMEOUT_S)
+        value = getattr(me, "supports_guest_queries", None)
+        return value if isinstance(value, bool) else "unknown"
+    except Exception:  # noqa: BLE001 — a hint, never a failure
+        return "unknown"
+
+
+async def _guest_list() -> dict:
+    """Every group any specialist may answer in, with a per-role hint. The
+    hints are asked side by side, one per role, so the list waits about one
+    hint's bound however many specialists it names."""
+    import guest_groups
+    store = guest_groups.store()
+    entries = store.entries()
+    roles = list(dict.fromkeys(entry.role for entry in entries))
+    hints = dict(zip(roles, await asyncio.gather(*map(_guest_mode_hint, roles))))
+    groups = []
+    for entry in entries:
+        groups.append({
+            "role": entry.role,
+            "specialist": _display_name_for_role(entry.role),
+            "chat_id": entry.chat.id,
+            "title": entry.chat.title,
+            "type": entry.chat.type,
+            "allowed_at": entry.allowed_at,
+            "state": store.status(entry.role, entry.chat.id),
+            "telegram_reports_guest_mode": hints[entry.role],
+        })
+    return {"status": "ok", "action": "list", "groups": groups}
+
+
+def _is_resident_turn(origin: dict, role: object) -> bool:
+    """The resident's own turn (not a run handed off from it)."""
+    if not isinstance(role, str) or not role:
+        return False
+    if origin.get("execution_role", role) != role:
+        return False
+    registry = _agent_registry
+    return registry is not None and registry.tier_for_role(role) == "resident"
+
+
+async def _guest_access_from_resident(args: dict) -> dict:
+    """The resident's face: list every allowed group, or revoke one by the
+    role and chat id the list shows."""
+    import guest_groups
+    action = args.get("action")
+    if action == "list":
+        return _result(await _guest_list())
+    if action != "revoke":
+        return _result({"status": "error", "kind": "not_in_group",
+                        "message": _GUEST_NOT_IN_GROUP})
+    role, chat_id = args.get("role"), args.get("chat_id")
+    if (not isinstance(role, str) or not role
+            or not isinstance(chat_id, int) or isinstance(chat_id, bool)):
+        return _result({"status": "error", "kind": "bad_arguments",
+                        "message": "Name the specialist and the group as the list "
+                                   "shows them."})
+    store = guest_groups.store()
+    removed = store.revoke(role, chat_id)
+    try:
+        await store.save()
+    except Exception:  # noqa: BLE001 — a result, never a raise
+        logger.exception("guest_access revoke for %s failed to save", role)
+        return _result({"status": "error", "kind": "save_failed",
+                        "message": "That did not go through; try again shortly."})
+    return _result({"status": "ok", "action": "revoke", "removed": removed})
+
+
 @tool(
     "guest_access",
     "Let everyone in the group you were just summoned in ask you (allow), stop that "
     "(revoke), or say whether they may (status). Works only when the operator summoned "
     "you in that group; it knows which group from the summons — there is no group to "
-    "name.",
+    "name. From Ellen's chat: list every group any specialist may answer in, or revoke "
+    "one by its role and chat id as the list shows them.",
     {"type": "object",
-     "properties": {"action": {"type": "string", "enum": ["allow", "revoke", "status"]}},
+     "properties": {"action": {"type": "string",
+                               "enum": ["allow", "revoke", "status", "list"]},
+                    "role": {"type": "string"},
+                    "chat_id": {"type": "integer"}},
      "required": ["action"]},
 )
 async def guest_access(args: dict) -> dict:
     """A specialist's answer to the operator's request, made inside a group,
     that it answer (or stop answering) everyone there. The group and the
-    specialist come from the turn's origin; the arguments carry only the
-    action. A run handed off from the summoned specialist inherits its origin
-    but was not summoned, so it is refused."""
+    specialist come from the turn's origin; there the arguments carry only
+    the action. A run handed off from the summoned specialist inherits its
+    origin but was not summoned, so it is refused.
+
+    From the resident's own chat the operator can instead list every allowed
+    group and revoke one, naming it by role and chat id."""
     import guest_groups
     origin = _snapshot_origin()
     role = origin.get("role")
     chat = _guest_chat_of(origin)
+    if chat is None and _is_resident_turn(origin, role):
+        if origin.get("_operator_turn") is not True:
+            return _result({"status": "error", "kind": "not_operator",
+                            "message": _GUEST_NOT_IN_GROUP})
+        return await _guest_access_from_resident(args)
     if (chat is None or not isinstance(role, str) or not role
             or origin.get("execution_role", role) != role):
         return _result({"status": "error", "kind": "not_in_group",
@@ -16789,6 +16991,8 @@ async def guest_access(args: dict) -> dict:
         return _result({"status": "error", "kind": "not_operator",
                         "message": _GUEST_NOT_IN_GROUP})
     action = args.get("action")
+    if action == "list":
+        return _result(await _guest_list())
     if action not in ("allow", "revoke", "status"):
         return _result({"status": "error", "kind": "bad_action",
                         "message": "The action is allow, revoke or status."})

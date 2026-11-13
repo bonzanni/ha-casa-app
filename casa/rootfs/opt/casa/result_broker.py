@@ -1188,8 +1188,14 @@ def make_plugin_admission_hook(
     protected: dict | None = None,
     store: ReferenceStore | None = None,
     owner=None,
+    guest_tools: "frozenset | None" = None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """The composite PreToolUse callback for plugin tools (#792 §3.3).
+
+    ``guest_tools``: on a guest run, the plugin tools the run may call. A
+    plugin tool outside the set is denied before everything else — before
+    the pin, the fault check, any record or in-flight call. ``None`` (every
+    other turn) judges nothing here.
 
     ``owner`` (S5 §5.3): on a pinned one-call turn the ``PinnedRun`` whose pin
     is this hook's FIRST check — a plugin call that is not the stored call is
@@ -1211,6 +1217,9 @@ def make_plugin_admission_hook(
         tool_name = (input_data or {}).get("tool_name", "")
         if not isinstance(tool_name, str) or not tool_name.startswith(PLUGIN_TOOL_PREFIX):
             return {}
+        if guest_tools is not None and tool_name not in guest_tools:
+            # a guest run: the list is judged before anything is recorded
+            return _deny(f"not executed: {tool_name} is not offered to guests")
         recorded = False
 
         def _forget_record() -> None:
@@ -2380,12 +2389,14 @@ def broker_matchers(
     role: str, resolution, *, client_id: str,
     authz_hook: Callable | None = None, protected: dict | None = None,
     store: ReferenceStore | None = None, owner=None,
+    guest_tools: "frozenset | None" = None,
 ) -> dict[str, list]:
     """The three ``HookMatcher`` lists a plugin-bearing SDK session appends —
     code-side, beside the authz hook, never from a hooks document. ``owner``
     (S5): on a pinned one-call turn the contract map is the one the tap
     CAPTURED when the tap was taken — never rebuilt here — and the three
-    callbacks run inside the owner's guard."""
+    callbacks run inside the owner's guard. ``guest_tools`` (a guest run's
+    allow-list) reaches the admission hook only."""
     from claude_agent_sdk import HookMatcher
 
     if owner is not None:
@@ -2401,7 +2412,8 @@ def broker_matchers(
             matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
             hooks=[make_plugin_admission_hook(
                 role, contract_map, client_id=client_id,
-                authz_hook=authz_hook, protected=protected, store=store, owner=owner)])],
+                authz_hook=authz_hook, protected=protected, store=store, owner=owner,
+                guest_tools=guest_tools)])],
         "PostToolUse": [HookMatcher(
             matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
             hooks=[make_result_hook(contract_map, client_id=client_id, store=store,

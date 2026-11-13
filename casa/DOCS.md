@@ -557,8 +557,30 @@ our chat." and it asks you there.
 **Letting everyone in a group ask.** In that group, tell the specialist so:
 "@… you can answer everyone here" (or "stop answering everyone here"). The
 group is remembered for that specialist; one installed in its place starts
-without it. Other people's questions are not answered yet in this version,
-even in a group you allowed: the bot stays silent.
+without it.
+
+**What your friends get (v0.372.0).** In a group you allowed, anyone can
+mention the specialist or reply to its answer, and it answers there in one
+short message, in its own voice. It can use only the tools its plugin's
+author opened to guests — nothing of Casa's, no memory of you, no history of
+earlier questions, no files — and it is told the person asking is not you.
+What friends say is not remembered. A bot answers at most three friends'
+questions at a time; the next one gets "Busy right now — ask me again in a
+moment." Elsewhere, and in groups you did not allow, other people's mentions
+stay unanswered.
+
+**Seeing and closing groups from the assistant's chat.** Ask the assistant
+"who may ask my specialists?" for every group a specialist answers in, with
+whether Telegram reports Guest Mode on for that bot. To close one without
+going to the group, say so: "stop the judge answering in «Game Night»".
+
+**For plugin authors.** A tool is offered to friends only when its entry in
+`casa.resultContract.tools` says `"guest": true`, for example
+`"lookup_rule": {"result": "safe", "guest": true}`. Casa refuses the flag on a
+`capability` tool, the setup tool, a tool with `callsCasa` and a protected
+tool. To give the specialist instructions for these public answers, add a
+`## Guest projection` section to its doctrine where the `## Text projection`
+heading stands; a guest answer gets the core doctrine and that section only.
 
 ### Background jobs (v0.321.0)
 

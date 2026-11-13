@@ -453,6 +453,7 @@ async def test_render_returns_digest_and_estimated_tokens(tmp_path) -> None:
     bundle = CompiledPromptBundle(
         role_id="concierge", resolved_model="claude-sonnet",
         text=projection, voice=projection, restricted_webhook=projection,
+        guest=projection,
         binding_digest="bd-concierge",
     )
     runtime = _FakeRuntime(explanation_store=ExplanationStore(tmp_path / "e"))
@@ -797,6 +798,7 @@ def _bundle_for(role_id: str = "concierge"):
     return CompiledPromptBundle(
         role_id=role_id, resolved_model="claude-sonnet",
         text=projection, voice=projection, restricted_webhook=projection,
+        guest=projection,
         binding_digest="bd-concierge",
     )
 

@@ -47,6 +47,8 @@ tools:
     # Casa posts the card that offers a specialist its own chat
     - mcp__casa-framework__offer_own_chat
     - mcp__casa-framework__send_media
+    # lists the groups specialists answer in, and revokes one
+    - mcp__casa-framework__guest_access
   disallowed:
     # #460: the assistant is a router—all concrete work is delegated.
     # Broad Bash is unused authority and must be fenced via CLI-enforcement.

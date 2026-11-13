@@ -892,6 +892,9 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-authorization row moved on when the tap that runs behind the
 # assistant gained its own test file (test_behind_ellen_approval.py), listed
 # beside the approval tests that row already names.
+# The plugin-access-profiles row moved on again when a guest run's options
+# gained a binding to the withheld-profile rule (test_guest_options.py),
+# listed beside the profile tests that row already names.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "6d8736f920dac090b005b27d8317ac12d116656e57e02078eba5bdb36f11e921",
@@ -902,7 +905,7 @@ PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-events.md":
         "30ee8209c4833435cbb1d8f2243963f3cbe21716465c6ebd3689a975a93006e2",
     "architecture/plugin-access-profiles.md":
-        "e32d74f560205f114ef3849e84ce5c7f6ee7575a6ccb622d78657e3375a1007f",
+        "f92478d3aba7de5113314d05f9409c47e418f7970eecb4d11e3b543ada14cbac",
     "architecture/plugin-handoff.md":
         "83914c68bf237085ef09f7ff8937b9bbf9dac214c3a769b40e7308850975a4f2",
     "architecture/plugin-health.md":

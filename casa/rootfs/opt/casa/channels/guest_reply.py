@@ -112,8 +112,9 @@ class GuestReply:
         self._lane = asyncio.Lock()
         self._ticker: asyncio.Task | None = None
         # The terminal edit, once started: the reply's own task, so that a
-        # caller's cancellation cannot abandon it (see ``_terminal``).
-        self._terminal_task: asyncio.Task | None = None
+        # caller's cancellation cannot abandon it (see ``_terminal``). A reply
+        # opened final holds an already-completed future here instead.
+        self._terminal_task: asyncio.Future | None = None
         self._done = False
         self._outcome: DeliveryOutcome | None = None
 
@@ -125,7 +126,26 @@ class GuestReply:
     async def open(self) -> bool:
         """Answer the guest query with the placeholder and keep the inline
         message id. False, logged, when Telegram refuses the answer."""
-        display, entities = self._line(THINKING_WORDS[0])
+        return await self._answer(*self._line(THINKING_WORDS[0]))
+
+    async def open_final(self, text: str) -> bool:
+        """Answer the guest query with *text* as the reply's one and final
+        message (the busy line): no placeholder, no ticker, no edit after it.
+        The reply is terminal at once, its outcome delivered, so every later
+        terminal call returns that outcome without touching the message.
+        False, logged, with nothing set, when Telegram refuses the answer."""
+        display, entities, _plain = self._forms(text)
+        if not await self._answer(display, entities):
+            return False
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        self._terminal_task = done
+        self._done = True
+        self._outcome = DeliveryOutcome.DELIVERED
+        return True
+
+    async def _answer(self, display: str, entities: Any) -> bool:
+        """Answer the guest query with one inline message and keep its id."""
         result = InlineQueryResultArticle(
             id=uuid.uuid4().hex, title=self.name,
             input_message_content=InputTextMessageContent(display, entities=entities),

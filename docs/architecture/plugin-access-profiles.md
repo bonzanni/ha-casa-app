@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-02
+last_reviewed: 2026-11-13
 ---
 
 # Plugin access profiles
@@ -49,7 +49,10 @@ The lists are only hygiene for visibility: the server grant is dropped, every al
 guarded namespace that is not in the profile is stripped (a `runtime.yaml` server allow
 included), the profile's names are allowed tool by tool, and the declared tools outside the
 profile are denied so they leave the model's context where a deny beats an allow. An
-unprofiled plugin produces no plan entry and its build is byte-identical to before.
+unprofiled plugin produces no plan entry and its build is byte-identical to before. A guest
+run's builder (`tools._build_guest_options`, [`guest-summons.md`](guest-summons.md)) computes
+the same plan and guard over its guest-flagged tools and intersects the result with them last,
+so a profile narrows a guest run and never widens it.
 
 **The plan is read live, at construction, and the record stores what was built.** The
 profile NAME comes from the live registry entry for the build's own `tier:role`; the bare
