@@ -225,9 +225,10 @@ def _install_telegram_stubs() -> None:
     # #1434: reply threading — keeps the constructor kwargs for inspection.
     class _FakeReplyParameters:
         def __init__(self, message_id, *, allow_sending_without_reply=None,
-                     **kw):
+                     quote=None, **kw):
             self.message_id = message_id
             self.allow_sending_without_reply = allow_sending_without_reply
+            self.quote = quote
 
     tg.ReplyParameters = _FakeReplyParameters
 

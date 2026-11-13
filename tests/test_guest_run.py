@@ -405,6 +405,8 @@ _FILES = ("agent.py", "tools.py", "channels/telegram.py", "channels/telegram_tra
 TELEGRAM_CHANNEL_BRANCHES: dict[tuple[str, str, int], str] = {
     ("agent.py", "_channel_context_block", 1):
         "n/a: the guest prompt is the guest projection under the frame, with no channel block",
+    ("agent.py", "_channel_context_block", 2):
+        "n/a: the reply marker guide sits in the same channel block, which a guest prompt lacks",
     ("agent.py", "_limit_line_route", 1):
         "guest: a guest turn is never a narration; the guest check before it routes to log",
     ("agent.py", "_limit_line_route", 2):

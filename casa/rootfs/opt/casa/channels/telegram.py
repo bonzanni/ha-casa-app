@@ -86,7 +86,7 @@ from channels.tg_address import (
 # pair and the stored row, shared with the transport that hands them out.
 from channels.telegram_transport import _post_parts as _job_post_parts
 from channels.telegram_draft import DraftStream, DraftTooLong
-from output_boundary import Admitted, UnadmittedText
+from output_boundary import Admitted, ReplyMark, UnadmittedText
 from media_policies import MEDIA_POLICIES
 from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
 from channels.telegram_supervisor import ReconnectSupervisor
@@ -5398,16 +5398,24 @@ class TelegramChannel(Channel):
         message.
 
         The target is the context's reserved ``_reply_to`` address, which only
-        Casa sets. It counts only when it is a message of this bot in the chat
-        being sent to (*chat_id*): a bot cannot reply to another bot's message,
-        and a reply across chats is not one the reader would see. Anything
-        else, a malformed value included, sends plain. The reply is sent even
-        when the target is gone, so a deleted message never loses the answer.
-        *message* is the text about to be sent; the target is read from
-        *context* alone."""
-        raw = context.get("_reply_to")
+        Casa sets. Without one, an answer whose admission kept a reply marker
+        (*message*'s ``reply``, a :class:`ReplyMark`) replies to the person's
+        own message, the reserved ``_tg_request``; the marker's quote rides
+        only when it is their exact words (``_operator_words``) and fits
+        Telegram's 1024-unit bound, else the reply goes without it. A target
+        counts only when it is a message of this bot in the chat being sent
+        to (*chat_id*): a bot cannot reply to another bot's message, and a
+        reply across chats is not one the reader would see. Anything else, a
+        malformed value included, sends plain. The reply is sent even when
+        the target is gone, so a deleted message never loses the answer."""
+        raw, quote = context.get("_reply_to"), None
         if raw is None:
-            return None
+            mark = getattr(message, "reply", None)
+            if not isinstance(mark, ReplyMark):
+                return None
+            raw, quote = context.get("_tg_request"), mark.quote
+            if raw is None:
+                return None
         try:
             target = TgAddress.from_json(raw)
             chat = int(chat_id)
@@ -5417,7 +5425,10 @@ class TelegramChannel(Channel):
         if (target.message_id is None or target.chat_id != chat
                 or not self._own_address(target)):
             return None
-        return ReplyParameters(message_id=target.message_id,
+        if not (quote and utf16_len(quote) <= _TG_MAX_QUOTE
+                and quote in str(context.get("_operator_words") or "")):
+            quote = None
+        return ReplyParameters(message_id=target.message_id, quote=quote,
                                allow_sending_without_reply=True)
 
     def _first_message_kw(self, context: dict, chat_id: Any, message: Any) -> dict:
@@ -5426,6 +5437,24 @@ class TelegramChannel(Channel):
         of the same answer is sent without them."""
         reply = self._reply_parameters(context, chat_id, message)
         return {"reply_parameters": reply} if reply is not None else {}
+
+    async def _send_message(self, **kw):
+        """``send_message``, once more without the reply's quote when Telegram
+        refuses the quote (``QUOTE_TEXT_INVALID``: not exact text of the
+        message replied to). The answer then goes as a plain reply; any other
+        refusal propagates unchanged."""
+        try:
+            return await self._app.bot.send_message(**kw)
+        except BadRequest as exc:
+            reply = kw.get("reply_parameters")
+            if (reply is None or not reply.quote
+                    or "QUOTE_TEXT_INVALID" not in str(exc).upper()):
+                raise
+            logger.warning("reply quote refused; sent without it: %s",
+                           type(exc).__name__)
+            kw["reply_parameters"] = ReplyParameters(
+                message_id=reply.message_id, allow_sending_without_reply=True)
+            return await self._app.bot.send_message(**kw)
 
     async def send(self, message: str, context: dict[str, Any]) -> DeliveryOutcome:
         """Send a complete message (block mode fallback).
@@ -5448,7 +5477,7 @@ class TelegramChannel(Channel):
         outcome = DeliveryOutcome.NOT_DELIVERED
         first = self._first_message_kw(context, target_chat, message)
         for chunk in _split_message(message):
-            await self._app.bot.send_message(
+            await self._send_message(
                 chat_id=target_chat,
                 text=chunk,
                 **first,
@@ -5583,7 +5612,7 @@ class TelegramChannel(Channel):
         delivery latch BEFORE sending them (#831). ``record`` (S4), when given,
         receives the platform's return of each send that succeeded."""
         try:
-            sent = await self._app.bot.send_message(
+            sent = await self._send_message(
                 chat_id=chat_id, text=display, entities=entities, **kw,
             )
             if record is not None:
@@ -5595,7 +5624,7 @@ class TelegramChannel(Channel):
             # refused — a log line must never echo a credential.
             logger.warning("rich-text send fell back to plain: %s",
                            type(exc).__name__)
-            sent = await self._app.bot.send_message(
+            sent = await self._send_message(
                 chat_id=chat_id, text=original, **kw,
             )
             if record is not None:
@@ -6026,7 +6055,7 @@ class TelegramChannel(Channel):
                         # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
                         # it here is how a delegation path loses the distinction.
                         return await self.send(_plain(message), context)
-                    _landed(await self._app.bot.send_message(
+                    _landed(await self._send_message(
                         chat_id=target_chat, text=display, **first))
                     context["_delivery_head_sent"] = True
                     return DeliveryOutcome.DELIVERED
@@ -6038,7 +6067,7 @@ class TelegramChannel(Channel):
             for display, entities in pages:
                 chunks, fell_back = [display], False
                 if entities is None:
-                    _landed(await self._app.bot.send_message(
+                    _landed(await self._send_message(
                         chat_id=target_chat, text=display, **first))
                 else:
                     # #831: the plain retry carries this page's link destinations,
@@ -6289,6 +6318,8 @@ class TelegramChannel(Channel):
 
 
 _TG_MAX_LENGTH = 4096
+# The longest quote a reply may carry, in UTF-16 units (Bot API ReplyParameters).
+_TG_MAX_QUOTE = 1024
 
 
 def _split_message(text: str) -> list[str]:

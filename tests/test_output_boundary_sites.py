@@ -103,11 +103,12 @@ EDIT_DM_MESSAGE_CALLERS = {
 
 RAW_TRANSPORT_FUNCTIONS = {
     # admitted — the function takes an Admitted (INV-OUT-001)
-    ("channels/telegram.py", "send"): "admitted",
     ("channels/telegram.py", "send_response"): "admitted",
     ("channels/telegram.py", "post_dm_keyboard"): "admitted",
     ("channels/telegram.py", "post_job_question"): "admitted",     # a job's question, admitted by ask_operator
-    ("channels/telegram.py", "_send_one"): "admitted",             # helper of the two above
+    # helper of send, send_response and their _send_one: one send_message,
+    # resent without the reply's quote when Telegram refuses the quote
+    ("channels/telegram.py", "_send_message"): "admitted",
     # stream — the draft a reply is written into, fed only from agent._emit,
     # which admits every cumulative; the function refuses a bare string
     ("channels/telegram.py", "_send_draft"): "stream",

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-13
 ---
 
 # Telegram bots: endpoints, routes and addresses
@@ -103,6 +103,12 @@ reply target Casa chose for a delivery. `send` and `send_response` read `_reply_
 being sent to, the answer's first physical message is a Telegram reply to it, sent even when
 the target is gone (`allow_sending_without_reply`), and every later page or chunk is plain. A
 target on another bot, in another chat, without a message id or malformed sends plain.
+Without a `_reply_to`, an answer whose admission kept a reply marker (`Admitted.reply`, see
+[`output-boundary.md`](output-boundary.md)) replies to `_tg_request` under the same rules. Its
+quote rides only when it is a substring of the operator's words (`_operator_words`) of at most
+1024 UTF-16 units, else the reply goes without one; a quote Telegram still refuses
+(`QUOTE_TEXT_INVALID`) is resent once without it (`TelegramChannel._send_message`). The marker
+lives on the answer's own text, so Casa's other sends under the same context stay plain.
 
 **Persisted shapes are strict.** A stored record or key that should carry its bot and does not
 (a post written as a bare message id, a scheduled question without `bot_id`, a delivery key

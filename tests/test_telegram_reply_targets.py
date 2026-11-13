@@ -195,3 +195,119 @@ async def test_the_request_reaches_the_turns_origin(tmp_path):
         await agent.aclose()
     (origin,) = _Capturing.origins
     assert origin["_tg_request"] == [BOT, OPERATOR, 70]
+
+
+# ---------------------------------------------------------------------------
+# The agent's own <reply/> marker
+# ---------------------------------------------------------------------------
+
+def _marked(text: str):
+    """*text* admitted as a final reply, the way a turn's answer reaches the
+    channel: a leading marker is gone from the text and kept as ``reply``."""
+    from output_boundary import IntentKind
+    from output_boundary_testing import admitted
+    return admitted(text, IntentKind.FINAL_REPLY)
+
+
+_ASKED = {"chat_id": OPERATOR, "_tg_request": [BOT, OPERATOR, 9],
+          "_operator_words": "Mon and Tue?"}
+
+
+async def test_a_marked_answer_replies_to_his_message_with_the_quote():
+    ch, _bus = _channel()
+    await ch.send_response(_marked('<reply quote="Tue"/>Tue works.'), dict(_ASKED))
+    sends = _sends(ch)
+    assert len(sends) == 1
+    assert sends[0]["text"] == "Tue works."
+    rp = sends[0]["reply_parameters"]
+    assert (rp.message_id, rp.quote) == (9, "Tue")
+    assert rp.allow_sending_without_reply is True
+
+
+async def test_a_bare_marker_replies_without_a_quote():
+    ch, _bus = _channel()
+    await ch.send_response(_marked("<reply/>**Both** work."), dict(_ASKED))
+    (sent,) = _sends(ch)
+    assert sent["text"] == "Both work."
+    assert (sent["reply_parameters"].message_id, sent["reply_parameters"].quote) == (9, None)
+
+
+@pytest.mark.parametrize("quote", ["Tuesday", "T" * 1025], ids=["not-his-words", "too-long"])
+async def test_a_quote_not_in_his_message_gives_a_plain_reply(quote):
+    ch, _bus = _channel()
+    ctx = dict(_ASKED, _operator_words="Mon and Tue? " + "T" * 1025)
+    await ch.send_response(_marked(f'<reply quote="{quote}"/>Tue works.'), ctx)
+    (sent,) = _sends(ch)
+    assert sent["reply_parameters"].message_id == 9
+    assert sent["reply_parameters"].quote is None
+
+
+@pytest.mark.parametrize("text", ['<reply quote="Tue"/>Tue works.',
+                                  '<reply quote="Tue"/>**Tue** works.'], ids=["plain", "rich"])
+async def test_a_refused_quote_is_resent_without_it(text):
+    ch, _bus = _channel()
+    bot = ch._app.bot
+    real = bot.send_message
+    tries = []
+
+    async def refuse_quote(**kw):
+        tries.append(kw)
+        rp = kw.get("reply_parameters")
+        if rp is not None and rp.quote:
+            raise BadRequest("Bad Request: QUOTE_TEXT_INVALID")
+        return await real(**kw)
+    bot.send_message = refuse_quote
+    await ch.send_response(_marked(text), dict(_ASKED))
+    assert len(tries) == 2
+    assert tries[0]["reply_parameters"].quote == "Tue"
+    assert tries[1]["reply_parameters"].quote is None
+    assert tries[1]["reply_parameters"].message_id == 9
+    assert tries[1]["text"] == "Tue works."
+    assert ("entities" in tries[1]) == ("entities" in tries[0])   # same rendering
+
+
+async def test_another_bad_request_is_not_taken_for_a_quote():
+    ch, _bus = _channel()
+
+    async def refuse(**kw):
+        raise BadRequest("Bad Request: chat not found")
+    ch._app.bot.send_message = refuse
+    with pytest.raises(BadRequest):
+        await ch.send_response(_marked('<reply quote="Tue"/>Tue works.'), dict(_ASKED))
+
+
+async def test_casa_s_target_wins_over_the_marker():
+    ch, _bus = _channel()
+    await ch.send_response(_marked('<reply quote="Tue"/>Tue works.'),
+                           dict(_ASKED, _reply_to=[BOT, OPERATOR, 7]))
+    (sent,) = _sends(ch)
+    assert sent["reply_parameters"].message_id == 7
+    assert sent["reply_parameters"].quote is None
+
+
+@pytest.mark.parametrize("request_", [[OTHER_BOT, OPERATOR, 9], [BOT, OPERATOR + 1, 9], None],
+                         ids=["other-bot", "other-chat", "no-request"])
+async def test_a_marker_without_his_message_here_sends_plain(request_):
+    ch, _bus = _channel()
+    ctx = dict(_ASKED, _tg_request=request_)
+    await ch.send_response(_marked("<reply/>Tue works."), ctx)
+    (sent,) = _sends(ch)
+    assert sent["text"] == "Tue works."
+    assert "reply_parameters" not in sent
+
+
+async def test_an_unmarked_answer_is_a_plain_message_even_with_his_request():
+    ch, _bus = _channel()
+    await ch.send_response(_marked("Tue works."), dict(_ASKED))
+    (sent,) = _sends(ch)
+    assert "reply_parameters" not in sent
+
+
+async def test_the_marker_rides_only_the_answer_not_other_sends_of_its_context():
+    ch, _bus = _channel()
+    ctx = dict(_ASKED)
+    await ch.send_response(_marked('<reply quote="Tue"/>' + _two_pages(True)), ctx)
+    await ch.send(_admitted("a line of Casa's own"), ctx)
+    sends = _sends(ch)
+    assert sends[0]["reply_parameters"].quote == "Tue"
+    assert all("reply_parameters" not in s for s in sends[1:])
