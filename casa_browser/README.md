@@ -15,4 +15,4 @@ in forms — and on the open web.
 - Pairing with Casa, your sites, run logs and the live view of the browser are on the app's
   own page in Home Assistant.
 
-**Experimental.** See the Documentation tab for setup.
+See the Documentation tab for setup.
