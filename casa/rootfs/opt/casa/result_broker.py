@@ -492,6 +492,14 @@ def label_at(role: str, where: Any) -> str:
     return "" if own_chat_of(role, endpoint) else post_label(role)
 
 
+def name_at(role: str, where: Any) -> str:
+    """How Casa's one-line notices at *where* name *role*: its label, except in
+    *role*'s own chat, where it is the plain display name — every message there is
+    the agent's own, so no head marks it."""
+    import tools as tools_mod
+    return label_at(role, where) or tools_mod._display_name_for_role(role)
+
+
 def compose_operator_message(body: str, label: str) -> str:
     """The ONE text ``render_paged`` splits: the label line, then the body
     as deposited. Paginating the composed text budgets the header like any

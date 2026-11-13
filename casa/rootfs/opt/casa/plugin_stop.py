@@ -309,12 +309,14 @@ async def tell_line(bot_id: int, chat_id: int, role: str, outcome: str, *,
     """The one line of a stop's *outcome* (``LINES``), posted by ``post_line``; the chat's
     agent hears it at its next turn, as every Casa line."""
     import chat_notes
-    from result_broker import post_label
+    from channels.tg_address import TgAddress
+    from result_broker import name_at
     line = line_for(outcome, role)
     if line is None or _transport() is None:
         return
     await post_line(bot_id, chat_id, role, line, reply_to=reply_to)
-    chat_notes.record(int(bot_id), int(chat_id), f"{post_label(role)}: {line}")
+    chat = TgAddress(int(bot_id), int(chat_id))
+    chat_notes.record(int(bot_id), int(chat_id), f"{name_at(role, chat)}: {line}")
 
 
 async def drain() -> None:

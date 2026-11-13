@@ -75,7 +75,8 @@ proposal the Stop came from (`tell_line` through `post_line`,
 `TelegramChannel.send_reply_line`), with no keyboard; it is filed under the task the card belongs to, read from
 the durable task index — live or ended, and after a restart too — so a reply to it reaches
 whatever a reply to the card reaches; it adds no memory line, and it is recorded as one note
-for the agent of that chat, which hears it at its next turn: `Stopped.`, `It had already
+for the agent of that chat under the same label (its plain name in the agent's own chat), which
+hears it at its next turn: `Stopped.`, `It had already
 ended.`, the `not_taken` line saying the browsing stops as soon as Casa Browser answers, and
 for `unavailable` that the specialist's browser is no longer set up. `already_stopped` adds
 no line: he has been told.

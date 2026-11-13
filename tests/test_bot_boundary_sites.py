@@ -529,7 +529,8 @@ IDENTITY_SITE_HITS = {
         "_retire_untracked_dispatches": 1, "_run_episode": 4, "_settle_locked": 2,
         "ensure_obligation": 3, "report_dispatch_outcome": 2, "settle_from_tool_evidence": 1,
     },
-    "plugin_stop.py": {"<module>": 1, "settle_ended": 1, "stop": 3, "visible_confirmation": 1},
+    "plugin_stop.py": {"<module>": 1, "settle_ended": 1, "stop": 3, "tell_line": 1,
+                       "visible_confirmation": 1},
     "plugin_store.py": {
         "manifest_callbacks": 1, "manifest_emits": 1, "manifest_requires": 2,
         "manifest_subscribes": 1, "manifest_triggers": 1,

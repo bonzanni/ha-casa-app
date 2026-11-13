@@ -1250,6 +1250,22 @@ async def test_a_stop_line_after_a_restart_is_filed_under_the_cards_task(env, tm
         task_posts.reset()
 
 
+async def test_a_stop_line_in_the_agents_own_chat_carries_no_head(env, monkeypatch):
+    """In Fido's own chat the stop's line is the line alone, and the chat's note names
+    him plainly: the head marks a specialist's post only in the resident's chat."""
+    own_bot = 333
+    bus = MessageBus()
+    bus.register("browser", _noop)
+    own = TelegramChannel(bot_token="B", chat_id=str(OPERATOR), default_agent="browser",
+                          bus=bus, is_casa=False, known_bot_id=own_bot)
+    own._app = types.SimpleNamespace(bot=_FakeBot())
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(env.ch, own),
+                        raising=False)
+    await plugin_stop.tell_line(own_bot, OPERATOR, "browser", "stopped", reply_to=None)
+    assert [m["text"] for m in own._app.bot.sent] == ["Stopped."]
+    assert chat_notes.drain(own_bot, OPERATOR) == ["Fido: Stopped."]
+
+
 async def test_a_card_sent_with_a_reply_keyboard_cannot_be_edited_and_is_a_quiet_false(
         env, caplog):
     """Telegram refuses any edit of a message sent with a reply keyboard, such as a card an

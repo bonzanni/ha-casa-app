@@ -1799,3 +1799,52 @@ async def test_a_reply_to_a_tasks_file_question_card_or_stop_line_reaches_the_ta
     Held.release.set()
     await call
     await _settled()
+
+
+# ---------------------------------------------------------------------------
+# A tap on a stored-call card in Alex's own chat: the lines after it carry no
+# "📊 Alex" head — the chat is Alex's, so they name him plainly
+# ---------------------------------------------------------------------------
+
+async def _own_chat_tap(world, monkeypatch, *, plugins=None) -> None:
+    import pinned_run as pr
+    import stored_call_settler
+    try:
+        from tests.test_stored_call_tap import _build, _meta
+    except ImportError:
+        from test_stored_call_tap import _build, _meta
+    build = _build(plugins=plugins)
+    monkeypatch.setattr(tools, "_capture_build_input", lambda cfg: build, raising=False)
+
+    async def runner(cfg, task_text, context_text, resolution=None, **_kw):
+        tools._pinned_run.get().resolve(pr.Capture("receipt", "Added to cart."))
+        return tools.DelegatedOutput(text="")
+    monkeypatch.setattr(tools, "_run_delegated_agent", runner)
+    meta = _meta(bot_id=ALEX_BOT, chat_id=OPERATOR, operator_id=OPERATOR, label="",
+                 text="Add to cart?", _scope=f"proposal:{ALEX_BOT}:{OPERATOR}",
+                 deadline=asyncio.get_running_loop().time() + 3600)
+    await stored_call_settler.handle_tap(
+        channel=world.alex, resident_role="finance", bot_id=ALEX_BOT, chat_id=OPERATOR,
+        user_id=OPERATOR, cid="c-tap", executing_role="finance", meta=meta, idx=0,
+        request_id="e" * 32, reservation=agent_lane.LANES.get("finance").reserve())
+
+
+async def test_a_tap_receipt_in_the_agents_own_chat_has_no_head(world, monkeypatch):
+    await _own_chat_tap(world, monkeypatch)
+    receipts = [t for t in world.alex.recorder.texts() if "Added to cart." in t]
+    assert receipts, world.alex.recorder.texts()
+    for receipt_text in receipts:
+        assert not any(line.startswith("📊") for line in receipt_text.splitlines())
+    assert chat_notes.drain(ALEX_BOT, OPERATOR) == ["Alex applied your tap (Yes)."]
+    assert _ellen_texts(world) == []
+
+
+async def test_a_tap_notice_in_the_agents_own_chat_names_it_plainly(world, monkeypatch):
+    await _own_chat_tap(world, monkeypatch, plugins=[])          # the plugin is unassigned
+    notices = [t for t in world.alex.recorder.texts() if "could not apply" in t]
+    assert len(notices) == 1, world.alex.recorder.texts()
+    [notice_text] = notices
+    assert notice_text.startswith("Alex could not apply your tap (")
+    assert chat_notes.drain(ALEX_BOT, OPERATOR) == [
+        "Alex refused your tap (Yes): plugin unassigned."]
+    assert _ellen_texts(world) == []
