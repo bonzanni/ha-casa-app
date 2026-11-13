@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.372.3] - 2026-11-13
+
+### Changed
+
+- In a private chat, the reply bubble with Telegram's **Stop** now appears as soon as the agent starts working, empty until its first word, with "typing…" beside it as before. You can stop a turn before it has written anything, for example while it waits on another agent or a tool; the empty bubble then goes and nothing arrives.
+
 ## [0.372.2] - 2026-11-13
 
 ### Fixed

@@ -118,6 +118,10 @@ resolves none refuses, so the absence is loud rather than a permissive default.
 
 **INV-OUT-001**: Model-authored text reaches the Telegram transport only as an `Admitted` minted by the authoring turn's scope — `send`, `send_response`, the draft send (`_send_draft`), `post_dm_keyboard` and `send_media`'s caption refuse a bare string with an error log, zero Bot API calls and the method's own failure value.
 
+The one string the draft send takes bare is the empty one — the draft shown before the
+model's first word, which carries no text at all
+([`telegram-reply-drafts.md`](telegram-reply-drafts.md)).
+
 The failure value is each method's own contract, so every existing consumer already
 handles it: `NOT_DELIVERED` from `send` and `send_response`, `None` from the keyboard post
 and from the draft send, and `UnadmittedText` — distinct from the channel-unavailable `RuntimeError` — from

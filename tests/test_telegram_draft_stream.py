@@ -198,6 +198,44 @@ async def test_flood_wait_is_slept():
     await finish(stream)
 
 
+async def test_a_started_stream_shows_an_empty_draft_until_the_first_text():
+    ft = FakeTime()
+    send = Recorder(ft)
+    stream = make(ft, send)
+    stream.start()
+    stream.start()                       # a second start is nothing
+    assert len(stream_tasks()) == 1
+    await run_until(ft, 12.0)
+    # the empty draft at the first round, and again at the keepalive
+    assert send.texts == ["", ""]
+    assert send.calls[0][0] == pytest.approx(0.6)
+    await stream.on_token("hello")
+    await run_until(ft, 13.0)
+    assert send.texts == ["", "", "hello"]
+    await finish(stream)
+
+
+async def test_an_empty_draft_is_kept_up_to_the_idle_limit_from_the_start():
+    ft = FakeTime()
+    send = Recorder(ft)
+    stream = make(ft, send, idle_limit=25.0)
+    stream.start()
+    await run_until(ft, 60.0)
+    assert send.texts == ["", "", ""]
+    assert send.calls[-1][0] < 25.0
+    await finish(stream)
+
+
+async def test_start_after_end_starts_nothing():
+    ft = FakeTime()
+    send = Recorder(ft)
+    stream = make(ft, send)
+    stream.end()
+    stream.start()
+    assert stream_tasks() == []
+    assert send.calls == []
+
+
 async def test_end_stops_everything():
     ft = FakeTime()
     send = Recorder(ft)
@@ -277,6 +315,37 @@ async def test_draft_call_shape():
     assert chat == "42" and stream.cid == "c1"
     assert bot.send_message.await_count == 0
     assert bot.edit_message_text.await_count == 0
+    await finish_turn(on_token)
+
+
+async def test_the_draft_is_there_empty_before_the_first_token():
+    ft = FakeTime()
+    ch, bot = channel(ft)
+    bot.send_chat_action = AsyncMock()
+    ch._start_typing("42", "c1")
+    on_token = ch.create_on_token(dict(_CTX))
+    await run_until(ft, 1.0)
+
+    # no token yet: an empty draft with Stop, which Stop removes
+    assert bot.send_message_draft.await_count == 1
+    kwargs = bot.send_message_draft.await_args.kwargs
+    assert kwargs["chat_id"] == 42
+    assert kwargs["text"] == ""
+    assert kwargs["entities"] is None
+    assert kwargs["api_kwargs"] == {"can_stop": True, "keep_on_stop": False}
+    assert list(ch._streams) == [str(kwargs["draft_id"])]
+    # "typing…" stays until the first word
+    assert set(ch._typing_leases["42"]) == {"c1"}
+
+    await on_token(admitted("hi"))
+    await run_until(ft, 2.0)
+    # the same draft takes the text, and from then on stays after Stop
+    assert bot.send_message_draft.await_count == 2
+    later = bot.send_message_draft.await_args.kwargs
+    assert later["draft_id"] == kwargs["draft_id"]
+    assert later["text"] == "hi"
+    assert later["api_kwargs"] == {"can_stop": True, "keep_on_stop": True}
+    ch._stop_typing("42")
     await finish_turn(on_token)
 
 
@@ -393,3 +462,13 @@ async def test_end_removes_the_stream():
     for _ in range(20):
         await _real_sleep(0)
     assert bot.send_message_draft.await_count == 0
+
+
+async def test_only_the_empty_string_is_taken_bare(caplog):
+    ft = FakeTime()
+    ch, bot = channel(ft)
+    with caplog.at_level(logging.ERROR):
+        assert await ch._send_draft("42", 7, " ") is None
+    assert bot.send_message_draft.await_count == 0
+    assert await ch._send_draft("42", 7, "") is None
+    assert bot.send_message_draft.await_count == 1

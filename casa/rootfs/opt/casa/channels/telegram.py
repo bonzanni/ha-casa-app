@@ -6110,9 +6110,11 @@ class TelegramChannel(Channel):
         """Return this turn's token callback: the reply is written into a
         draft while the model writes it.
 
-        The callback receives the *accumulated* reply text on each token. It
-        releases this turn's typing lease at its first call, then only hands
-        the text to the turn's :class:`DraftStream`, which sends it on its own
+        The draft starts with the turn, empty, and carries Telegram's Stop
+        from then on. The callback receives the *accumulated* reply text on
+        each token. It releases this turn's typing lease at its first call,
+        then only hands the text to the turn's :class:`DraftStream`, which
+        sends it on its own
         clock through :meth:`_send_draft` — the model's message loop never
         waits on the network. The callback's ``end`` attribute stops the
         stream; whoever runs the turn calls it once the model is done, and
@@ -6147,6 +6149,9 @@ class TelegramChannel(Channel):
             send=_send, cid=_lease_cid,
             on_end=lambda: self._streams.pop(key, None))
         self._streams[key] = (target_chat, stream)
+        # The draft is there from the start of the turn, empty, so Stop can
+        # be pressed before the first word.
+        stream.start()
         typing_released = False
 
         async def _stream_token(accumulated_text: str) -> None:
@@ -6173,14 +6178,23 @@ class TelegramChannel(Channel):
         fits one message; any other failure of the call propagates to the
         stream, which logs it once and carries on. Text that was not admitted
         makes no call (INV-OUT-001), nor does a channel that is not started.
+
+        The empty text is the draft before the first word: nothing of the
+        model's is in it, and Stop removes it — an empty bubble kept in the
+        chat would say nothing. A draft with text stays after Stop until the
+        reply arrives as a message.
         """
-        if _unadmitted("send_draft", text):
-            return None
-        display, entities = render(text)
-        if entities is None:
-            display = _plain(text)
-        if utf16_len(display) > _TG_MAX_LENGTH:
-            raise DraftTooLong()
+        empty = isinstance(text, str) and text == ""
+        if empty:
+            display, entities = "", None
+        else:
+            if _unadmitted("send_draft", text):
+                return None
+            display, entities = render(text)
+            if entities is None:
+                display = _plain(text)
+            if utf16_len(display) > _TG_MAX_LENGTH:
+                raise DraftTooLong()
         if self._app is None:
             return None
         try:
@@ -6188,7 +6202,7 @@ class TelegramChannel(Channel):
                 chat_id=int(target_chat), draft_id=draft_id, text=display,
                 entities=entities,
                 # not parameters of this library version's method yet
-                api_kwargs={"can_stop": True, "keep_on_stop": True},
+                api_kwargs={"can_stop": True, "keep_on_stop": not empty},
             )
         except RetryAfter as exc:
             wait = exc.retry_after

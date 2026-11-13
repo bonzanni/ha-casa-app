@@ -2,7 +2,9 @@
 
 The model's message loop must never wait on the network, so the token
 callback (:meth:`DraftStream.on_token`) only stores the latest text, and one
-small task per turn does the sending on its own clock. Once per ``interval``
+small task per turn does the sending on its own clock. The channel starts
+that task with the turn (:meth:`DraftStream.start`), so the draft is there,
+empty, before the model has written anything. Once per ``interval``
 it sends the stored text if it changed since the last send; otherwise, when
 ``keepalive`` has passed since the last send and the text changed less than
 ``idle_limit`` ago, it sends the same text again so the draft does not
@@ -57,8 +59,18 @@ class DraftStream:
         self._warned = False
         self._task: asyncio.Task | None = None
 
+    def start(self) -> None:
+        """Start the sending task with an empty text: the draft shows before
+        the first word. The idle limit then counts from here."""
+        if self.ended or self._task is not None:
+            return
+        self._text = ""
+        self._changed_at = self._clock()
+        self._task = asyncio.get_running_loop().create_task(
+            self._run(), name="telegram-draft-stream")
+
     async def on_token(self, text: Any) -> None:
-        """Store the latest text; start the sending task at the first call."""
+        """Store the latest text; start the sending task if nothing has."""
         if self.ended:
             return
         if self._task is None or text != self._text:
