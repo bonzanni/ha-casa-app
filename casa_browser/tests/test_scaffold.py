@@ -21,7 +21,7 @@ def test_config_shape():
     assert CONFIG["image"] == "ghcr.io/bonzanni/casa_browser"
     assert CONFIG["arch"] == ["amd64"]
     assert CONFIG["version"] == __version__
-    assert CONFIG["stage"] == "experimental"
+    assert "stage" not in CONFIG          # stable: the default, which the linter refuses to repeat
     assert CONFIG["init"] is False
     # Permissions: exactly the ones the design needs, and nothing that widens them.
     # Supervisor defaults stand for ingress_port 8099, no hassio_api and no host network

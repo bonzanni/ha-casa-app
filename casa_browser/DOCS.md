@@ -4,7 +4,7 @@ Casa Browser is an optional app beside Casa. Casa's browsing specialist, **Fido*
 work on websites for you: on the sites you register (signed in, with logins from a dedicated
 1Password vault) and on the open web. You ask your assistant as usual (Ellen, unless you
 renamed her); she hands the browsing to Fido, Fido drives the browser, and Casa checks each
-step before it runs. It is **experimental**.
+step before it runs.
 
 ## Before you start
 
