@@ -629,12 +629,38 @@ async def test_a_task_posts_its_closing_message_not_its_notes(world, monkeypatch
     assert "Reading the ledger now." in result
 
 
-async def test_a_quoted_brief_is_shown_as_written(world):
+@pytest.mark.parametrize("wrapped", [
+    '"How much on groceries in October?"', "“How much on groceries in October?”",
+    "«How much on groceries in October?»", "'How much on groceries in October?'",
+    "‘How much on groceries in October?’", '  "How much on groceries in October?"\n'])
+async def test_a_brief_wrapped_in_quotes_loses_its_outer_pair_in_the_quote_box(world, wrapped):
     _FakeSpecialistClient.reset(response="€420.")
-    await _delegate("sync", task='"How much on groceries in October?"')
-    assert _alex_texts(world)[0] == 'Ellen asked:\n"How much on groceries in October?"'
+    await _delegate("sync", task=wrapped)
+    assert _alex_texts(world)[0] == "Ellen asked:\nHow much on groceries in October?"
+    # the executor's note keeps the brief as written
     (line,) = chat_notes.drain(FINANCE_BOT, OPERATOR)
-    assert line == 'Ellen asked you: "How much on groceries in October?" — you answered'
+    assert line == f"Ellen asked you: {wrapped.strip()} — you answered"
+
+
+@pytest.mark.parametrize("brief", [
+    'Check "Albert Heijn" in October',            # an inner quote
+    '"Albert Heijn" and "Lidl"',                  # two pairs, not one wrapping pair
+    '"How much on groceries in October?',         # unmatched
+    "“How much on groceries in October?\"",       # mismatched pair
+    "'don't count the drugstore'",                # the mark recurs inside
+])
+async def test_a_brief_not_wrapped_in_one_pair_is_shown_as_written(world, brief):
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync", task=brief)
+    assert _alex_texts(world)[0] == f"Ellen asked:\n{brief}"
+
+
+async def test_the_requesters_name_is_bold(world):
+    from telegram import MessageEntity
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync")
+    name = world.alex.sent[0]["entities"][0]
+    assert (name.type, name.offset, name.length) == (MessageEntity.BOLD, 0, len("Ellen"))
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +680,8 @@ async def test_the_start_post_quotes_the_whole_task_silently(world):
     await _delegate("sync", task=LONG_TASK)
     s = world.alex.sent[0]
     assert s["text"] == f"Ellen asked:\n{LONG_TASK}"
-    (e,) = s["entities"]
+    name, e = s["entities"]
+    assert (name.type, name.offset, name.length) == (MessageEntity.BOLD, 0, 5)
     assert e.type == MessageEntity.EXPANDABLE_BLOCKQUOTE
     # the quote covers the request exactly, in UTF-16 units (the 💶 counts two)
     assert (e.offset, e.length) == (utf16_len("Ellen asked:\n"), utf16_len(LONG_TASK))
@@ -675,7 +702,8 @@ async def test_the_start_post_shows_the_briefs_formatting_inside_the_quote(world
     body = "Pay the 💶 rent by Monday, please."
     assert s["text"] == f"Ellen asked:\n{body}"
     head = utf16_len("Ellen asked:\n")
-    quote, bold, when = s["entities"]
+    name, quote, bold, when = s["entities"]
+    assert (name.type, name.offset, name.length) == (MessageEntity.BOLD, 0, len("Ellen"))
     assert (quote.type, quote.offset, quote.length) == (
         MessageEntity.EXPANDABLE_BLOCKQUOTE, head, utf16_len(body))
     assert (bold.type, bold.offset, bold.length) == (
@@ -693,7 +721,7 @@ async def test_a_start_post_whose_formatting_is_refused_is_sent_plain(world):
     real = world.alex._app.bot.send_message.side_effect
 
     async def refuse_rich_starts(**kw):
-        if kw.get("disable_notification") and len(kw.get("entities") or []) > 1:
+        if kw.get("disable_notification") and len(kw.get("entities") or []) > 2:
             raise BadRequest("can't parse entities")
         return await real(**kw)
 
@@ -701,7 +729,7 @@ async def test_a_start_post_whose_formatting_is_refused_is_sent_plain(world):
     await _delegate("sync", task=RICH_TASK)
     s = world.alex.sent[0]
     assert s["text"] == f"Ellen asked:\n{RICH_TASK}"
-    (e,) = s["entities"]
+    _name, e = s["entities"]
     assert (e.type, e.offset, e.length) == (
         MessageEntity.EXPANDABLE_BLOCKQUOTE, utf16_len("Ellen asked:\n"), utf16_len(RICH_TASK))
     assert world.alex.filed[0][2].slot == "task-start"
@@ -715,7 +743,7 @@ async def test_a_rich_task_too_long_for_one_message_keeps_the_formatting_that_fi
     await _delegate("sync", task=task)
     s = world.alex.sent[0]
     assert utf16_len(s["text"]) <= 4096 and s["text"].endswith("…")
-    quote, *rest = s["entities"]
+    _name, quote, *rest = s["entities"]
     assert quote.type == MessageEntity.EXPANDABLE_BLOCKQUOTE
     assert quote.offset + quote.length == utf16_len(s["text"])
     assert [(e.type, e.offset, e.length) for e in rest] == [
@@ -730,7 +758,7 @@ async def test_a_task_too_long_for_one_message_is_clipped_to_fit(world):
     s = world.alex.sent[0]
     assert utf16_len(s["text"]) <= 4096
     assert s["text"].startswith("Ellen asked:\n💶 ") and s["text"].endswith("…")
-    (e,) = s["entities"]
+    _name, e = s["entities"]
     assert e.offset + e.length == utf16_len(s["text"])
 
 

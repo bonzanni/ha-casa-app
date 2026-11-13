@@ -920,6 +920,25 @@ async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
     return outcome is DeliveryOutcome.DELIVERED
 
 
+# The quotation-mark pairs a brief may be wrapped in, opener → closer.
+_QUOTE_PAIRS = {'"': '"', "\u201c": "\u201d", "\u00ab": "\u00bb", "'": "'", "\u2018": "\u2019"}
+
+
+def _without_outer_quotes(text: str) -> str:
+    """*text* without the one pair of quotation marks wrapping all of it, the
+    quote box already showing it is quoted: only when the trimmed text opens
+    and closes with one matching pair and neither mark recurs inside.
+    Anything else is returned as it was."""
+    one = text.strip()
+    close = _QUOTE_PAIRS.get(one[:1])
+    if close is None or len(one) < 3 or one[-1] != close:
+        return text
+    inner = one[1:-1]
+    if one[0] in inner or close in inner or not inner.strip():
+        return text
+    return inner
+
+
 async def _post_task_start(birth: TaskBirth) -> None:
     """The task's start post in its executor's chat, silent: who asked, and
     the request as they wrote it, quoted whole. Its address is kept for the
@@ -929,7 +948,7 @@ async def _post_task_start(birth: TaskBirth) -> None:
     ep = _task_endpoint(birth)
     if ep is None:
         return
-    body = _task_post_admitted(birth, birth.brief, IntentKind.DISCRETE)
+    body = _task_post_admitted(birth, _without_outer_quotes(birth.brief), IntentKind.DISCRETE)
     if body is None:
         return
     delivery = birth.delivery
@@ -939,7 +958,7 @@ async def _post_task_start(birth: TaskBirth) -> None:
     who = _display_name_for_role(birth.requester.role)
     try:
         mid = await asyncio.wait_for(
-            ep.post_task_start(delivery.chat_id, f"{who} asked:", body, post=post),
+            ep.post_task_start(delivery.chat_id, who, body, post=post),
             _TASK_POST_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 — a task post is never the work's fault
         logger.warning("task %s start not delivered: %s", birth.task_id[:8],

@@ -3883,9 +3883,10 @@ class TelegramChannel(Channel):
             reg.record_job_post(rec.id, self.address(chat, mid))
         return mid
 
-    async def post_task_start(self, chat_id: int, head: str, body: Any, *,
+    async def post_task_start(self, chat_id: int, who: str, body: Any, *,
                               post: Any) -> "int | None":
-        """A task's silent start post: Casa's *head* line (who asked), then
+        """A task's silent start post: Casa's line "*who* asked:", the name in
+        bold, then
         the admitted *body*, the request as its requester wrote it, inside one
         expandable quote. The body is rendered as an answer is, so its
         formatting shows inside the quote; one Telegram refuses to format is
@@ -3903,7 +3904,7 @@ class TelegramChannel(Channel):
         sent = None
         try:
             for n, (quote, entities) in enumerate(tries, 1):
-                text, entities = self._task_start_message(head, quote, entities)
+                text, entities = self._task_start_message(who, quote, entities)
                 try:
                     sent = await self.bot.send_message(
                         chat_id=chat_id, text=text, entities=entities,
@@ -3922,12 +3923,13 @@ class TelegramChannel(Channel):
         return mid if type(mid) is int else None
 
     @staticmethod
-    def _task_start_message(head: str, quote: str, entities: list) -> "tuple[str, list]":
-        """The start post's text and entities: *head*, then *quote* with its
-        UTF-16 *entities* inside one expandable quote. A quote past the
-        message's budget is cut to fit with ``…``, and an entity that does not
-        end before the cut is dropped."""
+    def _task_start_message(who: str, quote: str, entities: list) -> "tuple[str, list]":
+        """The start post's text and entities: "*who* asked:" with *who* in
+        bold, then *quote* with its UTF-16 *entities* inside one expandable
+        quote. A quote past the message's budget is cut to fit with ``…``, and
+        an entity that does not end before the cut is dropped."""
         from telegram import MessageEntity
+        head = f"{who} asked:"
         shift = utf16_len(head) + 1
         budget = _TG_MAX_LENGTH - shift
         if utf16_len(quote) > budget:
@@ -3937,7 +3939,8 @@ class TelegramChannel(Channel):
             quote += "…"
         box = MessageEntity(type=MessageEntity.EXPANDABLE_BLOCKQUOTE, offset=shift,
                             length=utf16_len(quote))
-        return f"{head}\n{quote}", [box, *MessageEntity.shift_entities(shift, entities)]
+        name = MessageEntity(type=MessageEntity.BOLD, offset=0, length=utf16_len(who))
+        return f"{head}\n{quote}", [name, box, *MessageEntity.shift_entities(shift, entities)]
 
     def _job_request_post(self, rec) -> "TgAddress | None":
         """The operator's message that asked for the job (its origin's

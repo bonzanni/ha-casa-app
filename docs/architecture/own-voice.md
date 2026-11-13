@@ -126,8 +126,9 @@ its posts carry no `📊` label (`result_broker.label_at`): the chat is the agen
 **A task in an agent's chat.** A delegation to an agent whose chat is open at its birth
 opens its post index (`task_posts.open`) and its input destination
 (`task_input.open_pending`) first, then posts its start post there, silently
-(`TelegramChannel.post_task_start`): "Ellen asked:" over the brief as written, whole, in an
-expandable quote, its formatting rendered as an answer's is (plain when Telegram refuses it),
+(`TelegramChannel.post_task_start`): "Ellen asked:", the name in bold, over the brief as
+written, whole, in an expandable quote — less one pair of quotation marks wrapping all of it
+(`tools._without_outer_quotes`) — its formatting rendered as an answer's is (plain when Telegram refuses it),
 clipped with `…` only when it cannot fit one message; a task born on a
 Casa-started plugin setup or erase turn posts none. It then runs in its own session, whose
 delegation context says that its closing message is posted to the operator as a reply to
