@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.372.0] - 2026-11-13
+
+### Added
+
+- Friends can now ask a specialist in a group you allowed: they mention it or reply to its answer, and it answers there in one short message, in its own voice. It reaches only the tools its plugin's author opened to guests — nothing of Casa's, no memory of you, no earlier conversation, no files — and it knows the person asking is not you. Nothing friends say is remembered.
+- A specialist's bot answers up to three friends' questions at a time; the next one is told "Busy right now — ask me again in a moment."
+- Ask the assistant "who may ask my specialists?" to see every group a specialist answers in, with whether Telegram reports Guest Mode on for its bot, and tell her to stop one ("stop the judge answering in «…»") without going to the group.
+- Plugin authors mark a tool for guests with `"guest": true` in its `casa.resultContract.tools` entry, and can add a `## Guest projection` section to the doctrine for these public answers. Casa refuses the flag on a capability tool, the setup tool, a tool that calls Casa and a protected tool.
+
 ## [0.371.0] - 2026-11-13
 
 ### Changed
