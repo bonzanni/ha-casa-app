@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-13
 ---
 
 # Agent logs
@@ -12,7 +12,8 @@ The optional, read-only log each background agent keeps in a Telegram forum grou
 on, whose work goes to which topic, what one line says, the writer that posts it within the
 group's request budget, the registry and the retention that deletes each post before Telegram
 stops allowing it, and what happens to anything a person writes in the group. What a job puts
-in the operator's direct chat — the start line, questions, replies, the end — is
+in the operator's direct chat — the 👍 on the request (or the start line in its place),
+questions, replies, the end — is
 [`background-job-direct-chat.md`](background-job-direct-chat.md); none of it depends on the
 log. The option is in [`reference/operator-options.md`](../reference/operator-options.md).
 
