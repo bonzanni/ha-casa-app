@@ -213,7 +213,12 @@ def test_specialist_builds_grant_guest_access_and_engagements_do_not(monkeypatch
     assert GUEST_GRANT not in eng.allowed_tools
 
 
-def test_the_resident_build_does_not_grant_guest_access(monkeypatch):
+def test_the_resident_grants_guest_access_from_its_role(monkeypatch):
+    """The resident has the tool for listing and revoking groups from its own
+    chat; the grant comes from its role files, not from ``_guest_grants``."""
+    from pathlib import Path
+
+    import yaml
     from plugin_registry import ResolutionResult
     tools = _quiet_builder(monkeypatch)
     resident = _guest_cfg("assistant", kind="resident")
@@ -221,3 +226,10 @@ def test_the_resident_build_does_not_grant_guest_access(monkeypatch):
     opts = tools._build_specialist_options(
         resident, resolution=ResolutionResult(registry_valid=True, plugins=[]))
     assert GUEST_GRANT not in opts.allowed_tools
+    defaults = Path(tools.__file__).parent / "defaults"
+    role = yaml.safe_load(
+        (defaults / "roles/resident/assistant/role.yaml").read_text(encoding="utf-8"))
+    runtime = yaml.safe_load(
+        (defaults / "agents/assistant/runtime.yaml").read_text(encoding="utf-8"))
+    assert GUEST_GRANT in role["tools"]["allowed"]
+    assert GUEST_GRANT in runtime["tools"]["allowed"]

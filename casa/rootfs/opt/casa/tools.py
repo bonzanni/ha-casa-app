@@ -16863,26 +16863,117 @@ def _guest_chat_of(origin: dict):
     return guest_groups.ChatRef(chat_id, title, chat_type)
 
 
+_GUEST_HINT_TIMEOUT_S = 5.0
+
+
+async def _guest_mode_hint(role: str):
+    """Whether Telegram reports guest mode on for *role*'s bot: ``True``,
+    ``False``, or ``"unknown"`` when it cannot be asked. Shown to the
+    operator as a hint only; nothing is decided on it."""
+    import own_voice
+    try:
+        endpoint = own_voice.endpoint_for(role)
+        app = getattr(endpoint, "_app", None) if endpoint is not None else None
+        if app is None:
+            return "unknown"
+        me = await asyncio.wait_for(app.bot.get_me(), _GUEST_HINT_TIMEOUT_S)
+        value = getattr(me, "supports_guest_queries", None)
+        return value if isinstance(value, bool) else "unknown"
+    except Exception:  # noqa: BLE001 — a hint, never a failure
+        return "unknown"
+
+
+async def _guest_list() -> dict:
+    """Every group any specialist may answer in, with a per-role hint."""
+    import guest_groups
+    store = guest_groups.store()
+    hints: dict[str, object] = {}
+    groups = []
+    for entry in store.entries():
+        if entry.role not in hints:
+            hints[entry.role] = await _guest_mode_hint(entry.role)
+        groups.append({
+            "role": entry.role,
+            "specialist": _display_name_for_role(entry.role),
+            "chat_id": entry.chat.id,
+            "title": entry.chat.title,
+            "type": entry.chat.type,
+            "allowed_at": entry.allowed_at,
+            "state": store.status(entry.role, entry.chat.id),
+            "telegram_reports_guest_mode": hints[entry.role],
+        })
+    return {"status": "ok", "action": "list", "groups": groups}
+
+
+def _is_resident_turn(origin: dict, role: object) -> bool:
+    """The resident's own turn (not a run handed off from it)."""
+    if not isinstance(role, str) or not role:
+        return False
+    if origin.get("execution_role", role) != role:
+        return False
+    registry = _agent_registry
+    return registry is not None and registry.tier_for_role(role) == "resident"
+
+
+async def _guest_access_from_resident(args: dict) -> dict:
+    """The resident's face: list every allowed group, or revoke one by the
+    role and chat id the list shows."""
+    import guest_groups
+    action = args.get("action")
+    if action == "list":
+        return _result(await _guest_list())
+    if action != "revoke":
+        return _result({"status": "error", "kind": "not_in_group",
+                        "message": _GUEST_NOT_IN_GROUP})
+    role, chat_id = args.get("role"), args.get("chat_id")
+    if (not isinstance(role, str) or not role
+            or not isinstance(chat_id, int) or isinstance(chat_id, bool)):
+        return _result({"status": "error", "kind": "bad_arguments",
+                        "message": "Name the specialist and the group as the list "
+                                   "shows them."})
+    store = guest_groups.store()
+    removed = store.revoke(role, chat_id)
+    try:
+        await store.save()
+    except Exception:  # noqa: BLE001 — a result, never a raise
+        logger.exception("guest_access revoke for %s failed to save", role)
+        return _result({"status": "error", "kind": "save_failed",
+                        "message": "That did not go through; try again shortly."})
+    return _result({"status": "ok", "action": "revoke", "removed": removed})
+
+
 @tool(
     "guest_access",
     "Let everyone in the group you were just summoned in ask you (allow), stop that "
     "(revoke), or say whether they may (status). Works only when the operator summoned "
     "you in that group; it knows which group from the summons — there is no group to "
-    "name.",
+    "name. From Ellen's chat: list every group any specialist may answer in, or revoke "
+    "one by its role and chat id as the list shows them.",
     {"type": "object",
-     "properties": {"action": {"type": "string", "enum": ["allow", "revoke", "status"]}},
+     "properties": {"action": {"type": "string",
+                               "enum": ["allow", "revoke", "status", "list"]},
+                    "role": {"type": "string"},
+                    "chat_id": {"type": "integer"}},
      "required": ["action"]},
 )
 async def guest_access(args: dict) -> dict:
     """A specialist's answer to the operator's request, made inside a group,
     that it answer (or stop answering) everyone there. The group and the
-    specialist come from the turn's origin; the arguments carry only the
-    action. A run handed off from the summoned specialist inherits its origin
-    but was not summoned, so it is refused."""
+    specialist come from the turn's origin; there the arguments carry only
+    the action. A run handed off from the summoned specialist inherits its
+    origin but was not summoned, so it is refused.
+
+    From the resident's own chat the operator can instead list every allowed
+    group and revoke one, naming it by role and chat id."""
     import guest_groups
     origin = _snapshot_origin()
     role = origin.get("role")
     chat = _guest_chat_of(origin)
+    if chat is None and _is_resident_turn(origin, role):
+        if origin.get("_operator_turn") is not True:
+            return _result({"status": "error", "kind": "not_operator",
+                            "message": _GUEST_NOT_IN_GROUP})
+        return await _guest_access_from_resident(args)
     if (chat is None or not isinstance(role, str) or not role
             or origin.get("execution_role", role) != role):
         return _result({"status": "error", "kind": "not_in_group",
@@ -16891,6 +16982,8 @@ async def guest_access(args: dict) -> dict:
         return _result({"status": "error", "kind": "not_operator",
                         "message": _GUEST_NOT_IN_GROUP})
     action = args.get("action")
+    if action == "list":
+        return _result(await _guest_list())
     if action not in ("allow", "revoke", "status"):
         return _result({"status": "error", "kind": "bad_action",
                         "message": "The action is allow, revoke or status."})
