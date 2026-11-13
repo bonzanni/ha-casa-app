@@ -100,7 +100,8 @@ is left for the platform to judge; a bot injected for a test is outside the seam
 **Model text enters the six model-text methods only as admitted text.** `send`,
 `send_response`, the draft send (`_send_draft`), `post_dm_keyboard`, `send_media`'s caption
 and `guest_finish` accept an `Admitted` — the value the authoring turn's scope mints, or
-Casa's own `casa_text` — and refuse a bare string with an `ERROR` log.
+Casa's own `casa_text` — and refuse a bare string with an `ERROR` log (the draft send takes
+the empty string, the draft before the first word, as it is).
 The first five then make zero Bot API calls and return the method's own failure value:
 `NOT_DELIVERED`, `None`, or `UnadmittedText` from `send_media`; `guest_finish` still owes the
 group its one edit and makes it Casa's failure line ([`guest-summons.md`](guest-summons.md)). `edit_dm_message` stays string-typed, because it re-renders a body admitted

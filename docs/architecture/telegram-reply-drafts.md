@@ -27,17 +27,22 @@ sub-agent's in-flight text deltas are not streamed, and what the reply contains 
 finished messages — is the same as on a turn that never streamed. The callback
 (`TelegramChannel.create_on_token`) writes that text into a Telegram draft (the Bot API's
 `sendMessageDraft`), rendered as the final reply is, with Telegram's own Stop button
-(`can_stop`, `keep_on_stop`) and a fresh non-zero draft id per turn. When the model is done,
+(`can_stop`, `keep_on_stop`) and a fresh non-zero draft id per turn. The draft is there from
+the start of the turn: `create_on_token` starts the stream, which shows an empty draft until
+the first word, so Stop can be pressed while the model is still thinking or calling a tool.
+An empty draft is sent without `keep_on_stop`, so a press removes it; one with text stays in
+the chat until the reply arrives. When the model is done,
 `Agent.handle_message` ends the stream and the reply goes out through the ordinary send:
 `send_response` for a reply, `send` for Casa's own line. Nothing is sent early and edited
 later.
 
 **The model never waits on the network.** The callback releases the turn's typing lease at
-its first call and otherwise only stores the latest text in the turn's `DraftStream`
-(`channels/telegram_draft.py`). One task per turn does the sending on its own clock: about
-every 0.6 s it sends the stored text if it changed since the last send; with nothing new it
-re-sends the same text every 10 s so the draft does not vanish, and stops re-sending once the
-text has not changed for 10 minutes. A text that no longer fits one message stops growing:
+its first call — until then "typing…" shows beside the empty draft — and otherwise only
+stores the latest text in the turn's `DraftStream` (`channels/telegram_draft.py`). One task
+per turn does the sending on its own clock: about every 0.6 s it sends the stored text if it
+changed since the last send; with nothing new it re-sends the same text every 10 s so the
+draft does not vanish, and stops re-sending once the text has not changed for 10 minutes,
+counted from the start of the turn while the draft is still empty. A text that no longer fits one message stops growing:
 the last text that fitted keeps being re-sent under the same rules. A flood wait is slept.
 The draft decides nothing about the turn.
 
@@ -70,7 +75,8 @@ cancels the child.
 is logged and the reply still goes. The draft therefore never outlives the turn, and nothing
 waits on a draft to deliver the answer.
 
-What it does not cover: what the client shows of a draft once it is ended; a reply too long
+What it does not cover: what the client shows of a draft once it is ended — after a turn that
+sends nothing, an empty draft stays until Telegram removes it on its own; a reply too long
 for one message is paged by the ordinary send, as any reply is.
 
 **INV-TG-024**: A stop update acts only on a draft the receiving endpoint is writing now, in the chat the update names — it ends that stream and asks the turns under its correlation id to stop; every other update, and every other press, is left alone and nothing is sent.
@@ -81,9 +87,8 @@ press that is acted on leaves one log line with the correlation id and the numbe
 interrupted, 0 when it reached none. A failure while stopping is logged and leaves the turn
 running.
 
-What it does not cover: a press before the first word, when no draft exists yet; and a turn
-`interrupt_turns` cannot reach — the press ends the draft and the reply arrives whole when
-the turn finishes. `interrupt_turns` reaches a turn on a client a pool holds: one in its map,
+What it does not cover: a turn `interrupt_turns` cannot reach — the press ends the draft and
+the reply arrives whole when the turn finishes. `interrupt_turns` reaches a turn on a client a pool holds: one in its map,
 or one an invalidation or the pool's own close has taken out of the map and is waiting on. It
 does not reach a turn that runs outside the pool, nor one whose client a reset of its
 conversation (`SdkClientPool.close_key`) or an eviction took out of the map while the turn
