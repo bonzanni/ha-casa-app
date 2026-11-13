@@ -991,6 +991,13 @@ def build_restricted_webhook_options(
     )
 
 
+# The note an engagement's outcome turn carries when Casa sends its answer as a
+# reply to the request that asked for the work (the notice's ``_reply_to``).
+REPLY_OPENING_NOTE = (
+    "(Casa: your answer goes to the person as a reply to their request. Open it with "
+    "\"Done.\" when the work finished, \"Stopped.\" when it was stopped, or "
+    "\"Couldn't finish:\" and why when it did not finish.)")
+
 # #926: the ONE statement that distinguishes the boot replay of a retained
 # delegated answer from its live announcement. It must be true on every arm the
 # replay can reach: the interrupted relay may have shown the user nothing (it
@@ -2144,6 +2151,8 @@ class Agent:
             f"\nThe original user question was: {user_text}\n\n"
             "Reply to the user via their original channel. Be concise.\n"
         )
+        if msg.context.get("_reply_to"):
+            body += REPLY_OPENING_NOTE + "\n"
 
         # Release A Layer 3: the notification's context carries only cid/chat_id,
         # so copy the trusted origin markers from the PERSISTED completion origin

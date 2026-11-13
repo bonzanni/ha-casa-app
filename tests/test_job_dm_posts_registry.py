@@ -99,16 +99,16 @@ async def _wait_started(held):
 
 class TestFilingAndIndex:
     async def test_a_live_jobs_post_is_filed_indexed_and_persisted(self, tmp_path):
-        from engagement_registry import JOB_POST_START
+        from engagement_registry import JOB_POST_PARKED
         reg, rec = await _job_record(tmp_path)
-        assert reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_START) is True
+        assert reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_PARKED) is True
         assert reg.record_job_post(rec.id, A(502)) is True
         assert reg.job_post_owner(A(501)) is rec
         assert reg.job_post_owner(A(502)) is rec
         await _flush(reg)
         row = _disk(tmp_path, rec.id)
         assert row["dm_posts"] == [[111, 100, 501], [111, 100, 502]]
-        assert row["ui_posts"] == [[111, 100, 501, JOB_POST_START]]
+        assert row["ui_posts"] == [[111, 100, 501, JOB_POST_PARKED]]
 
     async def test_posts_are_uncapped_while_the_job_lives(self, tmp_path):
         reg, rec = await _job_record(tmp_path)
@@ -172,9 +172,9 @@ class TestEndedJobPosts:
 
     async def test_settlement_moves_the_posts_to_the_ended_index_and_a_reload_keeps_them(
             self, tmp_path):
-        from engagement_registry import EngagementRegistry, JOB_POST_START
+        from engagement_registry import EngagementRegistry, JOB_POST_PARKED
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_START)
+        reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_PARKED)
         reg.record_job_post(rec.id, A(502))
         assert reg.ended_job_post_owner(A(501)) is None          # live: not ended
         assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
@@ -344,12 +344,12 @@ class TestPendingTerminalCountsAsLive:
 
 class TestKeyboardsAndQuestions:
     async def test_keyboard_posts_are_taken_exactly_once(self, tmp_path):
-        from engagement_registry import JOB_POST_START
+        from engagement_registry import JOB_POST_PARKED
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_START)
+        reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_PARKED)
         await reg.try_transition_terminal(rec.id, "cancelled", strict=True)
         assert reg.records_with_ui_posts() == [rec]
-        assert reg.take_ui_posts(rec.id) == [(A(501), JOB_POST_START)]
+        assert reg.take_ui_posts(rec.id) == [(A(501), JOB_POST_PARKED)]
         assert reg.take_ui_posts(rec.id) == []
         assert reg.records_with_ui_posts() == []
         await _flush(reg)

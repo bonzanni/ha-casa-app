@@ -157,39 +157,39 @@ class TestEngagementRoundTrip:
         assert again.get(rec.id).origin["_tg_bot"] == route
 
     async def test_posts_and_keyboards_round_trip_with_their_bot(self, tmp_path):
-        from engagement_registry import JOB_POST_QUESTION, JOB_POST_START
+        from engagement_registry import JOB_POST_PARKED, JOB_POST_QUESTION
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
                                _origin(FINANCE_BOT), **_task(FINANCE_BOT))
         start = TgAddress(FINANCE_BOT, CHAT, 7)
         question = TgAddress(FINANCE_BOT, CHAT, 8)
         plain = TgAddress(FINANCE_BOT, CHAT, 9)
-        reg.record_job_post(rec.id, start, keyboard=JOB_POST_START)
+        reg.record_job_post(rec.id, start, keyboard=JOB_POST_PARKED)
         reg.record_job_post(rec.id, question, keyboard=JOB_POST_QUESTION)
         reg.record_job_post(rec.id, plain)
         await _flush(reg)
         row = _rows(tmp_path)[0]
         assert row["dm_posts"] == [[222, 100, 7], [222, 100, 8], [222, 100, 9]]
-        assert row["ui_posts"] == [[222, 100, 7, JOB_POST_START],
+        assert row["ui_posts"] == [[222, 100, 7, JOB_POST_PARKED],
                                    [222, 100, 8, JOB_POST_QUESTION]]
         again = (await _reload(tmp_path)).get(rec.id)
         assert again.dm_posts == [start, question, plain]
-        assert again.ui_posts == [(start, JOB_POST_START),
+        assert again.ui_posts == [(start, JOB_POST_PARKED),
                                   (question, JOB_POST_QUESTION)]
 
     async def test_take_ui_posts_hands_back_addresses(self, tmp_path):
-        from engagement_registry import JOB_POST_START
+        from engagement_registry import JOB_POST_PARKED
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
                                _origin(FINANCE_BOT), **_task(FINANCE_BOT))
         start = TgAddress(FINANCE_BOT, CHAT, 7)
-        reg.record_job_post(rec.id, start, keyboard=JOB_POST_START)
+        reg.record_job_post(rec.id, start, keyboard=JOB_POST_PARKED)
         reg._terminal_observer = None
         assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
         again = await _reload(tmp_path)
         [loaded] = again.records_with_ui_posts()
-        assert loaded.ui_posts == [(start, JOB_POST_START)]
-        assert again.take_ui_posts(loaded.id) == [(start, JOB_POST_START)]
+        assert loaded.ui_posts == [(start, JOB_POST_PARKED)]
+        assert again.take_ui_posts(loaded.id) == [(start, JOB_POST_PARKED)]
 
     async def test_an_address_that_names_no_message_is_not_filed(self, tmp_path):
         reg = await _registry(tmp_path)
@@ -234,22 +234,24 @@ class TestEngagementStrictLoad:
 
     async def test_a_post_without_its_bot_is_refused_and_the_record_kept(
             self, tmp_path, caplog):
-        from engagement_registry import JOB_POST_START
+        from engagement_registry import JOB_POST_PARKED
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
                                _origin(CASA_BOT), **_task(CASA_BOT))
         rows = _rows(tmp_path)
         rows[0]["dm_posts"] = [5, [100, 6], [None, 100, 7], [111, 100, 8]]
-        rows[0]["ui_posts"] = [[5, JOB_POST_START], [None, 100, 7, JOB_POST_START],
-                               [111, 100, 8, "nope"], [111, 100, 8, JOB_POST_START]]
+        # a start line carries no keyboard: a stored "start" kind is skipped too
+        rows[0]["ui_posts"] = [[5, JOB_POST_PARKED], [None, 100, 7, JOB_POST_PARKED],
+                               [111, 100, 8, "nope"], [111, 100, 8, "start"],
+                               [111, 100, 8, JOB_POST_PARKED]]
         _write_rows(tmp_path, rows)
         with caplog.at_level(logging.ERROR, logger="engagement_registry"):
             again = await _reload(tmp_path)
         loaded = again.get(rec.id)
         assert loaded.dm_posts == [TgAddress(111, 100, 8)]
-        assert loaded.ui_posts == [(TgAddress(111, 100, 8), JOB_POST_START)]
+        assert loaded.ui_posts == [(TgAddress(111, 100, 8), JOB_POST_PARKED)]
         refused = [r for r in caplog.records if r.levelname == "ERROR"]
-        assert len(refused) == 3 + 3
+        assert len(refused) == 3 + 4
         assert again.job_post_owner(TgAddress(111, 100, 8)) is loaded
 
 

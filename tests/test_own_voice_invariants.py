@@ -1389,7 +1389,7 @@ SURFACE_POSTS = {
     ("channels/telegram_transport.py", "TelegramTransport.post_job_parked",
      "post_job_parked"): C,
     ("tools.py", "ask_operator", "post_job_question"): C,
-    ("tools.py", "_post_job_start_line", "post_job_start_line"): C,
+    ("tools.py", "_acknowledge_job_start", "post_job_start_line"): C,
     ("background_jobs.py", "JobRunner._post_parked", "post_job_parked"): C,
     # a file the agent sends, at the task's delivery
     ("tools.py", "_classify_send", "send_media"): B,

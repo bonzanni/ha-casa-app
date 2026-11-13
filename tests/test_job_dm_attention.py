@@ -1,5 +1,5 @@
 """A background job in the operator's direct chat: replies into a live job,
-its questions and their taps, the start line's Cancel, the one notice per
+its questions and their taps, the start line and a job's Cancel, the one notice per
 lost message, keyboard retirement, and quiet runs that end on interaction.
 
 REAL ``TelegramChannel`` handlers and seams, REAL ``EngagementRegistry`` and
@@ -548,50 +548,44 @@ class TestAskAndTap:
 
 
 class TestStartLineCancelAndRetirement:
-    async def test_an_operator_started_job_gets_a_silent_start_line_with_its_stop_key(
+    async def test_an_operator_started_job_with_no_request_gets_a_silent_start_line(
             self, tmp_path, monkeypatch):
+        """The rig's job names no request of his to put the 👍 on, so it gets the
+        line: no keyboard of any kind, filed as the job's post."""
         import tools
-        from engagement_registry import JOB_POST_START
         r = await _rig(tmp_path, monkeypatch)
-        await tools._post_job_start_line(r.rec.id)
+        await tools._acknowledge_job_start(r.rec.id)
         (post,) = r.bot.sent
         assert post["text"] == "📊 finance started «Process rows»."
-        # no inline button: the line raises the job's red Stop key at the keyboard
-        assert not hasattr(post["markup"], "inline_keyboard")
-        assert [[(k.text, k.style) for k in row] for row in post["markup"].keyboard] == [
-            [("⏹ Stop «Process rows»", "danger")]]
-        assert post["markup"].is_persistent is True and post["markup"].resize_keyboard is True
-        assert r.rec.ui_posts == [(A(post["message_id"]), JOB_POST_START)]
+        assert post["markup"] is None and post["reply_to"] is None
+        assert r.rec.ui_posts == []
+        assert r.rec.dm_posts == [A(post["message_id"])]
         assert r.reg.job_post_owner(A(post["message_id"])) is r.rec
 
     async def test_a_scheduled_job_gets_none(self, tmp_path, monkeypatch):
         import tools
         r = await _rig(tmp_path, monkeypatch, started_by="scheduled")
-        await tools._post_job_start_line(r.rec.id)
+        await tools._acknowledge_job_start(r.rec.id)
         assert r.bot.sent == []
 
     async def test_cancel_ends_the_job_and_every_keyboard_is_retired(
             self, tmp_path, monkeypatch):
         import tools
         r = await _rig(tmp_path, monkeypatch)
-        await tools._post_job_start_line(r.rec.id)
+        await tools._acknowledge_job_start(r.rec.id)
         start_mid = r.bot.sent[-1]["message_id"]
         q_mid = (await _ask(r))["message_id"]
-        cq = _CQ(f"v1|job_cancel|{r.rec.id}", start_mid)
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", q_mid)
         await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
         await _drain(r)
         assert cq.answers == ["Cancelling…"]
         assert r.rec.status == "cancelled"
-        # the start line is never edited: it carries the Stop key
+        # the start line carries no keyboard and is left as it is
         assert [e for e in r.bot.edits if e["message_id"] == start_mid] == []
         assert [m["message_id"] for m in r.bot.markups] == [q_mid]
         assert r.rec.ui_posts == []
-        # one silent end line in reply to the start line carries the outcome and the
-        # running time, and takes the key away
-        (end,) = r.bot.replies()
-        assert (end["text"], end["reply_to"]) == (
-            "🛑 Stopped finance's «Process rows» · 1 min", start_mid)
-        assert end["markup"].remove_keyboard is True
+        # the job's end posts no line of its own: its requester's answer tells it
+        assert r.bot.replies() == []
 
     async def test_a_second_cancel_tap_while_the_first_runs_is_already_finishing(
             self, tmp_path, monkeypatch):
@@ -603,24 +597,22 @@ class TestStartLineCancelAndRetirement:
 
     async def test_a_cancel_that_could_not_be_saved_keeps_the_button_and_says_so(
             self, tmp_path, monkeypatch):
-        import tools
         r = await _rig(tmp_path, monkeypatch)
-        await tools._post_job_start_line(r.rec.id)
+        q_mid = (await _ask(r))["message_id"]
         await _drain(r)
-        start_mid = r.bot.sent[-1]["message_id"]
 
         def _fail(snapshot):
             raise OSError("disk full")
         real = r.reg._write_tombstone
         r.reg._write_tombstone = _fail
-        cq = _CQ(f"v1|job_cancel|{r.rec.id}", start_mid)
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", q_mid)
         await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
         await _drain(r)
         r.reg._write_tombstone = real
         assert r.rec.status == "active"
         assert r.bot.edits == [] and r.bot.markups == []
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job could not be stopped just now — try again.", start_mid)]
+            ("The job could not be stopped just now — try again.", q_mid)]
         assert r.rec.ui_posts and r.rec.id not in r.ch._job_cancels
 
     async def test_a_keyboard_post_landing_after_the_end_is_retired_by_its_filer(
@@ -635,30 +627,28 @@ class TestStartLineCancelAndRetirement:
 
     async def test_boot_retires_what_an_ended_job_still_carries(
             self, tmp_path, monkeypatch):
-        from engagement_registry import JOB_POST_START
+        from engagement_registry import JOB_POST_QUESTION
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, A(960), keyboard=JOB_POST_START)
+        r.reg.record_job_post(r.rec.id, A(960), keyboard=JOB_POST_QUESTION)
         r.reg._terminal_observer = None          # as if the edits never ran
         await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
         assert r.ch.retire_ended_job_keyboards() == 1
         await _drain(r)
-        assert r.bot.edits == []
-        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("✅ finance finished «Process rows» · 1 min", 960)]
+        assert [m["message_id"] for m in r.bot.markups] == [960]
+        assert r.bot.edits == [] and r.bot.sent == []
         assert r.ch.retire_ended_job_keyboards() == 0
 
     async def test_launch_death_retires_the_keyboards_too(self, tmp_path, monkeypatch):
         import tools
-        from engagement_registry import JOB_POST_START
+        from engagement_registry import JOB_POST_PARKED
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, A(970), keyboard=JOB_POST_START)
+        r.reg.record_job_post(r.rec.id, A(970), keyboard=JOB_POST_PARKED)
         result = await tools._report_launch_death(
             None, r.rec, kind="launch_incomplete", detail="x", driver=None)
         assert result is tools.LaunchDeathResult.REPORTED
         await _drain(r)
-        assert r.bot.edits == []
-        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("❌ finance's «Process rows» failed · 1 min", 970)]
+        assert [m["message_id"] for m in r.bot.markups] == [970]
+        assert r.bot.edits == [] and r.bot.sent == []
 
 
 # ---------------------------------------------------------------------------

@@ -399,41 +399,6 @@ async def test_a_file_whose_task_ended_meanwhile_in_the_residents_chat_names_the
         f"statement.pdf is in {rb.post_label('finance')}'s inbox; the task had already ended."]
 
 
-def _ended_job(status="completed"):
-    return types.SimpleNamespace(
-        id="c" * 32, status=status, role_or_type="finance", task="t",
-        started_at=1000.0, completed_at=1060.0,
-        origin={"chat_id": str(OPERATOR), "job": {"title": "Accounting check"}})
-
-
-@pytest.mark.parametrize("cost,suffix", [(0.12, " · 1 min · $0.12"), (None, " · 1 min")])
-@pytest.mark.parametrize("status,line", [("completed", "✅ Finished «Accounting check»"),
-                                         ("cancelled", "🛑 Stopped «Accounting check»"),
-                                         ("failed", "❌ «Accounting check» failed")])
-async def test_a_jobs_end_line_in_its_agents_own_chat_does_not_name_the_agent(
-        world, monkeypatch, status, line, cost, suffix):
-    from engagement_registry import JOB_POST_START
-    ch, _bus = _endpoint("own")
-    _behind_transport(monkeypatch, ch)
-    rec = _ended_job(status)
-    if cost is not None:
-        rec.origin["job"]["cost_usd"] = cost
-    await ch._retire_job_post(rec, (TgAddress(OWN_BOT, OPERATOR, 501), JOB_POST_START))
-    assert ch._app.bot.edited == []
-    assert [m["text"] for m in ch._app.bot.sent] == [line + suffix]
-
-
-async def test_a_jobs_end_line_in_the_residents_chat_names_the_agent(world, monkeypatch):
-    from engagement_registry import JOB_POST_START
-    ch, _bus = _endpoint("casa")
-    _behind_transport(monkeypatch, ch)
-    await ch._retire_job_post(_ended_job(),
-                              (TgAddress(CASA_BOT, OPERATOR, 501), JOB_POST_START))
-    assert ch._app.bot.edited == []
-    assert [m["text"] for m in ch._app.bot.sent] == [
-        "✅ Finance finished «Accounting check» · 1 min"]
-
-
 # ---------------------------------------------------------------------------
 # 📎 and albums
 # ---------------------------------------------------------------------------

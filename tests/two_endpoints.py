@@ -144,6 +144,10 @@ class FakeEndpoint:
         return on_token
 
     # -- job records -----------------------------------------------------
+    async def react(self, chat_id: int, message_id: int) -> bool:
+        self._record("react", chat_id, message_id)
+        return self._ready
+
     async def post_job_start_line(self, rec: Any) -> "int | None":
         self._record("post_job_start_line", rec)
         return self._mid() if self._ready else None

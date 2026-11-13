@@ -113,8 +113,8 @@ def _note_for(status="completed", *, whose="Finance's", via=""):
 
 async def test_a_reply_to_an_ended_jobs_start_line_is_the_residents_turn_with_its_end(
         tmp_path):
-    from engagement_registry import JOB_POST_START
-    reg, rec = await _ended_job(tmp_path, posts=[(501, JOB_POST_START)])
+    # the start line is filed with no keyboard
+    reg, rec = await _ended_job(tmp_path, posts=[(501, None)])
     ch, bus = _channel()
     ch._engagement_registry = reg
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=501))

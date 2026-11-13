@@ -514,18 +514,17 @@ async def test_a_tap_on_111_looks_only_in_111s_lanes(pair):
 
 
 async def test_an_ended_jobs_keyboards_are_retired_through_their_own_bots(pair):
-    from engagement_registry import JOB_POST_QUESTION, JOB_POST_START
+    from engagement_registry import JOB_POST_PARKED, JOB_POST_QUESTION
     rec = _job(status="completed")
-    posts = [(TgAddress(CASA_BOT, OPERATOR, 7), JOB_POST_START),
+    posts = [(TgAddress(CASA_BOT, OPERATOR, 7), JOB_POST_PARKED),
              [FINANCE_BOT, OPERATOR, 7, JOB_POST_QUESTION]]
     await pair.casa._retire_job_posts(rec, posts)
     await pair.finance._retire_job_posts(rec, posts)
-    # the start line is never edited: its end line (which takes the Stop key away)
-    assert [n for n, _ in calls(pair.casa)] == ["send_message"]
-    assert [kw["chat_id"] for n, kw in calls(pair.casa)] == [OPERATOR]
-    assert [n for n, _ in calls(pair.finance)] == ["edit_message_reply_markup"]
-    (_, kw), = calls(pair.finance)
-    assert (kw["chat_id"], kw["message_id"]) == (OPERATOR, 7)
+    # each bot edits only its own post, and posts nothing
+    for ep in (pair.casa, pair.finance):
+        assert [n for n, _ in calls(ep)] == ["edit_message_reply_markup"]
+        (_, kw), = calls(ep)
+        assert (kw["chat_id"], kw["message_id"]) == (OPERATOR, 7)
 
 
 async def test_a_lost_message_notice_is_never_sent_through_another_bot(pair):

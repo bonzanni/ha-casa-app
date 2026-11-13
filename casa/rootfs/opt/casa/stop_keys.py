@@ -23,9 +23,7 @@ is replaced.
 
 A Telegram message carries an inline keyboard or a reply keyboard, never both, and an edit
 cannot raise or remove a reply keyboard: the keyboard rides on the messages Casa posts for
-this purpose — the start message, and one short line when an item ends. A message sent
-with a reply keyboard can never be edited, so a job's start line is never touched again:
-its outcome, running time and cost ride on its end line.
+this purpose — the start message, and one short line when an item ends.
 """
 from __future__ import annotations
 
@@ -43,13 +41,6 @@ TITLE_CHARS = 40
 _LABEL_HEAD, _LABEL_CLOSE = LABEL.split("{title}")
 #: the line a press of a key whose work is gone gets (``plugin_stop``'s own wording)
 ENDED_LINE = "It had already ended."
-#: a job's end line, by its terminal status: (mark, in the agent's own chat, elsewhere —
-#: naming the agent as its start line does)
-JOB_END_LINES = {
-    "completed": ("✅", "Finished «{title}»", "{agent} finished «{title}»"),
-    "cancelled": ("🛑", "Stopped «{title}»", "Stopped {agent}'s «{title}»"),
-}
-JOB_FAILED_LINE = ("❌", "«{title}» failed", "{agent}'s «{title}» failed")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -172,12 +163,3 @@ def pressed(bot_id: int, chat_id: int, text: str) -> "tuple[str, Item | None] | 
     if text.startswith(_LABEL_HEAD) and _LABEL_CLOSE in text[len(_LABEL_HEAD):]:
         return "ended", None
     return None
-
-
-def job_end_line(rec: Any, agent: str = "") -> str:
-    """A job's end line by its terminal status, ``✅ Finished «<title>»``, naming *agent*
-    when it is given (a chat that is not the agent's own). Its running time and cost
-    (``background_jobs.cost_suffix``) are the caller's to add."""
-    mark, own, named = JOB_END_LINES.get(getattr(rec, "status", ""), JOB_FAILED_LINE)
-    text = (named if agent else own).format(title=job_title(rec), agent=agent)
-    return f"{mark} {text}"

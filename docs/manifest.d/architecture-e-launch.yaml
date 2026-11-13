@@ -11,10 +11,12 @@
     - casa/rootfs/opt/casa/engagement_registry.py::_usable_time
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.ack_terminal_notification
     - casa/rootfs/opt/casa/casa_core.py::_notify_recovered_engagement_outcomes
+    - casa/rootfs/opt/casa/tools.py::reply_target
   tests:
     - tests/test_finalize_engagement.py
     - tests/test_engagement_terminal_notification.py
     - tests/test_engagement_terminal_notification_replay.py
+    - tests/test_job_chat_feel.py
   related: [architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-failure-and-restart.md, architecture/engagements.md]
   defines_invariants: [INV-ENG-018]
   invariant_tests:

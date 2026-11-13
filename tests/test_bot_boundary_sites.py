@@ -406,7 +406,7 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel._on_proposal_callback": 1, "TelegramChannel._quoted_address": 1,
         "TelegramChannel._quoted_task": 1, "TelegramChannel._record_post": 1,
         "TelegramChannel._redirect_from_log_group": 2, "TelegramChannel._reply_note_for": 1,
-        "TelegramChannel._resolve_file_address": 1, "TelegramChannel._retire_job_post": 1,
+        "TelegramChannel._resolve_file_address": 1,
         "TelegramChannel._cancel_job_by_key": 1, "TelegramChannel._press_stop_key": 2,
         "TelegramChannel._route_task_file": 1, "TelegramChannel._route_task_file.tell": 1,
         "TelegramChannel._run_job_cancel": 1, "TelegramChannel._send_dormant_line": 1,
@@ -419,7 +419,7 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel.deliver_operator_proposal": 1,
         "TelegramChannel.deliver_operator_question": 1, "TelegramChannel.deliver_run_card": 1,
         "TelegramChannel.send_reply_line": 1, "TelegramChannel.mark_proposal": 1,
-        "TelegramChannel.speak_first": 1,
+        "TelegramChannel.speak_first": 1, "TelegramChannel.post_job_start_line": 1,
         "TelegramChannel.proposal_finish_hook._finish": 5,
         "_summons_chat_name": 2,
     },
@@ -933,7 +933,6 @@ BOT_ID_READS = {
     ("channels/telegram.py", "TelegramChannel._spawn_run_stop._run"): (1, FIELD, "the confirmation's own bot"),
     ("channels/telegram.py", "TelegramChannel._spawn_run_stop._tell"): (1, FIELD, "the confirmation's own bot"),
     ("channels/telegram.py", "TelegramChannel._send_key_line"): (1, PRE_POST, _NO_ID_KEYS),
-    ("channels/telegram.py", "TelegramChannel.post_job_start_line"): (1, PRE_POST, _NO_ID_KEYS),
     ("channels/telegram.py", "TelegramChannel.deliver_run_card"): (1, PRE_POST, _NO_ID_KEYS),
     ("channels/telegram.py", "TelegramChannel.send_reply_line"): (1, PRE_POST, _NO_ID_KEYS),
     ("channels/telegram.py", "TelegramChannel._own_address"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
@@ -1073,7 +1072,9 @@ def _class(tree: ast.Module, name: str) -> ast.ClassDef:
 
 def test_the_transport_reads_the_configured_chat_only_for_the_operators_id():
     """The transport never picks a chat from configuration for a delivery:
-    the configured chat is read once, to know who the operator is."""
+    the configured chat is read once, to know who the operator is. The one
+    other chat it reads is a stored address's own: the operator's request a
+    job's 👍 goes on."""
     tree = ast.parse((CODE / "channels" / "telegram_transport.py").read_text(encoding="utf-8"))
     readers = set()
     for method in _class(tree, "TelegramTransport").body:
@@ -1083,7 +1084,7 @@ def test_the_transport_reads_the_configured_chat_only_for_the_operators_id():
             if ((isinstance(node, ast.Attribute) and node.attr == "chat_id")
                     or (isinstance(node, ast.Constant) and node.value == "chat_id")):
                 readers.add(method.name)
-    assert readers == {"operator_user_id"}
+    assert readers == {"operator_user_id", "react_job_request"}
 
 
 #: Reads of an endpoint's configured operator chat (``self.chat_id``) in the

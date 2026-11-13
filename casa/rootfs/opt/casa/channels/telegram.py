@@ -3940,61 +3940,63 @@ class TelegramChannel(Channel):
 
     async def post_job_start_line(self, rec) -> "int | None":
         """The silent ``📊 <Agent> started «<title>».`` line of a job the
-        operator started — Casa's text, with no button: it raises the chat's
-        Stop keys at the keyboard, the job's own among them (``stop_keys``).
-        Filed as the job's keyboard post once it lands, which keeps its key
-        live. Returns the message id, or ``None`` when nothing landed."""
-        import stop_keys
-        from engagement_registry import JOB_POST_START
+        operator started, posted when his request could not take the 👍 —
+        Casa's text, with no keyboard, in reply to his request when that is
+        this bot's message in the job's chat. Filed as the job's post once it
+        lands, so a reply quoting it reaches the job. Returns the message id,
+        or ``None`` when nothing landed."""
         chat = self._job_chat(rec)
-        if chat is None or self.bot is None:
+        if chat is None or self.bot is None or not self.has_bot_id:
             return None
+        request = self._job_request_post(rec)
+        extra = ({"reply_parameters": ReplyParameters(
+            message_id=request.message_id, allow_sending_without_reply=True)}
+            if request is not None else {})
         try:
-            kbd = stop_keys.keyboard(self.bot_id, chat, starting=stop_keys.job_item(rec))
             msg = await self.bot.send_message(
-                chat_id=chat,
-                text=self._job_start_text(rec),
-                reply_markup=kbd, disable_notification=True)
+                chat_id=chat, text=self._job_start_text(rec),
+                disable_notification=True, **extra)
         except Exception as exc:  # noqa: BLE001 — a start line is never the job's fault
             logger.info("job start line not posted: %s", type(exc).__name__)
             return None
         mid = getattr(msg, "message_id", None)
         if type(mid) is not int:
             return None
-        await self._file_job_keyboard(rec, mid, JOB_POST_START)
+        reg = self._engagement_registry
+        if reg is not None:
+            reg.record_job_post(rec.id, self.address(chat, mid))
         return mid
 
-    def _job_start_post(self, rec) -> "TgAddress | None":
-        """The address of the job's start line, while it is filed and it is
-        this bot's message (only the bot that posted it can reply to it)."""
-        from engagement_registry import JOB_POST_START
-        for post in getattr(rec, "ui_posts", None) or ():
-            parts = _job_post_parts(post)
-            if parts is not None and parts[1] == JOB_POST_START:
-                return parts[0] if self._own_address(parts[0]) else None
-        return None
+    def _job_request_post(self, rec) -> "TgAddress | None":
+        """The operator's message that asked for the job (its origin's
+        ``_tg_request``), when it is this bot's message in the job's chat —
+        the only message a job post from here can reply to."""
+        try:
+            request = TgAddress.from_json((getattr(rec, "origin", None) or {}).get("_tg_request"))
+        except AddressError:
+            return None
+        if (request.message_id is None or request.chat_id != self._job_chat(rec)
+                or not self._own_address(request)):
+            return None
+        return request
 
     async def post_job_parked(self, rec, text: str) -> "int | None":
         """A parked job's one line in the operator's direct chat, with the
-        job's Cancel button: a reply to the start line when the job has one,
-        else a new post. Filed as the job's keyboard post, so a reply quoting
-        it reaches the job. Returns the message id, or ``None`` when nothing
-        landed."""
-        from telegram import (
-            InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters,
-        )
+        job's Cancel button: a reply to his request when that is this bot's
+        message in the job's chat, else a new post. Filed as the job's
+        keyboard post, so a reply quoting it reaches the job. Returns the
+        message id, or ``None`` when nothing landed."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         from engagement_registry import JOB_POST_PARKED
         chat = self._job_chat(rec)
         if chat is None or self.bot is None:
             return None
         kbd = InlineKeyboardMarkup([[InlineKeyboardButton(
             text="Cancel", callback_data=job_cancel_callback(rec.id))]])
-        start = self._job_start_post(rec)
-        if start is not None and start.chat_id != chat:
-            start = None
+        request = self._job_request_post(rec)
         extra = ({"reply_parameters": ReplyParameters(
-            message_id=start.message_id, allow_sending_without_reply=True)}
-            if start is not None else {})
+            message_id=request.message_id, allow_sending_without_reply=True)}
+            if request is not None else {})
         try:
             msg = await self.bot.send_message(
                 chat_id=chat, text=text, reply_markup=kbd, **extra)
@@ -4105,37 +4107,22 @@ class TelegramChannel(Channel):
                                rec.id[:8], exc_info=True)
 
     async def _retire_job_post(self, rec, post) -> None:
-        """Retire one keyboard post of an ended job at its own address. The start line
-        is never edited (it carries the reply keyboard, which Telegram does not allow to
-        be edited): one silent line in reply to it ends the job — its outcome, running
-        time and cost, ``✅ Finished «<title>» · 40 min · $2.40`` (naming the agent where
-        the start line does) — with the chat's Stop keys still live. A question loses its
-        buttons. A post this cannot touch — one without an address, or another bot's —
-        keeps its keyboard; a tap on it reads the terminal record."""
-        from engagement_registry import JOB_POST_START
+        """Retire one keyboard post of an ended job at its own address: a
+        question or a parking line loses its buttons. The job's end is told
+        by its requester's answer, so nothing is posted here. A post this
+        cannot touch — one without an address, or another bot's — keeps its
+        keyboard; a tap on it reads the terminal record."""
         parts = _job_post_parts(post)
         if parts is None:
             logger.warning("job %s keyboard post without an address: %r",
                            rec.id[:8], post)
             return
-        address, kind = parts
+        address, _kind = parts
         if not self._own_address(address) or address.message_id is None:
             logger.warning("job %s keyboard post on bot %s left as it is: not "
                            "this endpoint's", rec.id[:8], address.bot_id)
             return
-        chat, message_id = address.chat_id, address.message_id
-        if kind == JOB_POST_START:
-            import background_jobs
-            import result_broker
-            import stop_keys
-            # in the agent's own chat the chat is the agent: no name
-            agent = (self._job_agent_name(rec)
-                     if result_broker.label_at(rec.role_or_type, self) else "")
-            await self._send_key_line(
-                chat, stop_keys.job_end_line(rec, agent) + background_jobs.cost_suffix(rec),
-                reply_to=message_id, silent=True)
-        else:
-            await self.clear_dm_keyboard(chat, message_id)
+        await self.clear_dm_keyboard(address.chat_id, address.message_id)
 
     def _job_tap_allowed(self, cq: Any, rec) -> bool:
         return self._job_owner_is(getattr(cq, "from_user", None), rec)

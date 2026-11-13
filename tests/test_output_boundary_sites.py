@@ -128,11 +128,11 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "deliver_casa_notice"): "notice",       # a tap's or a task's outcome line, Casa-composed
     ("channels/telegram.py", "deliver_run_card"): "notice",          # the Stop: a browsing request's status card, Casa-composed
     ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: a request's start, stop or end line, Casa-composed
-    ("channels/telegram.py", "_send_key_line"): "notice",            # the Stop keys: a job's end line and a stale key's answer, Casa templates
+    ("channels/telegram.py", "_send_key_line"): "notice",            # the Stop keys: a stale key's answer, Casa template
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
     ("channels/telegram.py", "send_step_line"): "notice",            # the configurator's step line, Casa template
-    ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line raising its Stop key, Casa template
+    ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line when its 👍 failed, Casa template
     ("channels/telegram.py", "post_job_parked"): "notice",           # a parked job's line with its Cancel, Casa template quoting the job's last progress report
     ("channels/telegram.py", "_send_dm_reply"): "notice",            # a lost-message / turn notice in reply to the operator, Casa-composed
     # a summoned turn's one inline message: the terminal edit carries the

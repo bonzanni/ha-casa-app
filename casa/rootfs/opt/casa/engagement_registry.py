@@ -74,13 +74,15 @@ def _usable_time(value: object) -> bool:
     except OverflowError:       # an int too large for a float, e.g. 10**400
         return False
 
-# The keyboard posts a job leaves in the operator's direct chat.
+# The keyboard posts a job leaves in the operator's direct chat. A job's start
+# line carries no keyboard: no ``start`` kind is written, and a stored one is
+# skipped at load.
 JOB_POST_START = "start"
 JOB_POST_QUESTION = "question"
 JOB_POST_PARKED = "parked"
 
 
-_JOB_POST_KINDS = (JOB_POST_START, JOB_POST_QUESTION, JOB_POST_PARKED)
+_JOB_POST_KINDS = (JOB_POST_QUESTION, JOB_POST_PARKED)
 
 
 def _post_address(value: object) -> TgAddress | None:
@@ -358,8 +360,8 @@ class EngagementRecord:
     # posted it, the chat and the message (stored ``[bot, chat, message]``).
     dm_posts: list = field(default_factory=list)
     # The subset of those posts that carry a keyboard, each
-    # ``(TgAddress, kind)`` (``JOB_POST_START``, ``JOB_POST_QUESTION`` or
-    # ``JOB_POST_PARKED``; stored ``[bot, chat, message, kind]``). Kept past
+    # ``(TgAddress, kind)`` (``JOB_POST_QUESTION`` or ``JOB_POST_PARKED``;
+    # stored ``[bot, chat, message, kind]``). Kept past
     # the end until the keyboards are retired (``take_ui_posts``).
     ui_posts: list = field(default_factory=list)
     # The questions the job asked the operator, keyed by the random id their

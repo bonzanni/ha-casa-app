@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-13
 ---
 
 # A background job in the operator's direct chat
@@ -8,8 +8,9 @@ last_reviewed: 2026-11-10
 
 ## Scope
 
-What a background job puts in the operator's direct chat and what they can do there: the start
-line, the job's Stop key at the reply keyboard and its end line, a specialist job's questions (`ask_operator`) and their buttons,
+What a background job puts in the operator's direct chat and what they can do there: the 👍 on
+the request that started it (or the start line that stands in for it), the one reply its end
+becomes, a specialist job's questions (`ask_operator`) and their buttons,
 replies into a live job, the line a parked job posts, and how those keyboards are retired when
 the job ends. What a job is is [`background-jobs.md`](background-jobs.md), and how its session
 runs, parks and shows its cost is [`background-job-session.md`](background-job-session.md); the
@@ -29,14 +30,20 @@ their labels, the messages that carry them, how a press is matched — are
 running job says nothing in the DM unless it needs a decision or has its result. Everything
 here works with no log group configured, and nothing here reads one (INV-BGJOB-023). A job the operator
 started (directly, or through an agent acting on their message — the record's starter is
-`operator`) gets one silent line, `📊 <Agent> started «<title>».`, with no button: it raises
-the job's red key, `⏹ Stop «<title>»`, at the reply keyboard, which stays there while the job
-is live and its start line filed. A message sent with a reply keyboard can never be edited,
-so the start line stays as it was sent: the job's outcome, running time and cost are on the
-line that ends it (INV-BGJOB-020). A scheduled job, or one an agent started on its own, gets
-none, and so has no key. A job Casa parks posts one line with a
-**Cancel** button — in reply to the start line when there is one — and a reply to it continues
-the job (INV-BGJOB-017). A specialist's job asks with
+`operator`) puts 👍 on his message that asked for it (`tools._acknowledge_job_start`, through
+`TelegramTransport.react_job_request`): the origin's `_tg_request`, stamped at ingress, reacted
+to by the bot that message came to — the only bot that can — wherever the job's posts go. Only
+when that reaction cannot be set (no request stamped, no endpoint for its bot, Telegram
+refusing it) does the job get one silent line instead, `📊 <Agent> started «<title>».`, with no
+keyboard of any kind, in reply to his request when that is the posting bot's message in the
+job's chat; each step is bounded, and a failure is logged with its class. A scheduled job, or
+one an agent started on its own, gets neither. When the job ends it posts nothing of its own:
+the end notice names his request as its reply target, and the requester's answer, opening
+"Done.", "Stopped." or "Couldn't finish:", goes out as a reply to it
+([`engagement-terminal-telling.md`](engagement-terminal-telling.md)), carrying the job's running
+time and cost (INV-BGJOB-020). A job Casa parks posts one line with a
+**Cancel** button — in reply to his request when it is that bot's message in the job's chat, else
+a new post — and a reply to it continues the job (INV-BGJOB-017). A specialist's job asks with
 `ask_operator(question, options?)`: a plain post under its label, one button per option and a
 **Cancel job** button. A resident's plugin worker has no question tool; it parks what needs an
 answer and reports it, and its plugin's delivered posts reach the DM as before.
@@ -46,15 +53,17 @@ its launcher fixes, at its birth, the chat its posts go to (`rec.delivery` — i
 chat when that is open, the resident's for a resident's job, none otherwise) and who receives
 its result (`rec.requester`) ([`own-voice.md`](own-voice.md)). Its start line, questions,
 parking line and plugin posts all go there, through that delivery's bot; a job with no
-delivery posts none of them, and `ask_operator` refuses. In the host's own chat the lines carry
+delivery posts none of them, and `ask_operator` refuses. The 👍 alone goes where the request is:
+a job asked for in the resident's chat and delivered to its host's own chat is reacted to in
+the resident's chat, and its lines there are new posts, never replies across bots. In the host's own chat the lines carry
 no label (`Started «<title>».`). The reply route described here is one case of the task-first
 route every endpoint runs: a delegation's posts in an agent's chat are filed and routed the same
 way, and a file replying to a job's post reaches the job (INV-OWN-004, INV-OWN-005).
 
 **Ownership lives on the engagement record.** The record says which job owns a DM message: `dm_posts` lists the job's start
 line, questions and plugin posts (newest last, unbounded while the job lives, and kept with the
-tombstone after it ends), `ui_posts` the ones carrying a keyboard (start line, questions,
-parking lines), and `questions` the asked questions by a random id. The channel files
+tombstone after it ends), `ui_posts` the ones carrying a keyboard (questions and parking
+lines; a stored `start` kind is skipped at load), and `questions` the asked questions by a random id. The channel files
 each post as it lands (`EngagementRegistry.record_job_post`, reached through `task_posts.record`
 from the post-landing seam for plugin posts, and called from the start-line and question
 posters), and the registry keeps an index
@@ -101,16 +110,10 @@ stored and acknowledged, like every captionless file, and no turn starts.
 observer — told by every in-process terminal winner: the finalize funnel, the launch-death
 report, the reap, the legacy direct mutators — has the channel take the record's keyboard posts
 in one synchronous step and retire them on a task of its own: a question or parking line is
-edited to no buttons; the start line is never edited (it carries the reply keyboard) and gets
-one silent end line in reply to it (`stop_keys.job_end_line` plus
-`background_jobs.cost_suffix`): `✅ Finished «<title>» · 40 min · $2.40`, `🛑 Stopped
-«<title>» · …` or `❌ «<title>» failed · …` in the host's own chat, and naming the agent where
-the start line does — `✅ Finance finished «<title>» · …`, `🛑 Stopped Finance's «<title>» · …`,
-`❌ Finance's «<title>» failed · …`. The end line carries the chat's Stop keys still live, or
-the keyboard's removal when none is. A job that
+edited to no buttons, and nothing is posted. A job that
 completes from inside a running turn is the one exception to the timing: the observer leaves its
 keyboards to the completion's finalize tail, which retires them once that turn has ended (or a
-bounded wait passed), so the end line carries the completing turn's cost. A keyboard post that lands after the terminal write settled is
+bounded wait passed). A keyboard post that lands after the terminal write settled is
 retired by the code that filed it. At boot, terminal records still carrying keyboard posts are
 retired once. A keyboard an edit could not remove keeps its buttons; a tap on it reads the
 terminal record and gets "already finished".
@@ -160,8 +163,8 @@ press — says "The job could not be stopped just now — try again."
 
 ## Failure behavior
 
-**A start line or question send fails.** The start line is logged and the job runs on, with
-no Stop key (nothing filed raises one); the
+**The 👍 cannot be set.** The start line is posted instead, once. **A start line or question
+send fails.** The start line is logged and the job runs on; the
 question tool returns `delivery_failed` and the job may ask again. A send that timed out but
 landed has no known message id: its taps still work while the record holds the question, a typed
 reply to it takes the routes it took before, and it keeps its buttons after the end.
@@ -172,10 +175,6 @@ before.
 
 **A keyboard edit fails.** The keyboard stays; the record no longer lists it, so nothing retries
 it. Its taps read the terminal record.
-
-**An end line send fails.** It is logged and not retried; the job's key stays at the keyboard
-until the next message that carries the keys, and a press of a key for a job that
-has ended gets "It had already ended." ([`plugin-stop.md`](plugin-stop.md)).
 
 ## Extension points
 
@@ -191,10 +190,12 @@ parser.
 
 **Source**
 - `casa/rootfs/opt/casa/tools.py::ask_operator`
-- `casa/rootfs/opt/casa/tools.py::_post_job_start_line`
+- `casa/rootfs/opt/casa/tools.py::_acknowledge_job_start`
+- `casa/rootfs/opt/casa/channels/telegram_transport.py::TelegramTransport.react_job_request`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._job_request_post`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._cancel_job_by_key`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback`
@@ -214,6 +215,7 @@ parser.
 
 **Tests**
 - `tests/test_job_dm_attention.py`
+- `tests/test_job_chat_feel.py`
 - `tests/test_job_dm_posts_registry.py`
 - `tests/test_ended_job_replies.py`
 - `tests/test_stop_keys.py`

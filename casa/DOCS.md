@@ -589,17 +589,16 @@ background job. Ask the assistant for it as usual: she starts the job and replie
 straight away. The job runs as one long session: it keeps working until it is
 finished. Everything that needs you happens in your DM; if you set up a log group,
 you can also watch the job work there (see [Optional: agent logs](#optional-agent-logs)).
-A job you asked for puts one
-silent line in your DM — "📊 Finance started «…»." — and a red **⏹ Stop «…»** key
-at your keyboard, which stays there while the job runs however far the chat moves on. When a specialist's job
+A job you asked for puts a 👍 on
+your message that asked for it (v0.373.0); if Telegram does not take the 👍, you get one
+silent line instead — "📊 Finance started «…»." When a specialist's job
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
-of its messages there (its start line, a question, something its plugin posted);
-your words reach the job while it works, at its next step. To stop it, press its
-**Stop** key, or ask the assistant to cancel it. When the job ends, one silent line
-in reply to its start line shows the outcome, how long it ran and what it cost
-("✅ Finished «…» · 40 min · $2.40", "🛑 Stopped «…» · …" or "❌ «…» failed · …"; in
-the assistant's chat it names the agent) and takes the key away. If the job ended before it read your
+of its messages there (a question, something its plugin posted, its start line if it
+has one); your words reach the job while it works, at its next step. To stop it, ask
+the assistant to cancel it. When the job ends you get one message: the answer, as a
+reply to your request, opening "Done." (or "Stopped.", or "Couldn't finish:" and
+why), with how long the job ran and what it cost. If the job ended before it read your
 message, Casa answers it once: "The job had just finished, so your message didn't
 get through. Could you send it again?" A reply to a message of a job that has already ended goes to the assistant,
 with a note saying which job it was and how and when it ended.
@@ -611,9 +610,7 @@ DM — "«…» stopped without finishing. Reply to continue it, or Cancel." —
 **Cancel** button. Reply to that line to continue the job. Casa never ends a job
 on its own because it is slow or expensive; the cost is shown, never capped.
 
-When the job ends its DM buttons go away and the start line shows how it ended,
-how long it ran and what it cost; the assistant tells you the outcome, with the same
-time and cost. A specialist runs one job at a time, but quick questions to it
+When the job ends its DM buttons go away. A specialist runs one job at a time, but quick questions to it
 still work while a job is open. A job that is not working and has heard nothing from
 you for `engagement_reap_days` is cancelled. After a restart an open job continues where it was; a message you
 sent that it had not read yet reaches it after the restart, marked as sent before
@@ -634,8 +631,8 @@ schedule started posts nothing in your DM and tells you nothing when it complete
 that finds something new can still say so. An approval it needs still reaches your
 DM, and a run that is cancelled or fails is still reported. A quiet run that asks you
 something, or that you answer — a reply to one of its messages, a tap on its question
-— stops being quiet, and its end is then reported like any job's. A quiet run has no
-start line, so no Stop key: ask the assistant to cancel it. Runs you or the
+— stops being quiet, and its end is then reported like any job's. A quiet run puts
+nothing in your DM when it starts: to stop it, ask the assistant to cancel it. Runs you or the
 assistant start are unchanged.
 
 A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
@@ -1012,8 +1009,8 @@ Q3 accounting · 📊 Classified 25 · 25 done · 16 left
 Q3 accounting · ✅ completed — Tagged 41 rows; 2 need your decision.
 ```
 
-Everything that needs you stays in your direct chat: a job's start line and its
-**Stop** key, its questions, approvals, its result. Reply to a job's message
+Everything that needs you stays in your direct chat: a job's questions, approvals,
+its result. Reply to a job's message
 there to steer it. Nothing you write in the log group reaches an agent: anyone who
 writes there gets one pointer back to the direct chat.
 

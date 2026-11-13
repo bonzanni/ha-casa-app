@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-13
 ---
 
 # Engagement terminal telling
@@ -91,6 +91,17 @@ live notice is never delivered, its obligation is still on disk and the next boo
 it. A hand-edited row that owed a telling without being terminal, and whose status changed
 during this boot, is likewise left to the next boot.
 
+**The notice answers the request that asked for the work.** The one envelope builder
+(`tools.send_engagement_outcome`) puts a reply target in the notice's context
+(`tools.reply_target`): the origin's `_reply_to`, else the operator's own message that started
+it (`_tg_request`, stamped at Telegram ingress), as the reserved `_reply_to`. The narration
+turn keeps that key and is told, in Casa's note `agent.REPLY_OPENING_NOTE`, to open its answer
+with "Done.", "Stopped." or "Couldn't finish:" and why; the channel sends the answer's first
+message as a reply to that message when it is the sending bot's own in the chat being
+answered, and plain otherwise ([`telegram-bots.md`](telegram-bots.md)). That answer is the one
+message a job's end leaves ([`background-job-direct-chat.md`](background-job-direct-chat.md)).
+An outcome with no stored request — a scheduled run's — carries no target and no note.
+
 ## Failure behavior
 
 What fails after the transition — driver teardown, the journal's settlement, the log line —
@@ -118,11 +129,13 @@ not the record, and no predicate over a record can infer it.
 - `casa/rootfs/opt/casa/engagement_registry.py::_usable_time`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.ack_terminal_notification`
 - `casa/rootfs/opt/casa/casa_core.py::_notify_recovered_engagement_outcomes`
+- `casa/rootfs/opt/casa/tools.py::reply_target`
 
 **Tests**
 - `tests/test_finalize_engagement.py`
 - `tests/test_engagement_terminal_notification.py`
 - `tests/test_engagement_terminal_notification_replay.py`
+- `tests/test_job_chat_feel.py`
 
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)

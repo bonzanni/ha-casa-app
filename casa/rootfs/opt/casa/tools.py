@@ -8132,7 +8132,7 @@ async def start_job(args: dict) -> dict:
                                       **({"self_host": True} if self_host else {}))
     payload = json.loads(result["content"][0]["text"])
     if payload.get("status") == "pending":
-        await _post_job_start_line(payload.get("engagement_id"))
+        await _acknowledge_job_start(payload.get("engagement_id"))
     if self_host:
         # #1229: a specialist relays its own start to the operator; the id is
         # Casa's, not theirs — every result names the job instead
@@ -8154,18 +8154,27 @@ async def start_job(args: dict) -> dict:
 _START_LINE_TIMEOUT_S = 10.0
 
 
-async def _post_job_start_line(engagement_id: Any) -> None:
-    """The silent start line, which raises the job's Stop key at the keyboard, of
-    a job the operator started — directly or through an agent acting on their
-    message. A job the
-    scheduler started gets none, and nor does one an agent started on its
-    own: neither was asked for in the chat. Bounded; a failure is logged."""
+async def _acknowledge_job_start(engagement_id: Any) -> None:
+    """The start of a job the operator started — directly or through an agent
+    acting on their message — acknowledged in the chat: 👍 on his request, or,
+    when that cannot be put there, the silent start line. A job the scheduler
+    started gets neither, and nor does one an agent started on its own: neither
+    was asked for in the chat. Each step is bounded; a failure is logged with
+    its class."""
     rec = (_engagement_registry.get(engagement_id)
            if _engagement_registry is not None and isinstance(engagement_id, str)
            else None)
     if rec is None or (rec.origin.get("job") or {}).get("started_by") != "operator":
         return
     channel = _transport()
+    react = getattr(channel, "react_job_request", None)
+    if callable(react):
+        try:
+            if await asyncio.wait_for(react(rec), _START_LINE_TIMEOUT_S):
+                return
+        except Exception as exc:  # noqa: BLE001 — the start line stands in
+            logger.warning("job %s reaction not set: %s", rec.id[:8],
+                           type(exc).__name__)
     poster = getattr(channel, "post_job_start_line", None)
     if not callable(poster):
         return
@@ -10905,6 +10914,22 @@ async def _report_launch_death_inline(
         won=lambda r: r is LaunchDeathResult.REPORTED)
 
 
+def reply_target(origin: dict) -> dict:
+    """The reply target an outcome told for *origin* carries: ``{"_reply_to":
+    address}`` for the first of the origin's ``_reply_to`` and ``_tg_request``
+    (the operator's own message) that is a stored Telegram address, else
+    ``{}``. The channel sends the answer as a reply to it only where that
+    message is its own bot's, in the chat being answered."""
+    for key in ("_reply_to", "_tg_request"):
+        value = origin.get(key)
+        try:
+            TgAddress.from_json(value)
+        except AddressError:
+            continue
+        return {"_reply_to": value}
+    return {}
+
+
 async def send_engagement_outcome(
     bus: Any, *, complete: "DelegationComplete", origin: dict,
     ack: Any, context_extra: dict | None = None, source: str | None = None,
@@ -10921,7 +10946,8 @@ async def send_engagement_outcome(
     exist, which the bus drops silently), channel, the cid/chat_id/engagement_id
     context merged with ``context_extra`` (the funnel's ``next_steps``), and
     the delivery acknowledgement. The context carries the origin's route, so
-    the outcome is told through the bot the engagement came from."""
+    the outcome is told through the bot the engagement came from, and its
+    reply target (:func:`reply_target`), so it answers the request itself."""
     _role = origin.get("role")
     target_role = _role if isinstance(_role, str) and _role else fallback_role
     _channel = origin.get("channel")
@@ -10931,6 +10957,8 @@ async def send_engagement_outcome(
         "engagement_id": complete.delegation_id,
         # the outcome is told through the bot the engagement came from
         **carry_route(origin),
+        # ... as a reply to the message that asked for the work
+        **reply_target(origin),
     }
     if context_extra:
         context.update(context_extra)
@@ -11156,14 +11184,14 @@ _DRIVER_CANCEL_TIMEOUT_S = 20.0
 _finalize_tail_tasks: set[asyncio.Task] = set()
 
 # A job that completes from inside a running turn: its teardown waits, at most
-# this long, for that turn to end, so the end line and the end notice carry
-# the completing turn's cost. Past the bound it finalizes with the last cost
+# this long, for that turn to end, so the end notice carries the completing
+# turn's cost. Past the bound it finalizes with the last cost
 # known.
 _COMPLETION_TURN_END_WAIT_S = 30.0
 
-# Jobs whose end paint (the end line and the question keyboards) waits for their
+# Jobs whose end paint (their question and parking keyboards) waits for their
 # completing turn to end: the terminal observer leaves their keyboards to the
-# finalize tail, which retires them once the turn's cost is recorded.
+# finalize tail, which retires them once the turn has ended.
 _end_paint_deferred: set[str] = set()
 
 
@@ -11202,9 +11230,9 @@ async def _await_completing_turn(driver: Any, engagement: Any) -> None:
 
 
 def _paint_job_end(engagement: Any) -> None:
-    """Retire an ended job's keyboards (its end line, with its outcome, time
-    and cost, in reply to the start line) — the step the terminal observer
-    left to the finalize tail. Never raises."""
+    """Retire an ended job's keyboards (its questions' and parking line's
+    buttons) — the step the terminal observer left to the finalize tail.
+    Never raises."""
     _end_paint_deferred.discard(engagement.id)
     channel = _transport()
     retire = getattr(channel, "retire_job_keyboards", None)
@@ -11341,8 +11369,8 @@ async def _finalize_engagement(
         return _owes["notify"]
 
     # A completion from inside a running turn: the teardown waits for that
-    # turn to end (bounded), and the terminal observer leaves the end paint
-    # to it, so both carry the completing turn's cost.
+    # turn to end (bounded), so the end notice carries that turn's cost, and
+    # the terminal observer leaves the end paint to it.
     await_turn_end = (detach_teardown_tail
                       and _completing_turn_running(driver, engagement.id))
     if await_turn_end:
@@ -11467,8 +11495,7 @@ async def _finalize_engagement(
 def _with_job_cost(text: str, frozen: dict, now: float,
                    cost_job: dict | None = None) -> str:
     """A job's end notice to its resident carries how long it ran and its
-    cost as of its last turn end, so a job with no start line (scheduled or
-    agent-started) still shows it when the outcome is reported. ``cost_job``
+    cost as of its last turn end, shown when the outcome is reported. ``cost_job``
     is the live job state to read the cost from when the completing turn's
     end recorded it after the terminal flip."""
     job = (frozen.get("origin") or {}).get("job")
@@ -13403,13 +13430,11 @@ def _on_engagement_terminal(rec) -> None:
     committed. ``cancel_matching`` never awaits; the keyboard edits it causes
     run later on the broker's own hook tasks.
 
-    An ended job's keyboards in the direct chat (its start line, its
-    questions) are retired on every terminal winner too: the channel takes
-    them off the record in this step and retires them on a task of its
-    own: the end line in reply to the start line, which takes the job's Stop
-    key off the keyboard, and the questions' buttons edited away — except for a job that completed from inside a running turn, whose
-    finalize tail retires them once that turn has ended and its cost is
-    recorded."""
+    An ended job's keyboards in the direct chat (its questions, its parking
+    line) are retired on every terminal winner too: the channel takes them
+    off the record in this step and edits their buttons away on a task of
+    its own — except for a job that completed from inside a running turn,
+    whose finalize tail retires them once that turn has ended."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
     if rec.id in _end_paint_deferred:
         return                  # the finalize tail paints it after the turn ends
