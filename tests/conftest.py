@@ -156,6 +156,7 @@ class _FakeMessageEntity:
     CODE = "code"
     PRE = "pre"
     TEXT_LINK = "text_link"
+    EXPANDABLE_BLOCKQUOTE = "expandable_blockquote"
 
     def __init__(self, type, offset, length, url=None, **kwargs):
         self.type = type

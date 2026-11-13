@@ -215,6 +215,8 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(own_voice, "own_chat_state", chats.own_chat_state)
     monkeypatch.setattr(own_voice, "endpoint_for", chats.endpoint_for)
     monkeypatch.setattr(own_voice, "require_open_chat", chats.require_open_chat)
+    monkeypatch.setattr(own_voice, "_lifecycle",
+                        lambda: SimpleNamespace(link_for=lambda role: None))
     inputs = Inputs()
     for name in ("open_pending", "attach", "submit", "close"):
         monkeypatch.setattr(task_input, name, getattr(inputs, name))
@@ -297,7 +299,7 @@ async def test_a_task_of_alexs_open_chat_shows_there_whole_and_ellen_gets_her_bo
     # Alex's chat: the start line, then the whole answer, marker included,
     # no echo; every landed message filed under the task
     texts = _alex_texts(world)
-    assert texts[0].startswith("Ellen asked me: How much on groceries in October?")
+    assert texts[0] == "Ellen asked:\nHow much on groceries in October?"
     answer = "".join(texts[1:])
     assert MARKER in answer and ECHO.strip() not in answer
     assert len(texts) >= 3                       # paged
@@ -596,7 +598,13 @@ async def _ellens_result(world, mode, task="How much on groceries in October?"):
 
 # Alex runs here under his role's display name
 NAME = "Finance"
-START = "Ellen asked me: How much on groceries in October?"
+
+
+def _answer_note(link=None):
+    """Ellen's close-the-loop note for Alex's answer, as the result carries it."""
+    where = f" ({link}); you may link it as [his chat]({link})" if link else ""
+    return tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME, where=where)
+START = "Ellen asked:\nHow much on groceries in October?"
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
@@ -624,9 +632,129 @@ async def test_a_task_posts_its_closing_message_not_its_notes(world, monkeypatch
 async def test_a_quoted_brief_is_shown_as_written(world):
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync", task='"How much on groceries in October?"')
-    assert _alex_texts(world)[0] == 'Ellen asked me: "How much on groceries in October?"'
+    assert _alex_texts(world)[0] == 'Ellen asked:\n"How much on groceries in October?"'
     (line,) = chat_notes.drain(FINANCE_BOT, OPERATOR)
     assert line == 'Ellen asked you: "How much on groceries in October?" — you answered'
+
+
+# ---------------------------------------------------------------------------
+# The start post quotes the request; the answer replies to it
+# ---------------------------------------------------------------------------
+
+LONG_TASK = ("Look at every grocery line in October 💶 and tell me how much went to each "
+             "shop, which week was the most expensive, and whether anything looks like a "
+             "double charge; split Albert Heijn from Lidl and leave the drugstore out.")
+
+
+async def test_the_start_post_quotes_the_whole_task_silently(world):
+    from telegram import MessageEntity
+    from text_util import utf16_len
+    assert len(LONG_TASK) > 200
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync", task=LONG_TASK)
+    s = world.alex.sent[0]
+    assert s["text"] == f"Ellen asked:\n{LONG_TASK}"
+    (e,) = s["entities"]
+    assert e.type == MessageEntity.EXPANDABLE_BLOCKQUOTE
+    # the quote covers the request exactly, in UTF-16 units (the 💶 counts two)
+    assert (e.offset, e.length) == (utf16_len("Ellen asked:\n"), utf16_len(LONG_TASK))
+    assert s["disable_notification"] is True
+
+
+async def test_a_task_too_long_for_one_message_is_clipped_to_fit(world):
+    from text_util import utf16_len
+    task = "💶 " * 2000                      # 4000 characters (the task cap), 6000 UTF-16 units
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync", task=task)
+    s = world.alex.sent[0]
+    assert utf16_len(s["text"]) <= 4096
+    assert s["text"].startswith("Ellen asked:\n💶 ") and s["text"].endswith("…")
+    (e,) = s["entities"]
+    assert e.offset + e.length == utf16_len(s["text"])
+
+
+async def test_the_answer_replies_to_the_start_post_and_notifies(world):
+    _FakeSpecialistClient.reset(response="€420, mostly Albert Heijn.")
+    await _delegate("sync")
+    start_mid = world.alex.filed[0][1]
+    a = world.alex.sent[1]
+    assert a["text"] == "€420, mostly Albert Heijn."
+    assert a["reply_parameters"].message_id == start_mid
+    assert a["reply_parameters"].allow_sending_without_reply is True
+    assert not a.get("disable_notification")
+    assert tools._TASK_REPLY_TO == {}            # taken at the task's end
+
+
+async def test_a_long_answer_replies_only_with_its_first_page(world):
+    _FakeSpecialistClient.reset(response=_long_answer())
+    await _delegate("sync")
+    pages = world.alex.sent[1:]
+    assert len(pages) >= 2
+    assert pages[0]["reply_parameters"].message_id == world.alex.filed[0][1]
+    assert all("reply_parameters" not in p for p in pages[1:])
+
+
+async def test_a_reply_to_the_start_post_still_reaches_the_task(world):
+    _FakeSpecialistClient.reset(response="€420.")
+    payload = await _delegate("sync")
+    chat, mid, post = world.alex.filed[0]
+    assert (chat, post.owner, post.slot) == (OPERATOR, payload["delegation_id"], "task-start")
+    assert type(mid) is int
+
+
+async def test_a_task_whose_start_post_failed_answers_plain(world):
+    _FakeSpecialistClient.reset(response="€420.")
+    real = world.alex._app.bot.send_message.side_effect
+
+    async def refuse_the_start(**kw):
+        if kw.get("disable_notification"):
+            raise RuntimeError("telegram down")
+        return await real(**kw)
+
+    world.alex._app.bot.send_message.side_effect = refuse_the_start
+    await _delegate("sync")
+    (a,) = world.alex.sent
+    assert a["text"] == "€420." and "reply_parameters" not in a
+
+
+async def test_the_delegate_is_told_its_answer_opens_with_done():
+    assert 'open it with "Done."' in tools.ANSWER_SHOWN_LINE
+    assert "\"Couldn't finish:\"" in tools.ANSWER_SHOWN_LINE
+    assert "as a reply to the request" in tools.ANSWER_SHOWN_LINE
+
+
+async def test_the_close_note_links_the_helpers_chat():
+    out = tools._with_own_chat_answer_note("x", "Alex", True, link="https://t.me/AlexBot")
+    assert "https://t.me/AlexBot" in out
+    assert "[his chat](https://t.me/AlexBot)" in out
+    assert "https://t.me" not in tools._with_own_chat_answer_note("x", "Alex", True)
+
+
+async def test_the_answer_note_says_an_unfinished_answer_owes_nothing_yet():
+    note = tools.OWN_CHAT_ANSWER_NOTE.format(name="Fido", where="")
+    assert "opens with neither" in note and "<silent/>" in note
+    assert "Do not retell the answer." in note
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_ellens_close_links_alexs_chat(world, monkeypatch, mode):
+    monkeypatch.setattr(own_voice, "_lifecycle", lambda: SimpleNamespace(
+        link_for=lambda role: "https://t.me/AlexBot" if role == "finance" else None))
+    _FakeSpecialistClient.reset(response="Done. €420.")
+    _, result = await _ellens_result(world, mode)
+    assert result.endswith("\n\n" + _answer_note(link="https://t.me/AlexBot"))
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_a_result_with_both_notes_carries_only_the_answer_note(world, monkeypatch, mode):
+    _post_card(world)
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Posting the card.", "post_card"), ("Done. Card posted.", None)])
+    _, result = await _ellens_result(world, mode)
+    # the echo lines still say what was posted; one close-the-loop note follows
+    assert "📊 Alex posted to the person in Finance's chat (1 page)." in result
+    assert tools.OWN_CHAT_ECHO_NOTE.format(name=NAME) not in result
+    assert result.count(_answer_note()) == 1
 
 
 @pytest.mark.parametrize("synthetic", ["plugin_setup", "plugin_erase"])
@@ -701,7 +829,7 @@ async def test_ellens_result_for_an_own_chat_task_with_posts_asks_her_to_close_t
     assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) in result
     assert tools.POST_ECHO_SILENCE_NOTE not in result
     assert tools.SILENT_CLOSE_NOTE.format(name=NAME) not in result
-    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+    assert _answer_note() not in result
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
@@ -710,7 +838,7 @@ async def test_ellen_is_told_the_person_already_read_alexs_answer(world, monkeyp
     _script(monkeypatch, [("Checking the rate.", "run_fetch"), ("EUR/USD is 1.08.", None)])
     _, result = await _ellens_result(world, mode)
     assert _alex_texts(world)[1:] == ["EUR/USD is 1.08."]
-    assert result.endswith("\n\n" + tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME))
+    assert result.endswith("\n\n" + _answer_note())
     assert tools.SILENT_CLOSE_NOTE.format(name=NAME) not in result
     assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) not in result
 
@@ -721,7 +849,7 @@ async def test_a_silent_close_is_never_called_an_answer_the_person_read(
     _FakeSpecialistClient.reset(response="unused")
     _script(monkeypatch, [("Checking the rate.", "run_fetch"), ("<silent/>", None)])
     _, result = await _ellens_result(world, mode)
-    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+    assert _answer_note() not in result
     assert result.endswith(tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME))
 
 
@@ -736,7 +864,7 @@ async def test_the_persons_words_follow_the_answer_note(world, monkeypatch, mode
     monkeypatch.setattr(task_input, "take_said", lambda tid: said.pop(tid, []))
     _FakeSpecialistClient.reset(response="€395.")
     _, result = await _ellens_result(world, mode)
-    note = tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME)
+    note = _answer_note()
     assert result.endswith(f"{note}\n\n{WORDS_LINE}")
 
 
@@ -771,7 +899,7 @@ async def test_a_long_closing_answer_opening_with_the_marker_is_an_answer_not_si
     _script(monkeypatch, [("Checking the rate.", "run_fetch"), (MARKED_LONG_ANSWER, None)])
     _, result = await _ellens_result(world, mode)
     assert _alex_texts(world)[1:] == ["EUR/USD is 1.08."]
-    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) in result
+    assert _answer_note() in result
     assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) not in result
     assert tools.SILENT_CLOSE_NOTE.format(name=NAME) not in result
 
@@ -795,7 +923,7 @@ async def test_ellens_notes_agree_with_what_alexs_chat_shows(
     _script(monkeypatch, [("Checking the rate.", "run_fetch"), (closing, None)])
     _, result = await _ellens_result(world, mode)
     assert _alex_texts(world)[1:] == ([posted] if posted else [])
-    answer_note = tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) in result
+    answer_note = _answer_note() in result
     silent_note = tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) in result
     assert answer_note is (posted is not None)
     assert silent_note is ("<silent/>" in closing and posted is None)
@@ -815,7 +943,7 @@ async def test_ellen_is_not_told_the_person_read_an_answer_whose_chat_went_away(
     _, result = await _ellens_result(world, mode)
     assert "EUR/USD is 1.08." not in _alex_texts(world)
     assert "EUR/USD is 1.08." in result
-    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+    assert _answer_note() not in result
 
 
 async def test_a_task_of_a_chat_that_is_not_open_keeps_ellens_usual_notes(world, monkeypatch):
@@ -825,7 +953,7 @@ async def test_a_task_of_a_chat_that_is_not_open_keeps_ellens_usual_notes(world,
     _, result = await _ellens_result(world, "sync")
     assert result.endswith(tools.SILENT_CLOSE_NOTE.format(name=NAME))
     assert "Finance's chat" not in result
-    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+    assert _answer_note() not in result
 
 
 # ---------------------------------------------------------------------------
@@ -872,7 +1000,7 @@ async def test_a_continuations_notes_follow_its_record_birth(world, monkeypatch)
     assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) in text
     # a continuation's answer is not posted in Alex's chat: never "already read"
     assert world.alex.sent == []
-    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in text
+    assert _answer_note() not in text
 
 
 async def test_a_continuations_answer_is_never_called_read_in_alexs_chat(world, monkeypatch):
@@ -880,7 +1008,7 @@ async def test_a_continuations_answer_is_never_called_read_in_alexs_chat(world, 
                                 final_message="EUR/USD is 1.08.")
     (notice,) = await _continuation(world, monkeypatch, out)
     assert world.alex.sent == []
-    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in notice.content.text
+    assert _answer_note() not in notice.content.text
 
 
 async def test_a_quiet_continuation_still_tells_the_requester_the_persons_words(

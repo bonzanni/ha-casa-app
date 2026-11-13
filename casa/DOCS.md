@@ -485,12 +485,16 @@ Casa's own cards keep using the specialist's name.
   open, reports, files, its job lines and run cards. To stop a job of yours or
   its browsing, ask it there, as you would ask the assistant. Its messages
   there carry no `📊` label: the chat is the specialist.
-- **Work the assistant hands over** also appears there: a line "Ellen asked
-  me: …" when it starts (her request as she wrote it; work Casa itself starts,
-  such as a plugin's setup after an update, shows no such line), then the
-  specialist's closing message when it ends (its working notes stay out of
-  the chat, and a specialist with nothing more to say posts nothing). The assistant still gets the result and closes the
-  loop in her own chat, briefly when you have already read the answer. If you
+- **Work the assistant hands over** also appears there: a silent "Ellen
+  asked:" when it starts, with her request as she wrote it in a quote you can
+  expand (work Casa itself starts, such as a plugin's setup after an update,
+  shows no such message), then the specialist's closing message when it ends,
+  as a reply to her request, opening "Done." or "Couldn't finish:" (its
+  working notes stay out of the chat, and a specialist with nothing more to
+  say posts nothing). The assistant still gets the result and closes the
+  loop in her own chat, briefly and with a link to the specialist's chat when
+  you have already read the answer; an answer that only says where the work
+  stands needs nothing from her yet. If you
   reply to the task's messages while it works, your words reach it, and the
   assistant is told what you wrote and that the specialist already has it.
   The specialist's own conversation learns in one line that it did this work.

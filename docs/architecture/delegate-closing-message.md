@@ -50,6 +50,11 @@ the last message alone, and on the whole of it, never the copy the cap bounds: a
 answer longer than the cap that opens with `<silent/>` is an answer, carries no note, and
 is the answer the delegate's own chat posts.
 
+**A closing message posted in the delegate's own chat** is read there by the person, so the
+result tells the resident so (`OWN_CHAT_ANSWER_NOTE`, [`own-voice.md`](own-voice.md)): it
+closes the loop briefly, may link that chat (`_own_chat_link`, nothing when no link is known),
+and owes nothing yet when the answer opens with neither "Done." nor "Couldn't finish:".
+
 **A closing message the cap cut away travels beside the result.** When the result text was
 truncated, the whole closing message is no silence, and the kept prefix does not already
 end with its bounded copy, `_closing_beyond_cut` returns that copy with its sentinels

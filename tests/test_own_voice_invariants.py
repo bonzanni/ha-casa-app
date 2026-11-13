@@ -580,7 +580,7 @@ async def test_a_task_ellen_hands_alex_shows_in_his_chat_and_ellen_gets_her_resu
     await _settled()
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     texts = world.alex.recorder.texts()
-    assert texts[0] == f"Ellen asked me: {BRIEF}"
+    assert texts[0] == f"Ellen asked:\n{BRIEF}"
     assert ANSWER in "".join(texts[1:])
     assert _ellen_texts(world) == []          # Ellen's own record only
     # every message of the task is filed under it: a reply to it finds the task
@@ -661,7 +661,7 @@ async def test_a_reply_to_a_live_delegations_post_reaches_it_and_after_its_end_a
     start_line = 500                                       # the task's first post
     assert task_posts.owner(TgAddress(ALEX_BOT, OPERATOR, start_line)).task_id == did
     await _handle(world.alex, _text("only the market, please", reply_to=start_line,
-                                    quoted_text=f"Ellen asked me: {BRIEF}"))
+                                    quoted_text=f"Ellen asked:\n{BRIEF}"))
     assert Held.built.writes[-1].endswith("only the market, please")
     assert _queued(world.bus, "finance") == []
     Held.release.set()
@@ -680,7 +680,7 @@ async def test_what_the_operator_wrote_into_a_live_task_reaches_its_requester(
         world, monkeypatch):
     call, did = await _live_delegation(world, monkeypatch)
     await _handle(world.alex, _text("only Lidl", reply_to=500,
-                                    quoted_text=f"Ellen asked me: {BRIEF}"))
+                                    quoted_text=f"Ellen asked:\n{BRIEF}"))
     assert Held.built.writes[-1].endswith("only Lidl")      # the task read it
     Held.release.set()
     payload = await call
@@ -1472,6 +1472,8 @@ POST_RECORDS = {
         "callback's ingress)",
     ("tools.py", "_post_task_text"):
         "the task's executor; posted at the task's delivery, its own chat",
+    ("tools.py", "_post_task_start"):
+        "the task's executor; its start post, at the task's delivery, its own chat",
     ("tools.py", "_media_post"):
         "the agent sending the file; posted at the task's delivery, or in its "
         "own turn's chat when that chat is the agent's own (send_media's rule)",

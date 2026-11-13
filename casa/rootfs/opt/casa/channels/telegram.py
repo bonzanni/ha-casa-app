@@ -3882,6 +3882,37 @@ class TelegramChannel(Channel):
             reg.record_job_post(rec.id, self.address(chat, mid))
         return mid
 
+    async def post_task_start(self, chat_id: int, head: str, body: Any, *,
+                              post: Any) -> "int | None":
+        """A task's silent start post: Casa's *head* line (who asked), then
+        the admitted *body*, the request as its requester wrote it, inside one
+        expandable quote. A request too long for one message is clipped to
+        fit, ending in ``…``. Filed under the task as it lands, so a reply to
+        it reaches the task. Returns the message id, or ``None`` when nothing
+        landed."""
+        from telegram import MessageEntity
+        if _unadmitted("post_task_start", body):
+            return None
+        if self.bot is None:
+            return None
+        quote = str(body)
+        budget = _TG_MAX_LENGTH - utf16_len(head) - 1
+        if utf16_len(quote) > budget:
+            quote = quote[:utf16_prefix_end(quote, 0, budget - 1)].rstrip() + "…"
+        text = f"{head}\n{quote}"
+        entities = MessageEntity.adjust_message_entities_to_utf_16(text, [MessageEntity(
+            type=MessageEntity.EXPANDABLE_BLOCKQUOTE, offset=len(head) + 1,
+            length=len(quote))])
+        try:
+            sent = await self.bot.send_message(chat_id=chat_id, text=text,
+                                               entities=entities, disable_notification=True)
+        except Exception as exc:  # noqa: BLE001 — a start post is never the task's fault
+            logger.warning("task start post not delivered: %s", type(exc).__name__)
+            return None
+        self._record_post(chat_id, sent, post)
+        mid = getattr(sent, "message_id", None)
+        return mid if type(mid) is int else None
+
     def _job_request_post(self, rec) -> "TgAddress | None":
         """The operator's message that asked for the job (its origin's
         ``_tg_request``), when it is this bot's message in the job's chat —

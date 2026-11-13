@@ -84,10 +84,10 @@ specialist needs to know. The faulted agent is
 **A delegation is a task, and an agent with its own chat shows it there.** Its launcher stamps
 its executor, its delivery and its requester once, at its birth (voice delegations excepted:
 their result is spoken). When the target's own chat is open at that moment, the task's post
-index and input open first, a start line "Ellen asked me: …" (the brief as written) is posted
-in the target's chat — none for a task born on a Casa-started plugin setup or erase turn —
-the message the target closed its turn with is posted there when it ends (nothing when that is
-silence), and the resident still gets the bounded result, with notes that name that chat;
+index and input open first, a silent start post "Ellen asked:" quoting the brief as written is
+posted in the target's chat — none for a task born on a Casa-started plugin setup or erase turn —
+the message the target closed its turn with is posted there when it ends, as a reply to that
+post (nothing when that is silence), and the resident still gets the bounded result, with notes that name that chat;
 replies to those posts reach the running task, and what the operator wrote into it reaches
 the resident with the result. A target with no open chat posts
 nothing and its surfaces are refused. A hand-off inside it stamps its target's own delivery

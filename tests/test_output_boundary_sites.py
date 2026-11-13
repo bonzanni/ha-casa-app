@@ -105,6 +105,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "send_response"): "admitted",
     ("channels/telegram.py", "post_dm_keyboard"): "admitted",
     ("channels/telegram.py", "post_job_question"): "admitted",     # a job's question, admitted by ask_operator
+    ("channels/telegram.py", "post_task_start"): "admitted",       # a task's start post: Casa's who-asked line over the admitted request
     # helper of send, send_response and their _send_one: one send_message,
     # resent without the reply's quote when Telegram refuses the quote
     ("channels/telegram.py", "_send_message"): "admitted",
@@ -143,7 +144,7 @@ RAW_TRANSPORT_FUNCTIONS = {
 
 
 CHANNEL_METHODS = {"send", "send_response", "post_dm_keyboard", "send_media",
-                   "post_job_question", "guest_finish"}
+                   "post_job_question", "guest_finish", "post_task_start"}
 # (file, enclosing function) → what the call hands the method. "admitted" = a value
 # minted by TurnScope.admit or carried from one; "casa_text" = the Casa template
 # class; "forward" = the channel forwarding an already-admitted value to a sibling
@@ -169,7 +170,8 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
     ("tools.py", "ask_operator"): "admitted",                   # a job's question, admitted on the job's scope
     ("stored_call_settler.py", "handle_tap"): "admitted",       # the stored call's receipt, the plugin's admitted text
-    ("tools.py", "_post_task_text"): "admitted",                # a task's start line and answer, admitted on the task's scope
+    ("tools.py", "_post_task_text"): "admitted",                # a task's answer, admitted on the task's scope
+    ("tools.py", "_post_task_start"): "admitted",               # a task's quoted request, admitted on the task's scope
     ("own_voice_lifecycle.py", "post_card"): "casa_text",       # an own-chat card in the resident's chat
     ("own_voice_lifecycle.py", "_post"): "casa_text",           # the own-chat question naming a new bot
 }
@@ -228,7 +230,7 @@ def test_every_raw_transport_call_is_inside_a_recorded_function():
 
 
 ADMITTED_METHODS = {"send", "send_response", "post_dm_keyboard", "send_media",
-                    "post_job_question", "guest_finish"}
+                    "post_job_question", "guest_finish", "post_task_start"}
 DERIVED_METHODS = {"edit_dm_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_casa_notice", "reply",
