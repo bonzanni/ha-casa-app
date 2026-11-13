@@ -219,8 +219,8 @@ than being handed a success for a transition that did not happen. Distinguishing
 retryable outcome from the precondition failure matters where it is surfaced: one says
 "read your messages", the other says "try again".
 
-**Two callers race.** The loser is absorbed as already-terminal. No duplicate end line
-and no duplicate notification.
+**Two callers race.** The loser is absorbed as already-terminal. No duplicate end line in
+the log and no duplicate notification.
 
 **Driver teardown or the log line fails after the transition.** Both are caught and
 logged. **The terminal state stays committed** — so an engagement can be genuinely finished

@@ -30,7 +30,7 @@
 
 - doc: architecture/background-job-direct-chat.md
   summary: A background job in the operator's direct chat — the 👍 on the request that started it or the start line standing in for it, its end told as one reply to that request, a specialist job's ask_operator questions and their buttons, a parked job's line, replies into a live job, a reply to an ended job's post, the job-post ownership the engagement record keeps, the retirement of a job's keyboards when it ends, and why none of it needs a log group.
-  when_changing: the 👍 on a job's request, its start line, what its end posts or what a press of its Stop key runs, ask_operator or a question's buttons, how a reply or a tap reaches a live job, where a reply to an ended job's post goes, the job posts an engagement record files, how an ended job's keyboards are retired, or what a job needs without a log group
+  when_changing: the 👍 on a job's request, its start line, what its end posts, ask_operator or a question's buttons, how a reply or a tap reaches a live job, where a reply to an ended job's post goes, the job posts an engagement record files, how an ended job's keyboards are retired, or what a job needs without a log group
   covers:
     - casa/rootfs/opt/casa/tools.py::ask_operator
     - casa/rootfs/opt/casa/tools.py::_acknowledge_job_start
@@ -39,7 +39,6 @@
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._job_request_post
-    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._cancel_job_by_key
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback
@@ -60,7 +59,6 @@
     - tests/test_job_chat_feel.py
     - tests/test_job_dm_posts_registry.py
     - tests/test_ended_job_replies.py
-    - tests/test_stop_keys.py
   related: [architecture/agent-logs.md, architecture/background-jobs.md, architecture/background-job-session.md, architecture/engagement-inbound-disclosure.md, architecture/background-job-quiet-runs.md, architecture/telegram.md, architecture/plugin-stop.md]
   defines_invariants: [INV-BGJOB-026, INV-BGJOB-012, INV-BGJOB-024, INV-BGJOB-023, INV-BGJOB-013, INV-BGJOB-014]
   invariant_tests:

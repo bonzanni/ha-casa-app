@@ -233,3 +233,43 @@ def test_the_resident_grants_guest_access_from_its_role(monkeypatch):
         (defaults / "agents/assistant/runtime.yaml").read_text(encoding="utf-8"))
     assert GUEST_GRANT in role["tools"]["allowed"]
     assert GUEST_GRANT in runtime["tools"]["allowed"]
+
+
+# -- stop_work: the resident from its role, every specialist's own builds ------------
+
+STOP_WORK_GRANT = "mcp__casa-framework__stop_work"
+
+
+def test_a_specialists_own_chat_build_is_granted_stop_work(monkeypatch):
+    """A specialist's own-chat, delegated or pinned build is offered ``stop_work`` (the
+    tool itself refuses anything but the operator's own live message); an engagement or
+    job build is not, nor an executor's."""
+    from plugin_registry import ResolutionResult
+    tools = _quiet_builder(monkeypatch)
+    assert tools._STOP_WORK_GRANT == STOP_WORK_GRANT
+    assert tools._stop_work_grants(_guest_cfg("mtg"), engagement=False) == (STOP_WORK_GRANT,)
+    assert tools._stop_work_grants(_guest_cfg("mtg"), engagement=True) == ()
+    assert tools._stop_work_grants(_guest_cfg("cfg", kind="executor"), engagement=False) == ()
+    res = ResolutionResult(registry_valid=True, plugins=[])
+    options = tools._build_specialist_options(_guest_cfg("mtg"), resolution=res)
+    assert STOP_WORK_GRANT in options.allowed_tools
+    job = tools._build_specialist_options(
+        _guest_cfg("mtg"), resolution=res,
+        extra_casa_tools=("mcp__casa-framework__emit_completion",))
+    assert STOP_WORK_GRANT not in job.allowed_tools
+
+
+def test_the_resident_grants_stop_work_from_its_role(monkeypatch):
+    from pathlib import Path
+
+    import yaml
+    tools = _quiet_builder(monkeypatch)
+    assert tools._stop_work_grants(_guest_cfg("assistant", kind="resident"),
+                                   engagement=False) == ()
+    defaults = Path(tools.__file__).parent / "defaults"
+    role = yaml.safe_load(
+        (defaults / "roles/resident/assistant/role.yaml").read_text(encoding="utf-8"))
+    runtime = yaml.safe_load(
+        (defaults / "agents/assistant/runtime.yaml").read_text(encoding="utf-8"))
+    assert STOP_WORK_GRANT in role["tools"]["allowed"]
+    assert STOP_WORK_GRANT in runtime["tools"]["allowed"]

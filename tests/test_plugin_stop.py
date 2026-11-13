@@ -420,34 +420,32 @@ async def test_a_tap_and_ellen_at_once_tell_him_once(env):
     assert "already stopped and the person has been told" in typed
 
 
-async def test_the_start_tap_is_admitted_before_the_line_that_raises_the_stop_key(
-        env, monkeypatch):
-    """7b: his Start edits the card to no buttons, then settles the Confirmation — admitted,
-    saved with its card's message id — and only then posts the one silent ``Started.`` line
-    that raises the Stop key, so the key never shows for a request not yet admitted."""
+async def test_a_tapped_start_card_carries_no_stop_and_posts_no_line(env, monkeypatch):
+    """His Start edits the card to its settled text with no buttons, then settles the
+    Confirmation — admitted, saved with its card's message id. Nothing else is sent: the
+    card has no Stop of any kind, and he stops the runs by asking the agent."""
     order: list = []
+    sent_lines: list = []
     ch = types.SimpleNamespace(default_agent="assistant", bot_id=BOT, has_bot_id=True)
 
     async def deliver_operator_question(chat_id, text, labels, rid, *, post=None):
         return CARD_MID
 
-    async def edit_dm_message(chat_id, message_id, text, buttons=None):
+    async def edit_dm_message(chat_id, message_id, text, buttons=None, **kw):
         c = run_admission.CONFIRMATIONS.peek(cid_box[0])
-        order.append(("edit", c.status, list(buttons or [])))
+        order.append(("edit", c.status, list(buttons or []), kw))
         return True
 
     async def send_reply_line(chat_id, text, reply_to, *, post=None, silent=False):
-        c = run_admission.CONFIRMATIONS.peek(cid_box[0])
-        order.append(("line", c.status, c.card, text, reply_to, silent))
+        sent_lines.append(text)
         return True
     ch.deliver_operator_question, ch.edit_dm_message = deliver_operator_question, edit_dm_message
     ch.send_reply_line = send_reply_line
     monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(ch), raising=False)
     cid_box = await _pending_card(env, monkeypatch)
     await _answer_card(0)
-    assert order == [("edit", "pending", []),
-                     ("line", "admitted", [BOT, OPERATOR, CARD_MID], "📊 Fido\nStarted.",
-                      CARD_MID, True)]
+    assert order == [("edit", "pending", [], {})]
+    assert not order[-1][2] and not sent_lines
     c = run_admission.CONFIRMATIONS.peek(cid_box[0])
     reread = run_admission.Confirmations(str(env.tmp / "admissions.json")).peek(cid_box[0])
     assert reread.card_address() == TgAddress(BOT, OPERATOR, CARD_MID)
@@ -768,7 +766,7 @@ async def test_a_listing_the_plugin_could_not_make_is_said_so(env):
     assert await _stop_work(env, {}) == "- Fido: what it is doing could not be listed right now."
 
 
-async def test_stop_work_by_a_listed_ref_stops_it_and_marks_the_card(env):
+async def test_stop_work_on_a_request_posts_no_line_on_its_card(env):
     rp = env.use(_plugin(env.tmp / "p"))
     env.admit()
     text = await _stop_work(env, {"ref": "request:k1"})
@@ -777,11 +775,7 @@ async def test_stop_work_by_a_listed_ref_stops_it_and_marks_the_card(env):
                     "what stopped, in his words, and nothing about how you found it.")
     (edit,) = _card_edits(env)
     assert edit["text"].endswith("☑ Stopped")
-    # her reply tells him; one silent fixed line under the card takes the Stop key away
-    (line,) = _lines(env)
-    assert line["text"] == "📊 Fido\nStopped." and line["reply_to_message_id"] == CARD_MID
-    assert line["disable_notification"] is True
-    assert line["reply_markup"].remove_keyboard is True                 # nothing else is live
+    assert env.bot.sent == []                    # her reply tells him; Casa posts nothing
     assert run_admission.CONFIRMATIONS.peek(CID).card is None
     assert chat_notes.drain(BOT, OPERATOR) == []                         # she knows already
 
@@ -832,6 +826,140 @@ async def test_stop_work_by_an_unknown_ref_says_so(env):
     env.use(_plugin(env.tmp / "p", answer={"outcome": "unknown"}))
     text = await _stop_work(env, {"ref": "request:nope"})
     assert text.startswith("Error: nothing running has that ref")
+
+
+# -- stop_work stops his background jobs too -------------------------------------------------
+
+@pytest.fixture
+async def jobs(env, monkeypatch):
+    """An engagement registry with his jobs, and the finalize funnel recorded."""
+    from engagement_registry import EngagementRegistry
+    from tools import FinalizeResult
+    reg = EngagementRegistry(tombstone_path=str(env.tmp / "e.json"))
+    monkeypatch.setattr(tools_mod, "_engagement_registry", reg, raising=False)
+    tools_mod._agent_role_map["finance"] = _cfg("finance", "Finance")
+    finalize = AsyncMock(return_value=FinalizeResult.FINALIZED)
+    monkeypatch.setattr(tools_mod, "_finalize_engagement", finalize)
+
+    async def job(title="Q3 accounting", *, started_by="operator", user=OPERATOR):
+        return await reg.create(
+            "specialist", "finance", "in_casa", "t",
+            {**ORIGIN, "user_id": user, "job": {"title": title, "started_by": started_by}},
+            executor="finance", delivery=TgAddress(BOT, OPERATOR))
+    return types.SimpleNamespace(reg=reg, job=job, finalize=finalize)
+
+
+async def test_stop_work_lists_his_live_jobs_with_their_refs(env, jobs):
+    env.use(_plugin(env.tmp / "p", listing={"requests": [
+        {"ref": "request:k1", "tasks": ["invoice: RunPod"], "state": "running"}]}))
+    env.admit()
+    rec = await jobs.job()
+    eid = rec.id
+    listing = await _stop_work(env, {})
+    assert listing.splitlines() == ["- request:k1: Fido — invoice: RunPod (running)",
+                                    f"- job:{eid}: Finance — Q3 accounting (running)"]
+    assert f"- job:{eid}: Finance — Q3 accounting (running)" in listing
+
+
+async def test_stop_work_stops_his_job_through_the_cancel_funnel(env, jobs):
+    rec = await jobs.job()
+    text = await _stop_work(env, {"ref": f"job:{rec.id}"})
+    jobs.finalize.assert_awaited_once()
+    (got,), kwargs = jobs.finalize.call_args
+    assert got.id == rec.id
+    assert jobs.finalize.call_args.kwargs["outcome"] == "cancelled"
+    assert kwargs["text"] == "Cancelled by the operator." and kwargs["next_steps"] == []
+    assert kwargs["driver"] is getattr(agent_mod, "active_engagement_driver", None)
+    assert text == "Stopped «Q3 accounting»."
+    assert env.bot.sent == []                    # the job's own end tells him
+
+
+async def test_stop_work_neither_lists_nor_stops_another_operators_or_a_scheduled_job(
+        env, jobs):
+    other = await jobs.job("Bank sync", user=7)
+    scheduled = await jobs.job("Morning news", started_by="scheduled")
+    assert await _stop_work(env, {}) == "Nothing is running."
+    for rec in (other, scheduled):
+        assert await _stop_work(env, {"ref": f"job:{rec.id}"}) == "It had already ended."
+    jobs.finalize.assert_not_awaited()
+
+
+async def test_stop_work_on_an_ended_job_says_it_had_already_ended(env, jobs):
+    from tools import FinalizeResult
+    ended = await jobs.job()
+    assert await jobs.reg.try_transition_terminal(ended.id, "completed", strict=True)
+    assert await _stop_work(env, {"ref": f"job:{ended.id}"}) == "It had already ended."
+    assert await _stop_work(env, {"ref": "job:no-such-job"}) == "It had already ended."
+    jobs.finalize.assert_not_awaited()
+    raced = await jobs.job("Bank sync")              # ended while the stop was asked
+    jobs.finalize.return_value = FinalizeResult.ALREADY_TERMINAL
+    assert await _stop_work(env, {"ref": f"job:{raced.id}"}) == "It had already ended."
+
+
+async def test_stop_work_whose_cancel_did_not_save_says_try_again(env, jobs):
+    from tools import FinalizeResult
+    rec = await jobs.job()
+    jobs.finalize.return_value = FinalizeResult.PERSIST_FAILED
+    tok = agent_mod.origin_var.set(dict(ORIGIN))
+    try:
+        out = await tools_mod.stop_work.handler({"ref": f"job:{rec.id}"})
+    finally:
+        agent_mod.origin_var.reset(tok)
+    assert out["content"][0]["text"] == "The job could not be stopped just now — try again."
+    assert out.get("is_error") is True
+
+
+async def test_stop_work_is_refused_for_a_job_off_his_own_live_turn(env, jobs):
+    rec = await jobs.job()
+    off = {k: v for k, v in ORIGIN.items() if k != "_operator_turn"}
+    text = await _stop_work(env, {"ref": f"job:{rec.id}"}, off)
+    assert "Only the person's own message can stop work." in text
+    jobs.finalize.assert_not_awaited()
+
+
+def test_stop_work_describes_jobs_and_browsing():
+    assert tools_mod.stop_work.description == (
+        "Stop work that runs by itself: a background job, or a specialist's browsing. Without "
+        "ref: what is running, each with its ref. With a ref from that list: stops it at once. "
+        "Use it yourself whenever the person asks to stop or cancel such work; never delegate a "
+        "stop. Unless you must ask him which one, write nothing to the person between the two "
+        "calls.")
+    assert tools_mod.JOB_REF_PREFIX == "job:"
+
+
+# -- no Stop key at the keyboard ---------------------------------------------------------------
+
+def test_nothing_casa_sends_carries_a_reply_keyboard():
+    code_root = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
+    for path in code_root.rglob("*.py"):
+        src = path.read_text(encoding="utf-8")
+        assert "ReplyKeyboardMarkup" not in src, path
+        assert "KeyboardButton(" not in src.replace("InlineKeyboardButton(", ""), path
+
+
+async def test_an_old_stop_key_press_is_an_ordinary_message():
+    """A Stop key still shown on his phone from an earlier version sends its label as
+    text: it is his ordinary message to the chat's agent, and nothing is deleted."""
+    from telegram_reply_harness import _channel as _reply_channel, _settle
+    from test_telegram_new_reset import _drain_bus
+    ch, bus = _reply_channel()
+    deleted: list = []
+
+    async def delete_message(**kwargs):
+        deleted.append(kwargs)
+        return True
+    ch._app.bot.delete_message = delete_message
+    who = types.SimpleNamespace(first_name="Nicola", id=OPERATOR)
+    message = types.SimpleNamespace(text="⏹ Stop «news summary»", message_id=70,
+                                    reply_to_message=None, from_user=who, sender_chat=None)
+    update = types.SimpleNamespace(message=message,
+                                   effective_chat=types.SimpleNamespace(id=str(OPERATOR)),
+                                   effective_user=who)
+    await ch._handle(update, None)
+    await _settle(ch)
+    turns = await _drain_bus(bus)
+    assert len(turns) == 1
+    assert turns[0].content == "⏹ Stop «news summary»" and deleted == []
 
 
 # -- helpers for the start card (run_admission) ------------------------------------------------
@@ -906,21 +1034,17 @@ def _ended_entry(b, key="k1"):
     return {"ref": f"request:{key}", "binding_ref": b.ref}
 
 
-async def test_a_request_that_ended_on_its_own_marks_its_card_once(env, monkeypatch):
+async def test_a_request_that_ends_on_its_own_marks_its_card_and_posts_no_line(env, monkeypatch):
     c, b = env.admit()
     passes = _sweeping(env, monkeypatch, lambda: [_ended_entry(b)])
     await pc.sweep_once()
     edits = _card_edits(env)
     assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n☑ Ended"
     assert _buttons(edits[0]) == []                      # no Stop left on it
-    # one silent line in reply to the card takes the Stop key off the keyboard
-    (line,) = _lines(env)
-    assert line["text"] == "📊 Fido\nEnded." and line["reply_to_message_id"] == CARD_MID
-    assert line["disable_notification"] is True and line["reply_markup"].remove_keyboard
+    assert env.bot.sent == []                            # his answer tells him the rest
     assert env.turns == [] and env.lane_uses == []
     await pc.sweep_once()                                # named again on the next pass
-    assert len(passes) == 2 and len(_card_edits(env)) == 1
-    assert len(_lines(env)) == 1                         # the line, like the edit, once
+    assert len(passes) == 2 and len(_card_edits(env)) == 1 and env.bot.sent == []
     reloaded = run_admission.Confirmations(str(env.tmp / "admissions.json"))
     assert reloaded.peek(CID).card is None               # forgotten durably, text kept
     assert reloaded.peek(CID).card_text == CARD_TEXT
@@ -1028,8 +1152,7 @@ async def test_a_stop_tap_after_the_natural_end_still_says_it_had_ended(env, mon
     await _tap(env)
     await _quiet(env)
     assert len(_card_edits(env)) == 1
-    assert [m["text"] for m in _lines(env)] == ["📊 Fido\nEnded.",
-                                                 "📊 Fido\nIt had already ended."]
+    assert [m["text"] for m in _lines(env)] == ["📊 Fido\nIt had already ended."]
 
 
 
@@ -1080,3 +1203,23 @@ async def test_a_stop_line_after_a_restart_is_filed_under_the_cards_task(env, tm
     finally:
         await again.close()
         task_posts.reset()
+
+
+async def test_a_card_sent_with_a_reply_keyboard_cannot_be_edited_and_is_a_quiet_false(
+        env, caplog):
+    """Telegram refuses any edit of a message sent with a reply keyboard, such as a card an
+    earlier version posted: the edit reports False, once, with no warning."""
+    import logging
+    from telegram.error import BadRequest
+    tries: list = []
+
+    async def _refuse(**kwargs):
+        tries.append(kwargs)
+        raise BadRequest("Message can't be edited")
+    env.bot.edit_message_text = _refuse
+    with caplog.at_level(logging.INFO):
+        assert await env.ch.edit_dm_message(OPERATOR, CARD_MID, "x\n☑ Stopped") is False
+        assert await env.ch.edit_dm_message(OPERATOR, CARD_MID, "**x**") is False
+    assert len(tries) == 2
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert sum("can't be edited" in r.getMessage() for r in caplog.records) == 2

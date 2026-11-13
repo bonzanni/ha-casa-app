@@ -149,9 +149,8 @@ every namespace's handler, a tap on Casa's bot whose card records an agent that 
 its own chat is answered with one line naming that chat (`_refuse_moved_card`, INV-OWN-009). The
 namespaces are `_CALLBACK_NAMESPACES`; `proposal` is
 [`stored-call-buttons.md`](stored-call-buttons.md). `run_stop`, an inline Stop on a browsing
-request's card, is no broker request: it reads the durable admission, so it still acts after
-a restart ([`plugin-stop.md`](plugin-stop.md)). Stoppable work is otherwise stopped by its red
-key at the reply keyboard, whose press arrives as a text message (below). A background job's
+request's card from an earlier version, is no broker request: it reads the durable
+admission, so it still acts after a restart ([`plugin-stop.md`](plugin-stop.md)). A background job's
 buttons — its questions' options and its Cancel — are no broker requests either: their data (`v1|job_q|…`,
 `v1|job_cancel|…`) names the engagement and is resolved against its record, by the operator
 whose job it is, and is matched before the generic parser, whose four-field shape it does not
@@ -268,11 +267,6 @@ in-process.
 What it does not cover: a bot injected from outside the channel; values nested inside
 JSON-encoded parameters, which the library escapes and the platform judges; where the
 surrogate came from; and the polling pool, which carries no Casa-authored text.
-
-**A Stop key's press is no message to the agent.** The operator's text equal to a Stop key
-Casa issued in this chat (`stop_keys`, exact equality) is taken first, before a reply into a
-live task and everything below (`_press_stop_key`): it stops that work, his message is deleted,
-and no turn starts ([`plugin-stop.md`](plugin-stop.md)).
 
 **A plain DM message retires the questions this conversation asked, and only those.** The
 order in the DM path is fixed and each step is there for a measured reason: `/new` is

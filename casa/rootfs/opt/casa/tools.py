@@ -494,10 +494,15 @@ async def send_message(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# stop_work — the resident stops work a specialist carries on by itself (browsing)
+# stop_work — the operator's agent stops work that runs by itself: his background
+# jobs, and a specialist's browsing
 # ---------------------------------------------------------------------------
 
 STOP_WORK_ONLY_OPERATOR = "Only the person's own message can stop work."
+#: the ref ``stop_work`` lists a background job under: ``job:<engagement id>``
+JOB_REF_PREFIX = "job:"
+_JOB_ALREADY_ENDED = "It had already ended."
+_JOB_NOT_STOPPED = "The job could not be stopped just now — try again."
 _STOP_WORK_RESULTS = {
     "stopped": ("Stopped: {task}. Tell the person in one plain line what stopped, in his "
                 "words, and nothing about how you found it."),
@@ -511,18 +516,50 @@ _STOP_WORK_RESULTS = {
 _STOP_WORK_RESULTS["in_flight"] = _STOP_WORK_RESULTS["already_stopped"]
 
 
+def _his_live_jobs(operator_id: int) -> list:
+    """The live background jobs *operator_id* started: a record that is active or idle,
+    whose starter is the operator and whose origin names him."""
+    from provenance import strict_positive_id
+    if _engagement_registry is None:
+        return []
+    return [rec for rec in _engagement_registry.active_and_idle()
+            if ((rec.origin or {}).get("job") or {}).get("started_by") == "operator"
+            and strict_positive_id((rec.origin or {}).get("user_id")) == operator_id]
+
+
+async def _stop_his_job(engagement_id: str, operator_id: int) -> dict:
+    """Stop his live job *engagement_id* through the cancel funnel, as its Cancel button
+    does; one that is not among his live jobs had already ended."""
+    import agent as agent_mod
+    from channels.telegram import TelegramChannel
+    rec = next((r for r in _his_live_jobs(operator_id) if r.id == engagement_id), None)
+    if rec is None:
+        return _text_result(_JOB_ALREADY_ENDED)
+    fin = await _finalize_engagement(
+        rec, outcome="cancelled", text="Cancelled by the operator.", next_steps=[],
+        driver=getattr(agent_mod, "active_engagement_driver", None))
+    if fin is FinalizeResult.ALREADY_TERMINAL:
+        return _text_result(_JOB_ALREADY_ENDED)
+    if not fin:
+        return _text_result(_JOB_NOT_STOPPED, is_error=True)
+    return _text_result(f"Stopped «{TelegramChannel._job_title(rec)}».")
+
+
 @tool(
     "stop_work",
-    "Stop work a specialist carries on by itself, such as browsing. Without ref: what is "
-    "running, each with its ref. With a ref from that list: stops it at once. Use it "
-    "yourself whenever the person asks to stop or cancel such work; never delegate a stop. "
-    "Unless you must ask him which one, write nothing to the person between the two calls.",
+    "Stop work that runs by itself: a background job, or a specialist's browsing. Without "
+    "ref: what is running, each with its ref. With a ref from that list: stops it at once. "
+    "Use it yourself whenever the person asks to stop or cancel such work; never delegate a "
+    "stop. Unless you must ask him which one, write nothing to the person between the two "
+    "calls.",
     {"type": "object", "properties": {"ref": {"type": "string"}}, "required": []},
 )
 async def stop_work(args: dict) -> dict:
-    """The resident's direct stop (``plugin_stop``): no model turn, no specialist turn. Only on the
-    operator's own live turn — the spawn cap's ``_is_agent_context`` False and the sender the
-    operator as configured now; voice, narration, scheduled and delegated turns are refused."""
+    """The direct stop of work that runs by itself: no model turn, no specialist turn — a
+    browsing request through its plugin's stop tool (``plugin_stop``), a background job the
+    operator started through the cancel funnel. Only on the operator's own live turn — the
+    spawn cap's ``_is_agent_context`` False and the sender the operator as configured now;
+    voice, narration, scheduled and delegated turns are refused."""
     import plugin_stop
     from operator_calls import is_configured_operator
 
@@ -566,8 +603,15 @@ async def stop_work(args: dict) -> dict:
                     continue            # not his, or not this agent's to see
                 tasks = "; ".join(t for t in (r.get("tasks") or []) if isinstance(t, str))
                 lines.append(f"- {r.get('ref')}: {name} — {tasks} ({r.get('state')})")
+        from channels.telegram import TelegramChannel
+        for rec in _his_live_jobs(operator_id):
+            lines.append(f"- {JOB_REF_PREFIX}{rec.id}: "
+                         f"{_display_name_for_role(rec.role_or_type)} — "
+                         f"{TelegramChannel._job_title(rec)} (running)")
         return _text_result("\n".join(lines) if lines else "Nothing is running.")
     ref = ref.strip()
+    if ref.startswith(JOB_REF_PREFIX):
+        return await _stop_his_job(ref[len(JOB_REF_PREFIX):], operator_id)
     if not ref.startswith(plugin_stop.REF_PREFIX) or len(ref) > plugin_stop.REF_MAX:
         return _text_result("Error: that is not a ref from the list; call stop_work without "
                             "ref to see what is running.", is_error=True)
@@ -577,18 +621,11 @@ async def stop_work(args: dict) -> dict:
             continue                    # no request of this plugin he may stop has it
         on_bot = found.bot_id           # the bot the request was asked on
 
-        async def _tell(outcome: dict, seg=seg, on_bot=on_bot, role=role) -> None:
-            # the resident tells him in its own words; a request that no longer runs also
-            # gets one silent line in reply to its card, which takes its Stop key off the keyboard
-            o = outcome.get("outcome")
-            c = plugin_stop.confirmation_for(seg, on_bot, operator_id, ref)
-            card = c.card_address() if c is not None else None
-            await plugin_stop.settle_stop(c, o)
-            line = {"stopped": plugin_stop.LINES["stopped"],
-                    "ended": plugin_stop.ENDED_LINE}.get(o)
-            if line is not None and card is not None:
-                await plugin_stop.post_line(card.bot_id, card.chat_id, role, line,
-                                            reply_to=card.message_id)
+        async def _tell(outcome: dict, seg=seg, on_bot=on_bot) -> None:
+            # the agent tells him in its own words; Casa only marks the card
+            await plugin_stop.settle_stop(
+                plugin_stop.confirmation_for(seg, on_bot, operator_id, ref),
+                outcome.get("outcome"))
 
         out = await plugin_stop.stop(role, seg, ref, bot_id=on_bot, operator_id=operator_id,
                                      tell=_tell)
@@ -3189,6 +3226,20 @@ def _guest_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
     return (_GUEST_GRANT,)
 
 
+_STOP_WORK_GRANT = "mcp__casa-framework__stop_work"
+
+
+def _stop_work_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
+    """``stop_work`` for every specialist's own-chat, delegated or pinned build, the
+    same condition as ``guest_access``: in his chat with a specialist the operator
+    stops his work by asking it. The tool refuses anything but his own live message,
+    so a delegated or pinned turn is refused by the tool itself. The resident has it
+    from its role files."""
+    if engagement or getattr(cfg, "kind", "") != "specialist":
+        return ()
+    return (_STOP_WORK_GRANT,)
+
+
 def _build_specialist_options(
     cfg,
     *,
@@ -3381,7 +3432,8 @@ def _build_specialist_options(
         if grant not in allowed_tools:
             allowed_tools.append(grant)
     _code_granted_tools = (*_handoff_grants(cfg, engagement=bool(extra_casa_tools)),
-                      *_guest_grants(cfg, engagement=bool(extra_casa_tools)))
+                           *_guest_grants(cfg, engagement=bool(extra_casa_tools)),
+                           *_stop_work_grants(cfg, engagement=bool(extra_casa_tools)))
     for grant in _code_granted_tools:
         if grant not in allowed_tools:
             allowed_tools.append(grant)
@@ -3428,7 +3480,7 @@ def _build_specialist_options(
     if _mcp_registry is not None:
         # S6 (diff round 1, Astra): a casa-framework tool granted in code — the
         # engagement and job launch grants, the inbox tools, start_job,
-        # hand_off, guest_access (R2 acceptance F1: a role declaring no servers had hand_off
+        # hand_off, guest_access, stop_work (R2 acceptance F1: a role declaring no servers had hand_off
         # granted and invisible) — needs the server that exposes it, whatever
         # the config's own server list says
         _server_names = list(cfg.mcp_server_names)
@@ -6463,7 +6515,7 @@ async def _prelaunch(
                     "agent": agent_name, "engagement_id": rec.id,
                     "message": f"{_display_name_for_role(agent_name)} already has an open "
                                f"engagement: {title}. Wait for it to finish, or cancel it "
-                               "with its Stop key at the keyboard or by asking me.",
+                               "by asking me.",
                 })
     permit = None
     # The permit is taken here, before the agent's lane: a delegation refused
@@ -15573,7 +15625,7 @@ async def _settle_install_consent_post(handle) -> "dict | None":
 SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE = (
     "When it resumes, it picks up Casa's updated settings, but it keeps its "
     "personality and the plugin versions it started with. To get everything "
-    "new, cancel it (with its Stop key, or ask {assistant}) and start it "
+    "new, cancel it (ask {assistant}) and start it "
     "again."
 )
 
@@ -20160,7 +20212,7 @@ async def persona_ack_revoke(args: dict) -> dict:
 # path. Adding a tool here exposes it automatically.
 CASA_TOOLS: tuple = (
     send_message,
-    stop_work,                     # the resident's direct stop of a specialist's own work
+    stop_work,                     # the direct stop of a background job or a browsing request
     offer_own_chat,                # the resident offers a specialist its own chat
     guest_access,                  # a specialist answers everyone in a group the
                                    # operator allowed — specialists only, in code

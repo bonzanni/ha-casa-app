@@ -7,7 +7,7 @@ resume and launch-death lines are pinned beside their producers' own tests
 (``test_in_casa_driver``, ``test_pending_approval_topic``,
 ``test_start_job``, ``test_job_tools``, ``test_job_turn_guard``,
 ``test_launch_death_reporter``). Here: a delegated specialist or configurator
-run, the finalize funnel's end line, the configurator's step line, the
+run, the finalize funnel's end line in the log, the configurator's step line, the
 channel's check and the periodic pass."""
 from __future__ import annotations
 
@@ -276,7 +276,7 @@ async def test_a_jobs_log_key(kind, key):
     assert jobs.job_run_name(rec) == "the task"
 
 
-# --- the end line ----------------------------------------------------------------------
+# --- the log's end line ----------------------------------------------------------------
 
 @pytest.mark.parametrize("outcome,mark", [
     ("completed", "✅"), ("cancelled", "🛑"), ("error", "❌")])

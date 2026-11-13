@@ -65,7 +65,7 @@ class _Endpoint(FakeEndpoint):
         self._record("deliver_operator_question", chat_id, text, rid)
         return self._mid()
 
-    async def deliver_run_card(self, chat_id, text, *, starting=None, post=None, silent=False):
+    async def deliver_run_card(self, chat_id, text, *, post=None, silent=False):
         self._record("deliver_run_card", chat_id, text)
         return self._mid()
 

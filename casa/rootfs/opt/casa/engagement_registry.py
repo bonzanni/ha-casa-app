@@ -77,7 +77,6 @@ def _usable_time(value: object) -> bool:
 # The keyboard posts a job leaves in the operator's direct chat. A job's start
 # line carries no keyboard: no ``start`` kind is written, and a stored one is
 # skipped at load.
-JOB_POST_START = "start"
 JOB_POST_QUESTION = "question"
 JOB_POST_PARKED = "parked"
 

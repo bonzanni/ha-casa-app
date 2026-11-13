@@ -144,9 +144,8 @@ armed pass and a running one, and latches so that no pass starts or arms another
 **A plugin may name the requests that ended on their own** (`ended`). `call_sweep_tool` reads
 up to fifty objects from that list (anything else reads as none), and the pass hands them to
 `_settle_ended`, which keeps an entry only when its ref is a `request:` ref, its binding is
-this plugin's and the operator's as configured now, and marks that request's card ended, with
-one silent `Ended.` line that takes its Stop key away
-(`plugin_stop.settle_ended`, [`plugin-stop.md`](plugin-stop.md)). A failure there is logged
+this plugin's and the operator's as configured now, and marks that request's card ended,
+posting nothing (`plugin_stop.settle_ended`, [`plugin-stop.md`](plugin-stop.md)). A failure there is logged
 and leaves the continuations the pass queued as they are.
 
 **Such a specialist's work runs in the direct chat.** A continuation's answer reaches the

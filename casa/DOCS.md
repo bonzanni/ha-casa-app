@@ -482,9 +482,9 @@ Casa's own cards keep using the specialist's name.
 - **The specialist's own chat** holds your conversation with it — write to it
   there directly, and `/new` starts a fresh conversation with that specialist
   only — and everything it shows you: cards and their buttons, links you must
-  open, reports, files, its job lines and run cards, and their **Stop** keys at
-  your keyboard. Its messages there carry no `📊` label: the chat is the
-  specialist.
+  open, reports, files, its job lines and run cards. To stop a job of yours or
+  its browsing, ask it there, as you would ask the assistant. Its messages
+  there carry no `📊` label: the chat is the specialist.
 - **Work the assistant hands over** also appears there: a line "Ellen asked
   me: …" when it starts (her request as she wrote it; work Casa itself starts,
   such as a plugin's setup after an update, shows no such line), then the
@@ -653,8 +653,8 @@ with the specialist's answer in place of the bare result. If that follow-up
 cannot run, you still get the job's result, with a line saying the follow-up did
 not run. A job started in the specialist's own chat ends as before. While a
 specialist works on a task you started this way, its request to the browsing
-specialist starts without a start card: the status card and its **Stop** key still
-appear, and the card and the browsing specialist's progress messages arrive without
+specialist starts without a start card: the status card still appears (to stop the
+browsing, ask), and the card and the browsing specialist's progress messages arrive without
 a notification. Links, files, questions and cards that need you still notify,
 and every step that changes, pays or sends something is still asked.
 
@@ -1810,7 +1810,7 @@ instructions say to show you before asking you to confirm; of each one it says:
 
 > When it resumes, it picks up Casa's updated settings, but it keeps its
 > personality and the plugin versions it started with. To get everything new,
-> cancel it (with its Stop key, or ask Ellen) and start it again.
+> cancel it (ask Ellen) and start it again.
 
 Saying no changes nothing. New conversations get the new setup once Casa has
 loaded it: an upgrade or a rollback that completes loads it during the change,

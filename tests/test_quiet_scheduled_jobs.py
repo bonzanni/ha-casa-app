@@ -211,5 +211,5 @@ async def test_a_busy_refusal_for_a_quiet_run_does_not_point_at_a_topic():
     refusal = jobs._job_busy_refusal("ledger", "ledger:classify", "Classify entries", loud)
     assert refusal["message"] == (
         "ledger already has a running job: Classify entries. Wait for it to finish, "
-        "or cancel it with its Stop key at the keyboard or by asking me.")
+        "or cancel it by asking me.")
     assert "topic" not in refusal["message"] and "topic_id" not in refusal

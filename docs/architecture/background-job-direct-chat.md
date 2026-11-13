@@ -20,9 +20,8 @@ the job never took up draws is
 run changes, and how interacting with one ends its quietness, is
 [`background-job-quiet-runs.md`](background-job-quiet-runs.md); how a reply to a post that is
 no task's carries Casa's reply note is [`telegram.md`](telegram.md); the optional agent log,
-where a job can be watched, is [`agent-logs.md`](agent-logs.md); the Stop keys themselves —
-their labels, the messages that carry them, how a press is matched — are
-[`plugin-stop.md`](plugin-stop.md).
+where a job can be watched, is [`agent-logs.md`](agent-logs.md); stopping a job by asking the
+agent (`stop_work`) is [`plugin-stop.md`](plugin-stop.md).
 
 ## Mental model
 
@@ -150,14 +149,12 @@ The payloads are `v1|job_q|<eid>|<qid>|<n>` (at most 53 bytes) and `v1|job_cance
 seam; the question post is the turn's notice target. A second tap, or a tap and a typed reply,
 is a second answer. A Cancel tap on a live record answers "Cancelling…" and runs the cancel
 funnel on a task of its own; a second tap while it runs answers "already finishing", one on an
-ended job "already finished". A press of the job's Stop key (`TelegramChannel._press_stop_key`,
-`_cancel_job_by_key`) runs the same funnel with the same checks — the operator who started it,
-a record that counts as live, one cancel at a time — and answers nothing: his message is
-deleted, no turn starts, and a press while the cancel runs does nothing more. A tap while another terminal write of the job is still pending —
+ended job "already finished". He can also stop a job by asking the agent: `stop_work` runs the
+same funnel for a live job he started ([`plugin-stop.md`](plugin-stop.md)). A tap while another terminal write of the job is still pending —
 a completion's, say — is a cancellation like any other: its transition waits for that write,
 cancels the job if it rolled back, and ends with nothing more if it committed. When the funnel's write rolls back, the record stays live, the
-button and the key stay, and one line in reply to the tapped message — the start line, for a
-press — says "The job could not be stopped just now — try again."
+button stays, and one line in reply to the tapped message says "The job could not be stopped
+just now — try again."; through `stop_work` the agent is told the same words.
 
 **INV-BGJOB-014**: Every in-process terminal winner retires the job's direct-chat keyboards — through the registry's terminal observer, which takes them off the record in one synchronous step before the record leaves the pending-terminal set, or, for a completion from inside a running turn, through that completion's finalize tail once the turn has ended or its bounded wait passed; a keyboard post that lands after the terminal write settled is retired by its filer; and at boot every terminal record still carrying keyboard posts has them retired once.
 
@@ -196,7 +193,6 @@ parser.
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._job_request_post`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._cancel_job_by_key`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback`
@@ -218,7 +214,6 @@ parser.
 - `tests/test_job_chat_feel.py`
 - `tests/test_job_dm_posts_registry.py`
 - `tests/test_ended_job_replies.py`
-- `tests/test_stop_keys.py`
 
 **Related**
 - [`architecture/agent-logs.md`](../architecture/agent-logs.md)

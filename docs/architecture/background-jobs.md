@@ -66,8 +66,8 @@ The operator's replies in their direct chat to the job's posts are written into 
 session as they arrive. When a turn ends without the job
 finishing, Casa continues it, nudges it once, or parks it to wait for the operator
 ([`background-job-session.md`](background-job-session.md)). The job ends when it calls
-`emit_completion`, when the operator cancels it (its Stop key or a Cancel button in their direct
-chat, or through the resident's `cancel_engagement`), when the stale-job reap
+`emit_completion`, when the operator cancels it (a Cancel button in their direct chat, or by
+asking an agent, whose `stop_work` or the resident's `cancel_engagement` cancels it), when the stale-job reap
 ends it, or when its session cannot be resumed (INV-BGJOB-022). Its end is told to its
 requester, except that a completed job a specialist started on itself for someone else is first
 handed to that specialist, whose turn decides what the requester hears (INV-BGJOB-027 in

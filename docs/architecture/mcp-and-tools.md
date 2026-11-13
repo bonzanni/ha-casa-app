@@ -81,7 +81,9 @@ operator it could not work because its progress and completion tools were missin
 `guest_access` is granted in code under the same condition as `hand_off`
 (`tools._guest_grants`; [`guest-summons.md`](guest-summons.md)) and the build mounts the
 server for it by the same rule. The resident has it from its shipped role files instead, for
-listing and revoking the groups specialists answer in.
+listing and revoking the groups specialists answer in. `stop_work` is granted in code under the same condition too
+(`tools._stop_work_grants`; [`plugin-stop.md`](plugin-stop.md)), so the operator can ask a
+specialist in its own chat to stop his work; the resident has it from its role files.
 
 What it does not cover: a casa-framework tool the role's own configuration lists while
 declaring no casa-framework server. That pairing is the role's configuration to keep

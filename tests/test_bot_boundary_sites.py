@@ -407,7 +407,6 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel._quoted_task": 1, "TelegramChannel._record_post": 1,
         "TelegramChannel._redirect_from_log_group": 2, "TelegramChannel._reply_note_for": 1,
         "TelegramChannel._resolve_file_address": 1,
-        "TelegramChannel._cancel_job_by_key": 1, "TelegramChannel._press_stop_key": 2,
         "TelegramChannel._route_task_file": 1, "TelegramChannel._route_task_file.tell": 1,
         "TelegramChannel._run_job_cancel": 1, "TelegramChannel._send_dormant_line": 1,
         "TelegramChannel.address": 2, "TelegramChannel.deliver_operator_file": 1,
@@ -895,9 +894,6 @@ ROUTE_READERS = {
 
 #: Every read of a bot id: ``(file, function): (hits, classification, note)``.
 #: A PRE_POST entry names the test of the window before Casa's bot has an id.
-#: an endpoint's send that carries the chat's Stop keys reads its own bot before the post
-_NO_ID_KEYS = ("test_stop_keys.py::"
-               "test_before_the_bot_has_an_id_nothing_that_carries_the_keys_is_posted")
 
 BOT_ID_READS = {
     ("authz_grants.py", "ChallengeCoordinator._drive"): (1, FIELD, "the challenge key's own bot"),
@@ -929,12 +925,8 @@ BOT_ID_READS = {
     ("channels/telegram.py", "TelegramChannel._on_proposal_callback"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._on_resident_callback"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._run_stop_allowed"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._press_stop_key"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._spawn_run_stop._run"): (1, FIELD, "the confirmation's own bot"),
     ("channels/telegram.py", "TelegramChannel._spawn_run_stop._tell"): (1, FIELD, "the confirmation's own bot"),
-    ("channels/telegram.py", "TelegramChannel._send_key_line"): (1, PRE_POST, _NO_ID_KEYS),
-    ("channels/telegram.py", "TelegramChannel.deliver_run_card"): (1, PRE_POST, _NO_ID_KEYS),
-    ("channels/telegram.py", "TelegramChannel.send_reply_line"): (1, PRE_POST, _NO_ID_KEYS),
     ("channels/telegram.py", "TelegramChannel._own_address"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._own_intake"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._rebuild"): (1, NOISE, "a log line"),
@@ -976,13 +968,10 @@ BOT_ID_READS = {
     ("result_broker.py", "_deliver_and_replace"): (1, PRE_POST, "test_plugin_identities.py::test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted"),
     ("result_broker.py", "_endpoint_for"): (1, FIELD, "the target's own bot"),
     ("plugin_stop.py", "visible_confirmation"): (1, FIELD, "the confirmation's own bot"),
-    ("plugin_stop.py", "settle_ended"): (1, FIELD, "the card address's own bot"),
     ("result_broker.py", "label_at"): (1, FIELD, "the address's own bot"),
     ("result_broker.py", "_post_proposal"): (1, PRE_POST, "test_endpoint_isolation.py::test_a_proposal_naming_bot_111_is_refused_on_222"),
     ("run_admission.py", "Confirmations.by_key"): (1, FIELD, "the confirmation's own bot"),
     ("run_admission.py", "Confirmations.open_cards"): (1, FIELD, "the confirmation's own bot"),
-    ("run_admission.py", "_decide._on_settle"): (1, FIELD, "the card address's own bot"),
-    ("stop_keys.py", "_live_jobs"): (1, FIELD, "the job post address's own bot"),
     ("run_admission.py", "_spawn_status_card._post"): (1, POST_TIME, "the run card, once posted"),
     ("stored_call_settler.py", "handle_tap"): (2, RECEIPT, "the endpoint that received the tap"),
     ("specialist_install_consent.py", "approval_card_hooks._note_card"): (1, POST_TIME, "the bot that posted the card, read once it is posted"),
@@ -993,7 +982,6 @@ BOT_ID_READS = {
     ("tools.py", "ask_user"): (1, PRE_POST, "test_tools_route.py::test_a_scheduled_question_before_casas_bot_has_an_id_touches_nothing"),
     ("tools.py", "start_scheduled_job.tell"): (1, POST_TIME, "the chat note of a notice, only once Casa's bot has an id"),
     ("tools.py", "send_media"): (1, FIELD, "the task's delivery's own bot, stamped as the send's route"),
-    ("tools.py", "stop_work._tell"): (1, FIELD, "the card address's own bot"),
     ("tools.py", "stop_work"): (2, RESOLUTION, "the endpoint the turn's route resolves to, and the found request's own bot"),
     ("tools.py", "wipe_memory"): (1, FIELD, "Casa's operator address, read before the card"),
     ("trigger_consent.py", "prompt_trigger_consent"): (2, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),

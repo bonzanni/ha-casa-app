@@ -191,8 +191,9 @@ def reply_note(who: str, posted: str | None, quoted_text: str | None) -> str:
 
 
 def _cannot_be_edited(exc: BaseException) -> bool:
-    """Telegram's refusal to edit a message at all — one sent with a reply keyboard (the
-    Stop keys, ``stop_keys``) is never editable. Not an error: no retry, no warning."""
+    """Telegram's refusal to edit a message at all — one sent with a reply keyboard is never
+    editable, such as a card an earlier version of Casa sent with one. Not an error: no
+    retry, no warning."""
     return "can't be edited" in str(exc).lower()
 
 
@@ -2496,13 +2497,6 @@ class TelegramChannel(Channel):
     async def _handle_serialized(self, update: Update, chat_id: str) -> None:
         """Body of ``_handle``, run under ``_chat_serial_locks[chat_id]`` (#317)."""
         text = (update.message.text or "").strip()
-        # A Stop key at the keyboard sends its own label as the operator's message: it stops
-        # that work and goes nowhere else (``stop_keys``; exact equality with a label Casa
-        # issued in this chat). Checked first: a press made while he is replying to a post
-        # arrives as a reply, and is still the key.
-        if (self._sender_is_operator(update.effective_user)
-                and await self._press_stop_key(update, chat_id, text)):
-            return
         # A reply to a live task's post goes to the task; everything else takes the path below.
         ended_task = None
         if getattr(update.message, "reply_to_message", None) is not None:
@@ -3122,7 +3116,7 @@ class TelegramChannel(Channel):
     def _spawn_run_stop(self, c: Any, b: Any, reply_to: "int | None") -> None:
         """One tracked task stops the request directly (``plugin_stop``): no lane, no model.
         The path that holds the stop's flight marks the card and posts the outcome's line in
-        reply to *reply_to*, with the chat's Stop keys."""
+        reply to *reply_to*."""
         import plugin_stop
         role = b.chain[-1]
 
@@ -3142,85 +3136,6 @@ class TelegramChannel(Channel):
         task = asyncio.create_task(_run())
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
-
-    async def _press_stop_key(self, update: Update, chat_id: str, text: str) -> bool:
-        """The operator's message *text* is a Stop key of this chat (``stop_keys``): the key
-        of a live job runs the job's Cancel funnel, the key of a live browsing request runs
-        its Stop, a key whose work is gone gets one line with the keys still live. Either
-        way no turn starts, nothing reaches the agent, and his message is deleted. False
-        when the text is no key: the message takes its ordinary path."""
-        import stop_keys
-        chat = strict_positive_id(chat_id)
-        if chat is None or not self.has_bot_id:
-            return False
-        found = stop_keys.pressed(self.bot_id, chat, text)
-        if found is None:
-            return False
-        state, item = found
-        user = update.effective_user
-        if item is None:
-            await self._send_key_line(chat, stop_keys.ENDED_LINE)
-        elif item.kind == "job":
-            self._cancel_job_by_key(item, user)
-        else:
-            self._stop_run_by_key(item, chat, user)
-        mid = getattr(update.message, "message_id", None)
-        if type(mid) is int:
-            await self.delete_dm_message(chat, mid)
-        logger.info("Stop key pressed in chat %s: %s %s", chat, state,
-                    item.kind if item is not None else "")
-        return True
-
-    def _cancel_job_by_key(self, item: Any, user: Any) -> None:
-        """The Cancel funnel of a job, as a Cancel button of the job runs it: the job's
-        operator, a live record, one cancel at a time; a write that rolls back is told in
-        reply to the start line."""
-        reg = self._engagement_registry
-        rec = reg.get(item.key) if reg is not None else None
-        if rec is None or not self._job_owner_is(user, rec):
-            return
-        if item.key in self._job_cancels or not reg.counts_as_live(item.key):
-            return
-        self._job_cancels.add(item.key)
-        start = item.start
-        task = asyncio.create_task(self._run_job_cancel(
-            rec, start.chat_id, start.message_id))
-        self._turn_tasks.add(task)
-        task.add_done_callback(self._turn_tasks.discard)
-
-    def _stop_run_by_key(self, item: Any, chat: int, user: Any) -> None:
-        """The Stop of a browsing request, as its card's Stop button runs it; the outcome's
-        line replies to the card."""
-        import plugin_bindings
-        import run_admission
-        c = run_admission.CONFIRMATIONS.peek(item.key)
-        b = plugin_bindings.BINDINGS.peek(c.binding_ref) if c is not None else None
-        if (c is None or b is None or c.status != "admitted" or user is None
-                or not self._run_stop_allowed(c, b, chat, user.id)):
-            return
-        card = c.card_address()
-        self._spawn_run_stop(c, b, card.message_id if card is not None else None)
-
-    async def _send_key_line(self, chat_id: int, text: str, *,
-                             reply_to: "int | None" = None, silent: bool = False) -> bool:
-        """One line of Casa's fixed text in the chat, carrying the chat's Stop keys (or their
-        removal when none is live); a failure is logged. True when it landed."""
-        import stop_keys
-        from telegram import ReplyParameters
-        if self.bot is None:
-            return False
-        extra: dict = {"disable_notification": True} if silent else {}
-        if isinstance(reply_to, int) and not isinstance(reply_to, bool):
-            extra["reply_parameters"] = ReplyParameters(
-                message_id=reply_to, allow_sending_without_reply=True)
-        try:
-            await self.bot.send_message(
-                chat_id=chat_id, text=text,
-                reply_markup=stop_keys.keyboard(self.bot_id, chat_id), **extra)
-        except Exception as exc:  # noqa: BLE001 — a line is never the work's fault
-            logger.warning("Stop key line not posted: %s", type(exc).__name__)
-            return False
-        return True
 
     def proposal_finish_hook(self, *, rid: str, req: Any) -> Callable[[dict], Any]:
         """S5 §4.2/§4.4: the one owner of what follows a proposal's
@@ -5848,24 +5763,19 @@ class TelegramChannel(Channel):
         mid = getattr(msg, "message_id", None)
         return mid if isinstance(mid, int) else None
 
-    async def deliver_run_card(self, chat_id: int, text: str, *, starting=None,
-                               post=None, silent: bool = False) -> "int | None":
+    async def deliver_run_card(self, chat_id: int, text: str, *, post=None,
+                               silent: bool = False) -> "int | None":
         """The status card of browsing that started without a start question
-        (``run_admission``): Casa's label line and its fixed text, with no button. It
-        raises the chat's Stop keys at the keyboard, *starting* (the request's
-        ``stop_keys.Item``, not yet held as a card) among them. Filed under *post* as it
-        lands. ``silent`` sends it without a notification. Returns the message id, or
-        ``None`` when nothing landed."""
-        import stop_keys
-
+        (``run_admission``): Casa's label line and its fixed text, with no keyboard of any
+        kind — the operator stops the runs by asking the agent (``stop_work``). Filed under
+        *post* as it lands. ``silent`` sends it without a notification. Returns the message
+        id, or ``None`` when nothing landed."""
         if self._app is None:
             logger.warning("Telegram channel not started; cannot deliver the run card")
             return None
         quiet = {"disable_notification": True} if silent else {}
         try:
-            kbd = stop_keys.keyboard(self.bot_id, chat_id, starting=starting)
-            msg = await self._app.bot.send_message(
-                chat_id=chat_id, text=text, reply_markup=kbd, **quiet)
+            msg = await self._app.bot.send_message(chat_id=chat_id, text=text, **quiet)
         except Exception as exc:  # noqa: BLE001 — not proven
             logger.warning("deliver_run_card send failed (chat=%s): %s",
                            chat_id, type(exc).__name__)
@@ -5876,19 +5786,16 @@ class TelegramChannel(Channel):
 
     async def send_reply_line(self, chat_id: int, text: str, reply_to: "int | None", *,
                               post=None, silent: bool = False) -> bool:
-        """One Casa line (a Stop's outcome, a request's start or end, under the specialist's
-        label) as a reply to the card it answers, carrying the chat's Stop keys still live
-        (``stop_keys``; their removal when none is), filed under *post* (the card's own
-        record) as it lands. ``silent`` sends it without a notification. A failure is
-        logged and nothing more is attempted."""
-        import stop_keys
+        """One Casa line (the outcome of a card's own Stop, under the specialist's label) as
+        a reply to the card it answers, filed under *post* (the card's own record) as it
+        lands. ``silent`` sends it without a notification. A failure is logged and nothing
+        more is attempted."""
         if self._app is None:
             return False
         kwargs: dict = {"reply_to_message_id": reply_to} if isinstance(reply_to, int) else {}
         if silent:
             kwargs["disable_notification"] = True
         try:
-            kwargs["reply_markup"] = stop_keys.keyboard(self.bot_id, chat_id)
             sent = await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged
             logger.warning("reply line failed: %s", type(exc).__name__)

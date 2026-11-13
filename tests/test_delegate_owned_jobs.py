@@ -134,11 +134,11 @@ def test_the_voice_projection_says_no_job_starts_on_a_call():
 
 
 def test_a_job_is_said_to_live_in_this_chat_and_no_topic_is_named():
-    """A job's questions, result and Stop key come to the direct chat;
-    nothing tells her to point anyone to a topic."""
+    """A job's questions and result come to the direct chat; nothing tells
+    her to point anyone to a topic."""
     text = _assistant_carriers()["text"]
-    assert _ws("A job lives in this chat: its questions, its result and its Stop "
-               "key come here.") in text
+    assert _ws("A job lives in this chat: its questions and its result come "
+               "here.") in text
     assert "Engagements supergroup" not in text
 
 
