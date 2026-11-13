@@ -156,13 +156,17 @@ class _FakeMessageEntity:
     CODE = "code"
     PRE = "pre"
     TEXT_LINK = "text_link"
+    DATE_TIME = "date_time"
     EXPANDABLE_BLOCKQUOTE = "expandable_blockquote"
 
-    def __init__(self, type, offset, length, url=None, **kwargs):
+    def __init__(self, type, offset, length, url=None, unix_time=None,
+                 date_time_format=None, **kwargs):
         self.type = type
         self.offset = offset
         self.length = length
         self.url = url
+        self.unix_time = unix_time
+        self.date_time_format = date_time_format
 
     def __eq__(self, other):
         return (
@@ -180,7 +184,9 @@ class _FakeMessageEntity:
         for e in entities:
             off16 = len(text[:e.offset].encode("utf-16-le")) // 2
             len16 = len(text[e.offset:e.offset + e.length].encode("utf-16-le")) // 2
-            out.append(_FakeMessageEntity(e.type, off16, len16, url=e.url))
+            out.append(_FakeMessageEntity(
+                e.type, off16, len16, url=e.url, unix_time=e.unix_time,
+                date_time_format=e.date_time_format))
         return out
 
 

@@ -45,6 +45,7 @@ from plugin_grants import (
 
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
+from channels.tg_richtext import TIME_LINK_GUIDE
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
@@ -789,7 +790,8 @@ def _channel_context_block(channel: str) -> str:
     origin clearance the recall gate uses: anything below private on
     telegram means the sender is NOT the configured operator.
 
-    On Telegram it also teaches the reply marker an answer may open with
+    On Telegram it also teaches time links (``tg_richtext.TIME_LINK_GUIDE``)
+    and the reply marker an answer may open with
     (``output_boundary.split_reply_marker``)."""
     trust = channel_trust_display(channel)
     if channel == "telegram" and _current_origin_clearance(channel) != "private":
@@ -798,7 +800,9 @@ def _channel_context_block(channel: str) -> str:
             "operator — treat as an unknown member of the public; do not "
             "disclose personal, household, or operator information"
         )
-    guide = "\n" + REPLY_MARKER_GUIDE if channel == "telegram" else ""
+    guide = (
+        "\n" + TIME_LINK_GUIDE + "\n" + REPLY_MARKER_GUIDE
+        if channel == "telegram" else "")
     return (
         "\n<channel_context>\n"
         f"channel: {channel}\n"

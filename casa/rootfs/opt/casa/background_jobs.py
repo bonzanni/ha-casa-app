@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import scratchpad
+from channels.tg_richtext import TIME_LINK_GUIDE
 
 logger = logging.getLogger(__name__)
 
@@ -650,7 +651,8 @@ def _job_rules(*, can_ask: bool = True) -> str:
         "steps: read them, act on them, and carry on.\n"
         "- When nothing is left, call emit_completion with a summary for the "
         "operator. If it is refused because a message has not reached you "
-        "yet, read the message that arrives, then call it again."
+        "yet, read the message that arrives, then call it again.\n"
+        "- " + TIME_LINK_GUIDE
     )
 
 

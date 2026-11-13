@@ -53,9 +53,11 @@
   covers:
     - casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged
     - casa/rootfs/opt/casa/channels/tg_richtext.py::plain_text
+    - casa/rootfs/opt/casa/channels/tg_richtext.py::time_instant
     - casa/rootfs/opt/casa/channels/telegram.py::_split_message
   tests:
     - tests/test_tg_richtext.py
+    - tests/test_tg_time_links.py
     - tests/test_tg_richtext_v3.py
     - tests/test_tg_richtext_remnants.py
     - tests/test_telegram_split.py

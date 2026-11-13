@@ -16,6 +16,7 @@ Rendered constructs:
   - bold / italic       **b** / *i*  (asterisks) → BOLD / ITALIC
   - ATX headings        ## Heading               → BOLD line (hashes stripped)
   - labelled links      [label](https://…)       → TEXT_LINK (#404)
+  - time links          [label](time:<ISO 8601>) → DATE_TIME over the label
   - markdown tables     | a | b |                → padded PRE box, per-record
                                                    stanza, or inline rows (#506)
 
@@ -25,10 +26,14 @@ Doctrine (pinned):
   - Link URLs are http(s) only. A line containing a link with any other
     scheme, an empty label, or image syntax (unescaped ``![``) renders
     FULLY LITERAL — titles and all (round-3 rule; nothing is dropped).
-  - Bot API nesting: BOLD/ITALIC never contain or intersect CODE or
-    TEXT_LINK — emphasis is SPLIT AROUND those atoms at emission. Inside a
-    link label, inner constructs render as plain text (a link entity never
-    nests another entity). No entity is ever emitted inside PRE.
+  - The one other link target is ``time:`` followed by an ISO 8601 moment
+    (``time_instant``). It never makes a line literal: a moment Casa can read
+    becomes a DATE_TIME entity over the label, and one it cannot read leaves
+    the label as plain text. Casa never looks for times in free text.
+  - Bot API nesting: BOLD/ITALIC never contain or intersect CODE,
+    TEXT_LINK or DATE_TIME (the ATOMS) — emphasis is SPLIT AROUND those
+    atoms at emission. Inside a link label, inner constructs render as
+    plain text (a link entity never nests another entity). No entity is ever emitted inside PRE.
   - The parser NEVER raises; anything ambiguous or unsupported degrades to
     literal text, and any entity-conversion failure degrades to plain.
 
@@ -62,14 +67,17 @@ from __future__ import annotations
 import bisect
 import logging
 import re
+from datetime import datetime, timezone
 
 from markdown_it import MarkdownIt
 from telegram import MessageEntity
 
 from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
+from timekeeping import resolve_tz
 
-# kind: pre/code/bold/italic, or "link:<url>" (URL rides in the kind so the
-# pagination clip/rebase logic carries it across page cuts unchanged).
+# kind: pre/code/bold/italic, "link:<url>" or "time:<unix seconds>" (the
+# datum rides in the kind so the pagination clip/rebase logic carries it
+# across page cuts unchanged).
 Span = tuple[int, int, str]
 
 logger = logging.getLogger(__name__)
@@ -78,6 +86,20 @@ MAX_LEN = 4096
 MAX_ENTITIES = 100
 
 _LINK_KIND = "link:"
+_TIME_KIND = "time:"
+# A time target the model wrote with spaces ("time:2026-11-16 09:00", or a
+# phrase) is not a Markdown link destination. Inside a ``](time:…)`` target
+# each space is swapped for this private-use character before the inline
+# parse and swapped back after, so the link still parses and its label is
+# never lost.
+_TIME_SPACE = "\ue000"
+_TIME_TARGET_RE = re.compile(r"\]\((?i:time:)[^()\n]*\)")
+
+TIME_LINK_GUIDE = (
+    "time_links: write every date or time as a Markdown link whose target is time: and the "
+    "moment in ISO 8601 with its UTC offset, keeping your own words as the label, for example "
+    "[Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or [16 November](time:2026-11-16). "
+    "Telegram makes it tappable.")
 _TABLE_PRE_MAX_WIDTH = 40  # padded monospace wider than a phone → stanza
 
 _KIND = {
@@ -98,6 +120,39 @@ _MD = MarkdownIt("zero").enable(
     ["backticks", "escape", "emphasis", "link",
      "balance_pairs", "fragments_join"]
 )
+_normalize_link = _MD.normalizeLink
+
+
+def _normalize_link_keeping_time(url: str) -> str:
+    # markdown-it reads "time:2026-11-16T09:00+01:00" as a host and port and
+    # rewrites it; a time target is Casa's own syntax and is kept as written.
+    if url[:len(_TIME_KIND)].lower() == _TIME_KIND:
+        return url
+    return _normalize_link(url)
+
+
+_MD.normalizeLink = _normalize_link_keeping_time
+
+
+def time_instant(target: str) -> "int | None":
+    """The unix second a ``time:`` link target names, or ``None``.
+
+    The target is ``time:`` and an ISO 8601 date or date-time. One with no
+    UTC offset, or a date alone (its local midnight), is read in Casa's
+    timezone. Anything unparseable, or before 1970, gives ``None``."""
+    try:
+        moment = datetime.fromisoformat(target[len(_TIME_KIND):].strip())
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=resolve_tz())
+        seconds = int(moment.timestamp())
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def _is_atom(kind: str) -> bool:
+    """A span emphasis is split around: CODE, TEXT_LINK and DATE_TIME."""
+    return kind == "code" or kind.startswith((_LINK_KIND, _TIME_KIND))
 
 
 def parse_markdown(src: str) -> tuple[str, list[Span]]:
@@ -228,12 +283,18 @@ def _has_unescaped_image_marker(body: str) -> bool:
 def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
     """Render ONE line's inline constructs → (display, spans), or ``None``
     when the line must stay fully literal (image syntax, a link with a
-    disallowed scheme or an empty label, or any walk surprise). Spans are in
+    disallowed scheme or an empty label, or any walk surprise). A ``time:``
+    link is never a reason for that: its label is kept, as a DATE_TIME span
+    when the moment parses and as plain text when it does not. Spans are in
     line-local display coordinates. Never raises."""
     if not body:
         return body, []
     if _has_unescaped_image_marker(body):
         return None
+    spaced = _TIME_SPACE not in body and _TIME_TARGET_RE.search(body)
+    if spaced:
+        body = _TIME_TARGET_RE.sub(
+            lambda m: m.group(0).replace(" ", _TIME_SPACE), body)
     try:
         tokens = _MD.parseInline(body, {})
         children = tokens[0].children if tokens else None
@@ -245,20 +306,24 @@ def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
     out: list[str] = []
     n = 0  # display cursor
     emph_stack: list[tuple[str | None, int]] = []
-    link_stack: list[tuple[int, str]] = []
+    link_stack: list[tuple[int, str | None]] = []
     code_spans: list[tuple[int, int]] = []
-    link_spans: list[Span] = []
+    # kind None: a time link whose moment does not parse — label kept, no span
+    link_spans: list[tuple[int, int, str | None]] = []
     emph_spans: list[Span] = []
+
+    def content(c) -> str:
+        return c.content.replace(_TIME_SPACE, " ") if spaced else c.content
 
     for c in children:
         t = c.type
         if t == "text":
-            out.append(c.content)
-            n += len(c.content)
+            out.append(content(c))
+            n += len(out[-1])
         elif t == "code_inline":
             start = n
-            out.append(c.content)
-            n += len(c.content)
+            out.append(content(c))
+            n += len(out[-1])
             if not link_stack:  # inside a label: plain text, span suppressed
                 code_spans.append((start, n))
         elif t in ("em_open", "strong_open"):
@@ -282,14 +347,19 @@ def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
             if link_stack:  # nested TEXT_LINKs are Bot-API-invalid
                 return None
             href = str(c.attrs.get("href", ""))
-            if not href.lower().startswith(("http://", "https://")):
+            if href[:len(_TIME_KIND)].lower() == _TIME_KIND:
+                instant = time_instant(href.replace(_TIME_SPACE, " "))
+                kind = None if instant is None else f"{_TIME_KIND}{instant}"
+            elif href.lower().startswith(("http://", "https://")):
+                kind = _LINK_KIND + href
+            else:
                 return None
-            link_stack.append((n, href))
+            link_stack.append((n, kind))
         elif t == "link_close":
             if not link_stack:
                 return None
-            start, href = link_stack.pop()
-            link_spans.append((start, n, _LINK_KIND + href))
+            start, kind = link_stack.pop()
+            link_spans.append((start, n, kind))
         elif t in ("softbreak", "hardbreak"):
             out.append("\n")
             n += 1
@@ -302,10 +372,11 @@ def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
     for s, e, _ in link_spans:
         if not display[s:e].strip():  # empty/blank label: URL must stay visible
             return None
+    atom_spans: list[Span] = [sp for sp in link_spans if sp[2] is not None]
 
-    holes = sorted(code_spans + [(s, e) for s, e, _ in link_spans])
+    holes = sorted(code_spans + [(s, e) for s, e, _ in atom_spans])
     spans: list[Span] = [(s, e, "code") for s, e in code_spans]
-    spans.extend(link_spans)
+    spans.extend(atom_spans)
     for s, e, kind in emph_spans:
         spans.extend(
             (x, y, kind) for x, y in _subtract_intervals(s, e, holes)
@@ -346,10 +417,7 @@ def _parse_text(text: str) -> tuple[str, list[Span]]:
             parts.append(disp)
             raw_spans.extend((pos + s, pos + e, k) for s, e, k in ispans)
             if heading_prefix is not None:
-                holes = sorted(
-                    (s, e) for s, e, k in ispans
-                    if k == "code" or k.startswith(_LINK_KIND)
-                )
+                holes = sorted((s, e) for s, e, k in ispans if _is_atom(k))
                 raw_spans.extend(
                     (pos + s, pos + e, "bold")
                     for s, e in _subtract_intervals(0, len(disp), holes)
@@ -534,8 +602,10 @@ def _render_table(
 
     ncols = len(rendered[0])
     widths = [max(len(row[c][0]) for row in rendered) for c in range(ncols)]
+    # A PRE box carries no entity, so a link's address or a time's
+    # tappability would be lost in it.
     has_link = any(
-        k.startswith(_LINK_KIND)
+        k.startswith((_LINK_KIND, _TIME_KIND))
         for row in rendered for _, sp in row for _, _, k in sp
     )
     padded_width = sum(widths) + 3 * (ncols - 1) + 4
@@ -609,7 +679,7 @@ def _render_stanza(
                 pos += 1
             line = hdisp + ": " + vdisp
             label_end = len(hdisp) + 1  # includes the colon
-            # The label's ATOMS — CODE and TEXT_LINK — are re-emitted with
+            # The label's ATOMS — CODE, TEXT_LINK, DATE_TIME — are re-emitted with
             # their own kind, and the label's BOLD is their COMPLEMENT, so
             # bold can never contain or intersect either (emission doctrine,
             # ":28-31"). The link case is #517: a header link rides onto
@@ -617,10 +687,7 @@ def _render_stanza(
             # link spans from one cell are disjoint by the inline pass's own
             # rules (a code-wrapped link is pure code; a link-wrapped code is
             # pure link), which is what `_subtract_intervals` assumes.
-            atoms = sorted(
-                (s, e, k) for s, e, k in hspans
-                if k == "code" or k.startswith(_LINK_KIND)
-            )
+            atoms = sorted((s, e, k) for s, e, k in hspans if _is_atom(k))
             holes = [(s, e) for s, e, _ in atoms]
             spans.extend((pos + s, pos + e, k) for s, e, k in atoms)
             spans.extend(
@@ -712,6 +779,14 @@ def _spans_to_entities(
                 ents.append(MessageEntity(
                     type=MessageEntity.TEXT_LINK,
                     offset=start, length=end - start, url=url,
+                ))
+            elif kind.startswith(_TIME_KIND):
+                # No date_time_format: the reader sees the label as written.
+                ents.append(MessageEntity(
+                    type=MessageEntity.DATE_TIME,
+                    offset=start, length=end - start,
+                    unix_time=datetime.fromtimestamp(
+                        int(kind[len(_TIME_KIND):]), timezone.utc),
                 ))
             else:
                 ents.append(MessageEntity(

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-13
 ---
 
 # Telegram rendering
@@ -20,7 +20,7 @@ chat, callbacks, and the delivery outcome of an answer are
 **Rendering recognizes a small, deliberate grammar, and fails literal.** Agent output is
 markdown-ish; the rich renderer recognizes fenced code, inline code, asterisk bold/italic,
 ATX headings, labelled `[text](url)` links (http/https only — any other scheme leaves its
-whole line untouched), and confident markdown tables — nothing else. Block structure
+whole line untouched), time links, and confident markdown tables — nothing else. Block structure
 (fences, table runs) is segmented by casa's own line-based scanner, so an unclosed fence
 keeps its remainder byte-for-byte; inline semantics run through a CommonMark engine one
 line at a time, with the deliberate exception that underscores are never emphasis (tool
@@ -29,6 +29,17 @@ in one of three forms — a padded monospace box when narrow and link-free, per-
 `Header: value` stanzas when wide or link-bearing under a real header, or plain rows with
 their formatting intact otherwise — chosen so cell content and link destinations are never
 silently dropped. Anything ambiguous stays literal rather than rendering wrongly.
+
+**A time link is the one other link target, and it never fails the line.** An agent writes
+every date or time as `[its own words](time:<ISO 8601>)`, a rule its Telegram prompt states;
+Casa never looks for times in free text. A moment that parses becomes a `date_time` entity
+over the label, sent without a display format, so the reader sees the agent's words and can
+tap them. A moment with no UTC offset, or a date alone (its midnight), is read in Casa's
+timezone. A target that does not parse, a phrase with spaces included, leaves the label as
+plain text and the rest of the line formatted as usual. Like code and a link, the entity is an
+atom: bold splits around it, a table that holds one is never the monospace box (which carries
+no entity), and a page cut through it gives an entity on each page. The plain fallbacks show
+the label alone, since its words already say the time.
 
 **What counts as ambiguous is judged against the delimiter row.** A `|---|` row declares how
 many columns the table has; a bare run of pipe-bordered lines only implies one. So under a
@@ -169,10 +180,12 @@ units but sends unformatted text only.
 **Source**
 - `casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged`
 - `casa/rootfs/opt/casa/channels/tg_richtext.py::plain_text`
+- `casa/rootfs/opt/casa/channels/tg_richtext.py::time_instant`
 - `casa/rootfs/opt/casa/channels/telegram.py::_split_message`
 
 **Tests**
 - `tests/test_tg_richtext.py`
+- `tests/test_tg_time_links.py`
 - `tests/test_tg_richtext_v3.py`
 - `tests/test_tg_richtext_remnants.py`
 - `tests/test_telegram_split.py`
