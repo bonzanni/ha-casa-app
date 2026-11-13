@@ -1,24 +1,164 @@
-:root{color-scheme:light dark;--fg:#1f1f1f;--bg:#fafafa;--muted:#5f6368;--line:#dadce0;--accent:#1a73e8;--warn:#b3261e;--ok:#137333}
-@media (prefers-color-scheme:dark){:root{--fg:#e8eaed;--bg:#1f1f1f;--muted:#9aa0a6;--line:#3c4043;--accent:#8ab4f8;--warn:#f28b82;--ok:#81c995}}
-body{margin:0;font:15px/1.45 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
-nav{display:flex;gap:16px;padding:10px 16px;border-bottom:1px solid var(--line)}
-nav a{color:var(--accent);text-decoration:none;font-weight:600}
-main{padding:8px 16px 32px;max-width:960px}
-h1{font-size:22px}h2{font-size:17px;margin-top:24px}
-table{border-collapse:collapse;width:100%;font-size:14px}
-/* a wide table (the step log on a phone) scrolls inside the page, not the page itself */
-main table{display:block;max-width:100%;overflow-x:auto}
-td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
-button{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-form.inline{display:inline}
-label{display:block;margin:8px 0}
-input,textarea{font:inherit;width:100%;max-width:520px;box-sizing:border-box;padding:6px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg)}
-input[type=checkbox]{width:auto}
-textarea{min-height:56px}
-.waits li{margin:8px 0}
-.warn{color:var(--warn)}.ok{color:var(--ok)}.small{color:var(--muted);font-size:13px}
-img.shot{display:block;max-width:240px;margin-top:4px;border:1px solid var(--line)}
-.task{white-space:pre-wrap;color:var(--muted)}
-code.copy{cursor:pointer;display:inline-block;margin:2px 4px 2px 0;padding:1px 6px;border:1px solid var(--line);border-radius:6px;font-size:13px;word-break:break-all}
-code.copy.copied{color:var(--ok);border-color:var(--ok)}
+/* Casa Browser's pages in Home Assistant's look. The tokens carry Home Assistant's own names and
+   its default light and dark values; theme.js replaces them with the values Home Assistant's page
+   resolved (the user's theme and dark mode), so these are only the fallback. */
+:root{color-scheme:light dark;
+  --primary-color:#009ac7;--primary-text-color:#141414;--secondary-text-color:#5e5e5e;
+  --primary-background-color:#fafafa;--secondary-background-color:#e5e5e5;--card-background-color:#fff;
+  --divider-color:rgba(0,0,0,.12);--success-color:#43a047;--warning-color:#ffa600;--error-color:#db4437;
+  --text-primary-color:#fff;--ha-font-family-body:Roboto,Noto,-apple-system,system-ui,sans-serif;
+  --field-bg:color-mix(in srgb,var(--primary-text-color) 5%,transparent)}
+@media (prefers-color-scheme:dark){:root{
+  --primary-text-color:#e1e1e1;--secondary-text-color:#9b9b9b;--primary-background-color:#111;
+  --secondary-background-color:#282828;--card-background-color:#1c1c1c;--divider-color:rgba(225,225,225,.12)}}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--primary-background-color);color:var(--primary-text-color);
+  font:400 14px/1.5 var(--ha-font-family-body);-webkit-tap-highlight-color:transparent}
+a{color:var(--primary-color)}
+p{margin:0}
+svg.i{width:24px;height:24px;fill:currentColor;flex:none}
+
+/* ------------------------------------------------------------------ the tabs
+   Phone (HA's "narrow", under 871px): a bar at the bottom, as Home Assistant's own settings pages
+   do it. Wider: a row at the top. */
+nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:3;display:flex;height:calc(56px + env(safe-area-inset-bottom));
+  padding-bottom:env(safe-area-inset-bottom);background:var(--card-background-color);border-top:1px solid var(--divider-color)}
+nav.tabs a{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  color:var(--secondary-text-color);text-decoration:none;font-size:12px;font-weight:500;min-width:0}
+nav.tabs a svg{width:22px;height:22px}
+nav.tabs a[aria-current]{color:var(--primary-color)}
+main{max-width:760px;margin:0 auto;padding:16px 16px calc(96px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:16px}
+@media (min-width:871px){
+  nav.tabs{position:sticky;top:0;bottom:auto;height:48px;padding:0 24px;justify-content:center;gap:8px;
+    border-top:0;border-bottom:1px solid var(--divider-color)}
+  nav.tabs a{flex:none;flex-direction:row;gap:8px;padding:0 16px;font-size:14px;border-bottom:2px solid transparent}
+  nav.tabs a svg{width:20px;height:20px}
+  nav.tabs a[aria-current]{border-bottom-color:var(--primary-color)}
+  main{padding:24px 24px 48px}
+}
+
+/* ------------------------------------------------------------------ headings */
+.subhdr{display:flex;align-items:center;gap:4px;margin:-8px 0 -4px -8px}
+.subhdr h1{margin:0;font-size:20px;font-weight:500;line-height:1.3;min-width:0;overflow-wrap:anywhere}
+h2{margin:4px 4px -8px;font-size:14px;font-weight:500;color:var(--secondary-text-color)}
+
+/* ------------------------------------------------------------------ cards and rows (ha-card,
+   ha-row-item: 12px radius, 1px divider border, no shadow; rows 48px, 12/16 padding, 14/12 text) */
+.card{background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:12px;overflow:hidden}
+.card.pad{padding:16px;display:flex;flex-direction:column;gap:12px}
+.card.attn{border-color:var(--warning-color)}
+.card form{margin:0}
+.row{display:flex;align-items:center;gap:16px;min-height:48px;padding:12px 8px 12px 16px;width:100%;
+  color:inherit;text-decoration:none;background:none;border:0;font:inherit;text-align:left}
+.row + .row,.card > form + .row,.card > .row + form .row{border-top:1px solid var(--divider-color)}
+a.row:active,summary.row:active{background:color-mix(in srgb,var(--primary-text-color) 6%,transparent)}
+.txt{flex:1;min-width:0;display:flex;flex-direction:column}
+.l1{font-size:14px;line-height:1.45;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.l2{font-size:12px;line-height:1.45;color:var(--secondary-text-color);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.l2::first-letter{text-transform:uppercase}
+.wrap{white-space:normal;overflow-wrap:anywhere}
+.lead{flex:none;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.lead svg{width:20px;height:20px}
+.chev{color:var(--secondary-text-color)}
+.acts{display:flex;justify-content:flex-end;gap:8px;padding:0 16px 12px 68px;border-top:0!important}
+.acts.full{padding:12px 16px}
+.tint-ok{background:color-mix(in srgb,var(--success-color) 16%,transparent);color:var(--success-color)}
+.tint-run{background:color-mix(in srgb,var(--primary-color) 16%,transparent);color:var(--primary-color)}
+.tint-wait{background:color-mix(in srgb,var(--warning-color) 20%,transparent);color:var(--warning-color)}
+.tint-err{background:color-mix(in srgb,var(--error-color) 16%,transparent);color:var(--error-color)}
+.tint-mute{background:var(--secondary-background-color);color:var(--secondary-text-color)}
+
+details>summary{list-style:none;cursor:pointer}
+details>summary::-webkit-details-marker{display:none}
+details[open]>summary .chev{transform:rotate(180deg)}
+.notices{padding:0 16px 12px;display:flex;flex-direction:column;gap:8px}
+
+.chip{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 10px 0 8px;border-radius:9999px;font-size:12px;font-weight:500;align-self:flex-start}
+.chip svg{width:14px;height:14px}
+.chip span{display:inline-block}
+.chip span::first-letter{text-transform:uppercase}
+.meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.meta:has(> .lead){gap:16px;flex-wrap:nowrap}
+.muted{color:var(--secondary-text-color)}
+.small{font-size:12px;color:var(--secondary-text-color)}
+.task{white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* ------------------------------------------------------------------ buttons (ha-button: 40px pill,
+   16px sides; small 32px, 12px sides) */
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:40px;padding:0 16px;
+  border-radius:9999px;border:0;font:500 14px/1 var(--ha-font-family-body);cursor:pointer;text-decoration:none;
+  background:color-mix(in srgb,var(--primary-color) 14%,transparent);color:var(--primary-color)}
+button.s,.btn.s{height:32px;padding:0 12px}
+button.primary{background:var(--primary-color);color:var(--text-primary-color)}
+button.danger{background:none;color:var(--error-color);border:1px solid var(--error-color)}
+button.danger.fill{background:var(--error-color);color:#fff;border:0}
+button.plain{background:none;padding:0 12px}
+button:disabled{opacity:.6;cursor:default}
+button:focus:not(:focus-visible),a:focus:not(:focus-visible){outline:none}
+.ib{width:40px;height:40px;padding:0;border-radius:50%;background:none;color:var(--primary-text-color);display:inline-flex;
+  align-items:center;justify-content:center;flex:none}
+.ib svg{width:24px;height:24px}
+.fab{position:fixed;right:16px;bottom:calc(72px + env(safe-area-inset-bottom));z-index:2;height:48px;padding:0 20px 0 14px;
+  border-radius:9999px;background:var(--primary-color);color:var(--text-primary-color);display:inline-flex;align-items:center;gap:8px;
+  font-weight:500;text-decoration:none;box-shadow:0 3px 5px -1px rgba(0,0,0,.2),0 6px 10px rgba(0,0,0,.14),0 1px 18px rgba(0,0,0,.12)}
+.fab svg{width:20px;height:20px}
+@media (min-width:871px){.fab{bottom:24px;right:24px}}
+
+/* ------------------------------------------------------------------ forms (HA's filled field) */
+.stack{display:flex;flex-direction:column;gap:20px}
+form.stack details>summary.row{padding:0 4px;min-height:44px}
+form.stack details[open]>summary{margin-bottom:12px}
+.more{color:var(--primary-color);font-weight:500}
+label.field{display:flex;flex-direction:column;background:var(--field-bg);border-radius:4px 4px 0 0;
+  border-bottom:1px solid var(--secondary-text-color);padding:8px 16px 6px}
+label.field:focus-within{border-bottom:2px solid var(--primary-color);padding-bottom:5px}
+label.field span{font-size:12px;line-height:1.3;color:var(--secondary-text-color)}
+label.field:focus-within span{color:var(--primary-color)}
+/* 16px: iOS zooms the page into a smaller field */
+label.field input,label.field textarea{border:0;background:none;color:var(--primary-text-color);
+  font:400 16px/1.4 var(--ha-font-family-body);padding:2px 0;outline:none;width:100%;resize:vertical}
+label.field textarea{min-height:48px}
+label.check{display:flex;gap:12px;align-items:flex-start}
+label.check input{width:20px;height:20px;margin:1px 0 0;accent-color:var(--primary-color);flex:none}
+.end{display:flex;justify-content:flex-end;gap:8px}
+
+/* ------------------------------------------------------------------ copy chips */
+code.copy{cursor:pointer;display:inline-flex;align-items:center;height:28px;padding:0 10px;border:1px solid var(--divider-color);
+  border-radius:8px;font:400 12px/1 ui-monospace,monospace;color:var(--primary-text-color);max-width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+code.copy.copied{color:var(--success-color);border-color:var(--success-color)}
+.copies{display:flex;flex-wrap:wrap;gap:8px}
+
+/* ------------------------------------------------------------------ the step log as a timeline */
+.tl{padding:4px 16px 8px}
+.ev{display:grid;grid-template-columns:44px 16px minmax(0,1fr);gap:0 10px;padding:8px 0}
+.ev .t{font-size:12px;color:var(--secondary-text-color);line-height:20px;text-align:right}
+.ev .dot{position:relative;display:flex;justify-content:center}
+.ev .dot::before{content:"";position:absolute;top:0;bottom:-16px;width:2px;background:var(--divider-color)}
+.ev:first-child .dot::before{top:10px}
+.ev:last-child .dot::before{bottom:auto;height:10px}
+.ev:only-child .dot::before{display:none}
+.ev .dot i{position:relative;margin-top:5px;width:10px;height:10px;border-radius:50%;background:var(--primary-color)}
+.ev .k{font-size:14px;font-weight:500;line-height:20px}
+.ev .k span{font-weight:400;color:var(--secondary-text-color)}
+.ev .w{font-size:13px;color:var(--secondary-text-color);line-height:1.45;overflow-wrap:anywhere}
+img.shot{display:block;margin-top:8px;max-width:160px;max-height:120px;border-radius:8px;border:1px solid var(--divider-color)}
+
+/* ------------------------------------------------------------------ notices and messages */
+.banner{display:flex;gap:12px;align-items:flex-start;padding:12px 16px;border-radius:12px}
+.banner svg{width:20px;height:20px;flex:none;margin-top:1px}
+.banner.warn{background:color-mix(in srgb,var(--warning-color) 14%,transparent)}
+.banner.warn svg{color:var(--warning-color)}
+.banner.ok{background:color-mix(in srgb,var(--success-color) 14%,transparent)}
+.banner.ok svg{color:var(--success-color)}
+.warn{color:var(--error-color)}.ok{color:var(--success-color)}
+
+/* ------------------------------------------------------------------ the confirmation (app.js) */
+dialog.confirm{border:0;padding:24px;border-radius:24px;width:min(calc(100vw - 48px),400px);background:var(--card-background-color);
+  color:var(--primary-text-color);display:flex;flex-direction:column;gap:12px}
+dialog.confirm:not([open]){display:none}
+dialog.confirm::backdrop{background:rgba(0,0,0,.4)}
+dialog.confirm h2{margin:0;font-size:20px;font-weight:400;line-height:1.3;color:inherit}
+dialog.confirm p{color:var(--secondary-text-color)}
+dialog.confirm .end{margin-top:4px}

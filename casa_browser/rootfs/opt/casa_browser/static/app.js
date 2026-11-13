@@ -1,6 +1,34 @@
-// Casa Browser's pages: a confirmation before a form that ends something (data-confirm).
+// Casa Browser's pages: a confirmation before a form that ends something (data-confirm: the
+// question; data-confirm-body, data-ok, data-cancel: the rest of the dialog). A Home Assistant style
+// dialog where the browser has <dialog>, the browser's own confirm() where it has not.
 document.querySelectorAll('form[data-confirm]').forEach(f => {
-  f.addEventListener('submit', ev => { if (!confirm(f.dataset.confirm)) ev.preventDefault(); });
+  let sure = false;
+  f.addEventListener('submit', ev => {
+    if (sure) return;
+    ev.preventDefault();
+    const d = document.createElement('dialog');
+    if (typeof d.showModal !== 'function') {
+      if (confirm(f.dataset.confirm)) { sure = true; f.requestSubmit(); }
+      return;
+    }
+    d.className = 'confirm';
+    const h = document.createElement('h2'); h.textContent = f.dataset.confirm; d.appendChild(h);
+    if (f.dataset.confirmBody) {
+      const p = document.createElement('p'); p.textContent = f.dataset.confirmBody; d.appendChild(p);
+    }
+    const row = document.createElement('div'); row.className = 'end';
+    const no = document.createElement('button'); no.type = 'button'; no.className = 'plain';
+    no.textContent = f.dataset.cancel || 'Cancel';
+    const yes = document.createElement('button'); yes.type = 'button';
+    yes.className = f.dataset.danger !== undefined ? 'danger fill' : 'primary';
+    yes.textContent = f.dataset.ok || 'OK';
+    row.append(no, yes); d.appendChild(row);
+    no.addEventListener('click', () => d.close());
+    yes.addEventListener('click', () => { sure = true; d.close(); f.requestSubmit(); });
+    d.addEventListener('close', () => d.remove());
+    document.body.appendChild(d);
+    d.showModal();
+  });
 });
 // Open takes a while (the page, the capture): the button says so and cannot be pressed again, so
 // a second tap cannot spend the form. A page brought back from the browser's history is usable.

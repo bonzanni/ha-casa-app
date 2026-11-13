@@ -230,6 +230,10 @@
   doc: reference/casa-browser-ingress.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/sites
   doc: reference/casa-browser-ingress.md
+- item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/sites/new
+  doc: reference/casa-browser-ingress.md
+- item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/sites/{site}
+  doc: reference/casa-browser-ingress.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:POST:/sites
   doc: reference/casa-browser-ingress.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:POST:/sites/{site}/forget

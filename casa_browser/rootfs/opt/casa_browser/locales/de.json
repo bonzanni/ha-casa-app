@@ -8,7 +8,7 @@
   "home.wait_reconnect": "Eine Live-Ansicht ist offen; öffne sie erneut, um dich wieder zu verbinden.",
   "home.wait_question": "Eine Frage wartet auf deine Antwort; du kannst dir die Seite zuerst ansehen.",
   "home.open": "Öffnen",
-  "home.live_heading": "Live-Ansicht",
+  "home.live_heading": "Wartet auf dich",
   "home.runs_heading": "Aufträge",
   "home.notices_heading": "Hinweise",
   "runs.none": "Noch keine Aufträge.",
@@ -145,5 +145,18 @@
   "js.wait": "Einen Moment…",
   "js.kept": "Neu verbinden — Text bleibt",
   "app.copy": "Kopieren",
-  "app.copied": "Kopiert"
+  "app.copied": "Kopiert",
+  "when.today": "heute {time}",
+  "when.yesterday": "gestern {time}",
+  "run.title": "Auftrag",
+  "run.by": "Angefordert von {requester} · {mode}",
+  "run.log_empty": "Noch keine Schritte.",
+  "sites.add": "Website hinzufügen",
+  "sites.addresses_heading": "Adressen",
+  "sites.more": "Weitere Optionen",
+  "sites.forget_ask": "Die Anmeldung für {name} vergessen?",
+  "sites.forget_body": "Die im Browser gespeicherte Anmeldung für diese Website wird gelöscht und ihr 1Password-Eintrag nicht mehr verknüpft; die nächste Anmeldung fragt erneut. Ein Auftrag auf dieser Website wird beendet. Der Eintrag selbst bleibt in 1Password.",
+  "pair.again_ask": "Erneut koppeln?",
+  "app.cancel": "Abbrechen",
+  "app.back": "Zurück"
 }

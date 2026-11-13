@@ -8,7 +8,7 @@
   "home.wait_reconnect": "A live view is open; open it again to reconnect.",
   "home.wait_question": "A question is waiting for your answer; you can look at the page first.",
   "home.open": "Open",
-  "home.live_heading": "Live view",
+  "home.live_heading": "Needs you",
   "home.runs_heading": "Runs",
   "home.notices_heading": "Notices",
   "runs.none": "No runs yet.",
@@ -145,5 +145,18 @@
   "js.wait": "One moment…",
   "js.kept": "Reconnecting — text kept",
   "app.copy": "Copy",
-  "app.copied": "Copied"
+  "app.copied": "Copied",
+  "when.today": "today {time}",
+  "when.yesterday": "yesterday {time}",
+  "run.title": "Run",
+  "run.by": "Requested by {requester} · {mode}",
+  "run.log_empty": "No steps yet.",
+  "sites.add": "Add site",
+  "sites.addresses_heading": "Addresses",
+  "sites.more": "More options",
+  "sites.forget_ask": "Forget the sign-in for {name}?",
+  "sites.forget_body": "The browser's saved sign-in for this site is cleared and its 1Password item is no longer linked, so the next login asks again. A run on this site stops. The item itself stays in 1Password.",
+  "pair.again_ask": "Pair again?",
+  "app.cancel": "Cancel",
+  "app.back": "Back"
 }
