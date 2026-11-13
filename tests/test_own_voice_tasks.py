@@ -602,7 +602,7 @@ NAME = "Finance"
 
 def _answer_note(link=None):
     """Ellen's close-the-loop note for Alex's answer, as the result carries it."""
-    where = f" ({link}); you may link it as [his chat]({link})" if link else ""
+    where = f" ({link}); you may link it as [{NAME}'s chat]({link})" if link else ""
     return tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME, where=where)
 START = "Ellen asked:\nHow much on groceries in October?"
 
@@ -694,7 +694,7 @@ async def test_a_long_answer_replies_only_with_its_first_page(world):
     assert all("reply_parameters" not in p for p in pages[1:])
 
 
-async def test_a_reply_to_the_start_post_still_reaches_the_task(world):
+async def test_the_start_post_is_filed_under_the_task_with_slot_task_start(world):
     _FakeSpecialistClient.reset(response="€420.")
     payload = await _delegate("sync")
     chat, mid, post = world.alex.filed[0]
@@ -726,7 +726,8 @@ async def test_the_delegate_is_told_its_answer_opens_with_done():
 async def test_the_close_note_links_the_helpers_chat():
     out = tools._with_own_chat_answer_note("x", "Alex", True, link="https://t.me/AlexBot")
     assert "https://t.me/AlexBot" in out
-    assert "[his chat](https://t.me/AlexBot)" in out
+    assert "[Alex's chat](https://t.me/AlexBot)" in out
+    assert "his chat" not in out
     assert "https://t.me" not in tools._with_own_chat_answer_note("x", "Alex", True)
 
 

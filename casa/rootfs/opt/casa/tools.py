@@ -1140,7 +1140,7 @@ def _with_own_chat_answer_note(text: str, shown_in: str, posted: bool, *,
     point there."""
     if not (shown_in and posted):
         return text
-    where = f" ({link}); you may link it as [his chat]({link})" if link else ""
+    where = f" ({link}); you may link it as [{shown_in}'s chat]({link})" if link else ""
     note = OWN_CHAT_ANSWER_NOTE.format(name=shown_in, where=where)
     return f"{text}\n\n{note}" if text else note
 
@@ -5857,7 +5857,8 @@ def _attach_completion_callback(
                                                   own_chat=bool(_shown))
                 bounded = _with_own_chat_answer_note(
                     bounded, _shown, posted,
-                    link=_own_chat_link(birth.executor) if birth is not None else None)
+                    link=(_own_chat_link(birth.executor)
+                          if _shown and posted and birth is not None else None))
                 bounded = _with_operator_words(
                     bounded, said, getattr(record, "executor", "") or record.agent)
                 bounded = _with_own_chat_offer_note(bounded, record.id)
@@ -8939,7 +8940,8 @@ async def delegate_to_agent(args: dict) -> dict:
                                            own_chat=bool(_shown))
             text = _with_own_chat_answer_note(
                 text, _shown, _posted,
-                link=_own_chat_link(_birth.executor) if _birth is not None else None)
+                link=(_own_chat_link(_birth.executor)
+                      if _shown and _posted and _birth is not None else None))
             text = _with_operator_words(text, _take_said(delegation_id), agent_name)
             text = _with_own_chat_offer_note(text, delegation_id)
         if not is_voice:
