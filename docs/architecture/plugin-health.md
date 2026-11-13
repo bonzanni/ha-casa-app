@@ -70,7 +70,9 @@ A turn the operator summoned in a group ([`guest-summons.md`](guest-summons.md))
 prepend the line: the group's message receives the model's text alone, and once that text has
 landed the line goes to the operator's chat with the agent as its own send, released by the
 same rule when that send reports nothing shown. A summoned turn whose text did not land
-releases it as any undelivered reply does.
+releases it as any undelivered reply does. A friend's summons there — a guest run — neither
+shows nor consults the notice: its group gets the run's text alone, and the cooldown is left
+for a turn that can show the line.
 
 A transport failure that cannot distinguish "never arrived" from "arrived, acknowledgement
 lost" is *not* a proven negative and does not release the memo. Only an established one

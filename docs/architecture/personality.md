@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-13
 ---
 
 # Personality: roles, personas and bindings
@@ -107,7 +107,10 @@ notice a change, check which side of that boundary the change is on.
 **Projections differ per surface, and admission has ceilings.** Text, voice and
 restricted-webhook prompts have materially different contents — voice carries only the
 persona core plus two quirks, and the restricted path no persona at all — and each surface
-enforces hard persona/total token ceilings (2k/12k text, 400/6k voice, 0/4k restricted).
+enforces hard persona/total token ceilings (2k/12k text, 400/6k voice, 0/4k restricted,
+400/12k guest). The fourth surface, `guest`, answers a friend's summons in a group
+([`guest-summons.md`](guest-summons.md)): the core doctrine and a `Guest projection` section
+only (`_SURFACE_SECTIONS`), with voice's short persona body.
 A persona that validates structurally can still fail *activation* on a ceiling, and voice
 behavior written only outside the core never reaches the voice surface. At serve time a
 session's memory view goes into a projection's one slot, after `<persona>` and before

@@ -116,7 +116,9 @@ resident, `specialist` for a specialist talking in its own chat ([`own-voice.md`
 
 Enforced by the channel write-policy check (`channel_policy.writes_to_bank`), read by every
 capture seam: a turn or a delegation whose channel is not write-trusted captures
-nothing (`memory.eligibility.admit`).
+nothing (`memory.eligibility.admit`). The guest channel (`telegram_guest`, a friend's summons
+in a group) is not write-trusted, and its run reaches no capture seam at all (INV-GUEST-003 in
+[`guest-summons.md`](guest-summons.md)).
 
 What it does not cover: `memory.capture.record` itself enforces nothing. A future seam that
 skips `admit` would bypass it.

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-13
 ---
 
 # The tool interface
@@ -283,10 +283,13 @@ drop-off a plugin declares instead of a delegation brief, is described in
 `hand_off`, which a specialist — answering a request, or asked in its own chat — uses to hand part of its work to another
 specialist and wait for the answer, is described in
 [`specialist-handoff.md`](specialist-handoff.md).
-`guest_access`, with which a specialist the operator summoned in a group lets everyone there
-ask it (`allow`), stops that (`revoke`) or reports it (`status`) — the group taken only from
-the turn's server-stamped origin, never from the arguments — is described in
-[`guest-summons.md`](guest-summons.md).
+`guest_access` has two faces. With it a specialist the operator summoned in a group lets
+everyone there ask it (`allow`), stops that (`revoke`) or reports it (`status`) — the group
+taken only from the turn's server-stamped origin, never from the arguments; from the
+resident's own chat the operator lists every group any specialist may answer in (`list`)
+and revokes one by the role and chat id the list shows. Both are described in
+[`guest-summons.md`](guest-summons.md), as is the guest run, which is offered no Casa tool at
+all.
 
 ## Extension points
 

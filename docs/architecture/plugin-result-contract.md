@@ -124,6 +124,16 @@ name, in `casa.driverSweep`, one `safe` tool Casa calls itself once a minute
 calls directly to list and stop the work it carries on by itself
 ([`plugin-stop.md`](plugin-stop.md)).
 
+**An entry may offer its tool to guests.** `"guest": true` says a friend's summons of the
+specialist in a group the operator allowed — a guest run — may call the tool
+([`guest-summons.md`](guest-summons.md)). Only the literal true is accepted, and never on a
+`capability` tool, the setup tool, a tool that declares `callsCasa` or a protected tool: each
+fails the contract as `result_contract_invalid` (INV-GUEST-008). The map carries it as
+`ToolContract.guest`. On a guest run `broker_matchers` passes the run's allow-list to the
+admission callback as `guest_tools`, and a plugin tool outside it is denied there first,
+before a stored call's pin, the fault check or any record; on every other turn
+`guest_tools` is `None` and judges nothing.
+
 ## Contracts & invariants
 
 **INV-PLUG-017**: In a resident, delegated-specialist, specialist-engagement or plugin-job-worker session that loads a plugin, a call to a non-setup MCP tool of a plugin that has not adopted the result contract is refused before it runs by a code-registered PreToolUse hook whose reason quotes none of the call's arguments, and a result arriving for such a tool is replaced before the model sees it by a code-registered PostToolUse hook whose replacement quotes none of the result's bytes; the plugin's exact setup tool is exempt from both, and no hooks document can shed either hook.

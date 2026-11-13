@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-08
+last_reviewed: 2026-11-13
 ---
 
 # Plugin runtime attachment
@@ -45,7 +45,8 @@ fields* — `command`, `args`, `url`, `headers` and `env`, the positions the CLI
 absent, empty, or still an `op://` reference (a failed secret resolution falls back to
 the raw value). The two manifest declarations that carve out of it are INV-PLUG-009 below.
 Enforced at three points: both session builders — the resident/specialist
-Agent's resolution and the delegated-specialist options builder — filter the resolved
+Agent's resolution and the delegated-specialist options builder, which a guest run's
+builder follows on its own resolution ([`guest-summons.md`](guest-summons.md)) — filter the resolved
 plugin set before anything derives from it, so SDK plugins, grants, the protected map and
 (for residents) the recorded binding all reflect what the session actually loads; the
 setup-episode worker holds a settled episode until the secrets resolve, because a

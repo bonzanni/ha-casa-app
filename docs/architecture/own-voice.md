@@ -168,7 +168,9 @@ plugins under its profile), plus the session's extras every specialist session g
 run in the agent's log). What it writes is captured with speaker kind `specialist`. Its
 turns come from the operator's direct messages in its chat, from his summons of its bot in a
 chat it is not a member of — a turn of this same conversation whose final text alone is
-shown there ([`guest-summons.md`](guest-summons.md)) — and from results of work it started; work the resident started reaches it only as a `(Casa) ` note line, under one
+shown there ([`guest-summons.md`](guest-summons.md)); a friend's summons in a group he allowed
+is not one of them but a guest run of its own, with none of this conversation's memory — and
+from results of work it started; work the resident started reaches it only as a `(Casa) ` note line, under one
 frame line that hands those notes to it as its own memory (`agent.CHAT_NOTES_FRAME`).
 
 **Own-chat routing, on every endpoint.** In any chat, task first:

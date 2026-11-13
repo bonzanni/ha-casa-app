@@ -109,6 +109,8 @@
   doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/guest_groups.py
   doc: architecture/guest-summons.md
+- item: casa/rootfs/opt/casa/guest_run.py
+  doc: architecture/guest-summons.md
 - item: casa/rootfs/opt/casa/own_voice_lifecycle.py
   doc: architecture/own-voice-lifecycle.md
 - item: casa/rootfs/opt/casa/run_admission.py

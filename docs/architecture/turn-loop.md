@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-13
 ---
 
 # The turn loop
@@ -58,6 +58,14 @@ is [`output-boundary.md`](output-boundary.md) (its three decisions: INV-OUT-006 
 text — the time envelope and Casa's per-turn notes, summons notes among them — what the
 origin records as the turn's question, and how a specialist's own conversation runs this
 loop are [`turn-notes.md`](turn-notes.md).
+
+**A friend's summons leaves the loop early.** A message on the guest channel
+(`"telegram_guest"`) — a friend summoning a specialist's bot in a group the operator allowed —
+branches off in `_process` once the origin snapshot and scope exist, before the turn's
+identity, the session gate, the memory view, the correction note, chat notes, capture or the
+pool, into `Agent._guest_turn`: one bounded run on a client of its own, built by
+`tools._build_guest_options`, retried like any turn and cut at its timeout
+([`guest-summons.md`](guest-summons.md), INV-GUEST-002, INV-GUEST-003).
 
 ## Contracts & invariants
 
