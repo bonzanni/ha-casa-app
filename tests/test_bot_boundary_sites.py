@@ -895,6 +895,7 @@ ROUTE_READERS = {
     ("task_model.py", "<module>"): (1, ROUTE, "a requester's stored route is checked against the route keys"),
     ("task_model.py", "Requester.from_json"): (1, ROUTE, "a requester's stored route is checked against the route keys"),
     ("tools.py", "start_scheduled_job"): (1, ROUTE, "stamped where a scheduled job is born"),
+    ("tools.py", "_record_reply_to"): (1, ROUTE, "a record's reply target is kept only when it is a message of the bot its narration goes out through"),
     ("trigger_registry.py", "_fresh_route"): (2, ROUTE, "stamped where a trigger turn is born"),
 }
 
@@ -984,6 +985,7 @@ BOT_ID_READS = {
     ("task_model.py", "delivery_for"): (2, PRE_POST, "test_task_model.py::test_the_resident_born_before_its_bot_has_an_id_delivers_nothing"),
     ("specialist_install_consent.py", "prompt_specialist_install_consent"): (1, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),
     ("tools.py", "_erase_gate"): (2, FIELD, "Casa's operator address, read before the question"),
+    ("tools.py", "_record_reply_to"): (1, FIELD, "the reply target's own bot, compared with the record's route"),
     ("tools.py", "_note_task"): (1, FIELD, "the task's delivery's own bot"),
     ("tools.py", "_post_task_start"): (1, FIELD, "the task's delivery's own bot, the address its answer replies to"),
     ("tools.py", "ask_user"): (1, PRE_POST, "test_tools_route.py::test_a_scheduled_question_before_casas_bot_has_an_id_touches_nothing"),
