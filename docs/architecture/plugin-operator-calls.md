@@ -103,7 +103,9 @@ to none); the Start choice's `on_settle` records the admission as `admitted` wit
 address and its settled text (`Confirmation.card`, `[bot, chat, message]`, and `card_text`),
 and only then posts one silent line, `Started.` (`run_admission.STARTED_LINE`), in reply to
 the card under the agent's label (`plugin_stop.post_line`), which raises the request's red
-Stop key at the reply keyboard ([`plugin-stop.md`](plugin-stop.md)), so the key never shows
+Stop key at the reply keyboard ([`plugin-stop.md`](plugin-stop.md)), named by the title
+stored with the request when it was asked (`Confirmation.title`, `run_admission.key_title`:
+its first task, never a site), so the key never shows
 for a request not yet admitted; when that line does not land, the card is edited to carry a
 red Stop button instead (`run_admission.stop_button`, the `run_stop` callback). When his words admitted the runs there is no start card, so
 one status card (`compose_status`: `On it for Ellen:` over the same run lines — `On it:` when

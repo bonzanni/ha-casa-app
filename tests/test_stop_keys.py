@@ -85,7 +85,6 @@ def keys(markup) -> list:
 @pytest.fixture
 async def rig(monkeypatch, tmp_path):
     import authz_grants
-    stop_keys.reset()
     chat_notes.reset()
     monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: (OPERATOR, OPERATOR))
     monkeypatch.setattr(tools_mod, "_agent_role_map", {
@@ -139,7 +138,7 @@ async def rig(monkeypatch, tmp_path):
                                        keyboard=JOB_POST_START)
         return rec
 
-    def run(cid="conf-" + "c" * 32, *, key="k1", card_mid=CARD_MID, text=CARD_TEXT):
+    def run(cid="conf-" + "c" * 32, *, key="k1", card_mid=CARD_MID, text=CARD_TEXT, title="invoice"):
         ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
                               artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
                               delivery=TgAddress(BOT, OPERATOR))
@@ -149,13 +148,13 @@ async def rig(monkeypatch, tmp_path):
         c = run_admission.Confirmation(
             cid=cid, plugin="browser", bot_id=BOT, operator_id=OPERATOR, binding_ref=b.ref,
             request_key=key, status="admitted", admissions=[], created_at=time.time(),
-            card=[BOT, OPERATOR, card_mid] if card_mid else None, card_text=text)
+            card=[BOT, OPERATOR, card_mid] if card_mid else None, card_text=text,
+            title=title)
         run_admission.CONFIRMATIONS.add(c)
         return c
 
     yield types.SimpleNamespace(ch=ch, bot=ch._app.bot, reg=reg, job=job, run=run,
                                 cancels=cancels, stops=stops)
-    stop_keys.reset()
 
 
 def _message(text, *, user=OPERATOR, mid=990):
@@ -190,11 +189,11 @@ async def test_a_run_status_card_raises_its_key_beside_a_live_jobs(rig):
     await rig.job()
     c = rig.run(card_mid=None, text="")
     mid = await rig.ch.deliver_run_card(OPERATOR, CARD_TEXT,
-                                        starting=stop_keys.run_item(c, CARD_TEXT))
+                                        starting=stop_keys.run_item(c))
     assert mid == 901
     (sent,) = rig.bot.sent
     assert keys(sent["reply_markup"]) == [[("⏹ Stop «Accounting check»", "danger")],
-                                          [("⏹ Stop «RunPod»", "danger")]]
+                                          [("⏹ Stop «invoice»", "danger")]]
 
 
 async def test_the_started_line_after_his_start_tap_raises_the_runs_key(rig):
@@ -204,7 +203,7 @@ async def test_the_started_line_after_his_start_tap_raises_the_runs_key(rig):
     (sent,) = rig.bot.sent
     assert (sent["text"], sent["reply_to_message_id"]) == ("📊 Fido\nStarted.", CARD_MID)
     assert sent["disable_notification"] is True
-    assert keys(sent["reply_markup"]) == [[("⏹ Stop «RunPod»", "danger")]]
+    assert keys(sent["reply_markup"]) == [[("⏹ Stop «invoice»", "danger")]]
 
 
 def _at(rig, rec, clock: str):
@@ -248,7 +247,6 @@ async def test_after_a_restart_a_shown_key_still_stops_its_own_item(rig):
     shown = keys(stop_keys.keyboard(BOT, OPERATOR))      # what his phone shows
     assert shown == [[("⏹ Stop «Accounting check» · 19:50", "danger")],
                      [("⏹ Stop «Accounting check» · 19:58", "danger")]]
-    stop_keys.reset()                                    # a restart
     await _press(rig, "⏹ Stop «Accounting check» · 19:50")
     assert rig.cancels == [(b.id, "the operator")]
 
@@ -314,7 +312,7 @@ async def test_a_press_while_its_cancel_runs_cancels_once(rig):
 async def test_a_press_stops_the_run_through_plugin_stop_and_takes_its_key(rig):
     await rig.job()
     c = rig.run()
-    await _press(rig, "⏹ Stop «RunPod»")
+    await _press(rig, "⏹ Stop «invoice»")
     assert rig.stops == [{"ref": "request:k1"}]
     rig.ch._dispatch_dm_turn.assert_not_awaited()
     assert len(rig.bot.deleted) == 1
@@ -352,12 +350,21 @@ async def test_a_key_whose_work_is_gone_is_answered_with_the_keys_still_live(rig
     assert keys(line["reply_markup"]) == [[("⏹ Stop «Bank sync»", "danger")]]
 
 
-async def test_after_a_restart_a_stale_key_is_an_ordinary_message(rig):
-    first = await rig.job()
-    stop_keys.keyboard(BOT, OPERATOR)
-    await rig.reg.try_transition_terminal(first.id, "completed", strict=True)
-    stop_keys.reset()                                    # a restart empties the memory
-    await _press(rig, "⏹ Stop «Accounting check»")
+async def test_a_key_casa_never_showed_in_this_process_is_answered_and_taken_down(rig):
+    """A key left on his phone from before a restart, for work that is gone: no record
+    names it, and it is still answered and its keyboard replaced."""
+    await _press(rig, "⏹ Stop «news summary» · 07:12")
+    assert len(rig.bot.deleted) == 1
+    rig.ch._dispatch_dm_turn.assert_not_awaited()
+    (line,) = rig.bot.sent
+    assert line["text"] == "It had already ended."
+    assert keys(line["reply_markup"]) == "remove"
+
+
+@pytest.mark.parametrize("text", ["⏹ Stop", "⏹ Stop «", "Stop «Accounting check»",
+                                  "please ⏹ Stop «Accounting check»"])
+async def test_a_text_that_has_not_a_keys_form_is_an_ordinary_message(rig, text):
+    await _press(rig, text)
     assert rig.bot.sent == [] and rig.bot.deleted == []
     rig.ch._dispatch_dm_turn.assert_awaited_once()
 
@@ -385,7 +392,7 @@ async def test_a_jobs_end_line_carries_its_outcome_cost_and_the_keys_still_live(
     (sent,) = rig.bot.sent
     assert sent["text"] == line + suffix and sent["disable_notification"] is True
     assert sent["reply_parameters"].message_id == START_MID
-    assert keys(sent["reply_markup"]) == [[("⏹ Stop «RunPod»", "danger")]]
+    assert keys(sent["reply_markup"]) == [[("⏹ Stop «invoice»", "danger")]]
 
 
 async def test_a_jobs_start_line_is_never_edited_for_its_whole_life(rig):
@@ -458,11 +465,18 @@ async def test_stop_work_posts_a_silent_stopped_line_that_takes_the_key(rig):
     assert line["disable_notification"] is True and keys(line["reply_markup"]) == "remove"
 
 
-def test_a_runs_title_is_the_sites_its_card_names():
-    assert stop_keys.run_title(CARD_TEXT) == "RunPod"
-    assert stop_keys.run_title(
-        "📊 Fido\nOn it (2 runs):\n• RunPod — a\n• Hetzner, RunPod — b\n• RunPod — c"
-    ) == "RunPod, Hetzner"
-    assert stop_keys.run_title("📊 Fido\nOK to start?\n• the open web — find flights\n\n"
-                               "☑ Start") == "the open web"
-    assert stop_keys.run_title("") == "browsing"
+def test_a_runs_title_is_its_first_task_and_never_a_site():
+    run = {"mode": "sites", "task_kind": "download  invoice", "task_text": "",
+           "sites": [{"name": "Acme — Billing"}]}
+    assert run_admission.key_title([run]) == "download invoice"
+    assert run_admission.key_title([run, run, run]) == "download invoice +2"
+    assert run_admission.key_title([{**run, "task_kind": "", "task_text": "get the PDF"}]) \
+        == "get the PDF"
+    assert run_admission.key_title([{**run, "task_kind": ""}]) == "browsing"
+    long = run_admission.key_title([{**run, "task_kind": "x" * 60}, run])
+    assert long == "x" * 36 + "… +1" and stop_keys._clip(long) == long
+
+
+def test_a_request_stored_without_a_title_has_a_browsing_key(rig):
+    c = rig.run(title="")
+    assert stop_keys.run_item(c).title == "browsing"

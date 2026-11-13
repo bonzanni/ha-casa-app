@@ -14,9 +14,12 @@ Nothing here is stored: the live set is read from those records each time a keyb
 sent or a key is pressed. A reply keyboard belongs to one bot's chat, so everything is per
 ``(bot, chat)``. A key's text is its label, ``⏹ Stop «title»``; a press arrives as the
 operator's own text message equal to it, and is matched by exact equality against the
-labels issued here, never by reading what was typed. Live items with the same title are
-told apart by the time each started (`` · 19:42``). A label is worked out from the records
-alone, so the keyboard a chat was last sent names the same items after a restart.
+labels of the live items. Live items with the same title are told apart by the time each
+started (`` · 19:42``). A label is worked out from the records alone, so the keyboard a
+chat was last sent names the same items after a restart. A message that has a key's own
+form and names no live item is a key whose work is gone, whenever it was shown and
+whether or not Casa restarted since: it is answered, and the keyboard it was pressed on
+is replaced.
 
 A Telegram message carries an inline keyboard or a reply keyboard, never both, and an edit
 cannot raise or remove a reply keyboard: the keyboard rides on the messages Casa posts for
@@ -28,7 +31,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import threading
 from typing import Any
 
 from channels.tg_address import TgAddress
@@ -37,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 LABEL = "⏹ Stop «{title}»"
 TITLE_CHARS = 40
+#: what every label starts with and, after its title, goes on with
+_LABEL_HEAD, _LABEL_CLOSE = LABEL.split("{title}")
 #: the line a press of a key whose work is gone gets (``plugin_stop``'s own wording)
 ENDED_LINE = "It had already ended."
 #: a job's end line, by its terminal status: (mark, in the agent's own chat, elsewhere —
@@ -60,11 +64,6 @@ class Item:
     start: "TgAddress | None" = None
 
 
-_lock = threading.Lock()
-#: (bot, chat) → the labels of the keyboard last sent there
-_SHOWN: dict[tuple[int, int], tuple[str, ...]] = {}
-
-
 def _clip(title: str) -> str:
     title = " ".join(str(title).split()) or "work"
     return title if len(title) <= TITLE_CHARS else title[:TITLE_CHARS - 1].rstrip() + "…"
@@ -80,21 +79,10 @@ def job_item(rec: Any, start: "TgAddress | None" = None) -> Item:
                 start)
 
 
-def run_title(card_text: str) -> str:
-    """The sites a request's card names (its ``• <sites> — <task>`` lines, built by
-    ``run_admission._run_lines``), each once, in order; ``browsing`` when it names none."""
-    seen: list[str] = []
-    for line in str(card_text or "").splitlines():
-        if line.startswith("• "):
-            for name in line[2:].split(" — ", 1)[0].split(", "):
-                name = name.strip()
-                if name and name not in seen:
-                    seen.append(name)
-    return ", ".join(seen) or "browsing"
-
-
-def run_item(c: Any, card_text: str = "") -> Item:
-    return Item("run", str(c.cid), run_title(card_text or c.card_text),
+def run_item(c: Any) -> Item:
+    """A browsing request's item, titled by what it does (``run_admission.key_title``,
+    stored with the request)."""
+    return Item("run", str(c.cid), str(getattr(c, "title", "") or "browsing"),
                 float(getattr(c, "created_at", 0.0) or 0.0), c.card_address())
 
 
@@ -163,11 +151,9 @@ def _shared(items: list[Item], labels: dict[int, str]) -> list[Item]:
 def keyboard(bot_id: int, chat_id: int, *, starting: "Item | None" = None) -> Any:
     """The reply keyboard for a message Casa is about to send in the chat: one red key per
     live item, one row each (*starting* included), or the keyboard's removal when none is
-    live. Its labels are remembered as the chat's last shown."""
+    live."""
     from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
     labels = [label for label, _ in _labelled(int(bot_id), int(chat_id), starting)]
-    with _lock:
-        _SHOWN[(int(bot_id), int(chat_id))] = tuple(labels)
     if not labels:
         return ReplyKeyboardRemove()
     return ReplyKeyboardMarkup([[KeyboardButton(text=label, style="danger")] for label in labels],
@@ -176,16 +162,16 @@ def keyboard(bot_id: int, chat_id: int, *, starting: "Item | None" = None) -> An
 
 def pressed(bot_id: int, chat_id: int, text: str) -> "tuple[str, Item | None] | None":
     """What a message *text* in the chat presses: ``("live", item)`` for the label of a live
-    item, ``("ended", None)`` for a label last shown there whose item is gone, else ``None``
-    — the message is not a key."""
+    item, ``("ended", None)`` for any other text of a key's form (``⏹ Stop «…»…``) — a key
+    whose work is gone — else ``None``: the message is not a key."""
     if not text:
         return None
     for label, item in _labelled(int(bot_id), int(chat_id), None):
         if label == text:
             return "live", item
-    with _lock:
-        shown = _SHOWN.get((int(bot_id), int(chat_id)), ())
-    return ("ended", None) if text in shown else None
+    if text.startswith(_LABEL_HEAD) and _LABEL_CLOSE in text[len(_LABEL_HEAD):]:
+        return "ended", None
+    return None
 
 
 def job_end_line(rec: Any, agent: str = "") -> str:
@@ -195,8 +181,3 @@ def job_end_line(rec: Any, agent: str = "") -> str:
     mark, own, named = JOB_END_LINES.get(getattr(rec, "status", ""), JOB_FAILED_LINE)
     text = (named if agent else own).format(title=job_title(rec), agent=agent)
     return f"{mark} {text}"
-
-
-def reset() -> None:
-    with _lock:
-        _SHOWN.clear()

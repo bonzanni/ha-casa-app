@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.372.4] - 2026-11-13
+
+### Changed
+
+- The red **⏹ Stop** key of a browsing request is now named after what the request does ("⏹ Stop «news summary»") instead of where it browses ("⏹ Stop «the open web»"). A request with several tasks shows the first one and how many more. A request that was already running when Casa was upgraded shows "⏹ Stop «browsing»".
+
+### Fixed
+
+- A Stop key left at the keyboard for work that had already ended could stay there after Casa restarted: pressing it sent its text to the agent as a message and the key did not go. Pressing such a key now answers "It had already ended." and takes it down.
+
 ## [0.372.3] - 2026-11-13
 
 ### Changed

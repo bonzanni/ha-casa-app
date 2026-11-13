@@ -86,7 +86,9 @@ no line: he has been told.
 field while a card scrolls up the chat, so stoppable work in his chat with a bot has one red
 key there, labelled `⏹ Stop «<title>»` (the title clipped to forty characters): a
 browsing request while its admission is `admitted`, holds its card and has its binding
-(`Confirmations.open_cards`), titled by the sites its card names; and a background job he
+(`Confirmations.open_cards`), titled by what it does (`run_admission.key_title`, stored with the
+admission: its first run's task and ` +N` for the runs after it, `browsing` when that run
+names no task; never a site); and a background job he
 started while its record is live and its start line is filed at that bot and chat. Nothing
 is stored: the live set is read from those records each time a keyboard is sent or a key is
 pressed, per bot and chat. Live items with one title are told apart by the time each started
@@ -100,15 +102,17 @@ that ended on its own, a job's end line. Each such message carries every key sti
 the chat, or the keyboard's removal when none is.
 
 **A press** arrives as the operator's own text message equal to a label, and is matched by
-exact equality against the labels issued in that chat (`stop_keys.pressed`), never by reading
-what was typed; `TelegramChannel._press_stop_key` checks it in the serialised text path,
+exact equality against the labels of the chat's live items (`stop_keys.pressed`);
+`TelegramChannel._press_stop_key` checks it in the serialised text path,
 before the route of a reply into a live task (a press made while he is replying to a post
 arrives as a reply) and only for the operator. A
 request's key runs the same Stop as its card's callback (`_stop_run_by_key`: the same
 `_run_stop_allowed` checks, the same task, `_spawn_run_stop`), whose line replies to the card;
 a job's key runs the job's cancel funnel ([`background-job-direct-chat.md`](background-job-direct-chat.md)).
-A label last shown in the chat whose work is gone gets `It had already ended.` with the keys
-still live. In every case his message is deleted, no turn starts and nothing reaches the
+Any other message of a key's own form (`⏹ Stop «…»`, with whatever follows the title) is a
+key whose work is gone: it gets `It had already ended.` with the keys still live, or the
+keyboard's removal when none is, so a key left on his phone is taken down by its first press.
+In every case his message is deleted, no turn starts and nothing reaches the
 agent; any other text, from anyone else, or a prefix of a label takes its ordinary path.
 
 **A request that ends on its own loses its Stop too** (`plugin_stop.settle_ended`). The
@@ -204,10 +208,10 @@ not know the request** (`unknown`). The request keeps its card and its key and n
 posted; a proposal reads `✖ expired`. **The plugin is no longer resolved for the role.**
 `unavailable`: no card mark, the line says so. **The card edit or the line fails.** It is logged; the stop already ran. **The stop
 task raises.** Logged; the request keeps its card and its key, on a proposal the last line is
-`✖ failed`. **Casa restarts.** The flights and the memory of the labels last shown are gone with
+`✖ failed`. **Casa restarts.** The flights are gone with
 the process; admissions and job records survive, so a card's Stop still works and a key of
 live work still matches, its label being read from the records; a key whose work ended before
-the restart is an ordinary message. **A card edit fails.** It is tried once; the card is forgotten all the
+the restart is answered as any key whose work is gone. **A card edit fails.** It is tried once; the card is forgotten all the
 same after `stopped`, `ended` or `already_stopped` (`settle_stop`, `settle_ended`), so the key
 goes, and an inline Stop left on it says the request had already ended. **No card landed**
 (the status card's post failed). Nothing is marked, the request has no key, and `stop_work`
