@@ -1470,7 +1470,8 @@ class Agent:
             # A friend's summons in a group: the reply goes out through the
             # Telegram transport, whose ``guest_finish`` and ``turn_finished``
             # route by the bot the context names.
-            channel = self._channel_manager.get("telegram")
+            from channels.telegram_transport import telegram_transport
+            channel = telegram_transport(self._channel_manager)
             delivery_context = msg.context
         else:
             channel = (self._channel_manager.get(msg.channel)
