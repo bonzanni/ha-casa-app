@@ -30,7 +30,13 @@ MON_MIDNIGHT_ROME = 1794783600      # 2026-11-15T23:00:00Z
 
 @pytest.fixture(autouse=True)
 def _rome(monkeypatch):
+    """Casa's timezone is Rome here; ``resolve_tz`` caches its answer, so the cache is
+    cleared around each test and a zone an earlier test cached never leaks in or out."""
+    import timekeeping
     monkeypatch.setenv("CASA_TZ", "Europe/Rome")
+    timekeeping.resolve_tz.cache_clear()
+    yield
+    timekeeping.resolve_tz.cache_clear()
 
 
 def _times(ents):

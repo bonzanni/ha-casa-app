@@ -56,7 +56,7 @@ async def test_the_resident_s_end_notice_carries_time_and_cost():
     assert tools._with_job_cost("Done.", {"started_at": 0, "origin": {}}, 5) == "Done."
 
 
-def test_the_end_notice_asks_the_narration_to_mention_time_and_cost():
+async def test_the_end_notice_asks_the_narration_to_mention_time_and_cost():
     import tools
     assert tools.JOB_COST_NOTE == (
         "(Casa: mention how long the job ran and what it cost, in your own words.)")
