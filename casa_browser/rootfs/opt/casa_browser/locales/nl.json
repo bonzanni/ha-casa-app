@@ -8,7 +8,7 @@
   "home.wait_reconnect": "Er is een live weergave open; open hem opnieuw om weer te verbinden.",
   "home.wait_question": "Er wacht een vraag op je antwoord; je kunt eerst de pagina bekijken.",
   "home.open": "Openen",
-  "home.live_heading": "Live weergave",
+  "home.live_heading": "Wacht op jou",
   "home.runs_heading": "Taken",
   "home.notices_heading": "Meldingen",
   "runs.none": "Nog geen taken.",
@@ -145,5 +145,18 @@
   "js.wait": "Even geduld…",
   "js.kept": "Opnieuw verbinden — tekst bewaard",
   "app.copy": "Kopiëren",
-  "app.copied": "Gekopieerd"
+  "app.copied": "Gekopieerd",
+  "when.today": "vandaag {time}",
+  "when.yesterday": "gisteren {time}",
+  "run.title": "Taak",
+  "run.by": "Gevraagd door {requester} · {mode}",
+  "run.log_empty": "Nog geen stappen.",
+  "sites.add": "Site toevoegen",
+  "sites.addresses_heading": "Adressen",
+  "sites.more": "Meer opties",
+  "sites.forget_ask": "De inlog voor {name} vergeten?",
+  "sites.forget_body": "De in de browser bewaarde inlog voor deze site wordt gewist en het 1Password-item is niet meer gekoppeld; de volgende inlog vraagt opnieuw. Een taak op deze site stopt. Het item zelf blijft in 1Password.",
+  "pair.again_ask": "Opnieuw koppelen?",
+  "app.cancel": "Annuleren",
+  "app.back": "Terug"
 }

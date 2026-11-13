@@ -146,17 +146,18 @@ going; tap Stop to end it." with **Keep going** and **Stop**; no answer means it
 
 ## The app's page
 
-The app's panel in Home Assistant is where you look after it:
+The app's panel in Home Assistant is where you look after it. It follows your Home Assistant
+theme, light or dark, and on a phone its three tabs sit at the bottom:
 
 - **Home** lists, first, whatever waits for you in the browser — a live view to open or to
   reconnect to, or a question whose page you can look at first — each with **Open**; then the
   runs (each with its step log, screenshots and files) and the latest notices. It shows a new
   live view by itself.
-- **Sites** lists your sites, how each signs in, the sign-in provider it learned (such as
-  Google), and **Forget sign-in** (the 1Password item stays). Tap an address to copy it. You
-  do not have to add a site here: the sign-in card above does it. You can still add one by
-  hand (its addresses, and either a 1Password item or nothing: then your first login in the
-  live view saves it).
+- **Sites** lists your sites and how each signs in. Tap one to see the sign-in provider it
+  learned (such as Google), its addresses (tap one to copy it), and **Forget sign-in**, which
+  asks first (the 1Password item stays). You do not have to add a site here: the sign-in card
+  above does it. You can still add one by hand with **Add site** (its addresses, and either a
+  1Password item or nothing: then your first login in the live view saves it).
 - **Setup** shows whether the app is ready, what the vault's user list says about the
   guest (read-only when at least one user of the vault is read-only; a warning when none is;
   nothing to confirm), and pairs with Casa.

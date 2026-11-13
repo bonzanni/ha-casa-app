@@ -97,7 +97,7 @@ async def test_home_lists_live_waits_first(rig, operator):
     assert status == 200
     opens = re.findall(r'action="' + re.escape(PREFIX) + r'/runs/([^/"]+)/open"', html)
     assert opens == [run_id]
-    assert html.index("Live view") < html.index("<h2>Runs</h2>")
+    assert html.index("Needs you") < html.index("<h2>Runs</h2>")
     for q in queued:
         assert f"/runs/{q}\"" in html and f"/runs/{q}/open" not in html
 
@@ -237,7 +237,7 @@ async def test_register_and_forget_from_the_sites_page(rig, operator):
                     "extra_field_names": ["recovery codes"]}
         return await real(op, **args)
     rig.broker.call = call
-    await operator.get("/sites")
+    await operator.get("/sites/new")
     status, _, resp = await operator.post("/sites", {
         "display_name": "Shop", "origins": "https://shop.example\n", "login_origins":
         "https://login.shop.example", "vault_item_id": "item_shop", "start_page": "",
@@ -249,12 +249,14 @@ async def test_register_and_forget_from_the_sites_page(rig, operator):
     site = next(s for s in rig.store.list_sites() if s.display_name == "Shop")
     assert site.origins == ("https://shop.example",) and site.vault_item_id == "item_shop"
     # without the confirmation nothing is registered
-    await operator.get("/sites")
+    await operator.get("/sites/new")
     status, _, _ = await operator.post("/sites", {"display_name": "Other", "origins":
                                                   "https://other.example"})
     assert status == 400 and not any(s.display_name == "Other" for s in rig.store.list_sites())
-    # forget: confirmed, through the controller, never a vault call
-    await operator.get("/sites")
+    # forget: from the site's own page, asked first (app.js's dialog: data-confirm), through
+    # the controller, never a vault call
+    status, page, _ = await operator.get(f"/sites/{site.site_id}")
+    assert status == 200 and re.search(r'/sites/' + re.escape(site.site_id) + r'/forget"[^>]*data-confirm=', page)
     status, _, _ = await operator.post(f"/sites/{site.site_id}/forget", {"confirm": "yes"})
     assert status == 303
     assert ("forget_profile", site.site_id) in rig.log
@@ -322,11 +324,11 @@ async def test_addresses_and_codes_copy_with_one_tap(rig, operator):
     with the exact text to copy), and app.js wires every such code to the clipboard."""
     from pathlib import Path
     import casa_browser
-    _, html, _ = await operator.get("/sites")
     for site in rig.store.list_sites():
+        _, html, _ = await operator.get(f"/sites/{site.site_id}")
         for address in (*site.origins, *site.login_origins):
             assert f'data-copy="{address}"' in html, address
-    assert html.count('class="copy"') >= 1
+        assert html.count('class="copy"') >= 1
     js = (Path(casa_browser.__file__).parent / "static/app.js").read_text()
     assert "querySelectorAll('code.copy')" in js and "clipboard.writeText" in js
     assert "execCommand('copy')" in js          # plain http (no clipboard API)
@@ -425,8 +427,28 @@ async def test_open_says_it_is_opening_and_presses_once(rig, operator):
     submit, so a second tap cannot spend the form)."""
     run_id = await waiting_run(rig)
     _status, html, _ = await operator.get("/")
-    assert re.search(r'/runs/' + re.escape(run_id) + r'/open".*?<button class="primary" data-busy="Opening…">',
+    assert re.search(r'/runs/' + re.escape(run_id) + r'/open".*?<button class="primary s" data-busy="Opening…">',
                      html, re.S)
     grant = rig.live.grants[run_id].grant_id
     _status, html, _ = await operator.get(f"/live/{grant}")
-    assert '<button class="primary" data-busy="Opening…">' in html
+    assert '<button class="primary s" data-busy="Opening…">' in html
+
+
+async def test_pages_carry_no_inline_style_and_name_their_tab(rig, operator):
+    """The CSP admits only this app's stylesheet ('self', no 'unsafe-inline'): a style="…"
+    attribute on a page would be dropped by the browser, so the look lives in style.css alone.
+    Every page loads theme.js (Home Assistant's resolved theme) before it paints, and marks
+    the tab it belongs to; a site's page and the Add site page are sub-pages of Sites."""
+    run_id = await waiting_run(rig)
+    site = rig.store.list_sites()[0]
+    expect = {"/": "/", f"/runs/{run_id}": "/", "/sites": "/sites", f"/sites/{site.site_id}": "/sites",
+              "/sites/new": "/sites", "/setup": "/setup", "/pair": "/setup"}
+    for path, tab in expect.items():
+        status, html, _ = await operator.get(path)
+        assert status == 200, path
+        assert " style=" not in html and "<style" not in html, path
+        head = html[:html.index("</head>")]
+        assert f"{PREFIX}/static/theme.js" in head, path
+        assert re.findall(r'<a href="([^"]+)" aria-current="page">', html) == [PREFIX + tab], path
+    status, _, _ = await operator.get("/sites/no-such-site")
+    assert status == 404

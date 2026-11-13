@@ -8,7 +8,7 @@
   "home.wait_reconnect": "Una vista dal vivo è aperta; riaprila per riconnetterti.",
   "home.wait_question": "Una domanda attende la tua risposta; puoi prima guardare la pagina.",
   "home.open": "Apri",
-  "home.live_heading": "Vista dal vivo",
+  "home.live_heading": "Ti aspetta",
   "home.runs_heading": "Attività",
   "home.notices_heading": "Avvisi",
   "runs.none": "Ancora nessuna attività.",
@@ -145,5 +145,18 @@
   "js.wait": "Un momento…",
   "js.kept": "Riconnessione — testo tenuto",
   "app.copy": "Copia",
-  "app.copied": "Copiato"
+  "app.copied": "Copiato",
+  "when.today": "oggi {time}",
+  "when.yesterday": "ieri {time}",
+  "run.title": "Attività",
+  "run.by": "Richiesta da {requester} · {mode}",
+  "run.log_empty": "Ancora nessun passo.",
+  "sites.add": "Aggiungi sito",
+  "sites.addresses_heading": "Indirizzi",
+  "sites.more": "Altre opzioni",
+  "sites.forget_ask": "Dimenticare l'accesso per {name}?",
+  "sites.forget_body": "L'accesso salvato nel browser per questo sito viene cancellato e il suo elemento di 1Password non è più collegato: il prossimo accesso lo chiederà di nuovo. Un'attività su questo sito si ferma. L'elemento resta in 1Password.",
+  "pair.again_ask": "Associare di nuovo?",
+  "app.cancel": "Annulla",
+  "app.back": "Indietro"
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.16] - 2026-11-13
+
+### Changed
+
+- The app's panel now looks like Home Assistant: its cards, lists, buttons and icons, in your Home Assistant theme, light or dark (a custom theme's colours too). On a phone the Home, Sites and Setup tabs sit at the bottom, as in Home Assistant's own settings.
+- Home puts what waits for you under "Needs you", each with its own **Open**, and lists the runs with their state and when they started; notices fold away.
+- A run's page shows its state, its files and its steps as a timeline.
+- Each site has its own page with its sign-in, its provider and its addresses. **Forget sign-in** is there and asks before it forgets. Adding a site by hand moved to **Add site**, with the less common fields under "More options".
+- The live view's Done button takes your theme's colour.
+
 ## [0.1.15] - 2026-11-11
 
 ### Fixed

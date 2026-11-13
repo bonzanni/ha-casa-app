@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-13
 ---
 
 # Casa Browser — ingress UI and the live view
@@ -54,10 +54,14 @@ save tap's nonce is its `consent_id` for the broker. Pages are escaped, never ca
 
 | Path | What |
 |---|---|
-| `/` | Live views first — every run in `waiting_live`, then every run in `live` (to reconnect), each with one **Open**, then every run waiting on an open question that offers a live view (its questions wait in Telegram) — then recent runs, notices |
+| `/` | "Needs you" first — every run in `waiting_live`, then every run in `live` (to reconnect), each in its own card with one **Open**, then every run waiting on an open question that offers a live view (its questions wait in Telegram) — then recent runs as a list (state, today/yesterday or the date), notices folded |
 | `/runs/{run}` | the run's state, task, files with their delivery outcome, the step log with its operator-only screenshots (`/runs/{run}/screenshots/{id}`: that run's ids only) |
-| `/sites` | registered sites (sign-in status; provider binding "bound to {provider}", "provider sign-in not bound", or "provider sign-in needs a live login" when the binding was learned under another proxy binding key than the current one — after an HA restore, which does not bring the key back — or under none recorded), registration (a 1Password item, or none: the first login live view's save creates it; the item's extra field names, never contents, with the whole-vault warning), forget (confirmed; the controller's forget, never a vault call) |
+| `/sites` | registered sites, one row each: how the site signs in, or "provider sign-in needs a live login" when the binding was learned under another proxy binding key than the current one — after an HA restore, which does not bring the key back — or under none recorded; **Add site** leads to `/sites/new` |
+| `/sites/{site}` | one site: its sign-in, its provider binding ("bound to {provider}", "provider sign-in not bound", or the live-login line above), its addresses (one-tap copy), and **Forget sign-in**, which asks in a dialog before its form is sent (the controller's forget, never a vault call) |
+| `/sites/new` | registration (posts to `/sites`; a 1Password item, or none: the first login live view's save creates it; the item's extra field names, never contents, are shown back on `/sites` with the whole-vault warning) |
 | `/setup`, `/pair` | readiness (1Password, the effective language and time zone), the guest's state from the vault's users (read-only, can edit items, or unknown) with their counts — a warning, nothing to tick, when no vault user is read-only: "The browser's 1Password guest account can edit items. Casa Browser only needs to read them; consider making it read-only." (design §5.2; logins never wait on it) — pairing: "first caller within two minutes"; a window that closed unclaimed says that pairing needs the browsing specialist (Fido) installed in Casa and asked to pair; after a claim the caller's self-reported name (escaped, marked as reported by the caller) and the address the claim came from. Re-pairing (`Pairing.arm`) ends every run and live view of the old pairing |
+
+**Look.** The pages take Home Assistant's look: its card, row, button and tab sizes and its Material Design icons (inline SVG), in `static/style.css` alone — the CSP admits no inline style, so no page carries a `style` attribute (`test_ui.py`). The colours are Home Assistant's theme values under their own names (`--primary-color`, `--card-background-color`, …): `static/theme.js`, loaded first in every page's head and the viewer's, reads the values Home Assistant's page resolved — the panel is a frame on Home Assistant's own origin — and sets them, again when that theme changes; it only reads. Opened outside that frame, the stylesheet's copies of Home Assistant's default light and dark values apply. The tabs (Home, Sites, Setup) sit at the bottom under 871 px, as Home Assistant's own settings pages do, and at the top above it; a sub-page (a run, a site, Add site, pairing) has a back arrow. A form that ends something asks first: `data-confirm` on the form, a dialog from `static/app.js`.
 
 **Language.** Every string the pages and the viewer show comes from one catalog per language,
 `locales/<language>.json` beside `i18n.py`: English is complete by definition, and the others

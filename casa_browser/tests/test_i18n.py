@@ -81,14 +81,15 @@ async def test_every_page_in_the_effective_language(localized):
     t = Text(language)
     run_id = await waiting_run(rig)
     pages = {}
-    for path in ("/", f"/runs/{run_id}", "/sites", "/setup", "/pair"):
+    for path in ("/", f"/runs/{run_id}", "/sites", "/sites/new", "/setup", "/pair"):
         status, page, _ = await operator.get(path)
         assert status == 200, (path, page[:300])
         assert f'<html lang="{language}">' in page, path
         assert "{" not in _text(page), path          # no template left unfilled
         pages[path] = page
     assert t("home.wait_live") in _text(pages["/"])
-    assert t("sites.register_heading") in _text(pages["/sites"])
+    assert t("sites.add") in _text(pages["/sites"])
+    assert t("sites.register_heading") in _text(pages["/sites/new"])
     assert t("setup.guest_heading") in _text(pages["/setup"])
     assert t("pair.heading") in _text(pages["/pair"])
     # the viewer: its own strings and the live.js table, in the same language
@@ -129,13 +130,13 @@ async def test_restored_binding_needs_a_live_login(localized):
     binding = ProviderBinding("https://accounts.provider.example", "a" * 64, "b" * 64, "c" * 64)
     rig.store.put_site(replace(site, provider_bindings=(binding,), revision=site.revision + 1))
     rig.store.put_binding_key("sa", rig.proxy.binding_key_id)
-    _, page, _ = await operator.get("/sites")
+    _, page, _ = await operator.get("/sites/sa")       # the site's own page names its provider
     assert t("sites.bound", origins="https://accounts.provider.example") in _text(page)
     assert rig.ctl.bindings_lost() == set()
     rig.proxy.binding_key_id = "k2"           # the restored app's proxy made a new key
     assert await rig.ctl._recover()
     assert rig.ctl.bindings_lost() == {"sa"}
-    _, page, _ = await operator.get("/sites")
+    _, page, _ = await operator.get("/sites/sa")       # the site's own page names its provider
     assert t("sites.binding_lost") in _text(page)
     assert t("sites.bound", origins="https://accounts.provider.example") not in _text(page)
 

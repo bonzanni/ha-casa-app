@@ -11,7 +11,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111;overscroll-behavi
   background:#202124;z-index:5;font:14px system-ui,sans-serif;color:#e8eaed}
 #pill form{margin:0}
 #pill button{border:0;border-radius:15px;height:30px;min-width:34px;padding:0 10px;font:600 14px system-ui,sans-serif;background:transparent;color:#fff}
-#pill #done{background:#1a73e8}
+#pill #done{background:var(--primary-color,#009ac7);color:var(--text-primary-color,#fff)}
 /* the picture's zoom (− · Fit · +) lives in the bar: never over a site's button */
 #zoomctl{display:flex;flex:none}
 #zoomctl button{font-size:20px;font-weight:400;padding:0 8px}
