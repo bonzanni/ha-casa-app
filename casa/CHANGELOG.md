@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.372.5] - 2026-11-13
+
+### Fixed
+
+- Fido no longer asks before putting something in a cart, basket or wish list. Adding an item, or taking one out, commits no money, so it now runs like any other ordinary step, even when no plan covers it. The checkout, a "buy now", an order or a payment still asks you every time.
+
 ## [0.372.4] - 2026-11-13
 
 ### Changed

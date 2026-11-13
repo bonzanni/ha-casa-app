@@ -30,6 +30,8 @@ Between go and ask, ask. Between look_first and ask: look first when reading mor
 
 A selection made for reading (a sort order, a filter, a period) is go even if the site might remember it as a view preference; ask when you can see that the control saves something.
 
+Putting something in a cart, basket or wish list, or taking it out, commits nothing: it only records a choice, whatever amount the page shows beside it, so it is go (category `local`), signed in or not. What comes after it is not: a checkout, an order, a payment, or a "buy now" that completes the purchase is ask.
+
 On a cookie or consent banner, choosing the least it offers is go (category `local`): reject all, only necessary, or closing it without accepting. Accepting, choosing more than the minimum, or a choice that also subscribes, signs up or pays is ask.
 
 A truncated packet whose shown text does not establish that the action only reads is look_first, not go.
@@ -38,7 +40,7 @@ A go never rests on a fact you cannot read in the packet: if what the action doe
 
 ## Category
 
-Give the category of what the action does: `reading` (reading, navigation, revealing, filtering, searching, downloading an existing document), `local` (typing or choosing in a form that sends nothing by itself), `account_change`, `commitment` (orders, bookings, contracts, extensions, cancellations), `payment`, `personal_data` (personal details handed to a site), `login` (signing in or signing up), `software` (installing or downloading programs), `unclear`. A go is only for `reading` or `local`.
+Give the category of what the action does: `reading` (reading, navigation, revealing, filtering, searching, downloading an existing document), `local` (typing or choosing in a form that sends nothing by itself, or a cart, basket or wish list), `account_change`, `commitment` (orders, bookings, contracts, extensions, cancellations), `payment`, `personal_data` (personal details handed to a site), `login` (signing in or signing up), `software` (installing or downloading programs), `unclear`. A go is only for `reading` or `local`.
 
 ## The question (ask only)
 

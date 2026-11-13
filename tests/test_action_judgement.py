@@ -398,9 +398,9 @@ async def test_packet_bounds(wired):
 
 def test_rulebook_files_are_the_measured_bytes():
     measured = {
-        # slice 6b (a typed line break is text, never the Enter key), measured 2026-10-31
-        "action_v1.txt": (8404, "abb21b7ddbc4ca11d22b761965780ec6"
-                                "3b1393b9b017fea78121af591656e702"),
+        # a cart, basket or wish list is local (go) without a plan, measured 2026-11-13
+        "action_v1.txt": (8752, "01c8207a7c40e32134e4a9ff72156877"
+                                "de5627c62abf05720575e07968e06dd7"),
         "rejudge_v1.txt": (2417, "7584e517b40bf7ec9c4c0e6e11c60820"
                                  "f68d8c9bd074b474d9e1f3397aca8eb0"),
         # slice 5, measured 2026-10-29
