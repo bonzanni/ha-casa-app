@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-13
 ---
 
 # Telegram bots: endpoints, routes and addresses
@@ -94,6 +94,21 @@ notice address, and the memory key of an operator message (`occurrence.message_k
 bot, chat, message)`). So `/new` on one bot cancels only that bot's lanes, a typed reply
 retires only that bot's pending question, and a reply to message 5 on one bot never reaches a
 job that posted message 5 on another.
+
+**An answer replies only to a message of its own bot, in its own chat.** Two reserved context
+keys hold addresses: `_tg_request`, the operator's own message, stamped by the receiving
+endpoint at ingress for an operator sender and copied into the turn's origin; and `_reply_to`, a
+reply target Casa chose for a delivery. `send` and `send_response` read `_reply_to` through
+`TelegramChannel._reply_parameters`: when it is a message of this endpoint's bot in the chat
+being sent to, the answer's first physical message is a Telegram reply to it, sent even when
+the target is gone (`allow_sending_without_reply`), and every later page or chunk is plain. A
+target on another bot, in another chat, without a message id or malformed sends plain.
+Without a `_reply_to`, an answer whose admission kept a reply marker (`Admitted.reply`, see
+[`output-boundary.md`](output-boundary.md)) replies to `_tg_request` under the same rules. Its
+quote rides only when it is a substring of the operator's words (`_operator_words`) of at most
+1024 UTF-16 units, else the reply goes without one; a quoted message Telegram refuses, for
+any reason, is resent once without the quote (`TelegramChannel._send_message`). The marker
+lives on the answer's own text, so Casa's other sends under the same context stay plain.
 
 **Persisted shapes are strict.** A stored record or key that should carry its bot and does not
 (a post written as a bare message id, a scheduled question without `bot_id`, a delivery key
@@ -218,6 +233,7 @@ both its write and its read path.
 - `casa/rootfs/opt/casa/channels/tg_address.py::scope`
 - `casa/rootfs/opt/casa/provenance.py::carry_route`
 - `casa/rootfs/opt/casa/casa_core.py::_build_telegram_transport`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._reply_parameters`
 
 **Tests**
 - `tests/test_tg_address.py`
@@ -230,6 +246,7 @@ both its write and its read path.
 - `tests/test_plugin_identities.py`
 - `tests/test_bot_boundary_invariants.py`
 - `tests/test_bot_boundary_sites.py`
+- `tests/test_telegram_reply_targets.py`
 
 **Related**
 - [`architecture/telegram.md`](../architecture/telegram.md)

@@ -98,16 +98,17 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("own_voice_lifecycle.py", "edit_card"): {"status"},           # an own-chat card's fixed Casa lines (asked again, bound, released)
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
-    ("run_admission.py", "_on_settle"): {"status"},                # a started card's stored text again, with a Stop button, when its key line did not land
 }
 
 RAW_TRANSPORT_FUNCTIONS = {
     # admitted — the function takes an Admitted (INV-OUT-001)
-    ("channels/telegram.py", "send"): "admitted",
     ("channels/telegram.py", "send_response"): "admitted",
     ("channels/telegram.py", "post_dm_keyboard"): "admitted",
     ("channels/telegram.py", "post_job_question"): "admitted",     # a job's question, admitted by ask_operator
-    ("channels/telegram.py", "_send_one"): "admitted",             # helper of the two above
+    ("channels/telegram.py", "post_task_start"): "admitted",       # a task's start post: Casa's who-asked line over the admitted request
+    # helper of send, send_response and their _send_one: one send_message,
+    # resent without the reply's quote when Telegram refuses the quote
+    ("channels/telegram.py", "_send_message"): "admitted",
     # stream — the draft a reply is written into, fed only from agent._emit,
     # which admits every cumulative; the function refuses a bare string
     ("channels/telegram.py", "_send_draft"): "stream",
@@ -126,12 +127,11 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
     ("channels/telegram.py", "deliver_casa_notice"): "notice",       # a tap's or a task's outcome line, Casa-composed
     ("channels/telegram.py", "deliver_run_card"): "notice",          # the Stop: a browsing request's status card, Casa-composed
-    ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: a request's start, stop or end line, Casa-composed
-    ("channels/telegram.py", "_send_key_line"): "notice",            # the Stop keys: a job's end line and a stale key's answer, Casa templates
+    ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: the outcome line of a card's own Stop, Casa-composed
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
     ("channels/telegram.py", "send_step_line"): "notice",            # the configurator's step line, Casa template
-    ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line raising its Stop key, Casa template
+    ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line when its 👍 failed, Casa template
     ("channels/telegram.py", "post_job_parked"): "notice",           # a parked job's line with its Cancel, Casa template quoting the job's last progress report
     ("channels/telegram.py", "_send_dm_reply"): "notice",            # a lost-message / turn notice in reply to the operator, Casa-composed
     # a summoned turn's one inline message: the terminal edit carries the
@@ -144,7 +144,7 @@ RAW_TRANSPORT_FUNCTIONS = {
 
 
 CHANNEL_METHODS = {"send", "send_response", "post_dm_keyboard", "send_media",
-                   "post_job_question", "guest_finish"}
+                   "post_job_question", "guest_finish", "post_task_start"}
 # (file, enclosing function) → what the call hands the method. "admitted" = a value
 # minted by TurnScope.admit or carried from one; "casa_text" = the Casa template
 # class; "forward" = the channel forwarding an already-admitted value to a sibling
@@ -170,7 +170,8 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
     ("tools.py", "ask_operator"): "admitted",                   # a job's question, admitted on the job's scope
     ("stored_call_settler.py", "handle_tap"): "admitted",       # the stored call's receipt, the plugin's admitted text
-    ("tools.py", "_post_task_text"): "admitted",                # a task's start line and answer, admitted on the task's scope
+    ("tools.py", "_post_task_text"): "admitted",                # a task's answer, admitted on the task's scope
+    ("tools.py", "_post_task_start"): "admitted",               # a task's quoted request, admitted on the task's scope
     ("own_voice_lifecycle.py", "post_card"): "casa_text",       # an own-chat card in the resident's chat
     ("own_voice_lifecycle.py", "_post"): "casa_text",           # the own-chat question naming a new bot
 }
@@ -229,7 +230,7 @@ def test_every_raw_transport_call_is_inside_a_recorded_function():
 
 
 ADMITTED_METHODS = {"send", "send_response", "post_dm_keyboard", "send_media",
-                    "post_job_question", "guest_finish"}
+                    "post_job_question", "guest_finish", "post_task_start"}
 DERIVED_METHODS = {"edit_dm_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_casa_notice", "reply",

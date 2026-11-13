@@ -580,7 +580,7 @@ async def test_a_task_ellen_hands_alex_shows_in_his_chat_and_ellen_gets_her_resu
     await _settled()
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     texts = world.alex.recorder.texts()
-    assert texts[0] == f"Ellen asked me: {BRIEF}"
+    assert texts[0] == f"Ellen asked:\n{BRIEF}"
     assert ANSWER in "".join(texts[1:])
     assert _ellen_texts(world) == []          # Ellen's own record only
     # every message of the task is filed under it: a reply to it finds the task
@@ -661,7 +661,7 @@ async def test_a_reply_to_a_live_delegations_post_reaches_it_and_after_its_end_a
     start_line = 500                                       # the task's first post
     assert task_posts.owner(TgAddress(ALEX_BOT, OPERATOR, start_line)).task_id == did
     await _handle(world.alex, _text("only the market, please", reply_to=start_line,
-                                    quoted_text=f"Ellen asked me: {BRIEF}"))
+                                    quoted_text=f"Ellen asked:\n{BRIEF}"))
     assert Held.built.writes[-1].endswith("only the market, please")
     assert _queued(world.bus, "finance") == []
     Held.release.set()
@@ -680,7 +680,7 @@ async def test_what_the_operator_wrote_into_a_live_task_reaches_its_requester(
         world, monkeypatch):
     call, did = await _live_delegation(world, monkeypatch)
     await _handle(world.alex, _text("only Lidl", reply_to=500,
-                                    quoted_text=f"Ellen asked me: {BRIEF}"))
+                                    quoted_text=f"Ellen asked:\n{BRIEF}"))
     assert Held.built.writes[-1].endswith("only Lidl")      # the task read it
     Held.release.set()
     payload = await call
@@ -1389,7 +1389,7 @@ SURFACE_POSTS = {
     ("channels/telegram_transport.py", "TelegramTransport.post_job_parked",
      "post_job_parked"): C,
     ("tools.py", "ask_operator", "post_job_question"): C,
-    ("tools.py", "_post_job_start_line", "post_job_start_line"): C,
+    ("tools.py", "_acknowledge_job_start", "post_job_start_line"): C,
     ("background_jobs.py", "JobRunner._post_parked", "post_job_parked"): C,
     # a file the agent sends, at the task's delivery
     ("tools.py", "_classify_send", "send_media"): B,
@@ -1472,6 +1472,8 @@ POST_RECORDS = {
         "callback's ingress)",
     ("tools.py", "_post_task_text"):
         "the task's executor; posted at the task's delivery, its own chat",
+    ("tools.py", "_post_task_start"):
+        "the task's executor; its start post, at the task's delivery, its own chat",
     ("tools.py", "_media_post"):
         "the agent sending the file; posted at the task's delivery, or in its "
         "own turn's chat when that chat is the agent's own (send_media's rule)",
@@ -1797,3 +1799,52 @@ async def test_a_reply_to_a_tasks_file_question_card_or_stop_line_reaches_the_ta
     Held.release.set()
     await call
     await _settled()
+
+
+# ---------------------------------------------------------------------------
+# A tap on a stored-call card in Alex's own chat: the lines after it carry no
+# "📊 Alex" head — the chat is Alex's, so they name him plainly
+# ---------------------------------------------------------------------------
+
+async def _own_chat_tap(world, monkeypatch, *, plugins=None) -> None:
+    import pinned_run as pr
+    import stored_call_settler
+    try:
+        from tests.test_stored_call_tap import _build, _meta
+    except ImportError:
+        from test_stored_call_tap import _build, _meta
+    build = _build(plugins=plugins)
+    monkeypatch.setattr(tools, "_capture_build_input", lambda cfg: build, raising=False)
+
+    async def runner(cfg, task_text, context_text, resolution=None, **_kw):
+        tools._pinned_run.get().resolve(pr.Capture("receipt", "Added to cart."))
+        return tools.DelegatedOutput(text="")
+    monkeypatch.setattr(tools, "_run_delegated_agent", runner)
+    meta = _meta(bot_id=ALEX_BOT, chat_id=OPERATOR, operator_id=OPERATOR, label="",
+                 text="Add to cart?", _scope=f"proposal:{ALEX_BOT}:{OPERATOR}",
+                 deadline=asyncio.get_running_loop().time() + 3600)
+    await stored_call_settler.handle_tap(
+        channel=world.alex, resident_role="finance", bot_id=ALEX_BOT, chat_id=OPERATOR,
+        user_id=OPERATOR, cid="c-tap", executing_role="finance", meta=meta, idx=0,
+        request_id="e" * 32, reservation=agent_lane.LANES.get("finance").reserve())
+
+
+async def test_a_tap_receipt_in_the_agents_own_chat_has_no_head(world, monkeypatch):
+    await _own_chat_tap(world, monkeypatch)
+    receipts = [t for t in world.alex.recorder.texts() if "Added to cart." in t]
+    assert receipts, world.alex.recorder.texts()
+    for receipt_text in receipts:
+        assert not any(line.startswith("📊") for line in receipt_text.splitlines())
+    assert chat_notes.drain(ALEX_BOT, OPERATOR) == ["Alex applied your tap (Yes)."]
+    assert _ellen_texts(world) == []
+
+
+async def test_a_tap_notice_in_the_agents_own_chat_names_it_plainly(world, monkeypatch):
+    await _own_chat_tap(world, monkeypatch, plugins=[])          # the plugin is unassigned
+    notices = [t for t in world.alex.recorder.texts() if "could not apply" in t]
+    assert len(notices) == 1, world.alex.recorder.texts()
+    [notice_text] = notices
+    assert notice_text.startswith("Alex could not apply your tap (")
+    assert chat_notes.drain(ALEX_BOT, OPERATOR) == [
+        "Alex refused your tap (Yes): plugin unassigned."]
+    assert _ellen_texts(world) == []

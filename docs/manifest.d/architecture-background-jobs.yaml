@@ -29,15 +29,16 @@
     INV-BGJOB-022: [tests/test_job_turn_guard.py::test_a_turn_ended_unfinished_is_nudged_once_then_parked, tests/test_job_turn_guard.py::test_a_ceiling_without_progress_since_the_last_one_parks, tests/test_job_turn_guard.py::test_an_api_fault_is_continued_once_then_parks, tests/test_job_turn_guard.py::test_cost_never_ends_or_parks_a_job, tests/test_job_turn_guard.py::test_a_second_death_ends_the_job_with_its_last_progress, tests/test_job_turn_guard.py::test_a_failed_resume_ends_the_job, tests/test_job_turn_guard.py::test_a_job_not_resumable_after_a_restart_ends_error, tests/test_finalize_engagement.py::test_a_job_s_cancelled_or_failed_end_carries_its_last_progress_once]
 
 - doc: architecture/background-job-direct-chat.md
-  summary: A background job in the operator's direct chat — the start line, the job's Stop key at the reply keyboard and its end line, a specialist job's ask_operator questions and their buttons, a parked job's line, replies into a live job, a reply to an ended job's post, the job-post ownership the engagement record keeps, the retirement of a job's keyboards when it ends, and why none of it needs a log group.
-  when_changing: a job's start line, its end line or what a press of its Stop key runs, ask_operator or a question's buttons, how a reply or a tap reaches a live job, where a reply to an ended job's post goes, the job posts an engagement record files, how an ended job's keyboards are retired, or what a job needs without a log group
+  summary: A background job in the operator's direct chat — the 👍 on the request that started it or the start line standing in for it, its end told as one reply to that request, a specialist job's ask_operator questions and their buttons, a parked job's line, replies into a live job, a reply to an ended job's post, the job-post ownership the engagement record keeps, the retirement of a job's keyboards when it ends, and why none of it needs a log group.
+  when_changing: the 👍 on a job's request, its start line, what its end posts, ask_operator or a question's buttons, how a reply or a tap reaches a live job, where a reply to an ended job's post goes, the job posts an engagement record files, how an ended job's keyboards are retired, or what a job needs without a log group
   covers:
     - casa/rootfs/opt/casa/tools.py::ask_operator
-    - casa/rootfs/opt/casa/tools.py::_post_job_start_line
+    - casa/rootfs/opt/casa/tools.py::_acknowledge_job_start
+    - casa/rootfs/opt/casa/channels/telegram_transport.py::TelegramTransport.react_job_request
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_reply
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line
-    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._cancel_job_by_key
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._job_request_post
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback
@@ -55,9 +56,9 @@
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.new_job_question
   tests:
     - tests/test_job_dm_attention.py
+    - tests/test_job_chat_feel.py
     - tests/test_job_dm_posts_registry.py
     - tests/test_ended_job_replies.py
-    - tests/test_stop_keys.py
   related: [architecture/agent-logs.md, architecture/background-jobs.md, architecture/background-job-session.md, architecture/engagement-inbound-disclosure.md, architecture/background-job-quiet-runs.md, architecture/telegram.md, architecture/plugin-stop.md]
   defines_invariants: [INV-BGJOB-026, INV-BGJOB-012, INV-BGJOB-024, INV-BGJOB-023, INV-BGJOB-013, INV-BGJOB-014]
   invariant_tests:
@@ -70,7 +71,7 @@
 
 - doc: architecture/background-job-session.md
   summary: How a running background job's session works — the brief and every later write from one writer, the reader and the CLI's take-up echo, continuing, nudging and parking at a turn end, the one resume after a CLI death or a restart, auto-compaction and the job header, and the cost shown to the operator.
-  when_changing: how a job's session is written into or read, the brief or its Started by line, what Casa does when a job's turn ends (continue, nudge, park), how a job resumes after its CLI died or Casa restarted, the compaction window or the job header, or a job's cost and running time on its end line
+  when_changing: how a job's session is written into or read, the brief or its Started by line, what Casa does when a job's turn ends (continue, nudge, park), how a job resumes after its CLI died or Casa restarted, the compaction window or the job header, or a job's cost and running time on its end notice
   covers:
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.submit_operator
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.submit_casa
@@ -87,7 +88,6 @@
     - casa/rootfs/opt/casa/background_jobs.py::job_header
     - casa/rootfs/opt/casa/background_jobs.py::launch_prompt
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_parked
-    - casa/rootfs/opt/casa/background_jobs.py::cost_suffix
     - casa/rootfs/opt/casa/tools.py::_await_completing_turn
     - casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs
   tests:
@@ -106,7 +106,7 @@
     INV-BGJOB-017: [tests/test_job_turn_guard.py::test_a_turn_ended_unfinished_is_nudged_once_then_parked, tests/test_job_turn_guard.py::test_operator_input_resets_the_nudge, tests/test_job_turn_guard.py::test_a_waiting_job_is_not_nudged, tests/test_job_turn_guard.py::test_queued_operator_input_is_not_a_stop, tests/test_job_turn_guard.py::test_operator_input_clears_awaiting, tests/test_job_turn_guard.py::test_a_terminal_or_terminal_pending_job_is_left_alone, tests/test_job_turn_guard.py::test_a_ceiling_after_progress_continues, tests/test_job_turn_guard.py::test_a_ceiling_without_progress_since_the_last_one_parks, tests/test_job_turn_guard.py::test_a_first_ceiling_with_no_progress_parks, tests/test_job_turn_guard.py::test_cost_never_ends_or_parks_a_job, tests/test_job_turn_guard.py::test_the_parking_line_carries_no_model_text, tests/test_job_session_driver.py::test_a_job_that_stops_twice_is_nudged_then_parked]
     INV-BGJOB-018: [tests/test_job_turn_guard.py::test_boot_skips_a_job_that_ended_before_its_turn_in_the_walk, tests/test_job_boot_resume_scope.py::test_boot_resumes_only_the_jobs_open_before_the_channels_started, tests/test_job_boot_resume_scope.py::test_the_boot_job_snapshot_is_taken_before_the_channels_start, tests/test_job_session_driver.py::test_a_launch_that_fails_and_leaves_the_record_live_ends_the_job, tests/test_job_session_driver.py::test_a_client_that_dies_while_the_launch_probes_it_has_a_recovery_owner, tests/test_job_session_driver.py::test_a_cancel_during_an_unfinished_suspension_keeps_the_barrier, tests/test_job_session_driver.py::test_a_death_while_recovery_waits_for_the_lock_still_retires_first, tests/test_job_session_driver.py::test_a_session_death_during_the_boot_reconcile_leaves_recovery_to_its_own_owner, tests/test_job_turn_guard.py::test_a_session_death_is_resumed_once_with_the_restart_line, tests/test_job_turn_guard.py::test_a_second_death_ends_the_job_with_its_last_progress, tests/test_job_turn_guard.py::test_a_failed_resume_ends_the_job, tests/test_job_turn_guard.py::test_boot_resumes_a_working_job_with_the_restart_line, tests/test_job_turn_guard.py::test_boot_leaves_a_waiting_job_with_an_empty_journal_alone, tests/test_job_session_driver.py::test_recovery_stages_restart_then_redeliveries_ahead_of_the_queue, tests/test_job_session_driver.py::test_the_dead_session_is_retired_before_its_replacement_opens, tests/test_job_session_driver.py::test_a_failed_write_is_written_once_after_recovery, tests/test_job_session_driver.py::test_a_failed_recovery_clears_recovering_and_stops_writing, tests/test_job_session_driver.py::test_a_dead_session_is_resumed_once_then_a_second_death_ends_it, tests/test_job_session_driver.py::test_a_transcript_miss_on_a_terminal_job_is_told_lost_once]
     INV-BGJOB-019: [tests/test_job_session_declaration.py::test_job_session_options_set_ceiling_window_and_echo, tests/test_job_session_declaration.py::test_the_window_is_one_shared_constant, tests/test_job_session_declaration.py::test_the_cli_command_carries_the_echo_flag_and_ceiling, tests/test_job_session_declaration.py::test_after_a_compaction_the_session_is_told_who_the_job_is, tests/test_job_session_declaration.py::test_any_other_session_start_adds_nothing, tests/test_job_session_declaration.py::test_the_hook_joins_the_session_s_own_hooks]
-    INV-BGJOB-020: [tests/test_job_session_driver.py::test_the_job_cost_is_its_base_plus_the_cli_total_at_each_turn_end, tests/test_job_session_driver.py::test_a_one_turn_job_s_end_carries_that_turn_s_cost, tests/test_job_session_driver.py::test_a_completing_turn_that_never_ends_finalizes_after_the_bound, tests/test_job_turn_guard.py::test_each_turn_end_persists_the_job, tests/test_job_turn_guard.py::test_cost_never_ends_or_parks_a_job, tests/test_job_cost.py::test_the_end_line_carries_outcome_time_and_cost, tests/test_stop_keys.py::test_a_jobs_start_line_is_never_edited_for_its_whole_life, tests/test_job_cost.py::test_the_resident_s_end_notice_carries_time_and_cost]
+    INV-BGJOB-020: [tests/test_job_session_driver.py::test_the_job_cost_is_its_base_plus_the_cli_total_at_each_turn_end, tests/test_job_session_driver.py::test_a_one_turn_job_s_end_carries_that_turn_s_cost, tests/test_job_session_driver.py::test_a_completing_turn_that_never_ends_finalizes_after_the_bound, tests/test_job_turn_guard.py::test_each_turn_end_persists_the_job, tests/test_job_turn_guard.py::test_cost_never_ends_or_parks_a_job, tests/test_job_cost.py::test_a_jobs_end_posts_no_line_of_its_own, tests/test_job_cost.py::test_the_resident_s_end_notice_carries_time_and_cost]
 
 - doc: architecture/background-job-message-journal.md
   summary: The operator-message journal of a background job — the per-job file an operator message is committed to before it is admitted, when an entry goes, the check of every entry against the session transcript at boot and at recovery, the one marked redelivery, and the lost-message notice of an ended job.

@@ -442,6 +442,20 @@ class TelegramTransport(Channel):
         delivery = getattr(rec, "delivery", None)
         return None if delivery is None else self.endpoint(delivery)
 
+    async def react_job_request(self, rec: Any) -> bool:
+        """Put 👍 on the operator's message that asked for the job (its
+        origin's ``_tg_request``), through the bot that message came to: only
+        that bot can react to it, wherever the job's own posts go. ``False``
+        when the origin holds no such message or no endpoint serves its bot."""
+        try:
+            request = TgAddress.from_json((getattr(rec, "origin", None) or {}).get("_tg_request"))
+            ep = self.endpoint(request)
+        except (AddressError, EndpointUnavailable):
+            return False
+        if request.message_id is None:
+            return False
+        return await ep.react(request.chat_id, request.message_id)
+
     async def post_job_start_line(self, rec: Any) -> "int | None":
         ep = self._job_endpoint(rec)
         return None if ep is None else await ep.post_job_start_line(rec)

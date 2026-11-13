@@ -26,9 +26,12 @@ One kind of request skips all three: a specialist asking for the runs in a
 turn that belongs to a task the operator started
 (``handoff.helper_under_operator_task``: the turn carries Casa's mark of that
 task and the requester is a specialist, not the resident). Those runs are
-admitted without a reading or a question and get the status card and the Stop
-key at the keyboard (``stop_keys``). A resident's own request, the agent's own run, and scheduled or
-agent-started work keep the steps above.
+admitted without a reading or a question and get the status card. A resident's
+own request, the agent's own run, and scheduled or agent-started work keep the
+steps above.
+
+No card carries a Stop: the operator stops the runs by asking the agent, which
+calls ``stop_work`` (``plugin_stop``).
 
 The kind of task is shown on the card but not compared: admission stays
 site-based because every change a run would make is asked per action (the
@@ -239,11 +242,14 @@ def _run_lines(runs: list[dict]) -> list[str]:
     return lines
 
 
+#: the longest title a request is stored with (``key_title``)
+TITLE_CHARS = 40
+
+
 def key_title(runs: list[dict]) -> str:
-    """What the request does, for its Stop key (``stop_keys``): the first run's task and
+    """What the request does, stored with it as its title: the first run's task and
     `` +N`` for the runs after it; ``browsing`` when that run names no task. Never a site.
-    A long task is cut so that the whole title, count included, fits a key."""
-    from stop_keys import TITLE_CHARS
+    A long task is cut so that the whole title, count included, fits ``TITLE_CHARS``."""
     first = runs[0] if runs else {}
     task = " ".join(str(first.get("task_kind") or first.get("task_text") or "").split())
     more = f" +{len(runs) - 1}" if len(runs) > 1 else ""
@@ -280,15 +286,6 @@ def _requester_name(binding, role: str) -> "str | None":
     return tools_mod._display_name_for_role(binding.requester)
 
 
-#: the line that raises the Stop key when the runs start from the start question's tap
-STARTED_LINE = "Started."
-
-
-def stop_button(cid: str) -> "tuple[str, str]":
-    """The Stop button a start card carries when its Stop key could not be raised."""
-    return ("Stop", f"v1|run_stop|{cid}|0")
-
-
 def _admissions(runs: list[dict]) -> list[dict]:
     return [{"spec_digest": r["spec_digest"], "origin_kind": ORIGIN_KIND,
              "origin_ref": "adm-" + uuid.uuid4().hex} for r in runs]
@@ -311,11 +308,10 @@ class Confirmation:
     process: str = ""           # the process that posted a pending card
     # the start or status card of the request (None: none landed, or the request no longer
     # runs): its address ``[bot, chat, message]`` and its text as shown, so a Stop from any
-    # path marks it (``plugin_stop.settle_run_card``); while it is held, the request has its
-    # Stop key at the keyboard (``stop_keys``)
+    # path marks it (``plugin_stop.settle_run_card``)
     card: "list | None" = None
     card_text: str = ""
-    # what the request does, for its Stop key (``key_title``)
+    # what the request does (``key_title``)
     title: str = ""
 
     def card_address(self) -> "TgAddress | None":
@@ -462,8 +458,7 @@ class Confirmations:
 
     def clear_card(self, cid: str) -> None:
         """The request no longer runs (``plugin_stop.settle_ended``, ``settle_stop``): its
-        card is forgotten, so no later pass marks it again and its Stop key goes. Its text
-        stays."""
+        card is forgotten, so no later pass marks it again. Its text stays."""
         with self._lock:
             self._load_locked()
             c = self._items.get(cid)
@@ -473,8 +468,8 @@ class Confirmations:
             self._save_locked()
 
     def open_cards(self, bot_id: int) -> "list[Confirmation]":
-        """The requests asked on bot *bot_id* that still hold a card whose Stop works:
-        admitted, with a card neither a stop nor a natural end has forgotten
+        """The requests asked on bot *bot_id* that still hold their card: admitted, with a
+        card neither a stop nor a natural end has forgotten
         (``clear_card``), and a binding that still exists — what the Stop callback itself
         requires. Oldest first. Read-only."""
         from plugin_bindings import BINDINGS
@@ -484,6 +479,17 @@ class Confirmations:
                     if c.status == "admitted" and c.card and c.bot_id == int(bot_id)]
         return sorted((c for c in held if BINDINGS.peek(c.binding_ref) is not None),
                       key=lambda c: c.created_at)
+
+    def card_for_binding(self, binding_ref: str) -> "TgAddress | None":
+        """The card of the newest ``admitted`` request of the binding *binding_ref* that
+        still holds one (``clear_card`` has not forgotten it), or None. Read-only."""
+        with self._lock:
+            self._load_locked()
+            held = [c for c in self._items.values()
+                    if c.status == "admitted" and c.card and c.binding_ref == binding_ref]
+        if not held:
+            return None
+        return max(held, key=lambda c: c.created_at).card_address()
 
     def open_cards_on_bot(self, bot_id: int) -> int:
         """How many requests asked on bot *bot_id* still hold a card whose Stop works
@@ -577,7 +583,7 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
     cid = "conf-" + uuid.uuid4().hex
     if helper_under_operator_task(call.origin, call.chain):
         # a colleague asked, in a turn of a task the operator started: no
-        # question, no reading; the status card and its Stop key are posted
+        # question, no reading; the status card is posted
         conf = Confirmation(cid=cid, plugin=call.plugin, bot_id=bot_id,
                             operator_id=int(call.identity.operator_id),
                             binding_ref=binding.ref, request_key=request_key,
@@ -638,23 +644,6 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
             except ChannelUnavailable:
                 logger.warning("run admission: no continuation queued, the binding's bot "
                                "is unavailable; the driver sweep finds the run")
-            card = settled.card_address() if started else None
-            if card is not None:
-                # the card keeps no button: one silent line in reply to it raises the
-                # Stop key at the keyboard
-                import plugin_stop
-                if not await plugin_stop.post_line(card.bot_id, card.chat_id, call.role,
-                                                   STARTED_LINE, reply_to=card.message_id):
-                    # no line landed, so no key went up: the card gets a Stop button
-                    # instead (``channels.telegram``'s ``run_stop``), so the runs never
-                    # go without a Stop
-                    try:
-                        await endpoint.edit_dm_message(
-                            card.chat_id, card.message_id, settled.card_text,
-                            buttons=[stop_button(cid)], danger=(0,))
-                    except Exception as exc:  # noqa: BLE001 — logged; stop_work remains
-                        logger.warning("run admission: no Stop reached the card (%s)",
-                                       type(exc).__name__)
 
     start = "Start" if len(runs) == 1 else "Start all"
     landed = await post_question(
@@ -687,22 +676,18 @@ def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
                        chat_id: int) -> None:
     """The runs were admitted without a start card (by his words, or for a colleague
     under his task): one status card is posted beside the answer (never awaited by it),
-    through *endpoint* in *chat_id*, the call's delivery; it carries no button and raises
-    the request's Stop key at the keyboard (``stop_keys``). A colleague's card under his
-    task is sent without a notification. A failed post is logged and nothing else —
-    Ellen's ``stop_work`` remains."""
+    through *endpoint* in *chat_id*, the call's delivery; it carries no button. A
+    colleague's card under his task is sent without a notification. A failed post is
+    logged and nothing else — ``stop_work`` still stops the request."""
     async def _post() -> None:
-        import stop_keys
         from handoff import helper_under_operator_task
         from result_broker import compose_operator_message, label_at
         text = compose_operator_message(
             compose_status(runs, _requester_name(binding, call.role)),
             label_at(call.role, endpoint))
         silent = helper_under_operator_task(call.origin, call.chain)
-        conf = CONFIRMATIONS.peek(cid)
-        starting = stop_keys.run_item(conf) if conf is not None else None
-        mid = await endpoint.deliver_run_card(chat_id, text, starting=starting,
-                                              post=_card_post(call, cid), silent=silent)
+        mid = await endpoint.deliver_run_card(chat_id, text, post=_card_post(call, cid),
+                                              silent=silent)
         if isinstance(mid, int) and not isinstance(mid, bool):
             CONFIRMATIONS.set_card(cid, TgAddress(endpoint.bot_id, chat_id, mid), text)
         else:

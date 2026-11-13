@@ -40,7 +40,7 @@ from io import BytesIO
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
-from telegram import InputFile, Update
+from telegram import InputFile, ReactionTypeEmoji, ReplyParameters, Update
 from telegram.constants import ChatAction
 from telegram.request import HTTPXRequest
 from telegram.error import (
@@ -86,7 +86,7 @@ from channels.tg_address import (
 # pair and the stored row, shared with the transport that hands them out.
 from channels.telegram_transport import _post_parts as _job_post_parts
 from channels.telegram_draft import DraftStream, DraftTooLong
-from output_boundary import Admitted, UnadmittedText
+from output_boundary import Admitted, ReplyMark, UnadmittedText
 from media_policies import MEDIA_POLICIES
 from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
 from channels.telegram_supervisor import ReconnectSupervisor
@@ -191,8 +191,9 @@ def reply_note(who: str, posted: str | None, quoted_text: str | None) -> str:
 
 
 def _cannot_be_edited(exc: BaseException) -> bool:
-    """Telegram's refusal to edit a message at all — one sent with a reply keyboard (the
-    Stop keys, ``stop_keys``) is never editable. Not an error: no retry, no warning."""
+    """Telegram's refusal to edit a message at all — one sent with a reply keyboard is never
+    editable, such as a card an earlier version of Casa sent with one. Not an error: no
+    retry, no warning."""
     return "can't be edited" in str(exc).lower()
 
 
@@ -986,6 +987,8 @@ ACK_WINDOW_S = 10.0
 #: An album's size; with names shortened in a list, ten files' lines always fit
 #: one Telegram message (design round d1, Astra).
 ACK_MAX_FILES = 10
+#: The reaction a stored file gets in place of a line of acknowledgement.
+REACTION = "\N{THUMBS UP SIGN}"
 
 
 @dataclass(eq=False)
@@ -1006,10 +1009,13 @@ class _AckEntry:
 
     name: str
     group: str | None
+    message_id: int | None = None    # the Telegram message that carried it
     line: str | None = None          # its own one-line outcome; None while pending
     stored: tuple | None = None      # (name, kind, size, path) once stored
     claim: _AckClaim | None = None
     covered: bool = False            # a dispatched caption turn acts on it
+    reacted: bool = False            # stored, and acknowledged with a reaction
+    reacting: bool = False           # its reaction is under way: no line yet
 
 
 @dataclass(eq=False)
@@ -1021,14 +1027,17 @@ class _AckBurst:
     claims: dict
     message_id: int | None = None
     shown: str = ""
+    reaction: "asyncio.Future | None" = None   # an album's one reaction
 
 
 def _ack_text(burst: _AckBurst) -> str:
     """The acknowledgement for what has landed: one file's own line, byte for
     byte as before; several files as one list of what was kept, then a line for
-    each file that was not. Files a caption turn covers are its reply's."""
+    each file that was not. Files a caption turn covers are its reply's, and a
+    file acknowledged with a reaction needs no line."""
     import agent_inbox
     shown = [e for e in burst.entries if e.line is not None and not e.covered
+             and not e.reacted and not e.reacting
              and not (e.claim is not None and not e.claim.done)]
     if len(shown) == 1 and len(burst.entries) == 1:
         return shown[0].line
@@ -2489,13 +2498,6 @@ class TelegramChannel(Channel):
     async def _handle_serialized(self, update: Update, chat_id: str) -> None:
         """Body of ``_handle``, run under ``_chat_serial_locks[chat_id]`` (#317)."""
         text = (update.message.text or "").strip()
-        # A Stop key at the keyboard sends its own label as the operator's message: it stops
-        # that work and goes nowhere else (``stop_keys``; exact equality with a label Casa
-        # issued in this chat). Checked first: a press made while he is replying to a post
-        # arrives as a reply, and is still the key.
-        if (self._sender_is_operator(update.effective_user)
-                and await self._press_stop_key(update, chat_id, text)):
-            return
         # A reply to a live task's post goes to the task; everything else takes the path below.
         ended_task = None
         if getattr(update.message, "reply_to_message", None) is not None:
@@ -2722,6 +2724,11 @@ class TelegramChannel(Channel):
             # the text he typed (or a file's caption), on a reserved key
             # stamped only here, so run admission never reads anything else.
             context["_operator_words"] = content
+            # The address of the message he sent (a caption turn's is the
+            # captioned file), so an answer sent later can reply to it. The
+            # route read above already proved this bot has an id.
+            context["_tg_request"] = self.address(
+                chat_id, int(update.message.message_id)).to_json()
         # #1314: a reply tells the agent what it answered — Casa's note, on a
         # reserved key; the text stays raw.
         reply_note = self._reply_note_for(update, chat_id, ended_task=ended_task)
@@ -3110,7 +3117,7 @@ class TelegramChannel(Channel):
     def _spawn_run_stop(self, c: Any, b: Any, reply_to: "int | None") -> None:
         """One tracked task stops the request directly (``plugin_stop``): no lane, no model.
         The path that holds the stop's flight marks the card and posts the outcome's line in
-        reply to *reply_to*, with the chat's Stop keys."""
+        reply to *reply_to*."""
         import plugin_stop
         role = b.chain[-1]
 
@@ -3130,85 +3137,6 @@ class TelegramChannel(Channel):
         task = asyncio.create_task(_run())
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
-
-    async def _press_stop_key(self, update: Update, chat_id: str, text: str) -> bool:
-        """The operator's message *text* is a Stop key of this chat (``stop_keys``): the key
-        of a live job runs the job's Cancel funnel, the key of a live browsing request runs
-        its Stop, a key whose work is gone gets one line with the keys still live. Either
-        way no turn starts, nothing reaches the agent, and his message is deleted. False
-        when the text is no key: the message takes its ordinary path."""
-        import stop_keys
-        chat = strict_positive_id(chat_id)
-        if chat is None or not self.has_bot_id:
-            return False
-        found = stop_keys.pressed(self.bot_id, chat, text)
-        if found is None:
-            return False
-        state, item = found
-        user = update.effective_user
-        if item is None:
-            await self._send_key_line(chat, stop_keys.ENDED_LINE)
-        elif item.kind == "job":
-            self._cancel_job_by_key(item, user)
-        else:
-            self._stop_run_by_key(item, chat, user)
-        mid = getattr(update.message, "message_id", None)
-        if type(mid) is int:
-            await self.delete_dm_message(chat, mid)
-        logger.info("Stop key pressed in chat %s: %s %s", chat, state,
-                    item.kind if item is not None else "")
-        return True
-
-    def _cancel_job_by_key(self, item: Any, user: Any) -> None:
-        """The Cancel funnel of a job, as a Cancel button of the job runs it: the job's
-        operator, a live record, one cancel at a time; a write that rolls back is told in
-        reply to the start line."""
-        reg = self._engagement_registry
-        rec = reg.get(item.key) if reg is not None else None
-        if rec is None or not self._job_owner_is(user, rec):
-            return
-        if item.key in self._job_cancels or not reg.counts_as_live(item.key):
-            return
-        self._job_cancels.add(item.key)
-        start = item.start
-        task = asyncio.create_task(self._run_job_cancel(
-            rec, start.chat_id, start.message_id))
-        self._turn_tasks.add(task)
-        task.add_done_callback(self._turn_tasks.discard)
-
-    def _stop_run_by_key(self, item: Any, chat: int, user: Any) -> None:
-        """The Stop of a browsing request, as its card's Stop button runs it; the outcome's
-        line replies to the card."""
-        import plugin_bindings
-        import run_admission
-        c = run_admission.CONFIRMATIONS.peek(item.key)
-        b = plugin_bindings.BINDINGS.peek(c.binding_ref) if c is not None else None
-        if (c is None or b is None or c.status != "admitted" or user is None
-                or not self._run_stop_allowed(c, b, chat, user.id)):
-            return
-        card = c.card_address()
-        self._spawn_run_stop(c, b, card.message_id if card is not None else None)
-
-    async def _send_key_line(self, chat_id: int, text: str, *,
-                             reply_to: "int | None" = None, silent: bool = False) -> bool:
-        """One line of Casa's fixed text in the chat, carrying the chat's Stop keys (or their
-        removal when none is live); a failure is logged. True when it landed."""
-        import stop_keys
-        from telegram import ReplyParameters
-        if self.bot is None:
-            return False
-        extra: dict = {"disable_notification": True} if silent else {}
-        if isinstance(reply_to, int) and not isinstance(reply_to, bool):
-            extra["reply_parameters"] = ReplyParameters(
-                message_id=reply_to, allow_sending_without_reply=True)
-        try:
-            await self.bot.send_message(
-                chat_id=chat_id, text=text,
-                reply_markup=stop_keys.keyboard(self.bot_id, chat_id), **extra)
-        except Exception as exc:  # noqa: BLE001 — a line is never the work's fault
-            logger.warning("Stop key line not posted: %s", type(exc).__name__)
-            return False
-        return True
 
     def proposal_finish_hook(self, *, rid: str, req: Any) -> Callable[[dict], Any]:
         """S5 §4.2/§4.4: the one owner of what follows a proposal's
@@ -3928,61 +3856,122 @@ class TelegramChannel(Channel):
 
     async def post_job_start_line(self, rec) -> "int | None":
         """The silent ``📊 <Agent> started «<title>».`` line of a job the
-        operator started — Casa's text, with no button: it raises the chat's
-        Stop keys at the keyboard, the job's own among them (``stop_keys``).
-        Filed as the job's keyboard post once it lands, which keeps its key
-        live. Returns the message id, or ``None`` when nothing landed."""
-        import stop_keys
-        from engagement_registry import JOB_POST_START
+        operator started, posted when his request could not take the 👍 —
+        Casa's text, with no keyboard, in reply to his request when that is
+        this bot's message in the job's chat. Filed as the job's post once it
+        lands, so a reply quoting it reaches the job. Returns the message id,
+        or ``None`` when nothing landed."""
         chat = self._job_chat(rec)
-        if chat is None or self.bot is None:
+        if chat is None or self.bot is None or not self.has_bot_id:
             return None
+        request = self._job_request_post(rec)
+        extra = ({"reply_parameters": ReplyParameters(
+            message_id=request.message_id, allow_sending_without_reply=True)}
+            if request is not None else {})
         try:
-            kbd = stop_keys.keyboard(self.bot_id, chat, starting=stop_keys.job_item(rec))
             msg = await self.bot.send_message(
-                chat_id=chat,
-                text=self._job_start_text(rec),
-                reply_markup=kbd, disable_notification=True)
+                chat_id=chat, text=self._job_start_text(rec),
+                disable_notification=True, **extra)
         except Exception as exc:  # noqa: BLE001 — a start line is never the job's fault
             logger.info("job start line not posted: %s", type(exc).__name__)
             return None
         mid = getattr(msg, "message_id", None)
         if type(mid) is not int:
             return None
-        await self._file_job_keyboard(rec, mid, JOB_POST_START)
+        reg = self._engagement_registry
+        if reg is not None:
+            reg.record_job_post(rec.id, self.address(chat, mid))
         return mid
 
-    def _job_start_post(self, rec) -> "TgAddress | None":
-        """The address of the job's start line, while it is filed and it is
-        this bot's message (only the bot that posted it can reply to it)."""
-        from engagement_registry import JOB_POST_START
-        for post in getattr(rec, "ui_posts", None) or ():
-            parts = _job_post_parts(post)
-            if parts is not None and parts[1] == JOB_POST_START:
-                return parts[0] if self._own_address(parts[0]) else None
-        return None
+    async def post_task_start(self, chat_id: int, who: str, body: Any, *,
+                              post: Any) -> "int | None":
+        """A task's silent start post: Casa's line "*who* asked:", the name in
+        bold, then
+        the admitted *body*, the request as its requester wrote it, inside one
+        expandable quote. The body is rendered as an answer is, so its
+        formatting shows inside the quote; one Telegram refuses to format is
+        sent plain. A request too long for one message is clipped to fit,
+        ending in ``…``, keeping the formatting that ends before the cut.
+        Filed under the task as it lands, so a reply to it reaches the task.
+        Returns the message id, or ``None`` when nothing landed."""
+        if _unadmitted("post_task_start", body):
+            return None
+        if self.bot is None:
+            return None
+        display, rich = render(str(body))
+        tries = [(display, rich)] if rich is not None else []
+        tries.append((str(_plain(body)), []))
+        sent = None
+        try:
+            for n, (quote, entities) in enumerate(tries, 1):
+                text, entities = self._task_start_message(who, quote, entities)
+                try:
+                    sent = await self.bot.send_message(
+                        chat_id=chat_id, text=text, entities=entities,
+                        disable_notification=True)
+                    break
+                except BadRequest as exc:  # nothing posted: the plain send cannot duplicate
+                    if n == len(tries):
+                        raise
+                    logger.warning("task start post rich send fell back to plain: %s",
+                                   type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 — a start post is never the task's fault
+            logger.warning("task start post not delivered: %s", type(exc).__name__)
+            return None
+        self._record_post(chat_id, sent, post)
+        mid = getattr(sent, "message_id", None)
+        return mid if type(mid) is int else None
+
+    @staticmethod
+    def _task_start_message(who: str, quote: str, entities: list) -> "tuple[str, list]":
+        """The start post's text and entities: "*who* asked:" with *who* in
+        bold, then *quote* with its UTF-16 *entities* inside one expandable
+        quote. A quote past the message's budget is cut to fit with ``…``, and
+        an entity that does not end before the cut is dropped."""
+        from telegram import MessageEntity
+        head = f"{who} asked:"
+        shift = utf16_len(head) + 1
+        budget = _TG_MAX_LENGTH - shift
+        if utf16_len(quote) > budget:
+            quote = quote[:utf16_prefix_end(quote, 0, budget - 1)].rstrip()
+            kept = utf16_len(quote)
+            entities = [e for e in entities if e.offset + e.length <= kept]
+            quote += "…"
+        box = MessageEntity(type=MessageEntity.EXPANDABLE_BLOCKQUOTE, offset=shift,
+                            length=utf16_len(quote))
+        name = MessageEntity(type=MessageEntity.BOLD, offset=0, length=utf16_len(who))
+        return f"{head}\n{quote}", [name, box, *MessageEntity.shift_entities(shift, entities)]
+
+    def _job_request_post(self, rec) -> "TgAddress | None":
+        """The operator's message that asked for the job (its origin's
+        ``_tg_request``), when it is this bot's message in the job's chat —
+        the only message a job post from here can reply to."""
+        try:
+            request = TgAddress.from_json((getattr(rec, "origin", None) or {}).get("_tg_request"))
+        except AddressError:
+            return None
+        if (request.message_id is None or request.chat_id != self._job_chat(rec)
+                or not self._own_address(request)):
+            return None
+        return request
 
     async def post_job_parked(self, rec, text: str) -> "int | None":
         """A parked job's one line in the operator's direct chat, with the
-        job's Cancel button: a reply to the start line when the job has one,
-        else a new post. Filed as the job's keyboard post, so a reply quoting
-        it reaches the job. Returns the message id, or ``None`` when nothing
-        landed."""
-        from telegram import (
-            InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters,
-        )
+        job's Cancel button: a reply to his request when that is this bot's
+        message in the job's chat, else a new post. Filed as the job's
+        keyboard post, so a reply quoting it reaches the job. Returns the
+        message id, or ``None`` when nothing landed."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         from engagement_registry import JOB_POST_PARKED
         chat = self._job_chat(rec)
         if chat is None or self.bot is None:
             return None
         kbd = InlineKeyboardMarkup([[InlineKeyboardButton(
             text="Cancel", callback_data=job_cancel_callback(rec.id))]])
-        start = self._job_start_post(rec)
-        if start is not None and start.chat_id != chat:
-            start = None
+        request = self._job_request_post(rec)
         extra = ({"reply_parameters": ReplyParameters(
-            message_id=start.message_id, allow_sending_without_reply=True)}
-            if start is not None else {})
+            message_id=request.message_id, allow_sending_without_reply=True)}
+            if request is not None else {})
         try:
             msg = await self.bot.send_message(
                 chat_id=chat, text=text, reply_markup=kbd, **extra)
@@ -4093,37 +4082,22 @@ class TelegramChannel(Channel):
                                rec.id[:8], exc_info=True)
 
     async def _retire_job_post(self, rec, post) -> None:
-        """Retire one keyboard post of an ended job at its own address. The start line
-        is never edited (it carries the reply keyboard, which Telegram does not allow to
-        be edited): one silent line in reply to it ends the job — its outcome, running
-        time and cost, ``✅ Finished «<title>» · 40 min · $2.40`` (naming the agent where
-        the start line does) — with the chat's Stop keys still live. A question loses its
-        buttons. A post this cannot touch — one without an address, or another bot's —
-        keeps its keyboard; a tap on it reads the terminal record."""
-        from engagement_registry import JOB_POST_START
+        """Retire one keyboard post of an ended job at its own address: a
+        question or a parking line loses its buttons. The job's end is told
+        by its requester's answer, so nothing is posted here. A post this
+        cannot touch — one without an address, or another bot's — keeps its
+        keyboard; a tap on it reads the terminal record."""
         parts = _job_post_parts(post)
         if parts is None:
             logger.warning("job %s keyboard post without an address: %r",
                            rec.id[:8], post)
             return
-        address, kind = parts
+        address, _kind = parts
         if not self._own_address(address) or address.message_id is None:
             logger.warning("job %s keyboard post on bot %s left as it is: not "
                            "this endpoint's", rec.id[:8], address.bot_id)
             return
-        chat, message_id = address.chat_id, address.message_id
-        if kind == JOB_POST_START:
-            import background_jobs
-            import result_broker
-            import stop_keys
-            # in the agent's own chat the chat is the agent: no name
-            agent = (self._job_agent_name(rec)
-                     if result_broker.label_at(rec.role_or_type, self) else "")
-            await self._send_key_line(
-                chat, stop_keys.job_end_line(rec, agent) + background_jobs.cost_suffix(rec),
-                reply_to=message_id, silent=True)
-        else:
-            await self.clear_dm_keyboard(chat, message_id)
+        await self.clear_dm_keyboard(address.chat_id, address.message_id)
 
     def _job_tap_allowed(self, cq: Any, rec) -> bool:
         return self._job_owner_is(getattr(cq, "from_user", None), rec)
@@ -4365,6 +4339,10 @@ class TelegramChannel(Channel):
             owner = self._ack_claim(burst, entry, caption)
         try:
             entry.line, entry.stored = await self._store_inbound(cls)
+            if entry.stored is not None and entry.claim is None:
+                # A caption's files are reacted to only once its turn is
+                # dispatched; until then the turn, or the line, may answer.
+                entry.reacted = await self._ack_react(chat_id, burst, entry)
         finally:
             if entry.line is None:      # cancelled or raised: never left pending
                 import agent_inbox
@@ -4375,6 +4353,46 @@ class TelegramChannel(Channel):
         if owner is not None:
             await self._run_claim(update, msg, user, burst, owner)
             await self._render_ack(chat_id, burst)
+
+    async def _ack_react(self, chat_id: Any, burst: _AckBurst, entry: _AckEntry) -> bool:
+        """A stored file is acknowledged with a reaction on its message. Telegram
+        shows one reaction for a whole album, and only on its first message, so
+        an album is reacted to once, there, and that one outcome stands for
+        every file of it. The file shows no line while its reaction is under
+        way; ``False`` sends it back to its line."""
+        entry.reacting = True
+        try:
+            if entry.group is None:
+                return await self.react(chat_id, entry.message_id)
+            if burst.reaction is None:
+                burst.reaction = asyncio.ensure_future(self._react_album(chat_id, burst))
+            return await asyncio.shield(burst.reaction)
+        finally:
+            entry.reacting = False
+
+    async def _react_album(self, chat_id: Any, burst: _AckBurst) -> bool:
+        """An album's one reaction: once no file of it has arrived or landed for
+        ``ALBUM_SETTLE_S`` (at most ``ALBUM_MAX_WAIT_S``), on its lowest message
+        id, the album's first message."""
+        deadline = time.monotonic() + self.ALBUM_MAX_WAIT_S
+        while (time.monotonic() - burst.touched < self.ALBUM_SETTLE_S
+               and time.monotonic() < deadline):
+            await asyncio.sleep(0.1)
+        first = min((e.message_id for e in burst.entries if e.message_id is not None),
+                    default=None)
+        return first is not None and await self.react(chat_id, first)
+
+    async def react(self, chat_id: int, message_id: int) -> bool:
+        """Put the 👍 reaction on one message. ``False`` when it did not go
+        through, logged with the exception's class only."""
+        try:
+            await self.bot.set_message_reaction(
+                chat_id=chat_id, message_id=message_id,
+                reaction=[ReactionTypeEmoji(REACTION)])
+            return True
+        except Exception as exc:  # noqa: BLE001 — the caller falls back to a line
+            logger.warning("reaction failed: %s", type(exc).__name__)
+            return False
 
     async def _store_inbound(self, cls: "_InboundClass") -> tuple[str, tuple | None]:
         """The default agent's inbox takes the file: its one-line outcome, and
@@ -4430,7 +4448,8 @@ class TelegramChannel(Channel):
         doc = getattr(msg, "document", None)
         name = agent_inbox._bounded_display(
             cls.display_name or (getattr(doc, "file_name", None) or "") if doc else "")
-        entry = _AckEntry(name=name, group=group)
+        entry = _AckEntry(name=name, group=group,
+                          message_id=getattr(msg, "message_id", None))
         claim = burst.claims.get(group) if group is not None else None
         if claim is not None and not claim.sealed:
             entry.claim = claim
@@ -4462,7 +4481,8 @@ class TelegramChannel(Channel):
                          burst: _AckBurst, claim: _AckClaim) -> None:
         """#1379: once every file of the album has landed (and none arrived for
         ``ALBUM_SETTLE_S``), ONE turn acts on the files it kept; they are left
-        out of the acknowledgement only when that turn was dispatched."""
+        out of the acknowledgement, and get their reaction, only when that turn
+        was dispatched. A turn not dispatched leaves them their lines."""
         album = bool(getattr(msg, "media_group_id", None))
         deadline = time.monotonic() + self.ALBUM_MAX_WAIT_S
         while time.monotonic() < deadline:
@@ -4479,6 +4499,8 @@ class TelegramChannel(Channel):
                     [e.stored for e in files], album=album):
                 for e in files:
                     e.covered = True
+                for e in files:
+                    e.reacted = await self._ack_react(msg.chat.id, burst, e)
         finally:
             claim.done = True
 
@@ -5387,6 +5409,70 @@ class TelegramChannel(Channel):
         counts a dropped message as sent."""
         return self._app is not None
 
+    def _reply_parameters(self, context: dict, chat_id: Any,
+                          message: Any = None) -> "ReplyParameters | None":
+        """The reply an answer's first message makes, or ``None`` for a plain
+        message.
+
+        The target is the context's reserved ``_reply_to`` address, which only
+        Casa sets. Without one, an answer whose admission kept a reply marker
+        (*message*'s ``reply``, a :class:`ReplyMark`) replies to the person's
+        own message, the reserved ``_tg_request``; the marker's quote rides
+        only when it is their exact words (``_operator_words``) and fits
+        Telegram's 1024-unit bound, else the reply goes without it. A target
+        counts only when it is a message of this bot in the chat being sent
+        to (*chat_id*): a bot cannot reply to another bot's message, and a
+        reply across chats is not one the reader would see. Anything else, a
+        malformed value included, sends plain. The reply is sent even when
+        the target is gone, so a deleted message never loses the answer."""
+        raw, quote = context.get("_reply_to"), None
+        if raw is None:
+            mark = getattr(message, "reply", None)
+            if not isinstance(mark, ReplyMark):
+                return None
+            raw, quote = context.get("_tg_request"), mark.quote
+            if raw is None:
+                return None
+        try:
+            target = TgAddress.from_json(raw)
+            chat = int(chat_id)
+        except (AddressError, TypeError, ValueError):
+            logger.warning("reply target is not a message address; sending plain")
+            return None
+        if (target.message_id is None or target.chat_id != chat
+                or not self._own_address(target)):
+            return None
+        if not (quote and utf16_len(quote) <= _TG_MAX_QUOTE
+                and quote in str(context.get("_operator_words") or "")):
+            quote = None
+        return ReplyParameters(message_id=target.message_id, quote=quote,
+                               allow_sending_without_reply=True)
+
+    def _first_message_kw(self, context: dict, chat_id: Any, message: Any) -> dict:
+        """The extra arguments of an answer's first ``send_message``: its
+        reply, when :meth:`_reply_parameters` gives one. Every later message
+        of the same answer is sent without them."""
+        reply = self._reply_parameters(context, chat_id, message)
+        return {"reply_parameters": reply} if reply is not None else {}
+
+    async def _send_message(self, **kw):
+        """``send_message``; when Telegram refuses a message whose reply
+        carries a quote (a quote that is not exact text of the message
+        replied to is one such refusal), the same message once more without
+        the quote, as a plain reply. A refusal of that resend, or of a
+        message with no quote, propagates unchanged."""
+        try:
+            return await self._app.bot.send_message(**kw)
+        except BadRequest as exc:
+            reply = kw.get("reply_parameters")
+            if reply is None or not reply.quote:
+                raise
+            logger.warning("reply quote refused; sent without it: %s",
+                           type(exc).__name__)
+            kw["reply_parameters"] = ReplyParameters(
+                message_id=reply.message_id, allow_sending_without_reply=True)
+            return await self._app.bot.send_message(**kw)
+
     async def send(self, message: str, context: dict[str, Any]) -> DeliveryOutcome:
         """Send a complete message (block mode fallback).
 
@@ -5406,11 +5492,14 @@ class TelegramChannel(Channel):
             return DeliveryOutcome.NOT_DELIVERED
 
         outcome = DeliveryOutcome.NOT_DELIVERED
+        first = self._first_message_kw(context, target_chat, message)
         for chunk in _split_message(message):
-            await self._app.bot.send_message(
+            await self._send_message(
                 chat_id=target_chat,
                 text=chunk,
+                **first,
             )
+            first = {}
             # The head landed. Stamp it where it survives a LATER chunk raising:
             # a raising method returns no enum at all, so the returned value
             # cannot carry this fact (#556 design §2.2).
@@ -5540,7 +5629,7 @@ class TelegramChannel(Channel):
         delivery latch BEFORE sending them (#831). ``record`` (S4), when given,
         receives the platform's return of each send that succeeded."""
         try:
-            sent = await self._app.bot.send_message(
+            sent = await self._send_message(
                 chat_id=chat_id, text=display, entities=entities, **kw,
             )
             if record is not None:
@@ -5552,7 +5641,7 @@ class TelegramChannel(Channel):
             # refused — a log line must never echo a credential.
             logger.warning("rich-text send fell back to plain: %s",
                            type(exc).__name__)
-            sent = await self._app.bot.send_message(
+            sent = await self._send_message(
                 chat_id=chat_id, text=original, **kw,
             )
             if record is not None:
@@ -5751,24 +5840,19 @@ class TelegramChannel(Channel):
         mid = getattr(msg, "message_id", None)
         return mid if isinstance(mid, int) else None
 
-    async def deliver_run_card(self, chat_id: int, text: str, *, starting=None,
-                               post=None, silent: bool = False) -> "int | None":
+    async def deliver_run_card(self, chat_id: int, text: str, *, post=None,
+                               silent: bool = False) -> "int | None":
         """The status card of browsing that started without a start question
-        (``run_admission``): Casa's label line and its fixed text, with no button. It
-        raises the chat's Stop keys at the keyboard, *starting* (the request's
-        ``stop_keys.Item``, not yet held as a card) among them. Filed under *post* as it
-        lands. ``silent`` sends it without a notification. Returns the message id, or
-        ``None`` when nothing landed."""
-        import stop_keys
-
+        (``run_admission``): Casa's label line and its fixed text, with no keyboard of any
+        kind — the operator stops the runs by asking the agent (``stop_work``). Filed under
+        *post* as it lands. ``silent`` sends it without a notification. Returns the message
+        id, or ``None`` when nothing landed."""
         if self._app is None:
             logger.warning("Telegram channel not started; cannot deliver the run card")
             return None
         quiet = {"disable_notification": True} if silent else {}
         try:
-            kbd = stop_keys.keyboard(self.bot_id, chat_id, starting=starting)
-            msg = await self._app.bot.send_message(
-                chat_id=chat_id, text=text, reply_markup=kbd, **quiet)
+            msg = await self._app.bot.send_message(chat_id=chat_id, text=text, **quiet)
         except Exception as exc:  # noqa: BLE001 — not proven
             logger.warning("deliver_run_card send failed (chat=%s): %s",
                            chat_id, type(exc).__name__)
@@ -5778,20 +5862,19 @@ class TelegramChannel(Channel):
         return mid if isinstance(mid, int) else None
 
     async def send_reply_line(self, chat_id: int, text: str, reply_to: "int | None", *,
-                              post=None, silent: bool = False) -> bool:
-        """One Casa line (a Stop's outcome, a request's start or end, under the specialist's
-        label) as a reply to the card it answers, carrying the chat's Stop keys still live
-        (``stop_keys``; their removal when none is), filed under *post* (the card's own
-        record) as it lands. ``silent`` sends it without a notification. A failure is
-        logged and nothing more is attempted."""
-        import stop_keys
+                              post=None) -> bool:
+        """One Casa line (the outcome of a card's own Stop, under the specialist's label) as
+        a reply to the card it answers — sent even when that card is gone — filed under
+        *post* (the card's own record) as it lands. A failure is logged and nothing more is
+        attempted."""
+        from telegram import ReplyParameters
         if self._app is None:
             return False
-        kwargs: dict = {"reply_to_message_id": reply_to} if isinstance(reply_to, int) else {}
-        if silent:
-            kwargs["disable_notification"] = True
+        kwargs: dict = {}
+        if isinstance(reply_to, int) and not isinstance(reply_to, bool):
+            kwargs["reply_parameters"] = ReplyParameters(
+                message_id=reply_to, allow_sending_without_reply=True)
         try:
-            kwargs["reply_markup"] = stop_keys.keyboard(self.bot_id, chat_id)
             sent = await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged
             logger.warning("reply line failed: %s", type(exc).__name__)
@@ -5973,6 +6056,9 @@ class TelegramChannel(Channel):
 
             def _landed(sent):
                 self._record_post(target_chat, sent, post)
+            # The reply, when the context names one, rides on the first
+            # physical message only.
+            first = self._first_message_kw(context, target_chat, message)
             if len(pages) == 1:
                 display, entities = pages[0]
                 if entities is None:
@@ -5980,26 +6066,28 @@ class TelegramChannel(Channel):
                         # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
                         # it here is how a delegation path loses the distinction.
                         return await self.send(_plain(message), context)
-                    _landed(await self._app.bot.send_message(
-                        chat_id=target_chat, text=display))
+                    _landed(await self._send_message(
+                        chat_id=target_chat, text=display, **first))
                     context["_delivery_head_sent"] = True
                     return DeliveryOutcome.DELIVERED
                 await self._send_one(target_chat, message, display, entities,
-                                     record=_landed)
+                                     record=_landed, **first)
                 context["_delivery_head_sent"] = True
                 return DeliveryOutcome.DELIVERED
             outcome = DeliveryOutcome.NOT_DELIVERED
             for display, entities in pages:
                 chunks, fell_back = [display], False
                 if entities is None:
-                    _landed(await self._app.bot.send_message(
-                        chat_id=target_chat, text=display))
+                    _landed(await self._send_message(
+                        chat_id=target_chat, text=display, **first))
                 else:
                     # #831: the plain retry carries this page's link destinations,
                     # which its marker-free display cannot.
                     chunks = self._plain_fallback_chunks(display, entities)
                     fell_back = await self._send_one(
-                        target_chat, chunks[0], display, entities, record=_landed)
+                        target_chat, chunks[0], display, entities, record=_landed,
+                        **first)
+                first = {}
                 # Page 1 carries the notice: once it lands the delivery counts as
                 # shown, however the remaining pages fare. Stamped BEFORE the
                 # overflow chunks below, so a raising tail cannot erase the fact
@@ -6241,6 +6329,8 @@ class TelegramChannel(Channel):
 
 
 _TG_MAX_LENGTH = 4096
+# The longest quote a reply may carry, in UTF-16 units (Bot API ReplyParameters).
+_TG_MAX_QUOTE = 1024
 
 
 def _split_message(text: str) -> list[str]:

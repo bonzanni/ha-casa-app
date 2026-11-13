@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-13
 ---
 
 # Engagement launch detach
@@ -146,7 +146,8 @@ the routing: the target role from the origin with the caller's fallback (the boo
 the configured assistant role; a hard-coded fallback sent a role-less record to a queue that
 need not exist, and the bus drops an unknown target silently), the channel, the
 cid/chat-id/engagement-id context merged with whatever the caller adds (the funnel's next
-steps), and the delivery acknowledgement.
+steps), the origin's reply target (`tools.py::reply_target`), so the outcome answers the
+request itself, and the delivery acknowledgement.
 
 ## Failure behavior
 

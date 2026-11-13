@@ -1254,11 +1254,24 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # "Alex is still on it." (said right after a start, "still" claimed progress
 # that had not happened). The eight other carriers byte-identical. No
 # retention claim.
+# MOVED (no Stop key at the keyboard), `assistant:text` only: the job
+# paragraph says the person stops a job "by asking you: call stop_work" where
+# it said "with its Stop key at the keyboard or by asking you
+# (`cancel_engagement`)", and the job-lives-here paragraph says "its questions
+# and its result come here" where it said "its questions, its result and its
+# Stop key come here". The eight other carriers byte-identical. No retention
+# claim.
+# MOVED (stop_work names jobs too), `assistant:text` only: the stop paragraph
+# says "To stop or cancel work that runs by itself, a background job or a
+# specialist's browsing, call stop_work yourself" where it said "To stop or
+# cancel work a specialist carries on by itself, such as browsing, call
+# stop_work yourself". The eight other carriers byte-identical. No retention
+# claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "7ca7a7be2ca937eb6ee88a15274e666201fc1e4439cf2d65c3e630a4a10fbccb",
+        "3417be6f6f005d548ecb29b4038436abb34bef29647b7bbd27d862abe294a94b",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":
@@ -1575,8 +1588,7 @@ _KERNEL_DROP_OFF_CLAUSE = (
 )
 
 _UNOPENED_TOPIC_DOCTRINE = (
-    "A job lives in this chat: its questions, its result and its Stop key "
-    "come here. When the person wants to talk with a specialist themselves, or "
+    "A job lives in this chat: its questions and its result come here. When the person wants to talk with a specialist themselves, or "
     "a step needs them to, delegate their words to it in `sync` mode and tell "
     "them its answer in your own words; they carry on by writing to you, and "
     "you delegate their next words the same way."
@@ -2128,3 +2140,17 @@ def test_the_text_doctrine_says_she_can_change_a_specialists_handle():
     assert "a different handle for a specialist" in text
     assert "`replace`" in text and "`check`" in text
     assert "even if earlier in the conversation it looked as if you could not" in text
+
+
+def test_the_doctrine_names_no_stop_key(system_md_text):
+    """No Stop key sits at the keyboard any more: the person stops a job by asking, and
+    the resident calls stop_work. Both the doctrine and the fallback prompt say so."""
+    from pathlib import Path
+    doctrine_text = (Path(__file__).resolve().parent.parent / "casa/rootfs/opt/casa/defaults"
+                     / "roles/resident/assistant/doctrine.md").read_text(encoding="utf-8")
+    assert "Stop key" not in system_md_text and "Stop key" not in doctrine_text
+    for text, who in ((doctrine_text, "stop it"), (system_md_text, "stops it")):
+        flat = _collapse_ws(text)
+        assert (f"messages, and {who} by asking you: call stop_work. If it is refused, say "
+                "why, naming the running engagement if one is given.") in flat
+        assert "A job lives in this chat: its questions and its result come here." in flat

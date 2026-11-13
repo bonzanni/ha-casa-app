@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-13
 ---
 
 # Background jobs: one long session
@@ -182,25 +182,21 @@ compaction, and puts its `additionalContext` into the model's context. At every 
 driver logs the window and threshold the CLI actually applies (`get_context_usage`, no model
 call), which is where to read whether the env took effect on a given model.
 
-**INV-BGJOB-020**: A job's cost is recorded at each turn end as its cost before the client opened plus the CLI's cumulative total, persisted, and shown on its end line and its end notice; a completion from inside a running turn is torn down only after that turn ends or a bounded wait passes; and no code path reads the cost to stop or refuse anything.
+**INV-BGJOB-020**: A job's cost is recorded at each turn end as its cost before the client opened plus the CLI's cumulative total, persisted, and shown on its end notice; a completion from inside a running turn is torn down only after that turn ends or a bounded wait passes; and no code path reads the cost to stop or refuse anything.
 
 The CLI reports `total_cost_usd` cumulatively for its own process, which starts again at zero
 after a resume, so the job's cost is `cost_base` (the record's cost when this client opened)
-plus that total, kept on `origin["job"]["cost_usd"]`. The DM start line of an operator-started
-job carries the Stop key, and Telegram never lets a message with a reply keyboard be edited,
-so it shows neither while the job runs; the job's agent log is where progress is watched. The
-line that ends the job, in reply to its start line, carries its running time always and the
-cost once a turn has ended (`background_jobs.cost_suffix`):
-`✅ Finance finished «Accounting check» · 1 h 5 min · $3.90` (in the host's own chat
-`✅ Finished «Accounting check» · …`; see
-[`background-job-direct-chat.md`](background-job-direct-chat.md)), and the end notice to the
-resident carries `Job ran 1 h 5 min · $3.90`, so a job with no start line (scheduled or
-agent-started) still shows it.
+plus that total, kept on `origin["job"]["cost_usd"]`. Nothing in the direct chat shows it
+while the job runs; the job's agent log is where progress is watched. The job posts no end line
+of its own ([`background-job-direct-chat.md`](background-job-direct-chat.md)): the end notice to
+its requester carries `Job ran 1 h 5 min · $3.90` (the cost once a turn has ended) and asks
+the narration to mention both in its own words (`tools.JOB_COST_NOTE`); the requester's answer
+to it is the one message the end leaves.
 
 A job usually finishes from inside a turn: it calls `emit_completion`, and that turn ends only
 after the tool returns. The completion's Casa-owned finalization therefore returns the tool
 result at once, waits for the completing turn's `ResultMessage` (`InCasaDriver.wait_turn_end`,
-at most 30 s), stores the cost it recorded, then closes the session and posts the end line;
+at most 30 s), stores the cost it recorded, then closes the session;
 the registry's terminal observer leaves such a job's keyboards to that step. Past the bound it
 finalizes with the last cost known. Who owns finalization and the completion gate are unchanged
 (INV-ENG-003). Between turn ends the cost shown is the last one: no estimate is made.
@@ -254,7 +250,6 @@ Anything new the header should carry after a compaction belongs in `job_header`.
 - `casa/rootfs/opt/casa/background_jobs.py::job_header`
 - `casa/rootfs/opt/casa/background_jobs.py::launch_prompt`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_parked`
-- `casa/rootfs/opt/casa/background_jobs.py::cost_suffix`
 - `casa/rootfs/opt/casa/tools.py::_await_completing_turn`
 - `casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs`
 

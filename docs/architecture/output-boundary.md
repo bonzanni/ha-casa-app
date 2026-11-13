@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-13
 ---
 
 # The output boundary
@@ -88,6 +88,21 @@ the running turn's scope. A read the `PreToolUse` guard denied produces no post 
 it is never evidence; a failed read is recorded as failed, not as ok. A role with no inbox
 records nothing, and voice turns cannot be file turns because only the Telegram default
 agent has an inbox ([`inbound-files.md`](inbound-files.md)).
+
+**An answer may open with a reply marker, and admission takes it off.** Like closing
+silence, the marker is admission's: a `FINAL_REPLY` or `STREAM_UPDATE` first loses a leading
+`<reply/>`, `<reply />` or `<reply quote="…"/>`, a space before its `/>` allowed
+(`split_reply_marker`: only at the very start, after leading whitespace, the quote running to
+the first `"/>` or `" />`, with the spaces and at most
+one line break after it), before any silence check, so `<reply/><silent/>` is a chosen
+silence. A final reply keeps the marker as `Admitted.reply`, a `ReplyMark` that
+`with_text` carries over and a suppressed admission never has; the rules that read the turn
+report judge the turn's own messages, marker and all, and the marker is taken off what they
+keep. A stream update that may still become a marker (`may_be_reply_marker`) is admitted
+empty, so the draft never shows one. Casa parses only this syntax of its own; the
+`<channel_context>` block of a Telegram prompt teaches it (`REPLY_MARKER_GUIDE`), and the
+transport decides whether the reply can be sent
+([`telegram-bots.md`](telegram-bots.md)). A marker anywhere else is the model's text.
 
 **A stored payload resolves its obligation now and carries the result as data.** The turn
 that sets a reminder, or launches a delegation or an engagement, may not be the turn that

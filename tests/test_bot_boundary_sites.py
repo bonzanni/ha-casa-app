@@ -394,19 +394,20 @@ IDENTITY_SITE_HITS = {
     "casa_core.py": {"main": 2},
     "configurator_continue.py": {"_continuation": 1},
     "channels/telegram.py": {
-        "TelegramChannel.__init__": 4, "TelegramChannel._clear_typing_loop": 2,
+        "TelegramChannel.__init__": 4, "TelegramChannel._ack_react": 2,
+        "TelegramChannel._react_album": 1,
+        "TelegramChannel._clear_typing_loop": 2,
         "TelegramChannel._dispatch_dm_turn": 3,
         "TelegramChannel._dispatch_engagement_continuation": 2,
         "TelegramChannel._dispatch_proposal_tap": 1,
         "TelegramChannel._edit_proposal_message": 4, "TelegramChannel._ended_job_phrase": 2,
         "TelegramChannel._file_address": 5,
         "TelegramChannel._handle": 2,
-        "TelegramChannel._on_non_text_message": 4,
+        "TelegramChannel._on_non_text_message": 5,
         "TelegramChannel._on_proposal_callback": 1, "TelegramChannel._quoted_address": 1,
         "TelegramChannel._quoted_task": 1, "TelegramChannel._record_post": 1,
         "TelegramChannel._redirect_from_log_group": 2, "TelegramChannel._reply_note_for": 1,
-        "TelegramChannel._resolve_file_address": 1, "TelegramChannel._retire_job_post": 1,
-        "TelegramChannel._cancel_job_by_key": 1, "TelegramChannel._press_stop_key": 2,
+        "TelegramChannel._resolve_file_address": 1,
         "TelegramChannel._route_task_file": 1, "TelegramChannel._route_task_file.tell": 1,
         "TelegramChannel._run_job_cancel": 1, "TelegramChannel._send_dormant_line": 1,
         "TelegramChannel.address": 2, "TelegramChannel.deliver_operator_file": 1,
@@ -418,7 +419,8 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel.deliver_operator_proposal": 1,
         "TelegramChannel.deliver_operator_question": 1, "TelegramChannel.deliver_run_card": 1,
         "TelegramChannel.send_reply_line": 1, "TelegramChannel.mark_proposal": 1,
-        "TelegramChannel.speak_first": 1,
+        "TelegramChannel.speak_first": 1, "TelegramChannel.post_job_start_line": 1,
+        "TelegramChannel.post_task_start": 1,
         "TelegramChannel.proposal_finish_hook._finish": 5,
         "_summons_chat_name": 2,
     },
@@ -528,7 +530,8 @@ IDENTITY_SITE_HITS = {
         "_retire_untracked_dispatches": 1, "_run_episode": 4, "_settle_locked": 2,
         "ensure_obligation": 3, "report_dispatch_outcome": 2, "settle_from_tool_evidence": 1,
     },
-    "plugin_stop.py": {"<module>": 1, "settle_ended": 1, "stop": 3, "visible_confirmation": 1},
+    "plugin_stop.py": {"<module>": 1, "settle_ended": 1, "stop": 3, "tell_line": 1,
+                       "visible_confirmation": 1},
     "plugin_store.py": {
         "manifest_callbacks": 1, "manifest_emits": 1, "manifest_requires": 2,
         "manifest_subscribes": 1, "manifest_triggers": 1,
@@ -559,7 +562,8 @@ IDENTITY_SITE_HITS = {
         "<module>": 1, "Confirmation": 2, "Confirmations.__init__": 1,
         "Confirmations._load_locked": 1, "Confirmations._save_locked": 5,
         "Confirmations.add": 1, "Confirmations.by_key": 2,
-        "Confirmations.by_key_on_any_bot": 2, "Confirmations.clear_card": 1,
+        "Confirmations.by_key_on_any_bot": 2, "Confirmations.card_for_binding": 1,
+        "Confirmations.clear_card": 1,
         "Confirmations.get": 1, "Confirmations.open_cards": 1,
         "Confirmations.peek": 1, "Confirmations.set_card": 1,
         "Confirmations.settle": 1, "_spawn_status_card": 1, "_spawn_status_card._post": 1,
@@ -798,6 +802,10 @@ IDENTITY_FUNCTIONS = {
               "confirmation) takes the asking bot's first, else only work the asking agent "
               "requested; each confirmation keeps its own bot"),
     ("run_admission.py", "_spawn_status_card"): (NOISE, "a signature"),
+    ("run_admission.py", "Confirmations.card_for_binding"): (
+        SAFE, "a lookup by the Casa-minted binding ref; the card it returns is a full "
+              "address carrying the bot that posted it, and the send seam replies to it "
+              "only through that bot, in that chat"),
     ("task_model.py", "Requester"): (NOISE, "a record's fields"),
     ("guest_groups.py", "GuestEntry"): (NOISE, "a record's fields: an allowance for one "
                                                "specialist in one group, not a key"),
@@ -889,14 +897,12 @@ ROUTE_READERS = {
     ("task_model.py", "<module>"): (1, ROUTE, "a requester's stored route is checked against the route keys"),
     ("task_model.py", "Requester.from_json"): (1, ROUTE, "a requester's stored route is checked against the route keys"),
     ("tools.py", "start_scheduled_job"): (1, ROUTE, "stamped where a scheduled job is born"),
+    ("tools.py", "_record_reply_to"): (1, ROUTE, "a record's reply target is kept only when it is a message of the bot its narration goes out through"),
     ("trigger_registry.py", "_fresh_route"): (2, ROUTE, "stamped where a trigger turn is born"),
 }
 
 #: Every read of a bot id: ``(file, function): (hits, classification, note)``.
 #: A PRE_POST entry names the test of the window before Casa's bot has an id.
-#: an endpoint's send that carries the chat's Stop keys reads its own bot before the post
-_NO_ID_KEYS = ("test_stop_keys.py::"
-               "test_before_the_bot_has_an_id_nothing_that_carries_the_keys_is_posted")
 
 BOT_ID_READS = {
     ("authz_grants.py", "ChallengeCoordinator._drive"): (1, FIELD, "the challenge key's own bot"),
@@ -928,13 +934,8 @@ BOT_ID_READS = {
     ("channels/telegram.py", "TelegramChannel._on_proposal_callback"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._on_resident_callback"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._run_stop_allowed"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._press_stop_key"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._spawn_run_stop._run"): (1, FIELD, "the confirmation's own bot"),
     ("channels/telegram.py", "TelegramChannel._spawn_run_stop._tell"): (1, FIELD, "the confirmation's own bot"),
-    ("channels/telegram.py", "TelegramChannel._send_key_line"): (1, PRE_POST, _NO_ID_KEYS),
-    ("channels/telegram.py", "TelegramChannel.post_job_start_line"): (1, PRE_POST, _NO_ID_KEYS),
-    ("channels/telegram.py", "TelegramChannel.deliver_run_card"): (1, PRE_POST, _NO_ID_KEYS),
-    ("channels/telegram.py", "TelegramChannel.send_reply_line"): (1, PRE_POST, _NO_ID_KEYS),
     ("channels/telegram.py", "TelegramChannel._own_address"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._own_intake"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._rebuild"): (1, NOISE, "a log line"),
@@ -976,24 +977,22 @@ BOT_ID_READS = {
     ("result_broker.py", "_deliver_and_replace"): (1, PRE_POST, "test_plugin_identities.py::test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted"),
     ("result_broker.py", "_endpoint_for"): (1, FIELD, "the target's own bot"),
     ("plugin_stop.py", "visible_confirmation"): (1, FIELD, "the confirmation's own bot"),
-    ("plugin_stop.py", "settle_ended"): (1, FIELD, "the card address's own bot"),
     ("result_broker.py", "label_at"): (1, FIELD, "the address's own bot"),
     ("result_broker.py", "_post_proposal"): (1, PRE_POST, "test_endpoint_isolation.py::test_a_proposal_naming_bot_111_is_refused_on_222"),
     ("run_admission.py", "Confirmations.by_key"): (1, FIELD, "the confirmation's own bot"),
     ("run_admission.py", "Confirmations.open_cards"): (1, FIELD, "the confirmation's own bot"),
-    ("run_admission.py", "_decide._on_settle"): (1, FIELD, "the card address's own bot"),
-    ("stop_keys.py", "_live_jobs"): (1, FIELD, "the job post address's own bot"),
     ("run_admission.py", "_spawn_status_card._post"): (1, POST_TIME, "the run card, once posted"),
     ("stored_call_settler.py", "handle_tap"): (2, RECEIPT, "the endpoint that received the tap"),
     ("specialist_install_consent.py", "approval_card_hooks._note_card"): (1, POST_TIME, "the bot that posted the card, read once it is posted"),
     ("task_model.py", "delivery_for"): (2, PRE_POST, "test_task_model.py::test_the_resident_born_before_its_bot_has_an_id_delivers_nothing"),
     ("specialist_install_consent.py", "prompt_specialist_install_consent"): (1, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),
     ("tools.py", "_erase_gate"): (2, FIELD, "Casa's operator address, read before the question"),
+    ("tools.py", "_record_reply_to"): (1, FIELD, "the reply target's own bot, compared with the record's route"),
     ("tools.py", "_note_task"): (1, FIELD, "the task's delivery's own bot"),
+    ("tools.py", "_post_task_start"): (1, FIELD, "the task's delivery's own bot, the address its answer replies to"),
     ("tools.py", "ask_user"): (1, PRE_POST, "test_tools_route.py::test_a_scheduled_question_before_casas_bot_has_an_id_touches_nothing"),
     ("tools.py", "start_scheduled_job.tell"): (1, POST_TIME, "the chat note of a notice, only once Casa's bot has an id"),
     ("tools.py", "send_media"): (1, FIELD, "the task's delivery's own bot, stamped as the send's route"),
-    ("tools.py", "stop_work._tell"): (1, FIELD, "the card address's own bot"),
     ("tools.py", "stop_work"): (2, RESOLUTION, "the endpoint the turn's route resolves to, and the found request's own bot"),
     ("tools.py", "wipe_memory"): (1, FIELD, "Casa's operator address, read before the card"),
     ("trigger_consent.py", "prompt_trigger_consent"): (2, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),
@@ -1072,7 +1071,9 @@ def _class(tree: ast.Module, name: str) -> ast.ClassDef:
 
 def test_the_transport_reads_the_configured_chat_only_for_the_operators_id():
     """The transport never picks a chat from configuration for a delivery:
-    the configured chat is read once, to know who the operator is."""
+    the configured chat is read once, to know who the operator is. The one
+    other chat it reads is a stored address's own: the operator's request a
+    job's 👍 goes on."""
     tree = ast.parse((CODE / "channels" / "telegram_transport.py").read_text(encoding="utf-8"))
     readers = set()
     for method in _class(tree, "TelegramTransport").body:
@@ -1082,7 +1083,7 @@ def test_the_transport_reads_the_configured_chat_only_for_the_operators_id():
             if ((isinstance(node, ast.Attribute) and node.attr == "chat_id")
                     or (isinstance(node, ast.Constant) and node.value == "chat_id")):
                 readers.add(method.name)
-    assert readers == {"operator_user_id"}
+    assert readers == {"operator_user_id", "react_job_request"}
 
 
 #: Reads of an endpoint's configured operator chat (``self.chat_id``) in the

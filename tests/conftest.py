@@ -156,12 +156,17 @@ class _FakeMessageEntity:
     CODE = "code"
     PRE = "pre"
     TEXT_LINK = "text_link"
+    DATE_TIME = "date_time"
+    EXPANDABLE_BLOCKQUOTE = "expandable_blockquote"
 
-    def __init__(self, type, offset, length, url=None, **kwargs):
+    def __init__(self, type, offset, length, url=None, unix_time=None,
+                 date_time_format=None, **kwargs):
         self.type = type
         self.offset = offset
         self.length = length
         self.url = url
+        self.unix_time = unix_time
+        self.date_time_format = date_time_format
 
     def __eq__(self, other):
         return (
@@ -174,12 +179,22 @@ class _FakeMessageEntity:
         return f"_FakeMessageEntity({self.type!r}, {self.offset}, {self.length})"
 
     @staticmethod
+    def shift_entities(by, entities):
+        shift = by if isinstance(by, int) else len(by.encode("utf-16-le")) // 2
+        return [_FakeMessageEntity(e.type, e.offset + shift, e.length, url=e.url,
+                                   unix_time=e.unix_time,
+                                   date_time_format=e.date_time_format)
+                for e in entities]
+
+    @staticmethod
     def adjust_message_entities_to_utf_16(text, entities):
         out = []
         for e in entities:
             off16 = len(text[:e.offset].encode("utf-16-le")) // 2
             len16 = len(text[e.offset:e.offset + e.length].encode("utf-16-le")) // 2
-            out.append(_FakeMessageEntity(e.type, off16, len16, url=e.url))
+            out.append(_FakeMessageEntity(
+                e.type, off16, len16, url=e.url, unix_time=e.unix_time,
+                date_time_format=e.date_time_format))
         return out
 
 
@@ -225,9 +240,10 @@ def _install_telegram_stubs() -> None:
     # #1434: reply threading — keeps the constructor kwargs for inspection.
     class _FakeReplyParameters:
         def __init__(self, message_id, *, allow_sending_without_reply=None,
-                     **kw):
+                     quote=None, **kw):
             self.message_id = message_id
             self.allow_sending_without_reply = allow_sending_without_reply
+            self.quote = quote
 
     tg.ReplyParameters = _FakeReplyParameters
 
@@ -312,27 +328,6 @@ def _install_telegram_stubs() -> None:
     tg.InlineKeyboardButton = _FakeInlineKeyboardButton
     tg.InlineKeyboardMarkup = _FakeInlineKeyboardMarkup
 
-    # The Stop keys at the keyboard (``stop_keys``): reply-keyboard primitives,
-    # kept as value shapes the tests can inspect.
-    class _FakeKeyboardButton:
-        def __init__(self, text, *, style=None, **kw):
-            self.text = text
-            self.style = style
-
-    class _FakeReplyKeyboardMarkup:
-        def __init__(self, keyboard, *, resize_keyboard=None, is_persistent=None, **kw):
-            self.keyboard = keyboard
-            self.resize_keyboard = resize_keyboard
-            self.is_persistent = is_persistent
-
-    class _FakeReplyKeyboardRemove:
-        def __init__(self, **kw):
-            self.remove_keyboard = True
-
-    tg.KeyboardButton = _FakeKeyboardButton
-    tg.ReplyKeyboardMarkup = _FakeReplyKeyboardMarkup
-    tg.ReplyKeyboardRemove = _FakeReplyKeyboardRemove
-
     # python-telegram-bot also surfaces CallbackQueryHandler from telegram.ext;
     # ext stubs are a MagicMock above, so this just lives there too.
     tg_ext.CallbackQueryHandler = MagicMock()
@@ -386,7 +381,12 @@ class _FakeForumSupergroup:
 class _FakeTelegramBot:
     def __init__(self):
         self.messages: list = []
+        self.reactions: list = []    # (chat_id, message_id) of each reaction set
         self._supergroups: dict = {}
+
+    async def set_message_reaction(self, *, chat_id, message_id, reaction):
+        self.reactions.append((chat_id, message_id))
+        return True
 
     def _require_supergroup(self, chat_id):
         if chat_id not in self._supergroups:

@@ -7,6 +7,7 @@ acknowledgement then carries only what that turn does not answer.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import types
 from types import SimpleNamespace as NS
 
@@ -32,6 +33,18 @@ class _Bot:
         self.sends = 0
         self.edits = 0
         self.fail_edit = False
+        self.reactions: list[tuple[int, int]] = []
+        self.fail_reaction = False
+        self.reaction_delay = 0.0    # a reaction's round trip, as on a real network
+
+    async def set_message_reaction(self, *, chat_id, message_id, reaction):
+        if self.reaction_delay:
+            await asyncio.sleep(self.reaction_delay)
+        if self.fail_reaction:
+            raise RuntimeError("reactions are off in this chat")
+        assert [r.emoji for r in reaction] == ["\N{THUMBS UP SIGN}"]
+        self.reactions.append((chat_id, message_id))
+        return True
 
     async def send_message(self, **kw):
         self.sends += 1
@@ -52,16 +65,23 @@ class _Bot:
         return True
 
 
-def _ch():
+def _ch(*, fail_reaction=False):
+    """A channel whose bot records the chat. ``fail_reaction`` makes every
+    reaction fail, so a stored file falls back to its line."""
     ch, bus = _channel()
     ch._app = types.SimpleNamespace(bot=_Bot())
+    ch._app.bot.fail_reaction = fail_reaction
     ch.ALBUM_SETTLE_S = 0.05
     return ch, bus
 
 
-def _send(ch, name, caption=None, group=None, size=1234):
-    return ch._on_non_text_message(NS(message=_file_msg(
-        caption, media_group_id=group, document=_doc(name, size=size))))
+_mids = itertools.count(1)
+
+
+def _send(ch, name, caption=None, group=None, size=1234, mid=None):
+    msg = _file_msg(caption, media_group_id=group, document=_doc(name, size=size))
+    msg.message_id = mid if mid is not None else next(_mids)
+    return ch._on_non_text_message(NS(message=msg))
 
 
 def _chat(ch):
@@ -69,7 +89,7 @@ def _chat(ch):
 
 
 async def test_three_files_in_a_row_get_one_message_listing_each(wired):
-    ch, bus = _ch()
+    ch, bus = _ch(fail_reaction=True)
     await _send(ch, "a.pdf")
     assert _chat(ch) == [f"Got a.pdf — 1 KB. Ask me any time and I'll read it. "
                          f"I'll keep it {DAYS} days."]           # one file: today's line
@@ -83,7 +103,7 @@ async def test_three_files_in_a_row_get_one_message_listing_each(wired):
 
 
 async def test_an_album_handled_concurrently_still_gets_one_message(wired):
-    ch, _ = _ch()
+    ch, _ = _ch(fail_reaction=True)
     await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1") for n in "abc"))
     [text] = _chat(ch)
     assert text.startswith("Got 3 files: ") and all(f"{n}.pdf" in text for n in "abc")
@@ -91,7 +111,7 @@ async def test_an_album_handled_concurrently_still_gets_one_message(wired):
 
 
 async def test_a_refused_file_is_reported_in_the_same_message(wired):
-    ch, _ = _ch()
+    ch, _ = _ch(fail_reaction=True)
     await _send(ch, "a.pdf", group="g1")
     await _send(ch, "notes.docx", group="g1")
     await _send(ch, "huge.pdf", group="g1", size=ai.CAP_BYTES + 1)
@@ -104,7 +124,7 @@ async def test_a_refused_file_is_reported_in_the_same_message(wired):
 
 async def test_files_apart_in_time_get_their_own_messages(wired, monkeypatch):
     monkeypatch.setattr(tg, "ACK_WINDOW_S", 0.0)
-    ch, _ = _ch()
+    ch, _ = _ch(fail_reaction=True)
     await _send(ch, "a.pdf")
     await asyncio.sleep(0.01)
     await _send(ch, "b.pdf")
@@ -112,7 +132,7 @@ async def test_files_apart_in_time_get_their_own_messages(wired, monkeypatch):
 
 
 async def test_a_text_message_in_between_starts_a_new_message(wired):
-    ch, _ = _ch()
+    ch, _ = _ch(fail_reaction=True)
 
     async def serialized(update, chat_id):
         return None
@@ -124,7 +144,7 @@ async def test_a_text_message_in_between_starts_a_new_message(wired):
 
 
 async def test_a_message_that_cannot_be_edited_is_replaced_by_a_full_one(wired):
-    ch, _ = _ch()
+    ch, _ = _ch(fail_reaction=True)
     await _send(ch, "a.pdf")
     ch._app.bot.fail_edit = True
     await _send(ch, "b.pdf")
@@ -132,7 +152,7 @@ async def test_a_message_that_cannot_be_edited_is_replaced_by_a_full_one(wired):
 
 
 async def test_ten_long_names_fit_one_telegram_message(wired):
-    ch, _ = _ch()
+    ch, _ = _ch(fail_reaction=True)
     for i in range(tg.ACK_MAX_FILES):
         await _send(ch, f"{i}{'x' * 250}.pdf", group="g1")
     [text] = _chat(ch)
@@ -156,7 +176,7 @@ async def test_an_album_caption_runs_one_turn_over_every_kept_file_and_no_ack(wi
 async def test_a_caption_written_on_the_last_file_still_covers_the_album(wired):
     """A sibling acknowledged before the captioned file arrived is taken back
     once the turn covers it, so the chat never shows both."""
-    ch, bus = _ch()
+    ch, bus = _ch(fail_reaction=True)
     await _send(ch, "a.pdf", group="g1")
     assert len(_chat(ch)) == 1
     await _send(ch, "b.pdf", "file both", group="g1")
@@ -185,7 +205,7 @@ async def test_a_refused_captioned_file_still_has_its_album_acted_on(wired):
 
 
 async def test_an_album_caption_with_no_turn_acknowledges_every_file(wired):
-    ch, bus = _ch()
+    ch, bus = _ch(fail_reaction=True)
     ch._rate_limiter = NS(enabled=True,
                           check=lambda key: NS(allowed=False, should_notify=False))
     await asyncio.gather(_send(ch, "a.pdf", "file these", group="g1"),
@@ -193,6 +213,20 @@ async def test_an_album_caption_with_no_turn_acknowledges_every_file(wired):
     assert await _drain_bus(bus) == []
     assert _chat(ch) == [f"Got 2 files: a.pdf (1 KB), b.pdf (1 KB). Ask me any time "
                          f"and I'll read them. I'll keep them {DAYS} days."]
+
+
+async def test_an_album_caption_with_no_turn_keeps_its_lines_and_gets_no_thumbs_up(wired):
+    """A 👍 alone would read as "on it" for a caption nothing will answer, so a
+    caption whose turn was not dispatched keeps its files' lines instead."""
+    ch, bus = _ch()
+    ch._rate_limiter = NS(enabled=True,
+                          check=lambda key: NS(allowed=False, should_notify=False))
+    await asyncio.gather(_send(ch, "a.pdf", "file these", group="g1"),
+                         _send(ch, "b.pdf", group="g1"))
+    assert await _drain_bus(bus) == []
+    assert ch._app.bot.reactions == []
+    [text] = _chat(ch)
+    assert text.startswith("Got 2 files: a.pdf (1 KB), b.pdf (1 KB).")
 
 
 async def test_the_caption_turn_waits_for_a_slow_album_file(wired, monkeypatch):
@@ -222,7 +256,7 @@ async def test_the_caption_turn_waits_for_a_slow_album_file(wired, monkeypatch):
 
 async def test_an_album_stays_one_message_however_slowly_it_lands(wired, monkeypatch):
     monkeypatch.setattr(tg, "ACK_WINDOW_S", 0.0)
-    ch, _ = _ch()
+    ch, _ = _ch(fail_reaction=True)
     await _send(ch, "a.pdf", group="g1")
     await asyncio.sleep(0.01)
     await _send(ch, "b.pdf", group="g1")
@@ -233,7 +267,7 @@ async def test_an_album_stays_one_message_however_slowly_it_lands(wired, monkeyp
 async def test_a_full_album_after_a_lone_file_is_one_turn_over_all_ten(wired):
     """Round 1 (Astra): an album keeps a message of its own, so a file sent
     just before it cannot push its tenth file out of the caption's turn."""
-    ch, bus = _ch()
+    ch, bus = _ch(fail_reaction=True)
     await _send(ch, "before.pdf")
     await asyncio.gather(*(_send(ch, f"{i}.pdf", "file these" if i == 0 else None,
                                  group="g1") for i in range(10)))
@@ -267,7 +301,7 @@ async def test_a_caption_arriving_after_the_turn_took_its_files_runs_its_own(wir
 async def test_two_albums_arriving_interleaved_keep_their_own_groups(wired):
     """Round 2 (Terra): an album's group is found by its album id, so another
     album's file landing in between cannot split it."""
-    ch, bus = _ch()
+    ch, bus = _ch(fail_reaction=True)
     await asyncio.gather(_send(ch, "a1.pdf", "file these", group="A"),
                          _send(ch, "b1.pdf", group="B"), _send(ch, "a2.pdf", group="A"),
                          _send(ch, "b2.pdf", group="B"))
@@ -285,3 +319,91 @@ async def test_a_lone_refusal_left_beside_a_turn_still_names_its_file(wired):
     [turn] = await _drain_bus(bus)
     assert len(_chat(ch)) == 1
     assert _chat(ch)[0].startswith("feb.pdf: That PDF is more than")
+
+
+# A stored file is acknowledged with a reaction on it, not with a line. Only
+# what was not kept, or a file whose reaction did not go through, gets a line.
+
+async def test_a_stored_file_gets_a_thumbs_up_and_no_text(wired):
+    ch, bus = _ch()
+    bot = ch._app.bot
+    await _send(ch, "a.pdf", mid=41)
+    assert bot.reactions == [(OPERATOR, 41)] and bot.chat == {}
+    assert await _drain_bus(bus) == []
+    assert len(wired.list_files()) == 1
+
+
+async def test_three_files_in_a_row_each_get_a_thumbs_up_and_no_message(wired):
+    ch, _ = _ch()
+    bot = ch._app.bot
+    for n in "abc":
+        await _send(ch, f"{n}.pdf")
+    assert len(bot.reactions) == 3 and bot.chat == {}
+    assert len({mid for _, mid in bot.reactions}) == 3
+
+
+async def test_an_album_gets_one_thumbs_up_however_its_files_land(wired):
+    """Telegram shows one reaction for an album whichever of its messages
+    carries it, so the album is reacted to once and every file of it counts
+    as acknowledged."""
+    ch, _ = _ch()
+    bot = ch._app.bot
+    await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1") for n in "abc"))
+    assert len(bot.reactions) == 1 and bot.chat == {}
+
+
+async def test_an_album_is_reacted_to_on_its_first_message(wired):
+    """Telegram displays an album's reaction only on the album's first message
+    (its lowest message id), whichever of its files is stored first."""
+    ch, _ = _ch()
+    bot = ch._app.bot
+    await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1", mid=mid)
+                           for n, mid in (("c", 12), ("a", 10), ("b", 11))))
+    assert bot.reactions == [(OPERATOR, 10)]
+
+
+async def test_an_album_whose_reaction_succeeds_never_shows_a_line(wired):
+    """No "Got …" line is sent while the album's reaction is pending, so the
+    chat never flashes a line that the reaction then takes away."""
+    ch, _ = _ch()
+    bot = ch._app.bot
+    bot.reaction_delay = 0.2
+    await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1") for n in "abc"))
+    assert bot.sends == 0 and bot.chat == {} and len(bot.reactions) == 1
+
+
+async def test_an_album_whose_reaction_fails_gets_todays_listing(wired):
+    ch, _ = _ch(fail_reaction=True)
+    await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1") for n in "abc"))
+    [text] = _chat(ch)
+    assert text.startswith("Got 3 files: ")
+
+
+async def test_a_refused_file_beside_stored_ones_gets_only_its_line(wired):
+    ch, _ = _ch()
+    bot = ch._app.bot
+    await _send(ch, "a.pdf")
+    await _send(ch, "notes.xyz")
+    await _send(ch, "b.pdf")
+    assert len(bot.reactions) == 2
+    assert list(bot.chat.values()) == [
+        "notes.xyz: I can't open a .xyz, so I haven't kept it. "
+        "PDFs, images, and text or CSV files all work."]
+
+
+async def test_a_file_whose_reaction_fails_gets_todays_line(wired):
+    ch, _ = _ch(fail_reaction=True)
+    bot = ch._app.bot
+    await _send(ch, "a.pdf")
+    assert bot.reactions == []
+    assert list(bot.chat.values()) == [
+        f"Got a.pdf — 1 KB. Ask me any time and I'll read it. I'll keep it {DAYS} days."]
+
+
+async def test_a_captioned_file_gets_a_thumbs_up_and_its_turn(wired):
+    ch, bus = _ch()
+    bot = ch._app.bot
+    await _send(ch, "a.pdf", "add it to the invoices", mid=42)
+    [turn] = await _drain_bus(bus)
+    assert turn.content == "add it to the invoices"
+    assert bot.reactions == [(OPERATOR, 42)] and bot.chat == {}

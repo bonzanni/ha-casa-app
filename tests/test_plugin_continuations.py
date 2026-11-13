@@ -1286,3 +1286,169 @@ async def test_the_compaction_window_is_set_only_for_a_long_runs_role(conv):
     long_one, ordinary = conv.h.launches
     assert long_one.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "200000"
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in ordinary.env
+
+
+# ---------------------------------------------------------------------------
+# A run's result replies to the card the operator approved it on
+# ---------------------------------------------------------------------------
+
+FIDO_BOT = 333
+
+
+def _card(mid=555, bot=FIDO_BOT, chat=42):
+    from channels.tg_address import TgAddress
+    return TgAddress(bot, chat, mid)
+
+
+@pytest.fixture
+def confirmations(monkeypatch, tmp_path):
+    import run_admission
+    store = run_admission.Confirmations(str(tmp_path / "adm.json"))
+    monkeypatch.setattr(run_admission, "CONFIRMATIONS", store)
+    return store
+
+
+def _confirmation(cid, binding_ref, *, status="admitted", card=None, created_at=1.0):
+    import run_admission
+    return run_admission.Confirmation(
+        cid=cid, plugin="browser", bot_id=BOT, operator_id=100, binding_ref=binding_ref,
+        request_key="k-" + cid, status=status, admissions=[], created_at=created_at,
+        card=card.to_json() if card is not None else None, card_text="Start?")
+
+
+def test_the_card_of_a_binding_is_its_newest_admitted_request_that_holds_one(confirmations):
+    confirmations.add(_confirmation("c1", "b-1", card=_card(1), created_at=1.0))
+    confirmations.add(_confirmation("c2", "b-1", card=_card(2), created_at=2.0))
+    confirmations.add(_confirmation("c3", "b-1", card=None, created_at=3.0))
+    confirmations.add(_confirmation("c4", "b-1", status="declined", card=_card(4),
+                                    created_at=4.0))
+    confirmations.add(_confirmation("c5", "b-2", card=_card(5), created_at=5.0))
+    assert confirmations.card_for_binding("b-1") == _card(2)
+    confirmations.clear_card("c2")
+    assert confirmations.card_for_binding("b-1") == _card(1)
+    assert confirmations.card_for_binding("b-9") is None
+
+
+@pytest.mark.asyncio
+async def test_the_card_is_read_when_queued_so_an_end_in_the_same_pass_keeps_it(
+        roles, confirmations, monkeypatch):
+    """The sweep queues a finished run's continuation, then marks its request ended,
+    which forgets the card — before the continuation's turn starts."""
+    b = _binding()
+    confirmations.add(_confirmation("c1", b.ref, card=_card()))
+    seen: list = []
+
+    async def _fake(pending, *, on_start):
+        on_start()
+        seen.append(pending)
+
+    monkeypatch.setattr(pc, "run_continuation", _fake)
+    q = pc.Continuations()
+    assert q.request(b, "r-1", "sweep") == "queued"
+    confirmations.clear_card("c1")          # _settle_ended, same pass, before the worker
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert [p.card for p in seen] == [_card()]
+    await q.drain()
+
+
+@pytest.mark.asyncio
+async def test_a_continuations_record_names_the_card_as_its_reply_target(
+        roles, lanes, announce, monkeypatch):
+    _recording_runner(monkeypatch, [])
+    reg, announced = announce
+    b = _binding()
+    await pc.run_continuation(pc.Pending(b, "r-1", "sweep", 0.0, bot_id=BOT, card=_card()),
+                              on_start=lambda: None)
+    task, record = announced[0]
+    await task
+    assert record.origin["_reply_to"] == _card().to_json()
+    # with no card, no reply target
+    await pc.run_continuation(pc.Pending(b, "r-2", "sweep", 0.0, bot_id=BOT),
+                              on_start=lambda: None)
+    task, record = announced[1]
+    await task
+    assert "_reply_to" not in record.origin
+
+
+class _NoticeBus:
+    def __init__(self):
+        self.notified: list = []
+
+    async def notify(self, msg):
+        self.notified.append(msg)
+
+
+async def _narration_notice(monkeypatch, origin):
+    """The notice ``_settle_then_announce`` sends for a finished record with *origin*."""
+    from unittest.mock import AsyncMock
+
+    from specialist_registry import DelegationComplete, DelegationRecord
+    bus = _NoticeBus()
+    monkeypatch.setattr(tools_mod, "_bus", bus, raising=False)
+    monkeypatch.setattr(tools_mod, "_specialist_registry", SimpleNamespace(
+        job_registry=SimpleNamespace(ack_terminal_notification=AsyncMock())), raising=False)
+    record = DelegationRecord(id="cont-rec", agent="browser", started_at=0.0, origin=origin)
+    complete = DelegationComplete(delegation_id=record.id, agent="browser", status="ok",
+                                  text="Bought the ticket.", origin=origin, elapsed_s=1.0)
+
+    async def _settle():
+        return None
+
+    await tools_mod._settle_then_announce(record, complete, _settle())
+    (notice,) = bus.notified
+    return notice
+
+
+def _channel(bot_id):
+    from channels.telegram import TelegramChannel
+    bot = SimpleNamespace()
+    ch = TelegramChannel(chat_id="42", bot=bot, bus=None, default_agent="browser",
+                         known_bot_id=bot_id)
+    ch._app = SimpleNamespace(bot=bot)
+    return ch
+
+
+@pytest.mark.asyncio
+async def test_the_narration_in_the_cards_chat_replies_to_the_card(monkeypatch):
+    """Fido asked in his own chat: his conversation narrates the result there, as a
+    reply to the card, opening "Done."."""
+    from unittest.mock import Mock
+    origin = {"role": "browser", "channel": "telegram", "chat_id": 42, "cid": "cont-1",
+              "_tg_bot": FIDO_BOT, "user_text": "", "_reply_to": _card().to_json(),
+              "_tg_request": [FIDO_BOT, 42, 9]}
+    notice = await _narration_notice(monkeypatch, origin)
+    assert notice.context["_reply_to"] == _card().to_json()
+    turn = agent_mod.Agent._synthesize_delegation_turn(Mock(), notice)
+    assert agent_mod.REPLY_OPENING_NOTE in turn.content
+    reply = _channel(FIDO_BOT)._reply_parameters(turn.context, 42)
+    assert reply.message_id == _card().message_id
+    assert reply.allow_sending_without_reply is True
+    # the card in the same bot's chat but another chat is no reply target either
+    other = await _narration_notice(monkeypatch, {**origin, "chat_id": 43})
+    assert "_reply_to" not in other.context
+
+
+@pytest.mark.asyncio
+async def test_a_narration_by_another_agent_in_its_own_chat_is_plain(monkeypatch):
+    """Ellen asked: her narration goes through her bot, which cannot reply to Fido's
+    card."""
+    from unittest.mock import Mock
+    origin = {"role": "assistant", "channel": "telegram", "chat_id": 42, "cid": "cont-2",
+              "_tg_bot": BOT, "user_text": "", "_reply_to": _card().to_json()}
+    notice = await _narration_notice(monkeypatch, origin)
+    assert "_reply_to" not in notice.context
+    turn = agent_mod.Agent._synthesize_delegation_turn(Mock(), notice)
+    # never told its answer is a reply, since it cannot be one
+    assert agent_mod.REPLY_OPENING_NOTE not in turn.content
+    assert _channel(BOT)._reply_parameters(turn.context, 42) is None
+
+
+@pytest.mark.asyncio
+async def test_a_narration_without_a_card_never_replies_to_the_askers_message(monkeypatch):
+    """Only the card is a continuation's reply target: the person's own message the
+    record's origin carries is never taken in its place."""
+    origin = {"role": "assistant", "channel": "telegram", "chat_id": 42, "cid": "d-1",
+              "_tg_bot": BOT, "user_text": "", "_tg_request": [BOT, 42, 9]}
+    notice = await _narration_notice(monkeypatch, origin)
+    assert "_reply_to" not in notice.context

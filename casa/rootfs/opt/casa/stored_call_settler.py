@@ -182,8 +182,12 @@ async def handle_tap(
     from pinned_run import PinnedRun
     from stored_calls import stored_call_still_ok
 
-    label = rb.post_label(executing_role)
+    from channels.tg_address import TgAddress
     bot = channel.bot_id if bot_id is None else bot_id
+    # the receipt's head line, left out in the agent's own chat; the notices and
+    # the chat's notes name the agent with it, or plainly where it is left out
+    head = rb.label_at(executing_role, TgAddress(bot, chat_id))
+    label = rb.name_at(executing_role, TgAddress(bot, chat_id))
     context = {"chat_id": str(chat_id), "cid": cid, "_tg_bot": bot}
     lane = agent_lane.LANES.get(executing_role)
     calls, options = list(meta.get("calls") or []), list(meta.get("options") or [])
@@ -414,7 +418,7 @@ async def handle_tap(
                     receipt = chat_notes.clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS)
                     body = f"{TELL_LINE}\n{receipt}" if tell else receipt
                     admitted = origin["turn_scope"].admit(IntentKind.FINAL_REPLY, body)
-                    labelled = admitted.with_text(f"{label}\n{admitted}")
+                    labelled = admitted.with_text(rb.compose_operator_message(str(admitted), head))
                     post = rb.PostRecord(role=executing_role, operator_id=user_id, plugin=seg,
                                          slot="receipt", tool_use_id=run_id, owner=run_id,
                                          posted_at=time.time(), kind=rb.RECEIPT)

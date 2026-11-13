@@ -13,7 +13,7 @@ serves (its binding), run admission — whether the operator's own words asked f
 browsing runs the plugin is about to start — and its confirmation's state, a continuation
 turn for a run, a delivered slot's outcome, and the check of one browsing action. It covers
 the `callsCasa` declaration, the record the admission hook makes, the six internal routes,
-the binding store, the confirmation card and the line that raises its Stop key, the admission decision and the action check. A seventh route on the same
+the binding store, the confirmation card and the status card, the admission decision and the action check. A seventh route on the same
 call, `POST /internal/broker/pad`, fills and reads the conversation's pad, and is
 [`scratchpad.md`](scratchpad.md). The continuation turn those routes queue,
 and the driver sweep, are [`plugin-continuations.md`](plugin-continuations.md); the result
@@ -97,35 +97,34 @@ them for each requested run's spec digest — admitted by them or put to the car
 `action_judgement.WORDS`: memory-only, at most 500 for a day each, keyed by plugin, bot,
 operator and digest, because nothing durable keeps his words.
 
-**An admitted request has its Stop key at the keyboard.** When his tap on Start admits the
-runs, the settled card keeps no button (`operator_calls.post_question` settles every answer
-to none); the Start choice's `on_settle` records the admission as `admitted` with the card's
-address and its settled text (`Confirmation.card`, `[bot, chat, message]`, and `card_text`),
-and only then posts one silent line, `Started.` (`run_admission.STARTED_LINE`), in reply to
-the card under the agent's label (`plugin_stop.post_line`), which raises the request's red
-Stop key at the reply keyboard ([`plugin-stop.md`](plugin-stop.md)), named by the title
-stored with the request when it was asked (`Confirmation.title`, `run_admission.key_title`:
-its first task, never a site), so the key never shows
-for a request not yet admitted; when that line does not land, the card is edited to carry a
-red Stop button instead (`run_admission.stop_button`, the `run_stop` callback). When his words admitted the runs there is no start card, so
-one status card (`compose_status`: `On it for Ellen:` over the same run lines — `On it:` when
-the run is the agent's own) is posted with no button, raising the same key,
-beside the answer in its own task, never awaited by it (`_spawn_status_card`,
+**An admitted request's card carries no Stop.** When his tap on Start admits the runs, the
+settled card keeps no button (`operator_calls.post_question` settles every answer to none,
+an edit failure logged by `edit_dm_message`); the Start choice's `on_settle` records the
+admission as `admitted` with the card's address and its settled text (`Confirmation.card`,
+`[bot, chat, message]`, and `card_text`), and posts nothing more. When his words admitted the
+runs there is no start card, so one status card (`compose_status`: `On it for Ellen:` over
+the same run lines — `On it:` when the run is the agent's own) is posted with no keyboard of
+any kind, beside the answer in its own task, never awaited by it (`_spawn_status_card`,
 `TelegramChannel.deliver_run_card`); when it lands its message and text are recorded with
-the admission (`Confirmations.set_card`), and a failed post is only logged. A request has its
-key while its admission is `admitted`, holds its card and its binding exists
-(`Confirmations.open_cards`); what a press does is [`plugin-stop.md`](plugin-stop.md). The
-`run_stop` callback of a card that still shows an inline Stop reads the admission by its id
-alone (`Confirmations.peek`) and compares the tapper itself. A request that is stopped, or
-ends on its own, has its card marked there, after which the admission forgets the card
-(`Confirmations.clear_card`), so no later pass edits it again and its key goes.
+the admission (`Confirmations.set_card`), and a failed post is only logged. Each request is
+stored with a title (`Confirmation.title`, `run_admission.key_title`: its first task and
+` +N` for the runs after it, never a site, at most `TITLE_CHARS`). He stops the runs by
+asking the agent, which calls `stop_work` ([`plugin-stop.md`](plugin-stop.md)). The
+`run_stop` callback of a card an earlier version posted with an inline Stop reads the
+admission by its id alone (`Confirmations.peek`) and compares the tapper itself. A request
+that is stopped, or ends on its own, has its card marked there, after which the admission
+forgets the card (`Confirmations.clear_card`), so no later pass edits it again. The card
+the operator approved is also where the run's result answers him: a continuation reads it
+(`Confirmations.card_for_binding`, the newest `admitted` request of the binding that still
+holds one) when it is queued, and its narration replies to it
+([`plugin-continuations.md`](plugin-continuations.md)).
 
 **A colleague's request under the operator's task starts without a card.** When the call's
 turn carries Casa's operator-task proof and its requester is a specialist, not the resident
 (`handoff.helper_under_operator_task` over the call's origin and its own chain), every
 requested run is admitted at once: no reading, no question, and none of his words kept for the
 action check; the admission is recorded and replayed by its key like any other, and the status
-card that raises its Stop key is posted as above, without a notification (`deliver_run_card(silent=True)`).
+card is posted as above, without a notification (`deliver_run_card(silent=True)`).
 The operator started that task and the specialist asking is working on it; every change a run
 would make is still asked per action. A resident's own request, the agent's own run, and any
 turn without the proof — scheduled or agent-started work — keep the steps above, and so does a

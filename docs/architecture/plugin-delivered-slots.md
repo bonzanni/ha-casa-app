@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-13
 ---
 
 # Plugin delivered slots
@@ -240,7 +240,8 @@ the resident's doctrine states the rule in words, and the sentinel itself lives 
 note. When the posts went to the person in the delegate's own chat, the lines say so ("posted
 to the person in Alex's chat") and the note under them instead asks the resident, whom the
 person asked, to close the loop in its own words, silent only when nothing at all is worth
-saying (`OWN_CHAT_ECHO_NOTE`, [`own-voice.md`](own-voice.md)). The doctrine also says that a delegate's line above the posts that only announces them,
+saying (`OWN_CHAT_ECHO_NOTE`, [`own-voice.md`](own-voice.md)); a result that already carries
+`OWN_CHAT_ANSWER_NOTE` for that chat gets no second close-the-loop note. The doctrine also says that a delegate's line above the posts that only announces them,
 points to them or says what they hold ("I'm posting its card now") is part of them, and is not
 passed on, while an answer written above them is. The
 ledger dies with the process, like the broker's references: a restart between the post and

@@ -88,12 +88,12 @@ class Endpoint(FakeEndpoint):
         self._record("deliver_operator_question", chat_id, text)
         return self._mid()
 
-    async def deliver_run_card(self, chat_id, text, *, starting=None, post=None, **options):
+    async def deliver_run_card(self, chat_id, text, *, post=None, **options):
         self._record("deliver_run_card", chat_id, text)
         self.options.append(("deliver_run_card", options))
         return self._mid()
 
-    async def send_reply_line(self, chat_id, text, reply_to, *, post=None, silent=False):
+    async def send_reply_line(self, chat_id, text, reply_to, *, post=None):
         self._record("send_reply_line", chat_id, text)
 
     async def edit_dm_message(self, chat_id, message_id, text, buttons=None):

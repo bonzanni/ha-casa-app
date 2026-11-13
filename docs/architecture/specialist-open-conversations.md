@@ -44,8 +44,8 @@ one of that specialist's engagements, so a made-up list acknowledges nothing; th
 Casa's erase-question continuations tell the model to make carry the same ids. For a persona, upgrade or rollback the warning
 says, of each conversation, the one sentence `tools.py::SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE`
 holds — it keeps its personality and the plugin versions it started with, picks up the new
-settings when it resumes, and to get everything new it is cancelled (with its Stop key,
-or by asking the assistant) and started again — and that template also feeds the three tool descriptions, so no surface can drift.
+settings when it resumes, and to get everything new it is cancelled (by asking the
+assistant) and started again — and that template also feeds the three tool descriptions, so no surface can drift.
 The sentence names whom to ask: `tools.py::specialist_open_conversation_notice` fills in the
 assistant's configured persona name at call time, while the descriptions, built at import
 before any persona is registered, say "the assistant".

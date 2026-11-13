@@ -155,7 +155,7 @@ just its name inside `/data/memory/exports/`.
 
 1. **Startup**: The app validates your OAuth token, copies default agent configs (if first boot), and starts nginx + the Casa core process.
 2. **Message flow**: Incoming messages (Telegram, webhook, voice) are routed through an async message bus to the appropriate agent based on the originating channel.
-3. **Agent processing**: Each agent builds a system prompt (personality + memory context), queries the Claude Agent SDK, stores the conversation in memory, and sends the response back through the originating channel. In a private Telegram chat you watch the reply to a message you send being written, word by word, with Telegram's **Stop** button under it; the finished reply then arrives as an ordinary message. The bubble and its Stop are there from the moment the agent starts working, empty until the first word, so you can stop a turn before it has written anything; nothing then arrives. Stop ends the reply and keeps what was already written, and the agent remembers it. It stops only the reply: an approval card, a background job or a browsing request the agent had already started keeps running, each with its own way to stop. A reply in a group arrives whole, and so do scheduled messages, reminders and an agent's greeting.
+3. **Agent processing**: Each agent builds a system prompt (personality + memory context), queries the Claude Agent SDK, stores the conversation in memory, and sends the response back through the originating channel. In a private Telegram chat you watch the reply to a message you send being written, word by word, with Telegram's **Stop** button under it; the finished reply then arrives as an ordinary message. The bubble and its Stop are there from the moment the agent starts working, empty until the first word, so you can stop a turn before it has written anything; nothing then arrives. Stop ends the reply and keeps what was already written, and the agent remembers it. It stops only the reply: an approval card, a background job or a browsing request the agent had already started keeps running; to stop a job or a browsing request, ask the agent. A reply in a group arrives whole, and so do scheduled messages, reminders and an agent's greeting. When an agent answers out of order, or answers one part of a longer message, it can send its answer as a reply to your message, quoting the part it answers. Dates and times an agent writes in its chat messages are tappable; the words stay the agent's own.
 4. **Home Assistant integration**: Agents interact with HA via the official HA MCP server, allowing them to control devices, read states, and create automations.
 5. **Per-agent triggers**: Each agent declares scheduled triggers (cron, interval or a one-off date) in its own `agents/<role>/triggers.yaml`. The TriggerRegistry registers them at boot, and fires them via the agent's normal turn loop.
 6. **Reminders**: Ellen can set her own reminders, which are ordinary triggers written to her `triggers.yaml` — so they survive restarts and updates. One-off reminders remove themselves after firing, and any reminder whose time fell while Casa was down is delivered on the next sweep rather than lost.
@@ -482,15 +482,19 @@ Casa's own cards keep using the specialist's name.
 - **The specialist's own chat** holds your conversation with it — write to it
   there directly, and `/new` starts a fresh conversation with that specialist
   only — and everything it shows you: cards and their buttons, links you must
-  open, reports, files, its job lines and run cards, and their **Stop** keys at
-  your keyboard. Its messages there carry no `📊` label: the chat is the
-  specialist.
-- **Work the assistant hands over** also appears there: a line "Ellen asked
-  me: …" when it starts (her request as she wrote it; work Casa itself starts,
-  such as a plugin's setup after an update, shows no such line), then the
-  specialist's closing message when it ends (its working notes stay out of
-  the chat, and a specialist with nothing more to say posts nothing). The assistant still gets the result and closes the
-  loop in her own chat, briefly when you have already read the answer. If you
+  open, reports, files, its job lines and run cards. To stop a job of yours or
+  its browsing, ask it there, as you would ask the assistant. Its messages
+  there carry no `📊` label: the chat is the specialist.
+- **Work the assistant hands over** also appears there: a silent "Ellen
+  asked:" when it starts, with her request as she wrote it in a quote you can
+  expand (work Casa itself starts, such as a plugin's setup after an update,
+  shows no such message), then the specialist's closing message when it ends,
+  as a reply to her request, opening "Done." or "Couldn't finish:" (its
+  working notes stay out of the chat, and a specialist with nothing more to
+  say posts nothing). The assistant still gets the result and closes the
+  loop in her own chat, briefly and with a link to the specialist's chat when
+  you have already read the answer; an answer that only says where the work
+  stands needs nothing from her yet. If you
   reply to the task's messages while it works, your words reach it, and the
   assistant is told what you wrote and that the specialist already has it.
   The specialist's own conversation learns in one line that it did this work.
@@ -589,17 +593,16 @@ background job. Ask the assistant for it as usual: she starts the job and replie
 straight away. The job runs as one long session: it keeps working until it is
 finished. Everything that needs you happens in your DM; if you set up a log group,
 you can also watch the job work there (see [Optional: agent logs](#optional-agent-logs)).
-A job you asked for puts one
-silent line in your DM — "📊 Finance started «…»." — and a red **⏹ Stop «…»** key
-at your keyboard, which stays there while the job runs however far the chat moves on. When a specialist's job
+A job you asked for puts a 👍 on
+your message that asked for it (v0.373.0); if Telegram does not take the 👍, you get one
+silent line instead — "📊 Finance started «…»." When a specialist's job
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
-of its messages there (its start line, a question, something its plugin posted);
-your words reach the job while it works, at its next step. To stop it, press its
-**Stop** key, or ask the assistant to cancel it. When the job ends, one silent line
-in reply to its start line shows the outcome, how long it ran and what it cost
-("✅ Finished «…» · 40 min · $2.40", "🛑 Stopped «…» · …" or "❌ «…» failed · …"; in
-the assistant's chat it names the agent) and takes the key away. If the job ended before it read your
+of its messages there (a question, something its plugin posted, its start line if it
+has one); your words reach the job while it works, at its next step. To stop it, ask
+the assistant to cancel it. When the job ends you get one message: the answer, as a
+reply to your request, opening "Done." (or "Stopped.", or "Couldn't finish:" and
+why), and saying how long the job ran and what it cost. If the job ended before it read your
 message, Casa answers it once: "The job had just finished, so your message didn't
 get through. Could you send it again?" A reply to a message of a job that has already ended goes to the assistant,
 with a note saying which job it was and how and when it ended.
@@ -611,9 +614,7 @@ DM — "«…» stopped without finishing. Reply to continue it, or Cancel." —
 **Cancel** button. Reply to that line to continue the job. Casa never ends a job
 on its own because it is slow or expensive; the cost is shown, never capped.
 
-When the job ends its DM buttons go away and the start line shows how it ended,
-how long it ran and what it cost; the assistant tells you the outcome, with the same
-time and cost. A specialist runs one job at a time, but quick questions to it
+When the job ends its DM buttons go away. A specialist runs one job at a time, but quick questions to it
 still work while a job is open. A job that is not working and has heard nothing from
 you for `engagement_reap_days` is cancelled. After a restart an open job continues where it was; a message you
 sent that it had not read yet reaches it after the restart, marked as sent before
@@ -634,8 +635,8 @@ schedule started posts nothing in your DM and tells you nothing when it complete
 that finds something new can still say so. An approval it needs still reaches your
 DM, and a run that is cancelled or fails is still reported. A quiet run that asks you
 something, or that you answer — a reply to one of its messages, a tap on its question
-— stops being quiet, and its end is then reported like any job's. A quiet run has no
-start line, so no Stop key: ask the assistant to cancel it. Runs you or the
+— stops being quiet, and its end is then reported like any job's. A quiet run puts
+nothing in your DM when it starts: to stop it, ask the assistant to stop it. Runs you or the
 assistant start are unchanged.
 
 A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
@@ -656,8 +657,8 @@ with the specialist's answer in place of the bare result. If that follow-up
 cannot run, you still get the job's result, with a line saying the follow-up did
 not run. A job started in the specialist's own chat ends as before. While a
 specialist works on a task you started this way, its request to the browsing
-specialist starts without a start card: the status card and its **Stop** key still
-appear, and the card and the browsing specialist's progress messages arrive without
+specialist starts without a start card: the status card still appears (to stop the
+browsing, ask), and the card and the browsing specialist's progress messages arrive without
 a notification. Links, files, questions and cards that need you still notify,
 and every step that changes, pays or sends something is still asked.
 
@@ -718,20 +719,22 @@ load), the operation is unavailable and Casa tells you once, with the reason in 
 ### Sending files to the assistant (v0.325.0)
 
 Send the assistant a PDF, a photo, or a text or CSV file in your direct chat and she
-keeps it: Casa replies with what it saved and how long it will keep it — seven days.
+keeps it: Casa puts a 👍 on the file to say it is saved, and keeps it for seven days.
 Nothing is read on arrival. Ask about the file whenever you like ("what does that
 invoice say?") and she opens it then; if several files could match, she asks which.
 
 **A caption is an instruction (v0.344.65).** Write a caption on the file — "add it to the
 invoices", "what's the total?" — and she acts on it straight away, exactly as if you had
-sent the caption as a message about that file: Casa keeps the file as usual and her reply
-takes the place of the "Got …" line. She decides what the caption asks for; Casa does not
+sent the caption as a message about that file: Casa keeps the file and gives it a 👍 as
+usual, and her reply is the answer. If she cannot take it up right then, Casa says in words
+what it saved instead. She decides what the caption asks for; Casa does not
 guess from its words. In an album the caption is about the whole album: she waits for every
 file to arrive and then acts on all of them in one reply.
 
-**Several files at once (v0.344.68).** Files you send together — an album, or several
-files within a few seconds — get one reply from Casa that lists each file as it arrives
-("Got 3 files: …"), with any file it could not keep named in the same message.
+**Several files at once (v0.344.68).** Each file you send gets its own 👍; an album gets one
+👍 for the whole album. A file Casa could not keep gets a short line instead, and files sent
+together — an album, or several files within a few seconds — share one such message. If
+Telegram does not take the 👍, Casa says what it saved in words, as before ("Got 3 files: …").
 
 Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When that is
 full a new file is refused rather than an old one dropped — the oldest go after seven days.
@@ -1010,8 +1013,8 @@ Q3 accounting · 📊 Classified 25 · 25 done · 16 left
 Q3 accounting · ✅ completed — Tagged 41 rows; 2 need your decision.
 ```
 
-Everything that needs you stays in your direct chat: a job's start line and its
-**Stop** key, its questions, approvals, its result. Reply to a job's message
+Everything that needs you stays in your direct chat: a job's questions, approvals,
+its result. Reply to a job's message
 there to steer it. Nothing you write in the log group reaches an agent: anyone who
 writes there gets one pointer back to the direct chat.
 
@@ -1811,7 +1814,7 @@ instructions say to show you before asking you to confirm; of each one it says:
 
 > When it resumes, it picks up Casa's updated settings, but it keeps its
 > personality and the plugin versions it started with. To get everything new,
-> cancel it (with its Stop key, or ask Ellen) and start it again.
+> cancel it (ask Ellen) and start it again.
 
 Saying no changes nothing. New conversations get the new setup once Casa has
 loaded it: an upgrade or a rollback that completes loads it during the change,

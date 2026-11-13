@@ -93,6 +93,23 @@ answered, in the chat the work posts in. A requester no longer loaded fails the 
 message (`RequesterUnavailable`), never with one role's answer passed off as another's. A relay's task is Casa's text and is
 never captured as the requester's words (INV-MEM-032).
 
+**The result replies to the card the operator approved.** `Continuations.request` reads the
+binding's card (`run_admission.Confirmations.card_for_binding`) when it queues the continuation
+and keeps it on the `Pending`: the same sweep pass may mark the request ended and forget its
+card (`_settle_ended`) before the turn starts. The record's origin then carries the card as
+its `_reply_to`, and `tools._settle_then_announce` puts that, and only that, into the
+requester's notice (`_record_reply_to`) only when the card is a message of the bot the
+narration goes out through, in its chat (the origin's `_tg_bot` and `chat_id`); the asker's own
+message, `_tg_request`, never stands in for it. Only such a narration is told to open with
+"Done." (`agent.REPLY_OPENING_NOTE`), and the send seam replies to the card through that bot
+(`TelegramChannel._reply_parameters`, with `allow_sending_without_reply`). The card is the
+binding's newest admitted one, so with two admitted requests of one binding in flight the first
+result may reply to the second card. So when the
+specialist was asked in its own chat, its narration there is a reply to the card; when another
+agent asked, that agent's narration in its own chat is plain. A continuation's own closing
+message is still never posted in its executor's chat: it reaches the operator only through
+that narration.
+
 **A turn that only made progress tells nobody** (operator ruling 2026-10-18). The
 specialist declares it itself: a continuation turn whose closing message, whole, is exactly `<silent/>`
 (`output_boundary.SILENCE_SENTINEL`; an empty answer is not a declaration, and notes written before that message do not stop it being one) has nothing for a requester — the browsing
@@ -144,9 +161,8 @@ armed pass and a running one, and latches so that no pass starts or arms another
 **A plugin may name the requests that ended on their own** (`ended`). `call_sweep_tool` reads
 up to fifty objects from that list (anything else reads as none), and the pass hands them to
 `_settle_ended`, which keeps an entry only when its ref is a `request:` ref, its binding is
-this plugin's and the operator's as configured now, and marks that request's card ended, with
-one silent `Ended.` line that takes its Stop key away
-(`plugin_stop.settle_ended`, [`plugin-stop.md`](plugin-stop.md)). A failure there is logged
+this plugin's and the operator's as configured now, and marks that request's card ended,
+posting nothing (`plugin_stop.settle_ended`, [`plugin-stop.md`](plugin-stop.md)). A failure there is logged
 and leaves the continuations the pass queued as they are.
 
 **Such a specialist's work runs in the direct chat.** A continuation's answer reaches the

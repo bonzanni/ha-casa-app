@@ -116,7 +116,9 @@ re-measures them.
 **The chat's note.** A committed tap that reaches execution leaves one body-free note for the
 agent of the chat the card is in (`chat_notes`, [`own-voice.md`](own-voice.md)), which it reads
 at its next turn: `📊 Finance applied your tap (Yes).`, `📊 Finance refused your tap (Yes):
-no_call.`. A typed verdict is an ordinary message: a reply on the card is the chat's agent's
+no_call.`. The `📊 <name>` head on these notes, the notices and the receipt is the resident's
+chat's; in the agent's own chat the receipt has no head line and the notes and notices name the
+agent plainly (`Alex applied your tap (Yes).`) — `result_broker.label_at` and `name_at`. A typed verdict is an ordinary message: a reply on the card is the chat's agent's
 turn, or goes into the task the card belongs to while that task lives
 ([`telegram.md`](telegram.md)).
 

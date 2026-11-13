@@ -45,6 +45,7 @@ from plugin_grants import (
 
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
+from channels.tg_richtext import TIME_LINK_GUIDE
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
@@ -55,7 +56,7 @@ from config import AgentConfig, effort_for
 from specialist_registry import CLOSING_MARKER, DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
 from output_boundary import (
-    Admitted, ApprovalCut, IntentKind, TurnScope, casa_text,
+    REPLY_MARKER_GUIDE, Admitted, ApprovalCut, IntentKind, TurnScope, casa_text,
     may_still_be_silence, strips_to_silence, without_unfinished_sentinel,
 )
 from log_cid import cid_var
@@ -198,8 +199,12 @@ COPIED_CONTEXT_MARKERS = (
     # #1277: read only by ``background_jobs.job_started_by``.
     ANSWERED_BY_OPERATOR,
     # Browser executor §5.5: the operator's own typed words (Telegram
-    # ingress); read only by handoff.operator_words.
+    # ingress); read by handoff.operator_words, and by
+    # TelegramChannel._reply_parameters to check a reply's quote.
     "_operator_words",
+    # The operator's inbound Telegram message, ``[bot_id, chat_id,
+    # message_id]`` (Telegram ingress): what an answer sent later replies to.
+    "_tg_request",
     # A summoned turn's group and its inline message (``provenance.GUEST_KEYS``):
     # read by the guest_access tool and by the keyboard seam that puts the
     # group's message in waiting. Dropped again wherever a run or a turn is
@@ -783,7 +788,11 @@ def _channel_context_block(channel: str) -> str:
     for telegram, which is a lie the model would act on when an accept-all-
     mode stranger is the sender. Key the honesty off the same per-sender
     origin clearance the recall gate uses: anything below private on
-    telegram means the sender is NOT the configured operator."""
+    telegram means the sender is NOT the configured operator.
+
+    On Telegram it also teaches time links (``tg_richtext.TIME_LINK_GUIDE``)
+    and the reply marker an answer may open with
+    (``output_boundary.split_reply_marker``)."""
     trust = channel_trust_display(channel)
     if channel == "telegram" and _current_origin_clearance(channel) != "private":
         trust = (
@@ -791,10 +800,14 @@ def _channel_context_block(channel: str) -> str:
             "operator — treat as an unknown member of the public; do not "
             "disclose personal, household, or operator information"
         )
+    guide = (
+        "\n" + TIME_LINK_GUIDE + "\n" + REPLY_MARKER_GUIDE
+        if channel == "telegram" else "")
     return (
         "\n<channel_context>\n"
         f"channel: {channel}\n"
-        f"trust: {trust}\n"
+        f"trust: {trust}"
+        f"{guide}\n"
         "</channel_context>"
     )
 
@@ -981,6 +994,13 @@ def build_restricted_webhook_options(
         include_partial_messages=False,
     )
 
+
+# The note an engagement's outcome turn carries when Casa sends its answer as a
+# reply to the request that asked for the work (the notice's ``_reply_to``).
+REPLY_OPENING_NOTE = (
+    "(Casa: your answer goes to the person as a reply to their request. Open it with "
+    "\"Done.\" when the work finished, \"Stopped.\" when it was stopped, or "
+    "\"Couldn't finish:\" and why when it did not finish.)")
 
 # #926: the ONE statement that distinguishes the boot replay of a retained
 # delegated answer from its live announcement. It must be true on every arm the
@@ -2135,6 +2155,10 @@ class Agent:
             f"\nThe original user question was: {user_text}\n\n"
             "Reply to the user via their original channel. Be concise.\n"
         )
+        if (msg.context.get("_reply_to")
+                and complete.kind != "launch_outcome_uncommitted"):
+            # the end's opening words fit only an outcome that ended the work
+            body += REPLY_OPENING_NOTE + "\n"
 
         # Release A Layer 3: the notification's context carries only cid/chat_id,
         # so copy the trusted origin markers from the PERSISTED completion origin

@@ -73,8 +73,8 @@ ends through the finalize funnel, which tells a cancelled or failed end through 
 A second start while a quiet run is live is refused with `job_busy`, saying the run is in
 progress on its schedule and to wait.
 
-What it does not cover: a quiet run has no start line, so no Stop key; the operator can
-ask the resident to cancel it. A reply to one of its plugin's posts, or a tap on its question,
+What it does not cover: a quiet run has no start line; the operator stops it by asking an
+agent, whose `stop_work` lists and stops it as any job of his ([`plugin-stop.md`](plugin-stop.md)). A reply to one of its plugin's posts, or a tap on its question,
 goes into it and ends its quietness (INV-BGJOB-015).
 
 **INV-BGJOB-015**: A quiet run that asks the operator something, or receives their reply to one of its posts, a tapped answer or an approval's continuation, stops being quiet before the question is posted or the message is accepted for the job — through a strict write under the registry lock that waits out a pending terminal write and is rolled back, with the interaction refused, when it fails or the record has gone terminal; whether a run's end is told is decided inside its terminal transition from the record's stamp, so an interacting run is told at its end and a run nobody interacted with has its completed end told to no one.

@@ -49,6 +49,10 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # the channel's mark that a turn opens an agent's own chat — a caller
         # who could set it would make the agent greet as if the chat had opened.
         "_chat_opening",
+        # the operator's inbound Telegram message and a reply target Casa
+        # chose — a caller who could set either would aim an answer at a
+        # message of its choice
+        "_tg_request", "_reply_to",
         # #1378: the file a caption was written on — a caller who could set it
         # would put Casa's words in the turn and arm it over a file of its choice.
         "_received_file",

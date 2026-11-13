@@ -59,6 +59,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tools import JOB_COST_NOTE
+
+_COST_NOTE = " " + JOB_COST_NOTE
+
 pytestmark = [pytest.mark.asyncio]
 
 
@@ -456,7 +460,7 @@ class TestTheSpecialistThatStartedAJobHearsItsEndFirst:
         assert calls == [(rec.id, "the answer")]
         assert len(bus.sent) == 1
         complete = bus.sent[0].content
-        assert complete.text == "Filed 4.\n\nJob ran 1 min"
+        assert complete.text == "Filed 4.\n\nJob ran 1 min" + _COST_NOTE
         assert (complete.delegation_id, complete.agent, complete.status) == (
             rec.id, "finance", "ok")
         # Still owed until the notice is delivered, and the acknowledgement
@@ -492,7 +496,7 @@ class TestTheSpecialistThatStartedAJobHearsItsEndFirst:
 
         assert len(bus.sent) == 1
         assert bus.sent[0].content.text == (
-            "the answer\n\n" + FOLLOW_UP_FAILED_LINE + "\n\nJob ran 1 min")
+            "the answer\n\n" + FOLLOW_UP_FAILED_LINE + "\n\nJob ran 1 min" + _COST_NOTE)
         assert _row(tombstone, rec.id)["terminal_notification_pending"] is True
 
     async def test_a_cancelled_follow_up_still_sends_the_jobs_own_result(
@@ -507,7 +511,7 @@ class TestTheSpecialistThatStartedAJobHearsItsEndFirst:
 
         assert len(self.bus.sent) == 1
         assert self.bus.sent[0].content.text == (
-            "the answer\n\n" + FOLLOW_UP_FAILED_LINE + "\n\nJob ran 1 min")
+            "the answer\n\n" + FOLLOW_UP_FAILED_LINE + "\n\nJob ran 1 min" + _COST_NOTE)
         row = _row(self.tombstone, self.rec.id)
         assert (row["status"], row["terminal_notification_pending"]) == (
             "completed", True), row
@@ -516,14 +520,14 @@ class TestTheSpecialistThatStartedAJobHearsItsEndFirst:
         # a resident started the job on the specialist
         ({**_origin(), "job": {"name": "ledger:classify", "title": "Quarter",
                                "started_by": "operator"}},
-         "completed", "the answer\n\nJob ran 1 min"),
+         "completed", "the answer\n\nJob ran 1 min" + _COST_NOTE),
         # no job at all: a specialist engagement
         (_origin(), "completed", "the answer"),
         # started in the specialist's own chat
         ({**_specialist_started(), "role": "finance"},
-         "completed", "the answer\n\nJob ran 1 min"),
-        (_specialist_started(), "cancelled", "the answer\n\nJob ran 1 min"),
-        (_specialist_started(), "error", "the answer\n\nJob ran 1 min"),
+         "completed", "the answer\n\nJob ran 1 min" + _COST_NOTE),
+        (_specialist_started(), "cancelled", "the answer\n\nJob ran 1 min" + _COST_NOTE),
+        (_specialist_started(), "error", "the answer\n\nJob ran 1 min" + _COST_NOTE),
         # a quiet scheduled run that completed is told to no one
         (_specialist_started(quiet=True, started_by="scheduled"), "completed", None),
     ], ids=["resident-started", "not-a-job", "own-chat", "cancelled", "error",

@@ -69,6 +69,7 @@ from claude_agent_sdk import (
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
 from channels.telegram_transport import telegram_transport
+from channels.tg_richtext import TIME_LINK_GUIDE
 from channels.tg_address import (
     AddressError, EndpointNotReady, EndpointUnavailable, RouteMissing, TgAddress,
     scope as tg_scope,
@@ -494,10 +495,21 @@ async def send_message(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# stop_work — the resident stops work a specialist carries on by itself (browsing)
+# stop_work — the operator's agent stops work that runs by itself: his background
+# jobs, and a specialist's browsing
 # ---------------------------------------------------------------------------
 
 STOP_WORK_ONLY_OPERATOR = "Only the person's own message can stop work."
+#: the ref ``stop_work`` lists a background job under: ``job:<engagement id>``
+JOB_REF_PREFIX = "job:"
+_JOB_ALREADY_ENDED = "It had already ended."
+#: a job stop_work ended: its first line is the outcome (the job log's end line); the rest
+#: tells the end's narration that he has already been told
+STOP_WORK_CANCEL_TEXT = (
+    "Cancelled by the operator.\n"
+    "(Casa: he asked for this stop himself and was told it stopped. If he asked in this "
+    "chat, what was said is enough: add nothing more, <silent/> is fine.)")
+_JOB_NOT_STOPPED = "The job could not be stopped just now — try again."
 _STOP_WORK_RESULTS = {
     "stopped": ("Stopped: {task}. Tell the person in one plain line what stopped, in his "
                 "words, and nothing about how you found it."),
@@ -511,18 +523,62 @@ _STOP_WORK_RESULTS = {
 _STOP_WORK_RESULTS["in_flight"] = _STOP_WORK_RESULTS["already_stopped"]
 
 
+def _his_live_jobs(operator_id: int) -> list:
+    """The live background jobs of *operator_id*: a job record that is active or idle
+    and whose origin names him, whoever started it — he, a schedule or an agent. Another
+    engagement of his is not a job and not listed here."""
+    from provenance import strict_positive_id
+    if _engagement_registry is None:
+        return []
+    return [rec for rec in _engagement_registry.active_and_idle()
+            if isinstance((rec.origin or {}).get("job"), dict)
+            and strict_positive_id((rec.origin or {}).get("user_id")) == operator_id]
+
+
+async def _stop_his_job(engagement_id: str, operator_id: int) -> dict:
+    """Stop his live job *engagement_id* through the cancel funnel, as its Cancel button
+    does; one that is not among his live jobs had already ended. A funnel that raises is
+    logged, as the Cancel button's is, and answered by what the record then shows."""
+    import agent as agent_mod
+    from channels.telegram import TelegramChannel
+    rec = next((r for r in _his_live_jobs(operator_id) if r.id == engagement_id), None)
+    if rec is None:
+        return _text_result(_JOB_ALREADY_ENDED)
+    stopped = _text_result(f"Stopped «{TelegramChannel._job_title(rec)}».")
+    try:
+        fin = await _finalize_engagement(
+            rec, outcome="cancelled", text=STOP_WORK_CANCEL_TEXT, next_steps=[],
+            driver=getattr(agent_mod, "active_engagement_driver", None))
+    except Exception:  # noqa: BLE001 — answered from the record below
+        logger.warning("stop_work: job cancel failed for %s", engagement_id[:8],
+                       exc_info=True)
+        latest = _engagement_registry.get(engagement_id)
+        status = getattr(latest, "status", None)
+        if status in ("active", "idle"):
+            return _text_result(_JOB_NOT_STOPPED, is_error=True)
+        return stopped if status == "cancelled" else _text_result(_JOB_ALREADY_ENDED)
+    if fin is FinalizeResult.ALREADY_TERMINAL:
+        return _text_result(_JOB_ALREADY_ENDED)
+    if not fin:
+        return _text_result(_JOB_NOT_STOPPED, is_error=True)
+    return stopped
+
+
 @tool(
     "stop_work",
-    "Stop work a specialist carries on by itself, such as browsing. Without ref: what is "
-    "running, each with its ref. With a ref from that list: stops it at once. Use it "
-    "yourself whenever the person asks to stop or cancel such work; never delegate a stop. "
-    "Unless you must ask him which one, write nothing to the person between the two calls.",
+    "Stop work that runs by itself: a background job, or a specialist's browsing. Without "
+    "ref: what is running, each with its ref. With a ref from that list: stops it at once. "
+    "Use it yourself whenever the person asks to stop or cancel such work; never delegate a "
+    "stop. Unless you must ask him which one, write nothing to the person between the two "
+    "calls.",
     {"type": "object", "properties": {"ref": {"type": "string"}}, "required": []},
 )
 async def stop_work(args: dict) -> dict:
-    """The resident's direct stop (``plugin_stop``): no model turn, no specialist turn. Only on the
-    operator's own live turn — the spawn cap's ``_is_agent_context`` False and the sender the
-    operator as configured now; voice, narration, scheduled and delegated turns are refused."""
+    """The direct stop of work that runs by itself: no model turn, no specialist turn — a
+    browsing request through its plugin's stop tool (``plugin_stop``), a background job the
+    operator started through the cancel funnel. Only on the operator's own live turn — the
+    spawn cap's ``_is_agent_context`` False and the sender the operator as configured now;
+    voice, narration, scheduled and delegated turns are refused."""
     import plugin_stop
     from operator_calls import is_configured_operator
 
@@ -566,8 +622,15 @@ async def stop_work(args: dict) -> dict:
                     continue            # not his, or not this agent's to see
                 tasks = "; ".join(t for t in (r.get("tasks") or []) if isinstance(t, str))
                 lines.append(f"- {r.get('ref')}: {name} — {tasks} ({r.get('state')})")
+        from channels.telegram import TelegramChannel
+        for rec in _his_live_jobs(operator_id):
+            lines.append(f"- {JOB_REF_PREFIX}{rec.id}: "
+                         f"{_display_name_for_role(rec.role_or_type)} — "
+                         f"{TelegramChannel._job_title(rec)} (running)")
         return _text_result("\n".join(lines) if lines else "Nothing is running.")
     ref = ref.strip()
+    if ref.startswith(JOB_REF_PREFIX):
+        return await _stop_his_job(ref[len(JOB_REF_PREFIX):], operator_id)
     if not ref.startswith(plugin_stop.REF_PREFIX) or len(ref) > plugin_stop.REF_MAX:
         return _text_result("Error: that is not a ref from the list; call stop_work without "
                             "ref to see what is running.", is_error=True)
@@ -577,18 +640,11 @@ async def stop_work(args: dict) -> dict:
             continue                    # no request of this plugin he may stop has it
         on_bot = found.bot_id           # the bot the request was asked on
 
-        async def _tell(outcome: dict, seg=seg, on_bot=on_bot, role=role) -> None:
-            # the resident tells him in its own words; a request that no longer runs also
-            # gets one silent line in reply to its card, which takes its Stop key off the keyboard
-            o = outcome.get("outcome")
-            c = plugin_stop.confirmation_for(seg, on_bot, operator_id, ref)
-            card = c.card_address() if c is not None else None
-            await plugin_stop.settle_stop(c, o)
-            line = {"stopped": plugin_stop.LINES["stopped"],
-                    "ended": plugin_stop.ENDED_LINE}.get(o)
-            if line is not None and card is not None:
-                await plugin_stop.post_line(card.bot_id, card.chat_id, role, line,
-                                            reply_to=card.message_id)
+        async def _tell(outcome: dict, seg=seg, on_bot=on_bot) -> None:
+            # the agent tells him in its own words; Casa only marks the card
+            await plugin_stop.settle_stop(
+                plugin_stop.confirmation_for(seg, on_bot, operator_id, ref),
+                outcome.get("outcome"))
 
         out = await plugin_stop.stop(role, seg, ref, bot_id=on_bot, operator_id=operator_id,
                                      tell=_tell)
@@ -661,15 +717,14 @@ ASK_USER_SILENCE_NOTE = (
 # the task is born (``task_model``), and never recomputes them: its delivery,
 # where every post of the task goes (``None``: it posts nothing, for its whole
 # life), and its requester, who receives its result. A task of an agent with
-# its own open chat shows there: a start line naming who asked, the message
-# its delegate closed its turn with, and the operator's replies reach its live
-# session.
+# its own open chat shows there: a silent start post naming who asked, with
+# the request quoted whole, the message its delegate closed its turn with, as
+# a reply to that post, and the operator's replies reach its live session.
 # ---------------------------------------------------------------------------
 
-# The brief as quoted in a task's start line and in its executor's note.
-_TASK_START_BRIEF_CHARS = 200
+# The brief as quoted in its executor's note.
 _TASK_NOTE_BRIEF_CHARS = 120
-# One task post (the start line, or every page of the answer) is bounded: a
+# One task post (the start post, or every page of the answer) is bounded: a
 # slow chat never holds the work or its requester's result.
 _TASK_POST_TIMEOUT_S = 30.0
 
@@ -734,10 +789,17 @@ _TASK_INPUTS: dict[str, str] = {}
 # the person in its own chat.
 ANSWER_SHOWN_LINE = (
     "answer_shown: your closing message is posted to the operator in your own chat with "
-    "them; write it as you would say it to them, the answer itself, with no working notes\n")
+    "them, as a reply to the request; write it as you would say it to them, the answer "
+    "itself, with no working notes, and open it with \"Done.\" when the work is done, or "
+    "\"Couldn't finish:\" and why when it is not; if you end a turn while the work is "
+    "still going, say where it stands and open with neither\n"
+    + TIME_LINK_GUIDE + "\n")
 # Delegations whose run's closing message is posted to the person in its
 # executor's own chat, by task id: the run is told so. Cleared at the input's end.
 _ANSWER_IN_CHAT: set[str] = set()
+# The start post each task's answer replies to, by task id; taken when the
+# task settles.
+_TASK_REPLY_TO: dict[str, TgAddress] = {}
 
 
 def _open_task(birth: TaskBirth) -> None:
@@ -825,13 +887,15 @@ def _answer_posts(birth: "TaskBirth | None", answer: str) -> bool:
 
 
 async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
-                          slot: str, kind: str = "") -> bool:
+                          slot: str, kind: str = "",
+                          reply_to: "TgAddress | None" = None) -> bool:
     """Post *text* at the task's delivery, through its executor's endpoint,
     every page filed under the task (its post record's owner is the task), so
     a reply to any page reaches the task. *slot* names which of the task's
-    posts this is (its start line or its answer): the two share owner and
-    tool-use id, so the slot alone keeps them two posts, each with its own
-    memory line. Bounded; a failure is logged and reported as ``False``."""
+    posts this is (its answer; :func:`_post_task_start` files the start post
+    under its own): the two share owner and tool-use id, so the slot alone
+    keeps them two posts, each with its own memory line. Its first page replies to *reply_to*, when given. Bounded; a
+    failure is logged and reported as ``False``."""
     import result_broker as rb
     ep = _task_endpoint(birth)
     if ep is None:
@@ -843,10 +907,12 @@ async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
     post = rb.PostRecord(role=birth.executor, operator_id=delivery.chat_id, plugin="",
                          slot=slot, tool_use_id=birth.task_id, owner=birth.task_id,
                          posted_at=time.time(), kind=kind)
+    context = {"chat_id": delivery.chat_id, "_post": post}
+    if reply_to is not None:
+        context["_reply_to"] = reply_to.to_json()
     try:
-        outcome = await asyncio.wait_for(
-            ep.send_response(admitted, {"chat_id": delivery.chat_id, "_post": post}),
-            _TASK_POST_TIMEOUT_S)
+        outcome = await asyncio.wait_for(ep.send_response(admitted, context),
+                                         _TASK_POST_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 — a task post is never the work's fault
         logger.warning("task %s post not delivered: %s", birth.task_id[:8],
                        type(exc).__name__)
@@ -854,13 +920,52 @@ async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
     return outcome is DeliveryOutcome.DELIVERED
 
 
+# The quotation-mark pairs a brief may be wrapped in, opener → closer.
+_QUOTE_PAIRS = {'"': '"', "\u201c": "\u201d", "\u00ab": "\u00bb", "'": "'", "\u2018": "\u2019"}
+
+
+def _without_outer_quotes(text: str) -> str:
+    """*text* without the one pair of quotation marks wrapping all of it, the
+    quote box already showing it is quoted: only when the trimmed text opens
+    and closes with one matching pair and neither mark recurs inside.
+    Anything else is returned as it was."""
+    one = text.strip()
+    close = _QUOTE_PAIRS.get(one[:1])
+    if close is None or len(one) < 3 or one[-1] != close:
+        return text
+    inner = one[1:-1]
+    if one[0] in inner or close in inner or not inner.strip():
+        return text
+    return inner
+
+
 async def _post_task_start(birth: TaskBirth) -> None:
-    """The task's start line in its executor's chat: who asked, and what."""
+    """The task's start post in its executor's chat, silent: who asked, and
+    the request as they wrote it, quoted whole. Its address is kept for the
+    task's answer to reply to. Bounded; a failure is logged and the answer
+    then posts plain."""
+    import result_broker as rb
+    ep = _task_endpoint(birth)
+    if ep is None:
+        return
+    body = _task_post_admitted(birth, _without_outer_quotes(birth.brief), IntentKind.DISCRETE)
+    if body is None:
+        return
+    delivery = birth.delivery
+    post = rb.PostRecord(role=birth.executor, operator_id=delivery.chat_id, plugin="",
+                         slot="task-start", tool_use_id=birth.task_id, owner=birth.task_id,
+                         posted_at=time.time())
     who = _display_name_for_role(birth.requester.role)
-    await _post_task_text(
-        birth,
-        f"{who} asked me: {_clip_line(birth.brief, _TASK_START_BRIEF_CHARS)}",
-        intent=IntentKind.DISCRETE, slot="task-start")
+    try:
+        mid = await asyncio.wait_for(
+            ep.post_task_start(delivery.chat_id, who, body, post=post),
+            _TASK_POST_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 — a task post is never the work's fault
+        logger.warning("task %s start not delivered: %s", birth.task_id[:8],
+                       type(exc).__name__)
+        return
+    if type(mid) is int:
+        _TASK_REPLY_TO[birth.task_id] = TgAddress(delivery.bot_id, delivery.chat_id, mid)
 
 
 async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None,
@@ -869,13 +974,17 @@ async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None
     delegate closed its turn with, whole (nothing when that is silence), is
     posted at its delivery, and its executor's conversation, when it did not
     ask for the work, gets a body-free note for its next turn. Never raises."""
-    if birth is None or not birth.in_own_chat:
+    if birth is None:
+        return
+    reply_to = _TASK_REPLY_TO.pop(birth.task_id, None)
+    if not birth.in_own_chat:
         return
     try:
         if answer is not None:
             import result_broker as rb
             await _post_task_text(birth, answer, intent=IntentKind.FINAL_REPLY,
-                                  slot="task-answer", kind=rb.TASK_ANSWER)
+                                  slot="task-answer", kind=rb.TASK_ANSWER,
+                                  reply_to=reply_to)
         _note_task(birth, "asked you",
                    "you answered" if answer is not None
                    else f"you couldn't finish it ({failure or 'unknown'})")
@@ -942,23 +1051,26 @@ OWN_CHAT_ECHO_NOTE = (
     "retell the posts. Reply with exactly <silent/> only if nothing at all is worth saying.)")
 
 
-def _with_post_echo(text: str, owner: str, *, shown_in: str = "") -> str:
+def _with_post_echo(text: str, owner: str, *, shown_in: str = "",
+                    answer_noted: bool = False) -> str:
     """S3 §6: append the body-free echo of every post a plugin proved under
     *owner* (a delegation id or an engagement id) to *text* — Casa's own
     lines after the delegate's answer, drained atomically so a post is
     echoed once. The text is returned unchanged when nothing was posted.
     *shown_in*, the name of the delegate whose own chat the posts went to,
-    says so and asks the resident to close the loop."""
+    says so and asks the resident to close the loop — unless *answer_noted*:
+    the result then carries :data:`OWN_CHAT_ANSWER_NOTE`, which already
+    covers that chat, and one close-the-loop note is enough."""
     import result_broker as _rb
     events = _rb.POSTS.drain(owner)
     if shown_in:
         lines = _rb.echo_lines(events, where=f"to the person in {shown_in}'s chat")
-        note = OWN_CHAT_ECHO_NOTE.format(name=shown_in)
+        notes = [] if answer_noted else [OWN_CHAT_ECHO_NOTE.format(name=shown_in)]
     else:
-        lines, note = _rb.echo_lines(events), POST_ECHO_SILENCE_NOTE
+        lines, notes = _rb.echo_lines(events), [POST_ECHO_SILENCE_NOTE]
     if not lines:
         return text
-    return (f"{text}\n\n" if text else "") + "\n".join([*lines, note])
+    return (f"{text}\n\n" if text else "") + "\n".join([*lines, *notes])
 
 
 def _own_chat_name(birth: "TaskBirth | None") -> str:
@@ -1011,9 +1123,12 @@ def _own_chat_pending(birth: "TaskBirth | None", role: str) -> dict:
 # person in the delegate's own chat: the resident closes the loop briefly
 # instead of retelling the answer.
 OWN_CHAT_ANSWER_NOTE = (
-    "(Casa: the person already read {name}'s answer in {name}'s chat. Close the loop here "
-    "in a line or two of your own: what came of it, plus anything only you know. Do not "
-    "retell the answer.)")
+    "(Casa: the person already read {name}'s answer in {name}'s chat{where}. If it opens with "
+    "\"Done.\" or \"Couldn't finish:\", close the loop here in a line or two of your own: what "
+    "came of it, plus anything only you know. If it opens with neither, it only says where the "
+    "work stands: {name} is still on it and the result will come in {name}'s chat, so nothing "
+    "is owed here yet; reply with exactly <silent/> unless you have something of your own to "
+    "add. Do not retell the answer.)")
 
 # The line that tells the requester what the person wrote straight into the
 # task while it ran (a reply in the delegate's own chat).
@@ -1046,14 +1161,27 @@ def _with_silent_close_note(text: str, output: "DelegatedOutput", role: str, *,
         return text
 
 
-def _with_own_chat_answer_note(text: str, shown_in: str, posted: bool) -> str:
+def _with_own_chat_answer_note(text: str, shown_in: str, posted: bool, *,
+                               link: "str | None" = None) -> str:
     """*text* with :data:`OWN_CHAT_ANSWER_NOTE` after it when the delegate's
     closing message is posted (*posted*) to the person in *shown_in*'s own
-    chat."""
+    chat; *link*, that chat's link when known, is named so the close can
+    point there."""
     if not (shown_in and posted):
         return text
-    note = OWN_CHAT_ANSWER_NOTE.format(name=shown_in)
+    where = f" ({link}); you may link it as [{shown_in}'s chat]({link})" if link else ""
+    note = OWN_CHAT_ANSWER_NOTE.format(name=shown_in, where=where)
     return f"{text}\n\n{note}" if text else note
+
+
+def _own_chat_link(role: str) -> "str | None":
+    """The link to *role*'s own chat, or ``None`` when none is known (no
+    lifecycle, no bot username). Never raises."""
+    import own_voice
+    try:
+        return own_voice._lifecycle().link_for(role)
+    except Exception:  # noqa: BLE001 — a link is a courtesy, never the work's fault
+        return None
 
 
 def _with_operator_words(text: str, said: "list[str]", executor: str) -> str:
@@ -3189,6 +3317,20 @@ def _guest_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
     return (_GUEST_GRANT,)
 
 
+_STOP_WORK_GRANT = "mcp__casa-framework__stop_work"
+
+
+def _stop_work_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
+    """``stop_work`` for every specialist's own-chat, delegated or pinned build, the
+    same condition as ``guest_access``: in his chat with a specialist the operator
+    stops his work by asking it. The tool refuses anything but his own live message,
+    so a delegated or pinned turn is refused by the tool itself. The resident has it
+    from its role files."""
+    if engagement or getattr(cfg, "kind", "") != "specialist":
+        return ()
+    return (_STOP_WORK_GRANT,)
+
+
 def _build_specialist_options(
     cfg,
     *,
@@ -3381,7 +3523,8 @@ def _build_specialist_options(
         if grant not in allowed_tools:
             allowed_tools.append(grant)
     _code_granted_tools = (*_handoff_grants(cfg, engagement=bool(extra_casa_tools)),
-                      *_guest_grants(cfg, engagement=bool(extra_casa_tools)))
+                           *_guest_grants(cfg, engagement=bool(extra_casa_tools)),
+                           *_stop_work_grants(cfg, engagement=bool(extra_casa_tools)))
     for grant in _code_granted_tools:
         if grant not in allowed_tools:
             allowed_tools.append(grant)
@@ -3428,7 +3571,7 @@ def _build_specialist_options(
     if _mcp_registry is not None:
         # S6 (diff round 1, Astra): a casa-framework tool granted in code — the
         # engagement and job launch grants, the inbox tools, start_job,
-        # hand_off, guest_access (R2 acceptance F1: a role declaring no servers had hand_off
+        # hand_off, guest_access, stop_work (R2 acceptance F1: a role declaring no servers had hand_off
         # granted and invisible) — needs the server that exposes it, whatever
         # the config's own server list says
         _server_names = list(cfg.mcp_server_names)
@@ -5563,6 +5706,7 @@ async def _settle_then_announce(
             "Delegation %s settled as cancelled — completion not announced",
             record.id[:8],
         )
+        _TASK_REPLY_TO.pop(record.id, None)
         return
     if complete.status == "ok":
         await _settle_task(birth, answer=raw_text if raw_text is not None else "")
@@ -5586,9 +5730,31 @@ async def _settle_then_announce(
             "delegation_id": record.id,
             # the reply goes back through the bot the delegation came from
             **carry_route(record.origin),
+            # ... as a reply to the card the work was approved on, when its
+            # record names one in this bot's chat (a continuation's; never the
+            # asker's message)
+            **_record_reply_to(record.origin),
         },
         on_delivery=_ack,
     ))
+
+
+def _record_reply_to(origin: dict) -> dict:
+    """``{"_reply_to": address}`` when *origin* holds a stored Telegram address
+    under ``_reply_to`` that the narration can reply to: a message of the bot
+    the narration goes out through (the origin's ``_tg_bot``), in its chat.
+    Else ``{}``, so a narration told it answers as a reply always does. Unlike
+    :func:`reply_target`, the person's own message (``_tg_request``) is never
+    taken in its place."""
+    value = origin.get("_reply_to")
+    try:
+        target = TgAddress.from_json(value)
+        bot, chat = int(origin.get("_tg_bot")), int(origin.get("chat_id"))
+    except (AddressError, TypeError, ValueError):
+        return {}
+    if target.bot_id != bot or target.chat_id != chat:
+        return {}
+    return {"_reply_to": value}
 
 
 def _delegation_failure_kind(exc: BaseException) -> str:
@@ -5735,11 +5901,15 @@ def _attach_completion_callback(
                 closing = _closing_beyond_cut(output, bounded, output_truncated)
                 # S3 §6: the echo rides the notice, after the bounded answer
                 # (Casa's lines are not the delegate's text the cap bounds).
-                bounded = _with_post_echo(bounded, record.id, shown_in=_shown)
+                posted = _answer_posts(birth, raw_text)
+                bounded = _with_post_echo(bounded, record.id, shown_in=_shown,
+                                          answer_noted=bool(_shown) and posted)
                 bounded = _with_silent_close_note(bounded, output, record.agent,
                                                   own_chat=bool(_shown))
                 bounded = _with_own_chat_answer_note(
-                    bounded, _shown, _answer_posts(birth, raw_text))
+                    bounded, _shown, posted,
+                    link=(_own_chat_link(birth.executor)
+                          if _shown and posted and birth is not None else None))
                 bounded = _with_operator_words(
                     bounded, said, getattr(record, "executor", "") or record.agent)
                 bounded = _with_own_chat_offer_note(bounded, record.id)
@@ -6463,7 +6633,7 @@ async def _prelaunch(
                     "agent": agent_name, "engagement_id": rec.id,
                     "message": f"{_display_name_for_role(agent_name)} already has an open "
                                f"engagement: {title}. Wait for it to finish, or cancel it "
-                               "with its Stop key at the keyboard or by asking me.",
+                               "by asking me.",
                 })
     permit = None
     # The permit is taken here, before the agent's lane: a delegation refused
@@ -8132,7 +8302,7 @@ async def start_job(args: dict) -> dict:
                                       **({"self_host": True} if self_host else {}))
     payload = json.loads(result["content"][0]["text"])
     if payload.get("status") == "pending":
-        await _post_job_start_line(payload.get("engagement_id"))
+        await _acknowledge_job_start(payload.get("engagement_id"))
     if self_host:
         # #1229: a specialist relays its own start to the operator; the id is
         # Casa's, not theirs — every result names the job instead
@@ -8154,18 +8324,27 @@ async def start_job(args: dict) -> dict:
 _START_LINE_TIMEOUT_S = 10.0
 
 
-async def _post_job_start_line(engagement_id: Any) -> None:
-    """The silent start line, which raises the job's Stop key at the keyboard, of
-    a job the operator started — directly or through an agent acting on their
-    message. A job the
-    scheduler started gets none, and nor does one an agent started on its
-    own: neither was asked for in the chat. Bounded; a failure is logged."""
+async def _acknowledge_job_start(engagement_id: Any) -> None:
+    """The start of a job the operator started — directly or through an agent
+    acting on their message — acknowledged in the chat: 👍 on his request, or,
+    when that cannot be put there, the silent start line. A job the scheduler
+    started gets neither, and nor does one an agent started on its own: neither
+    was asked for in the chat. Each step is bounded; a failure is logged with
+    its class."""
     rec = (_engagement_registry.get(engagement_id)
            if _engagement_registry is not None and isinstance(engagement_id, str)
            else None)
     if rec is None or (rec.origin.get("job") or {}).get("started_by") != "operator":
         return
     channel = _transport()
+    react = getattr(channel, "react_job_request", None)
+    if callable(react):
+        try:
+            if await asyncio.wait_for(react(rec), _START_LINE_TIMEOUT_S):
+                return
+        except Exception as exc:  # noqa: BLE001 — the start line stands in
+            logger.warning("job %s reaction not set: %s", rec.id[:8],
+                           type(exc).__name__)
     poster = getattr(channel, "post_job_start_line", None)
     if not callable(poster):
         return
@@ -8803,12 +8982,17 @@ async def delegate_to_agent(args: dict) -> dict:
                    _closing_beyond_cut(delegated_output, text, output_truncated))
         # S3 §6: what the plugin posted under this delegation, as body-free
         # Casa lines after the answer (after the cap: not the delegate's text).
-        text = _with_post_echo(text, delegation_id, shown_in=_shown)
+        _answer = None if is_voice else _closing_text(delegated_output)
+        _posted = _answer is not None and _answer_posts(_birth, _answer)
+        text = _with_post_echo(text, delegation_id, shown_in=_shown,
+                               answer_noted=bool(_shown) and _posted)
         if not is_voice:
             text = _with_silent_close_note(text, delegated_output, agent_name,
                                            own_chat=bool(_shown))
-            _answer = _closing_text(delegated_output)
-            text = _with_own_chat_answer_note(text, _shown, _answer_posts(_birth, _answer))
+            text = _with_own_chat_answer_note(
+                text, _shown, _posted,
+                link=(_own_chat_link(_birth.executor)
+                      if _shown and _posted and _birth is not None else None))
             text = _with_operator_words(text, _take_said(delegation_id), agent_name)
             text = _with_own_chat_offer_note(text, delegation_id)
         if not is_voice:
@@ -8859,9 +9043,11 @@ async def delegate_to_agent(args: dict) -> dict:
         # transferred to a created task — a cancel during registration).
         if _lane_reservation is not None:
             _lane_reservation.release()
-        # a task whose run was never created: its input ends here
+        # a task whose run was never created: its input ends here, and
+        # nothing will answer its start post
         if _task_input_open is not None:
             _end_task_input(_task_input_open)
+            _TASK_REPLY_TO.pop(_task_input_open, None)
 
 
 async def _delegation_in_lane(lane: Any, reservation: Any, cfg: Any, task_text: str,
@@ -10905,6 +11091,22 @@ async def _report_launch_death_inline(
         won=lambda r: r is LaunchDeathResult.REPORTED)
 
 
+def reply_target(origin: dict) -> dict:
+    """The reply target an outcome told for *origin* carries: ``{"_reply_to":
+    address}`` for the first of the origin's ``_reply_to`` and ``_tg_request``
+    (the operator's own message) that is a stored Telegram address, else
+    ``{}``. The channel sends the answer as a reply to it only where that
+    message is its own bot's, in the chat being answered."""
+    for key in ("_reply_to", "_tg_request"):
+        value = origin.get(key)
+        try:
+            TgAddress.from_json(value)
+        except AddressError:
+            continue
+        return {"_reply_to": value}
+    return {}
+
+
 async def send_engagement_outcome(
     bus: Any, *, complete: "DelegationComplete", origin: dict,
     ack: Any, context_extra: dict | None = None, source: str | None = None,
@@ -10921,7 +11123,8 @@ async def send_engagement_outcome(
     exist, which the bus drops silently), channel, the cid/chat_id/engagement_id
     context merged with ``context_extra`` (the funnel's ``next_steps``), and
     the delivery acknowledgement. The context carries the origin's route, so
-    the outcome is told through the bot the engagement came from."""
+    the outcome is told through the bot the engagement came from, and its
+    reply target (:func:`reply_target`), so it answers the request itself."""
     _role = origin.get("role")
     target_role = _role if isinstance(_role, str) and _role else fallback_role
     _channel = origin.get("channel")
@@ -10931,6 +11134,8 @@ async def send_engagement_outcome(
         "engagement_id": complete.delegation_id,
         # the outcome is told through the bot the engagement came from
         **carry_route(origin),
+        # ... as a reply to the message that asked for the work
+        **reply_target(origin),
     }
     if context_extra:
         context.update(context_extra)
@@ -11156,14 +11361,14 @@ _DRIVER_CANCEL_TIMEOUT_S = 20.0
 _finalize_tail_tasks: set[asyncio.Task] = set()
 
 # A job that completes from inside a running turn: its teardown waits, at most
-# this long, for that turn to end, so the end line and the end notice carry
-# the completing turn's cost. Past the bound it finalizes with the last cost
+# this long, for that turn to end, so the end notice carries the completing
+# turn's cost. Past the bound it finalizes with the last cost
 # known.
 _COMPLETION_TURN_END_WAIT_S = 30.0
 
-# Jobs whose end paint (the end line and the question keyboards) waits for their
+# Jobs whose end paint (their question and parking keyboards) waits for their
 # completing turn to end: the terminal observer leaves their keyboards to the
-# finalize tail, which retires them once the turn's cost is recorded.
+# finalize tail, which retires them once the turn has ended.
 _end_paint_deferred: set[str] = set()
 
 
@@ -11202,9 +11407,9 @@ async def _await_completing_turn(driver: Any, engagement: Any) -> None:
 
 
 def _paint_job_end(engagement: Any) -> None:
-    """Retire an ended job's keyboards (its end line, with its outcome, time
-    and cost, in reply to the start line) — the step the terminal observer
-    left to the finalize tail. Never raises."""
+    """Retire an ended job's keyboards (its questions' and parking line's
+    buttons) — the step the terminal observer left to the finalize tail.
+    Never raises."""
     _end_paint_deferred.discard(engagement.id)
     channel = _transport()
     retire = getattr(channel, "retire_job_keyboards", None)
@@ -11341,8 +11546,8 @@ async def _finalize_engagement(
         return _owes["notify"]
 
     # A completion from inside a running turn: the teardown waits for that
-    # turn to end (bounded), and the terminal observer leaves the end paint
-    # to it, so both carry the completing turn's cost.
+    # turn to end (bounded), so the end notice carries that turn's cost, and
+    # the terminal observer leaves the end paint to it.
     await_turn_end = (detach_teardown_tail
                       and _completing_turn_running(driver, engagement.id))
     if await_turn_end:
@@ -11464,13 +11669,16 @@ async def _finalize_engagement(
     )
 
 
+#: what the narration of a job's end is asked to do with its time and cost line
+JOB_COST_NOTE = "(Casa: mention how long the job ran and what it cost, in your own words.)"
+
+
 def _with_job_cost(text: str, frozen: dict, now: float,
                    cost_job: dict | None = None) -> str:
     """A job's end notice to its resident carries how long it ran and its
-    cost as of its last turn end, so a job with no start line (scheduled or
-    agent-started) still shows it when the outcome is reported. ``cost_job``
-    is the live job state to read the cost from when the completing turn's
-    end recorded it after the terminal flip."""
+    cost as of its last turn end, and asks the narration to mention both.
+    ``cost_job`` is the live job state to read the cost from when the
+    completing turn's end recorded it after the terminal flip."""
     job = (frozen.get("origin") or {}).get("job")
     if not isinstance(job, dict):
         return text
@@ -11479,6 +11687,7 @@ def _with_job_cost(text: str, frozen: dict, now: float,
     cost = (cost_job if isinstance(cost_job, dict) else job).get("cost_usd")
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         line += f" · ${cost:.2f}"
+    line += " " + JOB_COST_NOTE
     return f"{text}\n\n{line}" if text else line
 
 
@@ -13403,13 +13612,11 @@ def _on_engagement_terminal(rec) -> None:
     committed. ``cancel_matching`` never awaits; the keyboard edits it causes
     run later on the broker's own hook tasks.
 
-    An ended job's keyboards in the direct chat (its start line, its
-    questions) are retired on every terminal winner too: the channel takes
-    them off the record in this step and retires them on a task of its
-    own: the end line in reply to the start line, which takes the job's Stop
-    key off the keyboard, and the questions' buttons edited away — except for a job that completed from inside a running turn, whose
-    finalize tail retires them once that turn has ended and its cost is
-    recorded."""
+    An ended job's keyboards in the direct chat (its questions, its parking
+    line) are retired on every terminal winner too: the channel takes them
+    off the record in this step and edits their buttons away on a task of
+    its own — except for a job that completed from inside a running turn,
+    whose finalize tail retires them once that turn has ended."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
     if rec.id in _end_paint_deferred:
         return                  # the finalize tail paints it after the turn ends
@@ -15548,7 +15755,7 @@ async def _settle_install_consent_post(handle) -> "dict | None":
 SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE = (
     "When it resumes, it picks up Casa's updated settings, but it keeps its "
     "personality and the plugin versions it started with. To get everything "
-    "new, cancel it (with its Stop key, or ask {assistant}) and start it "
+    "new, cancel it (ask {assistant}) and start it "
     "again."
 )
 
@@ -20135,7 +20342,7 @@ async def persona_ack_revoke(args: dict) -> dict:
 # path. Adding a tool here exposes it automatically.
 CASA_TOOLS: tuple = (
     send_message,
-    stop_work,                     # the resident's direct stop of a specialist's own work
+    stop_work,                     # the direct stop of a background job or a browsing request
     offer_own_chat,                # the resident offers a specialist its own chat
     guest_access,                  # a specialist answers everyone in a group the
                                    # operator allowed — specialists only, in code

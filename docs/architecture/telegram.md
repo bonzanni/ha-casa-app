@@ -33,8 +33,8 @@ back to polling rather than failing.
 receiving route refuses every request when no secret is configured. Registration with the Bot
 API can still succeed and report itself as started, so the failure looks like Telegram not
 delivering rather than like a configuration error. This is deliberate fail-closed behaviour:
-the route would otherwise accept forged updates from anyone who found the URL. Polling is
-unaffected, because it does not use that route.
+the route would otherwise accept forged updates from anyone who found the URL. Polling does
+not use that route.
 
 **Two kinds of inbound message go to different places.** A direct message becomes an ordinary
 turn on the bus. A message a person writes in the optional agent-log group reaches nothing: it
@@ -42,7 +42,7 @@ draws one pointer to the direct chat per person per boot (INV-TG-016, in
 [`agent-logs.md`](agent-logs.md)). Both are *text*: the text
 handler is one of two message handlers, and the other takes every new non-text message — a
 file, a photo, a sticker, a pin. In the operator's chat it stores an accepted file and
-acknowledges it, files sent together in one edited message (INV-FILE-005) — or, when the file carries a caption, runs one ordinary turn with the caption
+acknowledges it with a 👍 (INV-FILE-005) — or, when the file carries a caption, runs one ordinary turn with the caption
 as the operator's words, admitted through the text handler's own dispatch tail
 (`_dispatch_dm_turn`, INV-FILE-004) — and answers everything else with a one-line refusal;
 outside that chat it follows the text path, and in the log group it draws the same one
@@ -91,7 +91,7 @@ string parameter still carrying a lone surrogate — a JSON `\ud800` escape in a
 result decodes to one — would raise before any request left the process: the whole reply,
 and the loss classed as unknown so the health notice is not re-offered. The channel therefore installs its own request class on the
 ordinary Bot API pool, below every sender — plain and rich, the draft send, narration, media
-captions — and it replaces each surrogate code point with one U+FFFD, one code point for
+captions — and replaces each surrogate code point with one U+FFFD, one code point for
 one, so entity offsets computed upstream stay valid. Nothing is normalised at the send
 sites, so a new sender cannot forget it. A value nested inside a JSON-encoded parameter (an
 entity address, a button label) is already an ASCII escape by the time it is serialised and
@@ -109,6 +109,9 @@ when it was posted or replaces it with a Casa status; the arrival replies and th
 delivered-link message are outside the contract, and so is the agent log, which is no channel
 method and posts plain text. The contract is INV-OUT-001 in
 [`output-boundary.md`](output-boundary.md), which also records every call site.
+
+**An answer can reply to a message Casa names**, on its first message
+([`telegram-bots.md`](telegram-bots.md)).
 
 **Casa's bot also hears of the bots it manages; an agent's bot passes its lifecycle first.**
 Each endpoint states the update types it wants on every `setWebhook` and `getUpdates`
@@ -139,17 +142,15 @@ lifecycle is [`own-voice-lifecycle.md`](own-voice-lifecycle.md), the rest
 
 **A tap is authorised against the request it answers.** Callback data is versioned and
 carries the namespace and request id; resolution is bound to the operator the request was
-posted for. A tap from someone else is refused. Note that the parser still accepts a legacy
-permission format — but actionability is bounded by process memory: a callback of a broker
-namespace resolves only while its request lives in the current process's broker, so buttons
-from before a restart are rejected as expired however well their format parses. Ahead of
+posted for. A tap from someone else is refused. The parser still accepts a legacy permission
+format, but a broker namespace's callback resolves only while its request lives in this
+process's broker, so a button from before a restart is expired however well it parses. Ahead of
 every namespace's handler, a tap on Casa's bot whose card records an agent that now declares
 its own chat is answered with one line naming that chat (`_refuse_moved_card`, INV-OWN-009). The
 namespaces are `_CALLBACK_NAMESPACES`; `proposal` is
 [`stored-call-buttons.md`](stored-call-buttons.md). `run_stop`, an inline Stop on a browsing
-request's card, is no broker request: it reads the durable admission, so it still acts after
-a restart ([`plugin-stop.md`](plugin-stop.md)). Stoppable work is otherwise stopped by its red
-key at the reply keyboard, whose press arrives as a text message (below). A background job's
+request's card from an earlier version, is no broker request: it reads the durable
+admission, so it still acts after a restart ([`plugin-stop.md`](plugin-stop.md)). A background job's
 buttons — its questions' options and its Cancel — are no broker requests either: their data (`v1|job_q|…`,
 `v1|job_cancel|…`) names the engagement and is resolved against its record, by the operator
 whose job it is, and is matched before the generic parser, whose four-field shape it does not
@@ -266,11 +267,6 @@ in-process.
 What it does not cover: a bot injected from outside the channel; values nested inside
 JSON-encoded parameters, which the library escapes and the platform judges; where the
 surrogate came from; and the polling pool, which carries no Casa-authored text.
-
-**A Stop key's press is no message to the agent.** The operator's text equal to a Stop key
-Casa issued in this chat (`stop_keys`, exact equality) is taken first, before a reply into a
-live task and everything below (`_press_stop_key`): it stops that work, his message is deleted,
-and no turn starts ([`plugin-stop.md`](plugin-stop.md)).
 
 **A plain DM message retires the questions this conversation asked, and only those.** The
 order in the DM path is fixed and each step is there for a measured reason: `/new` is

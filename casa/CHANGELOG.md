@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.373.0] - 2026-11-13
+
+### Changed
+
+- A file you send is acknowledged with a 👍 on the file instead of a "Got …" line. A file Casa can't keep still gets its short sentence.
+- When you ask for a background job, Casa puts a 👍 on your message instead of posting "started «…»". When it ends you get one message, a reply to your request, opening "Done.", "Stopped." or "Couldn't finish: …" and saying how long the job ran and what it cost, instead of a "✅ Finished «…»" line plus a separate answer.
+- A browsing run you approve no longer posts "Started." and "Ended."; its result arrives as a reply to the card when you asked for it in that chat. The card no longer has a **Stop** button: to stop a run, tell the agent.
+- When another agent asks a specialist for something, the specialist's chat shows the whole request as a quote you can expand, without a notification; its answer replies to it.
+- An agent can send its answer as a reply to your message, quoting the part it answers, when it answers out of order or one part of a longer message.
+- Dates and times the agents write are tappable.
+
+### Fixed
+
+- In a specialist's own chat, the lines after you tap a card no longer start with the "📊 <Agent>" head.
+- When a specialist reports where unfinished work stands, the assistant no longer treats it as the result.
+
+### Removed
+
+- The red **⏹ Stop «…»** keys at the keyboard. To stop a job or a run, tell the agent; it stops it at once. Not backward compatible: a Stop key still on your keyboard from before the upgrade no longer stops anything by itself. Pressing it sends its text to the agent, which stops the work if it still runs.
+
 ## [0.372.5] - 2026-11-13
 
 ### Fixed

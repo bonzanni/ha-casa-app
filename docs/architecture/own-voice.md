@@ -77,8 +77,8 @@ agent moves to a new bot only when it is empty. Durable kinds: a delegation aske
 bot or delivering there that is accepted or running, waiting for input it can still take,
 or still owing its requester an announcement; a live or idle job started on the bot or
 posting there; an ended job whose keyboard post on the bot is not retired; a scheduled
-question stored as posted through it; a browsing request that still holds its run card and
-its Stop key — admitted, neither stopped nor ended, its binding there
+question stored as posted through it; a browsing request that still holds its run card —
+admitted, neither stopped nor ended, its binding there
 (`run_admission.Confirmations.open_cards_on_bot`); an update held for it. Memory-only
 kinds: a live question or card asked on it (`verdict_broker.VerdictBroker.live_on_bot`), a
 continuation queued on it (`plugin_continuations.Continuations.pending_on_bot`), and a turn
@@ -125,20 +125,27 @@ its posts carry no `📊` label (`result_broker.label_at`): the chat is the agen
 
 **A task in an agent's chat.** A delegation to an agent whose chat is open at its birth
 opens its post index (`task_posts.open`) and its input destination
-(`task_input.open_pending`) first, then posts its start line there — "Ellen asked me: …",
-the brief as written; a task born on a Casa-started plugin setup or erase turn posts none —
-then runs in its own session, whose delegation context says that its closing message is
-posted to the operator (`answer_shown`). The start line and the answer are filed under
-slots of their own (`task-start`, `task-answer`), so each is its own post. The message it
-closed its turn with
-(`tools._closing_text`), whole, is posted there in pages — never its working notes before
-it, never the requester's bounded copy, and nothing when it closes with `<silent/>` — and
-the requester gets today's bounded result. That result's Casa notes name the agent's chat:
+(`task_input.open_pending`) first, then posts its start post there, silently
+(`TelegramChannel.post_task_start`): "Ellen asked:", the name in bold, over the brief as
+written, whole, in an expandable quote — less one pair of quotation marks wrapping all of it
+(`tools._without_outer_quotes`) — its formatting rendered as an answer's is (plain when Telegram refuses it),
+clipped with `…` only when it cannot fit one message; a task born on a
+Casa-started plugin setup or erase turn posts none. It then runs in its own session, whose
+delegation context says that its closing message is posted to the operator as a reply to
+the request and opens "Done." or "Couldn't finish:", or neither while the work is still
+going (`answer_shown`). The start post and the answer are filed under slots of their own
+(`task-start`, `task-answer`), so each is its own post. The message it closed its turn
+with (`tools._closing_text`), whole, is posted there in pages, the first replying to the
+start post (`tools._TASK_REPLY_TO`; plain when the start post did not land) and notifying —
+never its working notes before it, never the requester's bounded copy, and nothing when it
+closes with `<silent/>` — and the requester gets today's bounded result. That result's Casa notes name the agent's chat:
 a post echo says the posts went to the person there and asks the requester to close the
 loop in its own words (`OWN_CHAT_ECHO_NOTE`), a closing silence is said without steering it
 to silence (`OWN_CHAT_SILENT_CLOSE_NOTE`), and a closing message that posts is said to be
-already read there, so the requester closes in a line or two instead of retelling it
-(`OWN_CHAT_ANSWER_NOTE`). A delegation still running when its call returns (`async`, or a
+already read there, so the requester closes in a line or two instead of retelling it,
+linking that chat when its link is known — or, when the answer opens with neither "Done."
+nor "Couldn't finish:", owes nothing yet (`OWN_CHAT_ANSWER_NOTE`; it then replaces the
+post echo's note, one close-the-loop note per result). A delegation still running when its call returns (`async`, or a
 `sync` one past its 60-second wait) carries `own_chat_note` on its `pending` result
 (`OWN_CHAT_PENDING_NOTE`): the person sees the work and will get the answer in that chat,
 so the requester owes no holding line — one written while the answer was landing

@@ -96,7 +96,10 @@ class Admitted(str):
     ``annotations`` names every line Casa added, verbatim, so a tool result
     can tell the model what the operator actually saw. For
     :attr:`IntentKind.STORED` the text is unchanged and ``note`` carries the
-    resolved line the emitting turn will prepend."""
+    resolved line the emitting turn will prepend. ``reply`` is the
+    :class:`ReplyMark` a final reply opened with, already taken off the
+    text: the transport sends the answer as a reply to the person's
+    message when it can."""
 
     scope_id: str
     kind: IntentKind | None
@@ -106,12 +109,14 @@ class Admitted(str):
     suppressed: bool
     chosen_silence: bool
     send: "OperatorSend | None"
+    reply: "ReplyMark | None"
 
     def __new__(cls, text: str, *, scope_id: str, kind: IntentKind | None,
                 annotations: tuple[str, ...] = (), source: str = "model",
                 note: str = "", suppressed: bool = False,
                 chosen_silence: bool = False,
-                send: "OperatorSend | None" = None) -> "Admitted":
+                send: "OperatorSend | None" = None,
+                reply: "ReplyMark | None" = None) -> "Admitted":
         obj = str.__new__(cls, text)
         obj.scope_id = scope_id
         obj.kind = kind
@@ -121,6 +126,7 @@ class Admitted(str):
         obj.suppressed = suppressed
         obj.chosen_silence = chosen_silence
         obj.send = send
+        obj.reply = reply
         return obj
 
     @property
@@ -133,7 +139,8 @@ class Admitted(str):
         return Admitted(text, scope_id=self.scope_id, kind=self.kind,
                         annotations=self.annotations, source=self.source,
                         note=self.note, suppressed=self.suppressed,
-                        chosen_silence=self.chosen_silence, send=self.send)
+                        chosen_silence=self.chosen_silence, send=self.send,
+                        reply=self.reply)
 
     def mark_delivered(self) -> None:
         """#1079: the sender's confirmation that this text reached the
@@ -231,6 +238,55 @@ def without_sentinels(text: str) -> str:
     tag = re.escape(SILENCE_SENTINEL)
     text = re.sub(rf"(?:\s*(?<!\\){tag})+\s*\Z", "", text)
     return re.sub(rf"\A(?:\s*{tag})+(?:(?:[^\S\r\n]*\r?\n)+|[^\S\r\n]*)", "", text)
+
+
+# ---------------------------------------------------------------------------
+# The reply marker — how an answer asks to go out as a reply
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ReplyMark:
+    """An answer's request to be sent as a reply to the person's message,
+    optionally quoting *quote*, their words for the part it answers."""
+
+    quote: str | None = None
+
+
+REPLY_MARKER_GUIDE = (
+    'reply_to: your answer goes out as an ordinary message. When you answer late, or '
+    'answer one part of a longer message, start it with <reply/> to send it as a reply to '
+    'their message, or with <reply quote="..."/> holding their exact words for the part '
+    'you answer. In an ordinary back-and-forth write no marker.')
+
+_REPLY_MARKER = re.compile(
+    r'\A\s*<reply(?: ?/>| quote="(.*?)" ?/>)[^\S\r\n]*(?:\r?\n)?', re.DOTALL)
+_REPLY_FORMS = ("<reply/>", "<reply />", '<reply quote="')
+
+
+def split_reply_marker(text: str) -> "tuple[ReplyMark | None, str]":
+    """A reply marker at the very start of *text* (leading whitespace
+    allowed), and the text without it: ``<reply/>``, ``<reply />``,
+    ``<reply quote="…"/>`` or ``<reply quote="…" />``, whose quote runs to the
+    first ``"/>`` or ``" />``. The marker
+    goes with the spaces and at most one line break after it. A marker
+    anywhere else, or one that never closes, is the author's text:
+    ``(None, text)``, unchanged. An empty quote is no quote."""
+    m = _REPLY_MARKER.match(text or "")
+    if m is None:
+        return None, text
+    return ReplyMark(m.group(1) or None), text[m.end():]
+
+
+def may_be_reply_marker(text: str) -> bool:
+    """True while *text*, without its leading whitespace, is the beginning of
+    a reply marker that has not closed yet (``"<rep"``,
+    ``'<reply quote="Mon'``): an in-flight cumulative that could still
+    become one shows nothing until the next delta settles it."""
+    rest = (text or "").lstrip()
+    if not rest or split_reply_marker(rest)[0] is not None:
+        return False
+    return (rest.startswith(_REPLY_FORMS[2])
+            or any(form.startswith(rest) for form in _REPLY_FORMS))
 
 
 class ApprovalCut:
@@ -718,10 +774,23 @@ class TurnScope:
         and the consumed retries. Without it, today's whole-text rule.
         On any turn, the report's ``approval_cut`` (#1252) — the winning
         attempt's count of text-bearing messages folded before a call whose
-        approval is still pending — keeps only those messages."""
-        if kind is IntentKind.FINAL_REPLY and strips_to_silence(text):
-            return Admitted(text="", scope_id=self.id, kind=kind, suppressed=True,
-                            chosen_silence=SILENCE_SENTINEL in (text or ""))
+        approval is still pending — keeps only those messages.
+
+        A final reply or a stream update first loses a leading reply marker
+        (:func:`split_reply_marker`), before any silence check: a final reply
+        keeps it as ``reply``, and a stream update that may still become a
+        marker is admitted empty, so the draft never shows one. The rules
+        that read the report work on the turn's own messages, marker and all,
+        and the marker is taken off what they keep."""
+        mark: ReplyMark | None = None
+        if kind is IntentKind.STREAM_UPDATE:
+            marked, bare = split_reply_marker(text)
+            text = "" if marked is None and may_be_reply_marker(text) else bare
+        elif kind is IntentKind.FINAL_REPLY:
+            mark, bare = split_reply_marker(text)
+            if strips_to_silence(bare):
+                return Admitted(text="", scope_id=self.id, kind=kind, suppressed=True,
+                                chosen_silence=SILENCE_SENTINEL in (bare or ""))
         cut = report.get("approval_cut") if report is not None else None
         if kind is IntentKind.FINAL_REPLY and isinstance(cut, int):
             # #1252 (operator ruling): the operator sees the approval keyboard
@@ -738,7 +807,7 @@ class TurnScope:
                     "approval cut without this reply's messages: role=%s "
                     "cid=%s — reply withheld", self.role, self.cid)
                 text = ""
-            if strips_to_silence(text):
+            if strips_to_silence(split_reply_marker(text)[1]):
                 return Admitted(text="", scope_id=self.id, kind=kind,
                                 suppressed=True)
         if (kind is IntentKind.FINAL_REPLY and report is not None
@@ -765,6 +834,8 @@ class TurnScope:
                     "closing silence without confirmed sends: role=%s cid=%s "
                     "— earlier text kept, tag dropped", self.role, self.cid)
                 text = kept
+        if kind is IntentKind.FINAL_REPLY:
+            text = split_reply_marker(text)[1]
         if (kind in (IntentKind.FINAL_REPLY, IntentKind.STREAM_UPDATE)
                 and self.streaming_allowed):
             # #1512: a streaming turn shows its words as they are written, so
@@ -776,7 +847,8 @@ class TurnScope:
         if kind in _SENT_INTENTS:
             send = self.open_send(kind.value)
         if not (text or "").strip():
-            return Admitted(text=text, scope_id=self.id, kind=kind, send=send)
+            return Admitted(text=text, scope_id=self.id, kind=kind, send=send,
+                            reply=mark)
         head: list[str] = [ob.text for ob in self.obligations
                            if isinstance(ob, InheritedNote)]
         stored_note: list[str] = list(head)
@@ -790,10 +862,11 @@ class TurnScope:
             return Admitted(text=text, scope_id=self.id, kind=kind,
                             annotations=tuple(stored_note), note=note)
         if not head:
-            return Admitted(text=text, scope_id=self.id, kind=kind, send=send)
+            return Admitted(text=text, scope_id=self.id, kind=kind, send=send,
+                            reply=mark)
         self.annotations_applied.extend(head)
         return Admitted(text="\n\n".join(head) + "\n\n" + text, scope_id=self.id,
-                        kind=kind, annotations=tuple(head), send=send)
+                        kind=kind, annotations=tuple(head), send=send, reply=mark)
 
     # -- wording ------------------------------------------------------------
 

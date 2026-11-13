@@ -469,6 +469,21 @@ async def test_a_new_job_post_goes_through_the_jobs_delivery_not_its_route(
     assert calls(h.casa) == []
 
 
+async def test_a_jobs_reaction_goes_through_the_bot_his_request_came_to(two_endpoints):
+    """The 👍 on the operator's request is set by the bot that received it, whatever
+    bot the job's posts go to; a job with no request, or one on a bot with no
+    endpoint, reacts nowhere."""
+    h = two_endpoints
+    rec = _job(route=111, delivery=TgAddress(222, 100))
+    rec.origin["_tg_request"] = [111, 100, 7]
+    assert await h.transport.react_job_request(rec) is True
+    assert calls(h.casa) == [("react", (100, 7))] and calls(h.finance) == []
+    for request in (None, [333, 100, 7], [222, 100], "x"):
+        rec.origin["_tg_request"] = request
+        assert await h.transport.react_job_request(rec) is False
+    assert calls(h.casa) == [("react", (100, 7))] and calls(h.finance) == []
+
+
 async def test_retire_job_keyboards_is_synchronous_and_per_post_endpoint(two_endpoints):
     h = two_endpoints
     p1, p2, p3 = ((TgAddress(111, 100, 5), "start"),

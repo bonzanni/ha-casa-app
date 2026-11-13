@@ -31,7 +31,9 @@ finished messages — is the same as on a turn that never streamed. The callback
 the start of the turn: `create_on_token` starts the stream, which shows an empty draft until
 the first word, so Stop can be pressed while the model is still thinking or calling a tool.
 An empty draft is sent without `keep_on_stop`, so a press removes it; one with text stays in
-the chat until the reply arrives. When the model is done,
+the chat until the reply arrives. The draft never shows an answer's reply marker: admission
+takes it off every stream update and holds one still being written, so the draft stays empty
+until the first word after it ([`output-boundary.md`](output-boundary.md)). When the model is done,
 `Agent.handle_message` ends the stream and the reply goes out through the ordinary send:
 `send_response` for a reply, `send` for Casa's own line. Nothing is sent early and edited
 later.
