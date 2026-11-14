@@ -161,7 +161,17 @@ approval card's facts carry them under different keys (`secrets_required`,
 `env_referenced_not_required`), plus `secrets_required_already_set` for the required names
 that already hold a value in `plugin-env.conf` — an update usually keeps what an earlier install
 wired, and the card must not read those as asks (#1566) — the inspect and commit payloads do too, and the install recipe tells
-the configurator to wire the first and never to ask for the second. The collision
+the configurator to wire the first and never to ask for the second. The required names sit
+under each plugin, not in the inspect payload's `required_config_names` or
+`required_secret_names`, so when any plugin has some not yet holding a value in
+`plugin-env.conf` (the same read the card's `secrets_required_already_set` uses, so an upgrade
+is not asked again for what the install wired), the payload's `next` hint names each such
+plugin with those names (`tools.py::specialist_install_inspect`), and the install recipe has them
+agreed before the approval card — 1Password searched first, the operator asked only about what
+nothing found settles, never for a secret value — and wired after the commit
+— for an upgrade, after `specialist_upgrade`, from the owned plugins its result's `verify`
+shows unresolved (#1605). The hint
+is text for the configurator; nothing refuses a request made without them. The collision
 preflights — against installed plugins and between siblings of one bundle — keep reading
 the union: a name claimed in the defaulted form still collides (#431).
 

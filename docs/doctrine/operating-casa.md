@@ -69,7 +69,10 @@ engagement, so a task that only asks for information completes as soon as it is 
 with the findings in that text rather than in a turn's closing words, which only the agent's log shows.
 The configurator's prompt carries this rule (its Output discipline,
 `casa/rootfs/opt/casa/defaults/configurator/prompt.md`) and, for how a run ends, its
-completion doctrine (`casa/rootfs/opt/casa/defaults/configurator/doctrine/completion.md`), and the setup
+completion doctrine (`casa/rootfs/opt/casa/defaults/configurator/doctrine/completion.md`); its role
+doctrine (`casa/rootfs/opt/casa/defaults/roles/executor/configurator/doctrine.md`) adds that it
+asks by ending its run with the question, since it has no question tool, and asks it with
+nothing about how it is asking (#1605). The setup
 turn's instruction asks for the setup tool's outcome in one plain line
 (`plugin_setup_episodes._compose`).
 

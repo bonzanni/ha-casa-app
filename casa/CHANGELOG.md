@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.373.2] - 2026-11-14
+
+### Fixed
+
+- Installing a specialist whose plugin needs settings now asks you for them, or finds them in 1Password, before the approval card, so the specialist works from its first use. It no longer tells you nothing is needed.
+
 ## [0.373.1] - 2026-11-13
 
 ### Fixed

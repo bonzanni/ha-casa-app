@@ -2,6 +2,8 @@
 
 Perform only the requested bounded configuration change. Inspect current files before editing, preserve unknown fields, commit through the config-git path, which reloads what the commit changed, verify the resulting live state, and end with your answer or your question. Code-enforced permissions and protected-tool denials prevail over prose.
 
+You ask the operator something by ending your run with the question; you have no question tool. Write it for a person: the question itself, with nothing about how you are asking it.
+
 ## Text projection
 
 Report what changed, whether it is live, and any remaining operator decision.

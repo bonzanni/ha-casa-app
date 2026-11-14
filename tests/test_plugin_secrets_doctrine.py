@@ -128,6 +128,51 @@ def test_specialist_install_asks_for_names_never_values():
     assert "a vault name is the installer's choice" not in text
 
 
+def test_specialist_install_agrees_plugin_settings_before_the_card():
+    """#1605: a bundled plugin's `env_names` are agreed at step 2, before the
+    approval card (1Password first), and step 7 wires what was agreed."""
+    text = _read(_SPEC_INSTALL)
+    assert ("**The bundled plugins' settings the inspection's `next` hint names are agreed "
+            "here too, before the card**, even when `required_config_names` and "
+            "`required_secret_names` are empty: never tell him nothing is needed while the "
+            "hint names some.") in text
+    assert "It leaves out a name that already holds a value in `plugin-env.conf`" in text
+    assert ("For each one it names, search 1Password first (`list_vault_items`, `get_item_fields`), "
+            "as `recipes/plugin/secrets.md` says, and ask him only about what nothing found "
+            "settles") in text
+    assert "for a secret, never its value" in text
+    assert "wire what step 2 agreed" in text
+    assert text.index("are agreed here too, before the card") < text.index(
+        "specialist_install_request_approval(slug=")
+    assert "ask the operator to supply THOSE by name once inspection returns" not in text
+
+
+def test_specialist_upgrade_wires_the_plugin_settings_it_agreed():
+    """#1605 (review): an upgrade agrees the hint's plugin settings through
+    install steps 2-3, so it must also wire them after `specialist_upgrade`,
+    before its commit, or a newly added plugin stays withheld."""
+    text = _read(_DEFAULTS / "configurator/doctrine/recipes/specialist/upgrade.md")
+    assert ("The result's `verify` holds one `verify_plugin_state` result per owned plugin, "
+            "keyed by its `<slug>.<plugin>` name") in text
+    rule = ("For each owned plugin with an unresolved secret, wire what step 2 agreed exactly "
+            "as `recipes/specialist/install.md` step 7 does: "
+            "`set_plugin_env_reference` once per variable, then "
+            "`casa_reload(scope=\"plugin_env\")`, then "
+            "`verify_plugin_state(plugin_name=\"<slug>.<plugin>\")`.")
+    assert rule in text
+    assert text.index(rule) < text.index("Then `config_git_commit` (it reloads `agents`")
+    assert "no separate plugin step here" not in text
+
+
+def test_configurator_asks_by_ending_its_run():
+    """#1605: the configurator tried a question tool it does not have, then
+    opened its reply with talk about how it was asking."""
+    text = _read(_DEFAULTS / "roles/executor/configurator/doctrine.md")
+    assert ("You ask the operator something by ending your run with the question; you have "
+            "no question tool.") in text
+    assert "with nothing about how you are asking it" in text
+
+
 def test_secrets_recipe_distinguishes_unreadable_from_nothing_matched():
     text = _read(_SECRETS)
     assert "that is NOT \"nothing matched\"" in text
