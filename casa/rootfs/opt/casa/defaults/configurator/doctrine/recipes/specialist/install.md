@@ -24,8 +24,10 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    no published release refuses with `no_release_found` and nothing is staged; report that and ask
    the operator whether to install a branch or a sha they name.
 2. Nothing else up front — `specialist_install_inspect` reports the component's own declared
-   mission, default persona, dependencies (including any bundled/declared plugin), and required
-   config/secret names; ask the operator to supply THOSE by name once inspection returns.
+   mission, default persona, dependencies (including any bundled/declared plugin), required
+   config/secret names and, in its `next` hint, the bundled plugins' settings not yet set; once
+   inspection returns, agree THOSE by name before the approval card (step 2 below) — a plugin's
+   settings by searching 1Password first, asking the operator only about what nothing found holds.
 
 ## Steps
 
@@ -35,7 +37,16 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    closure — hold onto them verbatim. Inspect posts nothing.
 2. Agree the values with the operator: tell him what the specialist is (mission, default persona,
    dependencies — including what any bundled plugin needs) and ask for the required non-secret config
-   values and which secret names he provides. Then call
+   values and which secret names he provides. **The bundled plugins' settings the inspection's
+   `next` hint names are agreed here too, before the card**, even when `required_config_names`
+   and `required_secret_names` are empty: never tell him nothing is needed while the hint names
+   some. It leaves out a name that already holds a value in `plugin-env.conf` (an upgrade keeps
+   what the install wired). For each one it names, search
+   1Password first (`list_vault_items`, `get_item_fields`), as `recipes/plugin/secrets.md` says,
+   and ask him only about what nothing found settles: a non-secret variable's value, by what it
+   means; for a secret, never its value — tell him nothing in the vault holds it, so he can add
+   it to 1Password. Name what you found and end your run with the question; when nothing is left
+   to ask, go on. Then call
    `specialist_install_request_approval(slug=..., root_digest=..., staged_dir=..., receipt_id=...,
    mode="install", config={...}, secret_names_provided=[...])`. Casa works out the settings the
    install will end up with and posts ONE approval card to the operator, covering the WHOLE
@@ -110,8 +121,10 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
 7. **Wire bundled plugins' env vars — part of THIS install, not a follow-up.** For each bundled
    plugin the inspection listed with a non-empty `env_names` (mirrored as `required_env_vars` in
    the commit result, keyed by the SCOPED registry name `<slug>.<plugin>` — use that exact key as
-   the plugin identifier below), run the `recipes/plugin/secrets.md` flow now — explore, then
-   wire, then ask. Search 1Password for every unresolved required variable not declared in
+   the plugin identifier below), wire what step 2 agreed: the items found then, and the values the
+   operator gave, which reach this run in his words (the task's "What the operator asked for"
+   line). Run the `recipes/plugin/secrets.md` flow now — explore, then wire, then ask. Search
+   1Password for every unresolved required variable not declared in
    `casa.setupProvides`, except a variable that configures how 1Password itself is used (which
    vault). That one is never mapped to an item, and the default vault is named in your world
    state, so search it (`list_vault_items`, `get_item_fields`) before asking; ask the operator

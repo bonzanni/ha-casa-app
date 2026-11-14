@@ -15394,8 +15394,26 @@ async def specialist_install_inspect(args: dict) -> dict:
         ],
     }
 
-    ok_payload["next"] = ("agree the values with the operator, then call "
-                          "specialist_install_request_approval")
+    # #1605: a bundled plugin's env_names sit outside the two required lists,
+    # so the hint names them; the recipe (step 2) says how they are agreed.
+    # A name already holding a value in plugin-env.conf (an upgrade usually
+    # keeps what the install wired) is left out, as the approval card does.
+    from specialist_install_consent import _env_names_set
+    already_set = await asyncio.to_thread(_env_names_set)
+    unset = [(row.scoped_name, [n for n in row.env_names if n not in already_set])
+             for row in result.plugin_resolutions]
+    plugin_needs = "; ".join(f"{name}: {', '.join(names)}" for name, names in unset if names)
+    if plugin_needs:
+        ok_payload["next"] = (
+            "agree the values with the operator, including the settings the bundled "
+            f"plugins need ({plugin_needs}): search 1Password for them first "
+            "(list_vault_items, get_item_fields) and ask the operator only about what "
+            "nothing found holds, never for a secret value; they are wired after the "
+            "approval (install recipe step 7). Then call "
+            "specialist_install_request_approval")
+    else:
+        ok_payload["next"] = ("agree the values with the operator, then call "
+                              "specialist_install_request_approval")
     return _result(ok_payload)
 
 

@@ -833,6 +833,106 @@ async def test_inspect_ok_payload_surfaces_receipt_and_plugins(monkeypatch, tmp_
     }]
 
 
+def _plugin_row(tmp_path, name: str, env_names: tuple):
+    from specialist_receipt import PluginReceiptRow
+    return PluginReceiptRow(
+        identifier=name, scoped_name=f"mtg.{name}", manifest_name=name,
+        version="1.0.0", source_type="plugin", repo=f"owner/{name}", ref="main",
+        revision="d" * 40, subdir="", content_digest="sha256:" + "e" * 64,
+        staged_path=str(tmp_path / "staged" / ".dep-plugins" / name),
+        mcp_servers=(), protected_tools=(), env_names=env_names, exempt_env_names=(),
+    )
+
+
+def _plugin_env_conf(monkeypatch, tmp_path, text: str = "") -> None:
+    """plugin-env.conf under tmp_path, never /config."""
+    import plugin_env_conf
+    path = tmp_path / "plugin-env.conf"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(plugin_env_conf, "PLUGIN_ENV_CONF_PATH", path)
+
+
+@pytest.mark.asyncio
+async def test_inspect_next_names_the_bundled_plugins_settings(monkeypatch, tmp_path) -> None:
+    """#1605: the plugin's env_names sit outside the two required lists, which
+    were both empty; the configurator read only those and told the operator
+    nothing was needed. The hint now names every plugin that needs a setting,
+    with its names, and says they are agreed before the approval."""
+    from tools import specialist_install_inspect
+
+    rows = (_plugin_row(tmp_path, "mtg", ("CASA_PLUGIN_MTG_CORPUS_SHA256",
+                                          "CASA_PLUGIN_MTG_CORPUS_URL")),
+            _plugin_row(tmp_path, "quiet", ()))
+    _wire_inspect(monkeypatch, tmp_path, channel=None, plugin_resolutions=rows)
+    _plugin_env_conf(monkeypatch, tmp_path)
+
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main"}))
+
+    assert payload["required_config_names"] == []
+    assert payload["required_secret_names"] == []
+    hint = payload["next"]
+    assert "mtg.mtg: CASA_PLUGIN_MTG_CORPUS_SHA256, CASA_PLUGIN_MTG_CORPUS_URL" in hint
+    assert "mtg.quiet" not in hint                   # a plugin that needs nothing is not named
+    assert "search 1Password for them first" in hint
+    assert "never for a secret value" in hint
+    assert hint.index("search 1Password") < hint.index("specialist_install_request_approval")
+
+
+@pytest.mark.asyncio
+async def test_inspect_next_is_unchanged_when_no_plugin_needs_a_setting(
+        monkeypatch, tmp_path) -> None:
+    from tools import specialist_install_inspect
+
+    _wire_inspect(monkeypatch, tmp_path, channel=None,
+                  plugin_resolutions=(_plugin_row(tmp_path, "quiet", ()),))
+
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main"}))
+
+    assert payload["next"] == ("agree the values with the operator, then call "
+                               "specialist_install_request_approval")
+
+
+@pytest.mark.asyncio
+async def test_inspect_next_leaves_out_a_setting_already_in_plugin_env_conf(
+        monkeypatch, tmp_path) -> None:
+    """An upgrade usually keeps what the install wired: a name already holding
+    a value in plugin-env.conf is not named again (an empty value still is)."""
+    from tools import specialist_install_inspect
+
+    rows = (_plugin_row(tmp_path, "mtg", ("CASA_PLUGIN_MTG_CORPUS_SHA256",
+                                          "CASA_PLUGIN_MTG_CORPUS_URL", "MTG_EMPTY")),)
+    _wire_inspect(monkeypatch, tmp_path, channel=None, plugin_resolutions=rows)
+    _plugin_env_conf(monkeypatch, tmp_path,
+                     "CASA_PLUGIN_MTG_CORPUS_URL=op://Casa/item/url\nMTG_EMPTY=\n")
+
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main"}))
+
+    assert "mtg.mtg: CASA_PLUGIN_MTG_CORPUS_SHA256, MTG_EMPTY)" in payload["next"]
+    assert "CASA_PLUGIN_MTG_CORPUS_URL" not in payload["next"]
+
+
+@pytest.mark.asyncio
+async def test_inspect_next_is_unchanged_on_an_upgrade_whose_plugin_env_is_all_set(
+        monkeypatch, tmp_path) -> None:
+    from tools import specialist_install_inspect
+
+    rows = (_plugin_row(tmp_path, "mtg", ("CASA_PLUGIN_MTG_CORPUS_SHA256",
+                                          "CASA_PLUGIN_MTG_CORPUS_URL")),)
+    _wire_inspect(monkeypatch, tmp_path, channel=None, plugin_resolutions=rows)
+    _plugin_env_conf(monkeypatch, tmp_path,
+                     "CASA_PLUGIN_MTG_CORPUS_SHA256=abc\n"
+                     "CASA_PLUGIN_MTG_CORPUS_URL=op://Casa/item/url\n")
+
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main", "mode": "upgrade", "target_slug": "mtg"}))
+
+    assert payload["next"] == ("agree the values with the operator, then call "
+                               "specialist_install_request_approval")
+
+
 @pytest.mark.asyncio
 async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path) -> None:
     """Round trip (fix round 1, task-12): the receipt_id

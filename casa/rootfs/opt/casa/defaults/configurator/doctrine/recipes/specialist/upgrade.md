@@ -104,11 +104,18 @@ apply unchanged, step 3's open-conversation warning included.
    finding that the candidate is unrecoverable, and never grounds to propose an uninstall.
 5. If `state == "error"`: report the validation failure the result's `last_activation_error`
    names, in plain words; the OLD version, and its owned plugin set, are still live, unchanged.
-6. If `state == "active"`: `config_git_commit` (it reloads `agents`, which loads the new version),
-   then your answer — see `completion.md`. The new version's owned plugin
+6. If `state == "active"`: first **wire the bundled plugins' settings**. The result's `verify`
+   holds one `verify_plugin_state` result per owned plugin, keyed by its `<slug>.<plugin>` name —
+   the settings the inspection's `next` hint named show there as `secrets[*].status: unresolved`.
+   For each owned plugin with an unresolved secret, wire what step 2 agreed exactly as
+   `recipes/specialist/install.md` step 7 does: `set_plugin_env_reference` once per variable,
+   then `casa_reload(scope="plugin_env")`, then `verify_plugin_state(plugin_name="<slug>.<plugin>")`.
+   An unresolved required variable keeps the plugin withheld. When nothing is unresolved, there
+   is nothing to wire. Then `config_git_commit` (it reloads `agents`, which loads the new
+   version), then your answer — see `completion.md`. The new version's owned plugin
    set REPLACES the old one atomically as part of `specialist_upgrade` itself (a plugin the old
    version owned but the new one no longer declares is removed; anything newly declared is
-   activated) — no separate plugin step here.
+   activated) — never `plugin_add` or `plugin_remove` here.
    When the three conditions of `recipes/specialist/install.md` step 9 hold (here `voice_handoff`
    comes from the `specialist_upgrade` result), end the answer with its voice-concierge question.
 
