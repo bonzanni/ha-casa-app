@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-17
 ---
 
 # Background jobs
@@ -63,7 +63,8 @@ the job calls `emit_completion`. It records progress with `report_job_progress` 
 something worth telling, and a specialist's job asks the operator through `ask_operator`.
 The operator's replies in their direct chat to the job's posts are written into the running
 session as they arrive. When a turn ends without the job
-finishing, Casa continues it, nudges it once, or parks it to wait for the operator
+finishing, Casa continues it, nudges it once, or parks it to wait for the operator; a job
+whose step shows no activity for an hour is told to the operator once and left running
 ([`background-job-session.md`](background-job-session.md)). The job ends when it calls
 `emit_completion`, when the operator cancels it (a Cancel button in their direct chat, or by
 asking an agent, whose `stop_work` or the resident's `cancel_engagement` cancels it), when the stale-job reap
@@ -99,7 +100,7 @@ and one per plugin manifest name — is
 
 The reasons are "could not be resumed after a restart" and "its session ended unexpectedly"
 (INV-BGJOB-018 in [`background-job-session.md`](background-job-session.md)). The summary is
-the first line of the job's latest `report_job_progress`, so a cancellation also reports
+the job's latest `report_job_progress` note, so a cancellation also reports
 what the job had done. What it does not cover: the job itself may finish `failed` or `cancelled`
 through `emit_completion`, the operator may cancel it, the stale-job reap cancels a job idle
 and waiting past its expiry, and a launch that fails before its session is registered takes
@@ -139,11 +140,14 @@ plus the job, title, host role and a one-line message (`Started <title>.`).
 `report_job_progress(summary, done=None, remaining=None)` is granted only to a job
 engagement's session and may be called at any time in a live job. Outside one it returns
 `not_a_job`; a summary that is not a string, or a negative or boolean count, returns
-`invalid_arguments`. It records the summary's first line (at most 300 characters) as the
-job's `last_summary`, marks progress for the step-ceiling rule and persists `origin["job"]`;
-Casa reports the latest summary if the job is cancelled or fails. The counts are checked and
-otherwise unused — they are the worker's own unit and decide nothing. Nothing is posted in the
-direct chat.
+`invalid_arguments`. It saves a note as the job's `last_summary` and persists
+`origin["job"]`: the summary's first line and, when counts were passed, a suffix that says
+them — `(12 of 40 done)` with both, the total being their sum, `(12 done)` or
+`(28 remaining)` with one — the summary cut so that the whole note stays within 300
+characters (`background_jobs.progress_note`). Casa reports the latest note if the job is
+cancelled or fails. It is a note and nothing more: the counts are the worker's own unit, and
+no rule of the turn-end guard reads whether the job reported. Nothing is posted in the direct
+chat.
 
 Resume options rebuild the job session and its grants from `origin["job"]`, so a resumed
 session runs exactly as the launched one did. Plugin workers additionally rebuild from the
