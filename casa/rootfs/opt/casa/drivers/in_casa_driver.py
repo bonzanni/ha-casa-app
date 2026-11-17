@@ -638,7 +638,8 @@ class InCasaDriver(DriverProtocol):
 
     def recovering(self, engagement_id: str) -> bool:
         """SYNCHRONOUS: is Casa recovering the job's session after it ended
-        unexpectedly? The sweeps that skip a running turn skip this too."""
+        unexpectedly? One of the facts :meth:`job_facts` gives, which is
+        what the sweeps that skip a running turn read."""
         lane = self._lanes.get(engagement_id)
         return lane is not None and lane.recovering
 

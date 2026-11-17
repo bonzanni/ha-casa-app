@@ -763,6 +763,57 @@ async def test_a_job_that_stops_twice_is_nudged_then_parked(env, monkeypatch):
     assert bj.awaiting(env.rec) is None
 
 
+async def test_a_turn_with_no_frame_for_an_hour_is_told_once_and_goes_on(
+        env, monkeypatch):
+    """INV-BGJOB-029 end to end, on the real driver's facts: the brief's turn
+    is open and its session shows no frame past the limit — the watch's walk
+    tells the operator once. The job is not parked and nothing is written
+    into its session; when the slow step returns, its frame makes the job
+    read as working again."""
+    import background_jobs as bj
+    from channels.tg_address import TgAddress
+    driver, finalized = await _with_runner(env, monkeypatch)
+    runner = bj._runner
+    posted: list[str] = []
+
+    class Endpoint:
+        async def post_job_parked(self, rec, text):
+            posted.append(text)
+            return 7
+
+    runner.channel = SimpleNamespace(endpoint=lambda bot_id: Endpoint())
+    env.reg.active_and_idle = lambda: [
+        r for r in env.reg.records.values() if r.status in ("active", "idle")]
+    env.rec.delivery = TgAddress(111, 42)
+    cli = await open_job(env, driver)
+    driver.enqueue_brief(env.rec, "BRIEF")
+    await until(lambda: cli.written)
+    cli.echo(0)
+    await settle()
+    now = time.time()
+    last_frame = driver.job_facts(env.rec.id).active_ts
+    assert bj.job_state(env.rec, driver.job_facts(env.rec.id), now) == bj.JOB_WORKING
+    runner._watch_once(now)
+    await settle()
+    assert posted == []
+    for later in (bj.SILENT_AFTER_S + 60, bj.SILENT_AFTER_S + 360, 3 * bj.SILENT_AFTER_S):
+        runner._watch_once(now + later)             # no frame since
+        await settle()
+    assert posted == [
+        "«Rows» has shown no activity for 1 h. It may be stuck on a slow step. "
+        "It carries on by itself if the step returns; Cancel stops it."]
+    assert runner.told == {env.rec.id: last_frame}
+    assert bj.awaiting(env.rec) is None and len(cli.written) == 1
+    assert driver.job_facts(env.rec.id).turn_open is True and finalized == []
+    cli.say("the slow step returned")
+    await until(lambda: driver.job_facts(env.rec.id).active_ts > last_frame)
+    assert bj.job_state(env.rec, driver.job_facts(env.rec.id),
+                        time.time()) == bj.JOB_WORKING
+    runner._watch_once(time.time())
+    await settle()
+    assert len(posted) == 1
+
+
 async def test_a_dead_session_is_resumed_once_then_a_second_death_ends_it(
         env, monkeypatch):
     """INV-BGJOB-018 end to end: the first death resumes the session with the
