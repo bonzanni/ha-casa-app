@@ -739,7 +739,7 @@ async def _with_runner(env, monkeypatch):
 
 
 async def test_a_job_that_stops_twice_is_nudged_then_parked(env, monkeypatch):
-    """INV-BGJOB-017 end to end: the brief's turn ends unfinished — one nudge
+    """INV-BGJOB-030 end to end: the brief's turn ends unfinished — one nudge
     is written into the session; the nudge's turn ends unfinished too — the
     job is parked, still live."""
     import background_jobs as bj

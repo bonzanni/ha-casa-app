@@ -41,7 +41,7 @@ the end notice names his request as its reply target, and the requester's answer
 ([`engagement-terminal-telling.md`](engagement-terminal-telling.md)), carrying the job's running
 time and cost (INV-BGJOB-020). A job Casa parks posts one line with a
 **Cancel** button — in reply to his request when it is that bot's message in the job's chat, else
-a new post — and a reply to it continues the job (INV-BGJOB-017). A job that has shown no
+a new post — and a reply to it continues the job (INV-BGJOB-030). A job that has shown no
 activity for an hour posts one line the same way, without being parked (INV-BGJOB-029). A specialist's job asks with
 `ask_operator(question, options?)`: a plain post under its label, one button per option and a
 **Cancel job** button. A resident's plugin worker has no question tool; it parks what needs an

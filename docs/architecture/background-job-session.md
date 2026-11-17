@@ -134,7 +134,11 @@ A delegated start reads the token of the turn that delegated. A record without t
 no line; nothing is inferred for it. A look-alike inside `Request:` or `Context:` is model text:
 a reader takes the line after the first `Job id:` line, never the first `Started by:` it finds.
 
-**INV-BGJOB-017**: When a job's turn ends with the record live, no input pending, and no question, approval or parking outstanding since the operator's last input, Casa writes one nudge, and a second such end with no operator input between parks the job — it waits for the operator, who gets one line in their direct chat with Cancel; a turn stopped at the step ceiling is continued, and the tenth such end with no operator input between parks the job; neither path ends the job, and cost never ends or parks one.
+**INV-BGJOB-030**: When a job's turn ends with the record live, no input pending, and no question, approval or parking outstanding since the operator's last input, Casa writes one nudge, and a second such end with no operator input between parks the job — it waits for the operator, who gets one line in their direct chat with Cancel; a turn stopped at the step ceiling is continued, and the tenth such end with no operator input between parks the job; neither path ends the job, and cost never ends or parks one.
+
+The id replaces a retired predecessor (BGJOB 017) whose step-ceiling clause flipped: the old
+statement parked a job that had not reported progress since the previous ceiling, and such a
+job is now continued. A flipped assertion gets a fresh id.
 
 The guard runs synchronously in the reader, so a reply admitted before the decision is seen as
 pending input and is never mistaken for a stop. A reply admitted just after it may cross the

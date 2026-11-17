@@ -167,7 +167,7 @@ async def until(predicate, timeout: float = 2.0) -> None:
     await asyncio.wait_for(wait(), timeout)
 
 
-# -- INV-BGJOB-017: nudge once, then park -----------------------------------
+# -- INV-BGJOB-030: nudge once, then park -----------------------------------
 
 async def test_a_turn_ended_unfinished_is_nudged_once_then_parked(rig):
     rig.runner.turn_ended(rig.rec, _result())

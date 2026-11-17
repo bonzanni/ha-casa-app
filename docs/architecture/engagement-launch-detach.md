@@ -79,7 +79,7 @@ once by the worker, finds no session, and ends as a job that could not be resume
 returned, the launch owner holds nothing: the session's reader owns every turn, the job's
 turn-end handler continues, nudges or parks it, and the driver's session-loss path resumes a
 session that ended. A first turn that ends with nothing visible is a turn end like any other
-(INV-BGJOB-017), not a death.
+(INV-BGJOB-030), not a death.
 
 **Cancellation has an owner at every point.** A launcher cancelled after its record exists
 takes the cancellation arm: the compensation (`tools.py::_abort_launch_on_cancel`) is anchored

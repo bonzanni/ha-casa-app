@@ -50,7 +50,7 @@ the transition commits it, so a promotion that commits first is always seen. Pro
 is told at its end like any job. A quiet
 run that Casa parks (it stopped twice without finishing) or that has gone silent needs the
 operator too, so it is promoted the same way before its line is posted
-([`background-job-session.md`](background-job-session.md), INV-BGJOB-017, INV-BGJOB-029).
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-030, INV-BGJOB-029).
 
 **A quiet run needs nothing a job does not already have.** It was scheduled, so it has no
 start line. The plugin's posts target the origin's chat, the live operator stamped by the

@@ -411,9 +411,6 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::emit_completion":
         "posts an engagement's completion summary to that engagement's topic; "
         "its caller is the engaged executor or specialist, not a scheduled turn",
-    "tools.py::report_job_progress":
-        "posts a background job's batch progress line to that job's engagement "
-        "topic; its caller is the specialist running the job, not a scheduled turn",
     "tools.py::ask_operator":
         "posts a background job's question to the operator's DM under the job's "
         "specialist; its caller is the specialist running the job, not a "
@@ -479,6 +476,7 @@ CONDITIONAL_DELIVERY_EXAMPLES = {
 NOT_A_DELIVERY = {
     "scratchpad.py::_scratchpad",  # the conversation's own pad: it posts nothing to any chat
     "tools.py::hand_off",          # a specialist-only sync run; it posts nothing
+    "tools.py::report_job_progress",  # saves a job's note on its record; it posts nothing
     "tools.py::ack_event",
     "tools.py::callback_ack_revoke",
     "tools.py::browse_memory_day",

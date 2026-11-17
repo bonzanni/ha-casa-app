@@ -69,7 +69,7 @@ fact to hand back — the launch was cancelled — so its owner tells the engage
 launch has answered `pending`, nothing
 here applies: a fault on one of the job's turns is a turn end, continued once and then parked,
 and a session that ends is resumed once
-([`background-job-session.md`](background-job-session.md), INV-BGJOB-017 and INV-BGJOB-018).
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-030 and INV-BGJOB-018).
 
 The claim is bounded to what the tree provides, and it is a claim about the *caller*: the
 failure kind reaches the live invoking turn. Whether it then reaches the operator is that
