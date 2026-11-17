@@ -57,7 +57,7 @@ What it does not cover: the notice is one attempt — a Telegram failure or a cr
 loses it, and the message is discharged regardless, because retrying would hold an unclearable
 completion veto. A message the job did read is in its transcript and draws no notice: a turn
 that ends without answering it is the job's turn end, nudged or parked like any other
-([`background-job-session.md`](background-job-session.md), INV-BGJOB-017).
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-030).
 
 ## Failure behavior
 

@@ -189,7 +189,7 @@ specialist job and a plugin background job, the hook runs in the engagement clie
 reader with the job bound (`tools.engagement_var`), so a call it leaves waiting marks the job
 as waiting for the operator: the keyboard is what it showed, and the job's turn-end handler
 neither nudges nor parks it while the approval is outstanding
-([`background-job-session.md`](background-job-session.md), INV-BGJOB-017).
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-030).
 
 What it does not cover: a synchronous wait that degraded to pending and an async delegation
 (the child's later decision reaches the resident by #1049's note path). The deny strings are

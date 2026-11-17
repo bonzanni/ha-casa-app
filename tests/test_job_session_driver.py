@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 from claude_agent_sdk import (
-    AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock,
-    ToolResultBlock, UserMessage,
+    AssistantMessage, ClaudeAgentOptions, ResultMessage, SystemMessage,
+    TextBlock, ToolResultBlock, UserMessage,
 )
 from claude_agent_sdk._errors import CLIConnectionError
 
@@ -238,6 +239,110 @@ async def test_a_write_sets_turn_open_before_it_is_awaited(env):
     cli.gate.set()
 
 
+# -- the driver's facts about a job, and its activity time ------------------
+
+LONG_AGO = 1.0      # an activity time left by an earlier turn
+
+
+async def _first_turn(env, driver, cli) -> None:
+    driver.submit_casa(env.rec, "brief")
+    await until(lambda: len(cli.written) == 1)
+    cli.echo(0)
+    cli.result()
+    await until(lambda: len(env.turn_ends) == 1)
+
+
+async def test_the_write_that_opens_a_turn_stamps_the_turn_s_own_activity_time(env):
+    """An open turn never reads the previous turn's activity time: the write
+    that opens it stamps a new one synchronously, before the write is
+    awaited — here the write is still held in the transport and no frame of
+    the new turn has arrived."""
+    driver = env.make()
+    cli = await open_job(env, driver)
+    assert driver.job_facts(env.rec.id) == drv.JobFacts(
+        turn_open=False, recovering=False, active_ts=None)
+    await _first_turn(env, driver, cli)
+    session = driver._sessions[env.rec.id]
+    session.active_ts = LONG_AGO
+    assert driver.job_facts(env.rec.id) == drv.JobFacts(False, False, LONG_AGO)
+    cli.gate = asyncio.Event()
+    before = time.time()
+    driver.submit_operator(env.rec, "go")
+    await until(lambda: cli.writing == 1)
+    facts = driver.job_facts(env.rec.id)
+    assert facts.turn_open is True and facts.recovering is False
+    assert before <= facts.active_ts <= time.time()
+    cli.gate.set()
+
+
+async def test_every_frame_of_the_stream_stamps_the_activity_time(env):
+    """The take-up echo, the model's words, a tool result, a system frame,
+    a sub-agent's message and the result: each frame the reader handles is
+    activity."""
+    driver = env.make()
+    cli = await open_job(env, driver)
+    driver.submit_casa(env.rec, "brief")
+    await until(lambda: len(cli.written) == 1)
+    session = driver._sessions[env.rec.id]
+    frames = [
+        lambda: cli.echo(0),
+        lambda: cli.say("working"),
+        lambda: cli.frames.put_nowait(UserMessage(
+            content=[ToolResultBlock(tool_use_id="t1", content="ok")],
+            uuid="22222222-2222-4222-8222-222222222222")),
+        lambda: cli.frames.put_nowait(SystemMessage(subtype="task_progress", data={})),
+        lambda: cli.frames.put_nowait(AssistantMessage(
+            content=[TextBlock(text="from a sub-agent")], model="claude-opus-5-5",
+            parent_tool_use_id="toolu_1")),
+        lambda: cli.result(),
+    ]
+    for frame in frames:
+        session.active_ts = LONG_AGO
+        before = time.time()
+        frame()
+        await until(lambda: session.active_ts != LONG_AGO)
+        assert before <= session.active_ts <= time.time()
+        assert driver.job_facts(env.rec.id).active_ts == session.active_ts
+
+
+async def test_a_write_into_an_open_turn_is_not_activity(env):
+    """Only the write that OPENS a turn stamps: a message written into a
+    turn that is already running says nothing about what the job is doing,
+    so a silent turn stays silent until its session shows a frame."""
+    driver = env.make()
+    cli = await open_job(env, driver)
+    driver.submit_casa(env.rec, "brief")
+    await until(lambda: len(cli.written) == 1)
+    session = driver._sessions[env.rec.id]
+    session.active_ts = LONG_AGO
+    driver.submit_operator(env.rec, "still there?")
+    await until(lambda: len(cli.written) == 2)
+    assert driver.job_facts(env.rec.id) == drv.JobFacts(True, False, LONG_AGO)
+
+
+async def test_a_frame_type_the_sdk_does_not_know_never_reaches_the_reader():
+    """The activity time counts frames the reader handles. A keep-alive is
+    not one: the pinned SDK drops a frame type it does not know before the
+    message stream yields it."""
+    from claude_agent_sdk._internal.message_parser import parse_message
+    assert parse_message({"type": "keep_alive"}) is None
+
+
+async def test_job_facts_for_a_job_without_a_live_session(env):
+    """Nothing held: ``None``. A suspended job keeps its lane: facts with no
+    open turn and no activity time. A job that ended: ``None`` again."""
+    driver = env.make()
+    assert driver.job_facts(env.rec.id) is None
+    cli = await open_job(env, driver)
+    await _first_turn(env, driver, cli)
+    assert driver.job_facts(env.rec.id).active_ts is not None
+    await driver.cancel(env.rec)            # the idle suspension: record live
+    assert driver.job_facts(env.rec.id) == drv.JobFacts(False, False, None)
+    env.rec.status = "cancelled"
+    await driver.cancel(env.rec)
+    assert driver.job_facts(env.rec.id) is None
+
+
 async def test_the_journal_is_committed_before_admission(env):
     driver = env.make()
     await open_job(env, driver)
@@ -321,6 +426,7 @@ async def recovering_driver(env, *, restart="Casa restarted. Continue the job.",
 
     async def on_lost(rec):
         seen["recovering_in_handler"] = holder["d"].recovering(rec.id)
+        seen["facts_in_handler"] = holder["d"].job_facts(rec.id)
         if fail:
             raise RuntimeError("policy ends the job")
         await holder["d"].recover(rec, restart_line=restart, brief=brief,
@@ -353,6 +459,11 @@ async def test_recovery_stages_restart_then_redeliveries_ahead_of_the_queue(env)
     assert seen["recovering_in_handler"] is True
     assert seen["recovering_at_reopen"] is True
     assert driver.recovering(env.rec.id) is False
+    # While Casa recovers the job its dead session is gone: no open turn, no
+    # activity time, and ``recovering`` read from the lane.
+    assert seen["facts_in_handler"] == drv.JobFacts(
+        turn_open=False, recovering=True, active_ts=None)
+    assert driver.job_facts(env.rec.id).recovering is False
     assert new.texts() == [
         "Casa restarted. Continue the job.",
         "(Sent before the job's session restarted:)\nunread",
@@ -628,7 +739,7 @@ async def _with_runner(env, monkeypatch):
 
 
 async def test_a_job_that_stops_twice_is_nudged_then_parked(env, monkeypatch):
-    """INV-BGJOB-017 end to end: the brief's turn ends unfinished — one nudge
+    """INV-BGJOB-030 end to end: the brief's turn ends unfinished — one nudge
     is written into the session; the nudge's turn ends unfinished too — the
     job is parked, still live."""
     import background_jobs as bj
@@ -650,6 +761,57 @@ async def test_a_job_that_stops_twice_is_nudged_then_parked(env, monkeypatch):
     driver.submit_operator(env.rec, "carry on")
     await until(lambda: len(cli.written) == 3)
     assert bj.awaiting(env.rec) is None
+
+
+async def test_a_turn_with_no_frame_for_an_hour_is_told_once_and_goes_on(
+        env, monkeypatch):
+    """INV-BGJOB-029 end to end, on the real driver's facts: the brief's turn
+    is open and its session shows no frame past the limit — the watch's walk
+    tells the operator once. The job is not parked and nothing is written
+    into its session; when the slow step returns, its frame makes the job
+    read as working again."""
+    import background_jobs as bj
+    from channels.tg_address import TgAddress
+    driver, finalized = await _with_runner(env, monkeypatch)
+    runner = bj._runner
+    posted: list[str] = []
+
+    class Endpoint:
+        async def post_job_parked(self, rec, text):
+            posted.append(text)
+            return 7
+
+    runner.channel = SimpleNamespace(endpoint=lambda bot_id: Endpoint())
+    env.reg.active_and_idle = lambda: [
+        r for r in env.reg.records.values() if r.status in ("active", "idle")]
+    env.rec.delivery = TgAddress(111, 42)
+    cli = await open_job(env, driver)
+    driver.enqueue_brief(env.rec, "BRIEF")
+    await until(lambda: cli.written)
+    cli.echo(0)
+    await settle()
+    now = time.time()
+    last_frame = driver.job_facts(env.rec.id).active_ts
+    assert bj.job_state(env.rec, driver.job_facts(env.rec.id), now) == bj.JOB_WORKING
+    runner._watch_once(now)
+    await settle()
+    assert posted == []
+    for later in (bj.SILENT_AFTER_S + 60, bj.SILENT_AFTER_S + 360, 3 * bj.SILENT_AFTER_S):
+        runner._watch_once(now + later)             # no frame since
+        await settle()
+    assert posted == [
+        "«Rows» has shown no activity for 1 h. It may be stuck on a slow step. "
+        "It carries on by itself if the step returns; Cancel stops it."]
+    assert runner.told == {env.rec.id: last_frame}
+    assert bj.awaiting(env.rec) is None and len(cli.written) == 1
+    assert driver.job_facts(env.rec.id).turn_open is True and finalized == []
+    cli.say("the slow step returned")
+    await until(lambda: driver.job_facts(env.rec.id).active_ts > last_frame)
+    assert bj.job_state(env.rec, driver.job_facts(env.rec.id),
+                        time.time()) == bj.JOB_WORKING
+    runner._watch_once(time.time())
+    await settle()
+    assert len(posted) == 1
 
 
 async def test_a_dead_session_is_resumed_once_then_a_second_death_ends_it(

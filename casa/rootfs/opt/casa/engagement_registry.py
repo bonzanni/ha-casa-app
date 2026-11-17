@@ -388,19 +388,6 @@ class TerminalPreconditionFailed(Exception):
     unmodified."""
 
 
-def _session_working(driver: Any, engagement_id: str) -> bool:
-    """A turn is running in the job's session, or Casa is recovering it."""
-    for probe in ("turn_open", "recovering"):
-        fn = getattr(driver, probe, None)
-        try:
-            if callable(fn) and fn(engagement_id) is True:
-                return True
-        except Exception:  # noqa: BLE001 — no reading, not working
-            logger.debug("%s probe failed for %s", probe, engagement_id[:8],
-                         exc_info=True)
-    return False
-
-
 class EngagementRegistry:
     """In-memory dict + ``/data/engagements.json`` tombstone.
 
@@ -1810,18 +1797,21 @@ class EngagementRegistry:
         """
         import time
 
+        import background_jobs
+
         now = now_override if now_override is not None else time.time()
 
         for rec in list(self.active_and_idle()):
             idle_s = now - rec.last_user_turn_ts
 
-            # Session suspension (in_casa only). A job whose session has a
-            # turn running (one turn can run for hours) or that is being
-            # recovered is working, not idle, and is skipped.
+            # Session suspension (in_casa only). A job whose session is in
+            # use — a turn is running (one turn can run for hours, with or
+            # without activity) or Casa is recovering it — is not idle, and
+            # is skipped.
             if (rec.driver == "in_casa" and rec.status == "active"
                     and idle_s > _SESSION_SUSPEND_IDLE_S
                     and driver.is_alive(rec)
-                    and not _session_working(driver, rec.id)):
+                    and not background_jobs.session_in_use(driver, rec, now)):
                 session_id = driver.get_session_id(rec)
                 try:
                     await driver.cancel(rec)

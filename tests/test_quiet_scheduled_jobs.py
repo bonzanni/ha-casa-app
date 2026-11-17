@@ -104,7 +104,8 @@ async def test_a_quiet_runs_later_turn_and_progress_are_not_posted(
     finally:
         tools.engagement_var.reset(token)
     assert '"ok": true' in result["content"][0]["text"]
-    assert runtime.registry.get(rec.id).origin["job"]["last_summary"] == "matched 3"
+    assert runtime.registry.get(rec.id).origin["job"]["last_summary"] == (
+        "matched 3 (3 of 4 done)")
     runtime.bot.send_message.assert_not_awaited()
     runtime.bot.edit_message_text.assert_not_awaited()
 

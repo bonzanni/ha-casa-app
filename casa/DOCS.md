@@ -604,11 +604,15 @@ get through. Could you send it again?" A reply to a message of a job that has al
 with a note saying which job it was and how and when it ended.
 
 If a job stops without finishing, Casa nudges it once to carry on. If it stops
-again, or hits trouble (repeated errors from Claude, or a very long run with no
-progress reported), Casa parks it: it waits for you, and you get one line in your
-DM — "«…» stopped without finishing. Reply to continue it, or Cancel." — with a
-**Cancel** button. Reply to that line to continue the job. Casa never ends a job
-on its own because it is slow or expensive; the cost is shown, never capped.
+again, or keeps getting errors from Claude, Casa parks it: it waits for you, and
+you get one line in your DM — "«…» stopped without finishing. Reply to continue
+it, or Cancel." — with a **Cancel** button. Reply to that line to continue the
+job. A long job is continued by Casa on its own, whether or not it reports
+progress; only after 10,000 steps without a word from you does Casa park it and
+ask, saying how many steps it ran and for how long. If a job shows no activity
+for an hour you get one line saying so, with **Cancel**: the job is not stopped,
+and it carries on by itself if the slow step returns. Casa never ends a job on
+its own because it is slow or expensive; the cost is shown, never capped.
 
 When the job ends its DM buttons go away. A specialist runs one job at a time, but quick questions to it
 still work while a job is open. A job that is not working and has heard nothing from

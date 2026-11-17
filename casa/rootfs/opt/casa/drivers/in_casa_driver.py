@@ -433,6 +433,12 @@ class _JobSession:
     # The CLI reports ``total_cost_usd`` cumulatively for its own process, so
     # the job's cost at a turn end is this plus that.
     cost_base: float = 0.0
+    # When this session last showed activity (``time.time()``; memory only):
+    # stamped synchronously by the write that opens a turn and by the reader
+    # at every frame of the stream. An open turn therefore always has a time
+    # of its own, never the previous turn's. ``None`` until the first of
+    # either.
+    active_ts: float | None = None
 
 
 @dataclass(eq=False)
@@ -457,6 +463,19 @@ class _JobLane:
 
     def __post_init__(self) -> None:
         self.recovery_done.set()
+
+
+@dataclass(frozen=True)
+class JobFacts:
+    """What the driver holds about one job, read in one synchronous step
+    (:meth:`InCasaDriver.job_facts`): whether a turn is running in its live
+    session, whether Casa is recovering its session, and when the session
+    last showed activity. ``background_jobs.job_state`` derives the job's
+    state from these and the record."""
+
+    turn_open: bool
+    recovering: bool
+    active_ts: float | None
 
 
 class InCasaDriver(DriverProtocol):
@@ -619,9 +638,24 @@ class InCasaDriver(DriverProtocol):
 
     def recovering(self, engagement_id: str) -> bool:
         """SYNCHRONOUS: is Casa recovering the job's session after it ended
-        unexpectedly? The sweeps that skip a running turn skip this too."""
+        unexpectedly? One of the facts :meth:`job_facts` gives, which is
+        what the sweeps that skip a running turn read."""
         lane = self._lanes.get(engagement_id)
         return lane is not None and lane.recovering
+
+    def job_facts(self, engagement_id: str) -> JobFacts | None:
+        """SYNCHRONOUS, nothing awaited: the driver's facts about a job, or
+        ``None`` for a job it holds nothing for. A job with a delivery lane
+        and no live session (suspended, or being recovered) has no open turn
+        and no activity time; ``recovering`` is still read from its lane."""
+        session = self._sessions.get(engagement_id)
+        lane = self._lanes.get(engagement_id)
+        if session is None and lane is None:
+            return None
+        return JobFacts(
+            turn_open=session is not None and session.turn_open,
+            recovering=lane is not None and lane.recovering,
+            active_ts=session.active_ts if session is not None else None)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -1114,6 +1148,11 @@ class InCasaDriver(DriverProtocol):
                 return
             opening = not session.turn_open
             session.turn_open = True
+            if opening:
+                # The turn opens here, before the awaited write: it starts
+                # with its own activity time, so it is never read as silent
+                # (or as working) on the previous turn's.
+                session.active_ts = time.time()
             if opening and session.segment is None:
                 self._open_segment(session, rec)
             segment = session.segment
@@ -1217,6 +1256,11 @@ class InCasaDriver(DriverProtocol):
 
     async def _on_frame(self, session: _JobSession, engagement: Any,
                         sdk_msg: Any) -> None:
+        # Every frame of the stream is activity, the main loop's and a
+        # sub-agent's alike, stamped before anything here can await or raise.
+        # The SDK consumes control frames itself and drops frame types it
+        # does not know (a keep-alive among them), so none of those is one.
+        session.active_ts = time.time()
         rec = self._latest(engagement.id, engagement)
         segment = session.segment
         if segment is None and not isinstance(sdk_msg, ResultMessage):

@@ -174,28 +174,37 @@ class TestReapStaleEngagements:
         assert good.status == "cancelled"
 
 
-class TestAWorkingJobIsNeverStale:
-    """A job's turn can run for hours with no turn end, and its session can
-    be in recovery: the reap skips a job whose driver reports either, as the
-    idle suspension does."""
+class TestAJobWhoseSessionIsInUseIsNeverStale:
+    """A job's turn can run for hours with no turn end — showing activity or
+    silent past the limit — and its session can be in recovery: the reap
+    skips a job whose state is working, silent or recovering, as the idle
+    suspension does."""
 
-    @pytest.mark.parametrize("probe", ["turn_open", "recovering"])
-    async def test_a_working_job_is_not_reaped(self, tmp_path, probe):
+    @pytest.mark.parametrize("state", ["working", "silent", "recovering"])
+    async def test_a_job_whose_session_is_in_use_is_not_reaped(self, tmp_path, state):
+        import background_jobs as bj
+        from drivers.in_casa_driver import JobFacts
         from tools import reap_stale_engagements
 
         reg, telegram, bus, driver = _wire(tmp_path)
         rec = await _stale_record(reg, days=30)
-        getattr(driver, probe).return_value = True
+        now = time.time()
+        driver.job_facts.return_value = {
+            "working": JobFacts(True, False, now - 10),
+            "silent": JobFacts(True, False, now - bj.SILENT_AFTER_S - 60),
+            "recovering": JobFacts(False, True, None),
+        }[state]
+        assert bj.job_state(rec, driver.job_facts(rec.id), now) == state
         assert await reap_stale_engagements(ttl_days=7) == 0
         assert rec.status == "active"
         driver.cancel.assert_not_awaited()
 
     async def test_an_idle_waiting_job_past_its_expiry_is_reaped(self, tmp_path):
+        from drivers.in_casa_driver import JobFacts
         from tools import reap_stale_engagements
 
         reg, telegram, bus, driver = _wire(tmp_path)
         rec = await _stale_record(reg, days=30)
-        driver.turn_open.return_value = False
-        driver.recovering.return_value = False
+        driver.job_facts.return_value = JobFacts(False, False, None)
         assert await reap_stale_engagements(ttl_days=7) == 1
         assert rec.status == "cancelled"

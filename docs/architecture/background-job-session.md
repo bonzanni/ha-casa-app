@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-13
+last_reviewed: 2026-11-17
 ---
 
 # Background jobs: one long session
@@ -10,8 +10,9 @@ last_reviewed: 2026-11-13
 
 How a running background job's session works: the brief and every later write, the one
 writer and the one reader per job, what Casa does when a turn ends (continue, nudge once,
-park), what happens when the job's CLI process dies or Casa restarts, how context stays
-bounded, and the cost shown to the operator. The declaration, `start_job` and the launch are
+park), the one state a job is read as and the line a silent job draws, what happens when the
+job's CLI process dies or Casa restarts, how context stays bounded, and the cost shown to the
+operator. The declaration, `start_job` and the launch are
 [`background-jobs.md`](background-jobs.md); the operator-message journal that makes a
 restart lose nothing is [`background-job-message-journal.md`](background-job-message-journal.md);
 how a write is admitted is [`engagement-turn-admission.md`](engagement-turn-admission.md);
@@ -52,14 +53,25 @@ and discharges it. Nothing else discharges a ticket: no timeout and no frame-ord
 every turn end. Input already queued means the CLI runs it next, and a job waiting for the
 operator (`origin["job"]["awaiting"]`: it called `ask_operator`, a protected call waits on
 approval, or it was parked) is left alone. A turn that hit the step ceiling (`max_turns` 1000
-per write) is a continuation boundary: Casa writes "Continue the job." if the job called
-`report_job_progress` since the previous ceiling, and parks it otherwise. Any other turn end is
+per write) is a continuation boundary: Casa writes "Continue the job.", whatever the job
+reported. The tenth ceiling in a row with no operator input between
+(`CEILINGS_BEFORE_PARK`: 10,000 steps) is a backstop for a runaway loop and parks the job. Any
+other turn end is
 a stop: the first since the operator's last input gets one nudge, the second parks the job.
 An API fault is continued once after a minute; a second in a row parks the job. **Parking**
 sets `awaiting = "stopped"` and posts one line to the operator's direct chat with the job's
 Cancel button (`TelegramChannel.post_job_parked`); the operator's reply to it continues the
 job. Operator input resets the guard. Only Cancel, a failed resume and the stale-job reap end
 a job.
+
+**What a job is doing is one derived state.** `InCasaDriver.job_facts` gives, in one
+synchronous read, what the driver holds about a job: whether a turn is open in its live
+session, whether Casa is recovering it, and when the session last showed activity.
+`background_jobs.job_state` derives the state from those and the record; nothing stores it.
+First match wins: `ended` (the record is terminal), `recovering`, `working` or `silent` (a turn
+is open; silent once the session has shown no frame for `SILENT_AFTER_S`, one hour), `waiting`
+(`awaiting` is set), `resting` (between turns, or suspended). A silent job is told to the
+operator once and left alone: `JobRunner.watch` walks the live jobs every five minutes.
 
 **Context is bounded by the CLI's auto-compaction.** Every job session is built with the
 long-session window env (`claude_runtime.long_session_env`), which lowers the threshold at
@@ -122,7 +134,11 @@ A delegated start reads the token of the turn that delegated. A record without t
 no line; nothing is inferred for it. A look-alike inside `Request:` or `Context:` is model text:
 a reader takes the line after the first `Job id:` line, never the first `Started by:` it finds.
 
-**INV-BGJOB-017**: When a job's turn ends with the record live, no input pending, and no question, approval or parking outstanding since the operator's last input, Casa writes one nudge, and a second such end with no operator input between parks the job — it waits for the operator, who gets one line in their direct chat with Cancel; a turn stopped at the step ceiling is continued if the job reported progress since the previous ceiling and parked otherwise; neither path ends the job, and cost never ends or parks one.
+**INV-BGJOB-030**: When a job's turn ends with the record live, no input pending, and no question, approval or parking outstanding since the operator's last input, Casa writes one nudge, and a second such end with no operator input between parks the job — it waits for the operator, who gets one line in their direct chat with Cancel; a turn stopped at the step ceiling is continued, and the tenth such end with no operator input between parks the job; neither path ends the job, and cost never ends or parks one.
+
+The id replaces a retired predecessor (BGJOB 017) whose step-ceiling clause flipped: the old
+statement parked a job that had not reported progress since the previous ceiling, and such a
+job is now continued. A flipped assertion gets a fresh id.
 
 The guard runs synchronously in the reader, so a reply admitted before the decision is seen as
 pending input and is never mistaken for a stop. A reply admitted just after it may cross the
@@ -131,15 +147,46 @@ start over on any operator input and on restart; `awaiting` is persisted, becaus
 it. A parking post replies to the start line when the job has one and is otherwise a new post;
 either way it is filed as a job post, so a reply quoting it reaches the job
 ([`background-job-direct-chat.md`](background-job-direct-chat.md), INV-BGJOB-012). The line is
-Casa's own text (the job's title); the job's progress summaries are not part of it. A quiet run
+Casa's own text (the job's title); the job's progress summaries are not part of it. At the
+step backstop it states Casa's own facts — "«title» has run 10,000 steps over 6 h 20 min
+without finishing, far more than a job normally needs. Reply to continue it, or Cancel." — the
+time being since the job started, left out when the record has no usable start time; the
+reply continues the job for another ten ceilings. Whether the job called
+`report_job_progress` changes nothing here. A quiet run
 that parks stops being quiet ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 The nudge offers `ask_operator` only to a specialist's job; a resident's plugin worker has no
 question tool.
 
+**INV-BGJOB-028**: A job's state is derived in one place from its record and the driver's facts, first match winning — ended, recovering, working or silent while a turn is open, waiting, resting — with an open turn matched before waiting; an open turn's activity time is stamped by the write that opens it and by every frame of its stream, never carried over from the previous turn; and the idle suspension and the stale-job reap skip a job that is working, silent or recovering.
+
+`ended` reads the record's status alone. An open turn comes before `waiting` because a job may
+go on working in an open turn after it asked, and its session is then in use. The activity
+time lives on the session, in memory: the delivery worker stamps it synchronously where a
+write opens a turn, before the write is awaited, and the reader stamps it at every frame it
+handles, a sub-agent's included. A message written into a turn that is already open stamps
+nothing, and neither does a control frame or a keep-alive, which the SDK never hands to the
+reader. With no live session there is no open turn and no activity time; a job the driver
+holds nothing for reads as no open turn and not recovering. The two sweeps ask one helper
+(`background_jobs.session_in_use`), so they cannot disagree about a job.
+
+**INV-BGJOB-029**: A live job that reads silent is told to the operator once per silent episode — one line in their direct chat with Cancel, the episode named by the activity time it began at and recorded as told only once the line landed or the job has no delivery — and is otherwise left alone: not marked waiting, nothing written into its session, never interrupted and never ended.
+
+The line is "«title» has shown no activity for 1 h. It may be stuck on a slow step. It carries
+on by itself if the step returns; Cancel stops it.", posted like a parking line
+(`TelegramChannel.post_job_parked`), a quiet run being promoted first. The walk awaits nothing
+per job: it spawns one attempt, at most one outstanding per job, and the attempt records the
+episode it was handed — so a failed send is tried again at a later walk, and an attempt that
+completes late cannot mark a later episode as told. A frame gives a later activity time, so a
+later silence is another episode and nothing is reset. What the runner remembers is in memory
+and keyed by job id; after a restart no turn is open. What it does not cover: a send that
+timed out after Telegram accepted it repeats the line once, an attempt whose send never
+returns leaves that job without further silent lines, and Casa does not judge whether a job
+is looping or recover a step that hangs.
+
 **INV-BGJOB-018**: A job session whose message stream ends while the record is live, other than by Casa's own teardown, is removed from the driver and its client disconnected before a replacement opens, then resumed once with the restart line and every journaled message its transcript lacks; only a failed resume or a second unexpected end ends the job `error`, and then each message the transcript lacks is told as lost once.
 
 The dead reader marks the job recovering (the stale reap and the idle suspension skip a
-recovering job as they skip a running turn), removes its own session from the map with an
+recovering job as they skip a running turn, INV-BGJOB-028), removes its own session from the map with an
 identity check, and disconnects its client explicitly — the SDK's close cancels the session's
 outstanding hook and tool callbacks, which an EOF alone does not. Every path that opens a
 job's client goes through `InCasaDriver._open_session`, which first waits until no earlier
@@ -217,12 +264,16 @@ resume — so a wiped job's next resume fails and the job ends as one that could
 **A completing turn never ends.** The teardown proceeds after the bound with the last cost known;
 nothing is reported as an error.
 
+**A step hangs.** The turn stays open and the job stays occupied; after an hour without a frame
+the operator gets the silent line (INV-BGJOB-029). Casa does not interrupt the step.
+
 ## Extension points
 
 A new kind of Casa write goes through `InCasaDriver.submit_casa`, never `client.query`
 directly — the worker is what keeps writes ordered and admitted. A new job-session option belongs
 in `background_jobs.job_session_options`, so launch, worker and resume builds stay identical.
-Anything new the header should carry after a compaction belongs in `job_header`.
+Anything new the header should carry after a compaction belongs in `job_header`. A new reader
+of what a job is doing calls `background_jobs.job_state`, never the driver's fields.
 
 ## Source & test map
 
@@ -240,7 +291,10 @@ Anything new the header should carry after a compaction belongs in `job_header`.
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.wait_turn_end`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver._begin_loss`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.recover`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.job_facts`
 - `casa/rootfs/opt/casa/background_jobs.py::JobRunner`
+- `casa/rootfs/opt/casa/background_jobs.py::job_state`
+- `casa/rootfs/opt/casa/background_jobs.py::session_in_use`
 - `casa/rootfs/opt/casa/background_jobs.py::job_session_options`
 - `casa/rootfs/opt/casa/background_jobs.py::job_header`
 - `casa/rootfs/opt/casa/background_jobs.py::launch_prompt`
