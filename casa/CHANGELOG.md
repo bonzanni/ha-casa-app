@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.375.0] - 2026-11-17
+
+### Added
+
+- When a background job shows no activity for an hour, you get one line in your direct chat with a **Cancel** button: "«…» has shown no activity for 1 h. It may be stuck on a slow step. It carries on by itself if the step returns; Cancel stops it." The job is not stopped, and you are told once per stall.
+
+### Changed
+
+- A background job is no longer stopped for not reporting progress. Casa continues a long job on its own and asks you only after 10,000 steps without a word from you: "«…» has run 10,000 steps over 6 h 20 min without finishing, far more than a job normally needs. Reply to continue it, or Cancel."
+- A job's progress note now keeps the counts the job passed with it, for example "rows classified (12 of 40 done)". Casa still reports the latest note if the job is cancelled or fails.
+
 ## [0.374.0] - 2026-11-17
 
 ### Changed
