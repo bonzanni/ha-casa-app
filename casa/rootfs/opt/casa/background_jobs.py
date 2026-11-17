@@ -14,6 +14,11 @@ nudges it once, or parks it: a parked job waits for the operator, who is told
 in their direct chat and can reply to continue it or Cancel. Only Cancel, a
 failed resume and the stale-job reap end one.
 
+What a job is doing is one derived state (:func:`job_state`), read from its
+record and the driver's facts about its session. A job whose open turn has
+shown no activity for an hour reads ``silent``: the silent watch
+(:meth:`JobRunner.watch`) tells the operator once and leaves the job alone.
+
 The job's durable state lives in the engagement record's ``origin["job"]``;
 ``initial_job_state`` is its shape.
 """
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +55,18 @@ PLUGIN_JOB_CASA_GRANTS: tuple[str, ...] = (
 # extends the running turn's count. The ceiling is high on purpose: reaching
 # it is a continuation boundary, not a stop, so it only bounds a loop.
 JOB_MAX_TURNS: int = 1000
+
+# How many step ceilings in a row, counted since the operator's last input,
+# Casa continues before it parks the job and asks: a job that has run
+# CEILINGS_BEFORE_PARK * JOB_MAX_TURNS steps without the operator and without
+# finishing is far outside what a job needs. A backstop for a runaway loop;
+# generous on purpose, so it does not fire on a healthy job.
+CEILINGS_BEFORE_PARK: int = 10
+
+# An open turn with no frame from its session for this long reads ``silent``.
+SILENT_AFTER_S: float = 3600.0
+# How often the silent watch walks the live jobs.
+SILENT_CHECK_S: float = 300.0
 
 # A job's scratchpad: one file per job, written through on every change, kept
 # while the job lives and deleted when it ends.
@@ -663,7 +681,7 @@ class _JobState:
 
     stops: int = 0              # turn ends without finishing since operator input
     faults: int = 0             # consecutive API-fault turn ends
-    progress: bool = False      # report_job_progress since the last ceiling
+    ceilings: int = 0           # step-ceiling turn ends since operator input
     auto_resumed: bool = False  # the one automatic resume after a session death
 
 
@@ -681,20 +699,20 @@ def configure(runner: "JobRunner | None") -> None:
     _runner = runner
 
 
-def note_progress(engagement_id: str) -> None:
-    """``report_job_progress`` was called: the next step-ceiling stop is a
-    continuation boundary, not a loop."""
-    _state(engagement_id).progress = True
+def stop_watch() -> None:
+    """Casa's stop: the silent watch walks no more."""
+    if _runner is not None:
+        _runner.stop_watch()
 
 
 def note_operator_input(rec: Any) -> None:
     """An operator message was written into the job's session: the guard
-    starts over (stops, faults, progress since the last ceiling) and the job
-    is no longer waiting for the operator."""
+    starts over (stops, faults, step ceilings) and the job is no longer
+    waiting for the operator."""
     st = _state(rec.id)
     st.stops = 0
     st.faults = 0
-    st.progress = False
+    st.ceilings = 0
     job = (getattr(rec, "origin", None) or {}).get("job")
     if isinstance(job, dict) and job.pop(AWAITING_KEY, None) is not None:
         _persist_later(rec.id)
@@ -723,6 +741,99 @@ def _persist_later(engagement_id: str) -> None:
         _runner.spawn(_runner.persist(engagement_id))
 
 
+# What a job is doing, derived by :func:`job_state` and kept nowhere.
+JOB_ENDED = "ended"             # the record is terminal
+JOB_RECOVERING = "recovering"   # Casa is recovering its session
+JOB_WORKING = "working"         # a turn is running and its session shows activity
+JOB_SILENT = "silent"           # a turn is running; no frame for SILENT_AFTER_S
+JOB_WAITING = "waiting"         # no turn running; it waits for the operator
+JOB_RESTING = "resting"         # no turn running: between turns, or suspended
+
+# The states in which the job's session is in use: what the idle suspension
+# and the stale-job reap skip.
+SESSION_IN_USE = frozenset({JOB_WORKING, JOB_SILENT, JOB_RECOVERING})
+
+
+def job_state(rec: Any, facts: Any, now: float) -> str:
+    """The one state of a job, from its record and the driver's facts about
+    its session (``InCasaDriver.job_facts``; ``None`` reads as no open turn
+    and not recovering). Pure. First match wins:
+
+    - ``ended``: the record's status is not ``active`` or ``idle``;
+    - ``recovering``: Casa is recovering the session;
+    - ``working`` / ``silent``: a turn is open, and its session last showed
+      activity at most, or more than, ``SILENT_AFTER_S`` ago;
+    - ``waiting``: the job waits for the operator (:func:`awaiting`);
+    - ``resting``: none of the above.
+
+    An open turn is matched before ``waiting``: a job may go on working in an
+    open turn after it asked, and its session is then in use."""
+    if getattr(rec, "status", None) not in ("active", "idle"):
+        return JOB_ENDED
+    if facts is not None and facts.recovering:
+        return JOB_RECOVERING
+    if facts is not None and facts.turn_open:
+        ts = facts.active_ts
+        # An open turn always carries a time; one without is not called silent.
+        if ts is not None and now - ts > SILENT_AFTER_S:
+            return JOB_SILENT
+        return JOB_WORKING
+    if awaiting(rec) is not None:
+        return JOB_WAITING
+    return JOB_RESTING
+
+
+def _job_facts(driver: Any, engagement_id: str) -> Any:
+    """The driver's facts about a job, or ``None`` when it gives no reading
+    (no driver, a driver without the accessor, or a failing one)."""
+    from drivers.in_casa_driver import JobFacts
+    read = getattr(driver, "job_facts", None)
+    if not callable(read):
+        return None
+    try:
+        facts = read(engagement_id)
+    except Exception:  # noqa: BLE001 — no reading, no open turn assumed
+        logger.debug("job facts not read for %s", engagement_id[:8],
+                     exc_info=True)
+        return None
+    return facts if isinstance(facts, JobFacts) else None
+
+
+def session_in_use(driver: Any, rec: Any, now: float | None = None) -> bool:
+    """Whether the job's session is in use — a turn is running in it (one
+    turn can run for hours, with or without activity) or Casa is recovering
+    it. The idle suspension and the stale-job reap skip such a job."""
+    state = job_state(rec, _job_facts(driver, rec.id),
+                      time.time() if now is None else now)
+    return state in SESSION_IN_USE
+
+
+# The longest progress note Casa keeps (``origin["job"]["last_summary"]``).
+PROGRESS_NOTE_MAX = 300
+
+
+def progress_note(summary: str, done: int | None = None,
+                  remaining: int | None = None) -> str:
+    """The note ``report_job_progress`` saves: the summary's first line and,
+    when the job passed counts, a suffix that says them — ``(12 of 40 done)``
+    with both (the total is their sum), ``(12 done)`` or ``(28 remaining)``
+    with one. The whole note keeps the ``PROGRESS_NOTE_MAX`` bound: the
+    summary is cut so that it and the suffix fit."""
+    if done is not None and remaining is not None:
+        suffix = f"({done} of {done + remaining} done)"
+    elif done is not None:
+        suffix = f"({done} done)"
+    elif remaining is not None:
+        suffix = f"({remaining} remaining)"
+    else:
+        suffix = ""
+    line = (summary.splitlines() or [""])[0]
+    if not suffix:
+        return line[:PROGRESS_NOTE_MAX]
+    head = line[:max(0, PROGRESS_NOTE_MAX - len(suffix) - 1)]
+    return (f"{head} {suffix}" if head else suffix)[:PROGRESS_NOTE_MAX]
+
+
 def format_elapsed(seconds: float) -> str:
     """``40 min``, ``1 h 5 min``, ``2 h`` — the job's running time as the
     operator reads it on the job's end notice."""
@@ -739,9 +850,32 @@ def _title(rec: Any) -> str:
     return (title.splitlines() or ["job"])[0][:80]
 
 
+def _backstop_line(rec: Any, now: float) -> str:
+    """The line a job is parked with at the step backstop: Casa's own facts —
+    the steps it ran since the operator's last input and how long ago it
+    started — so the operator can judge. A record without a usable start
+    time says nothing about the time."""
+    started = getattr(rec, "started_at", None)
+    over = ""
+    if (isinstance(started, (int, float)) and not isinstance(started, bool)
+            and 0 < started <= now):
+        over = f" over {format_elapsed(now - started)}"
+    return (f"«{_title(rec)}» has run {CEILINGS_BEFORE_PARK * JOB_MAX_TURNS:,} "
+            f"steps{over} without finishing, far more than a job normally "
+            "needs. Reply to continue it, or Cancel.")
+
+
+def _silent_line(rec: Any) -> str:
+    return (f"«{_title(rec)}» has shown no activity for "
+            f"{format_elapsed(SILENT_AFTER_S)}. It may be stuck on a slow "
+            "step. It carries on by itself if the step returns; Cancel stops "
+            "it.")
+
+
 class JobRunner:
     """What Casa does around a job's session: the turn-end guard, parking,
-    the one automatic resume after a session death, and the resume at boot.
+    the silent watch, the one automatic resume after a session death, and
+    the resume at boot.
 
     Wired into the in_casa driver as its turn-end and session-lost handlers.
     ``channel`` is the Telegram transport (the parking post, the start
@@ -757,6 +891,15 @@ class JobRunner:
         self.channel = channel
         self.driver = driver
         self._tasks: set[asyncio.Task] = set()
+        # The silent watch's own memory, keyed by job id and apart from the
+        # guard state, which a turn end may drop. ``told``: the silent episode
+        # the operator was last told about, named by the activity time it
+        # began at — a later frame gives a later time, so a later silence is
+        # another episode and nothing is ever reset. ``telling``: the jobs
+        # with an attempt to tell outstanding, at most one each.
+        self.told: dict[str, float] = {}
+        self.telling: set[str] = set()
+        self._watch_task: asyncio.Task | None = None
 
     # -- small helpers -----------------------------------------------------
 
@@ -840,14 +983,17 @@ class JobRunner:
             return                  # waiting for the operator
         from drivers.in_casa_driver import RESULT_SUBTYPE_MAX_TURNS
         if getattr(result, "subtype", None) == RESULT_SUBTYPE_MAX_TURNS:
-            if st.progress:
-                st.progress = False
-                logger.info("job %s reached its step ceiling with progress; "
-                            "continuing", rec.id[:8])
+            # The step ceiling is a continuation boundary, whatever the job
+            # reported: Casa continues it, up to the backstop.
+            st.ceilings += 1
+            if st.ceilings < CEILINGS_BEFORE_PARK:
+                logger.info("job %s reached its step ceiling (%d of %d since "
+                            "operator input); continuing", rec.id[:8],
+                            st.ceilings, CEILINGS_BEFORE_PARK)
                 self._write(rec, CONTINUE_LINE)
             else:
-                self.park(rec, f"«{_title(rec)}» stopped without finishing. "
-                               "Reply to continue it, or Cancel.")
+                st.ceilings = 0
+                self.park(rec, _backstop_line(rec, time.time()))
             return
         if st.stops == 0:
             st.stops = 1
@@ -875,18 +1021,22 @@ class JobRunner:
         reply to it continues the job. Nothing here ends the job.
 
         The line is Casa's own text only (the job's title, as on its start
-        line): the job's progress summaries are its words and are not
-        part of it."""
+        line, and Casa's own counts): the job's progress summaries are its
+        words and are not part of it."""
         logger.info("job %s parked: %s", rec.id[:8], line)
         st = _state(rec.id)
         st.stops = 0
         mark_awaiting(rec.id, AWAITING_STOPPED)
         self.spawn(self._post_parked(rec, line))
 
-    async def _post_parked(self, rec: Any, text: str) -> None:
+    async def _post_parked(self, rec: Any, text: str) -> bool:
+        """Post one of Casa's lines about the job in the operator's direct
+        chat with the job's Cancel button: the parking line, or the silent
+        line. ``True`` when the line is settled — it landed, or the job has
+        no delivery to post through; ``False`` when the send failed."""
         if was_quiet_run(rec):
-            # A quiet run that parks needs the operator now: it stops being
-            # quiet, so its end is told like any job's.
+            # A quiet run that parks, or goes silent, needs the operator now:
+            # it stops being quiet, so its end is told like any job's.
             try:
                 await self.registry.promote_from_quiet(rec.id)
             except Exception:  # noqa: BLE001
@@ -894,12 +1044,80 @@ class JobRunner:
                                exc_info=True)
         poster = self._delivery_method(rec, "post_job_parked")
         if not callable(poster):
-            return
+            return True
         try:
-            await poster(rec, text)
-        except Exception:  # noqa: BLE001 — the record still says it waits
-            logger.warning("job %s parking line not posted", rec.id[:8],
-                           exc_info=True)
+            return await poster(rec, text) is not None
+        except Exception:  # noqa: BLE001 — a parked record still says it waits
+            logger.warning("job %s line not posted", rec.id[:8], exc_info=True)
+            return False
+
+    # -- the silent watch ----------------------------------------------------
+
+    def start_watch(self) -> None:
+        """Start the process's one silent watch (casa_core, where the runner
+        is configured). A second call while it runs starts nothing."""
+        if self._watch_task is None or self._watch_task.done():
+            self._watch_task = self.spawn(self.watch())
+
+    def stop_watch(self) -> None:
+        """Casa's stop: no further walk."""
+        task, self._watch_task = self._watch_task, None
+        if task is not None:
+            task.cancel()
+
+    async def watch(self) -> None:
+        """Every ``SILENT_CHECK_S``: one walk over the live jobs."""
+        while True:
+            await asyncio.sleep(SILENT_CHECK_S)
+            try:
+                self._watch_once(time.time())
+            except Exception:  # noqa: BLE001 — the watch outlives a bad walk
+                logger.warning("job silent watch: walk failed", exc_info=True)
+
+    def _watch_once(self, now: float) -> None:
+        """One walk, SYNCHRONOUS — nothing is awaited per job: a live job
+        that reads ``silent``, whose silent episode the operator has not been
+        told about and which has no attempt outstanding, gets one spawned
+        attempt to tell them. A job that is no longer live is forgotten. A
+        failure for one job is logged and the walk goes on."""
+        live: set[str] = set()
+        for rec in list(self.registry.active_and_idle()):
+            if not isinstance((getattr(rec, "origin", None) or {}).get("job"), dict):
+                continue
+            live.add(rec.id)
+            try:
+                facts = _job_facts(self.driver, rec.id)
+                if job_state(rec, facts, now) != JOB_SILENT:
+                    continue
+                if (self.told.get(rec.id) == facts.active_ts
+                        or rec.id in self.telling):
+                    continue
+                self.telling.add(rec.id)
+                if self.spawn(self._tell_silent(rec, facts.active_ts)) is None:
+                    self.telling.discard(rec.id)
+            except Exception:  # noqa: BLE001 — one job never stops the walk
+                logger.warning("job %s: silent check failed", rec.id[:8],
+                               exc_info=True)
+        for gone in [eid for eid in self.told if eid not in live]:
+            del self.told[gone]
+        self.telling &= live
+
+    async def _tell_silent(self, rec: Any, active_ts: float) -> None:
+        """One attempt to tell the operator about the silent episode that
+        began at *active_ts*: one line with the job's Cancel button. The job
+        is NOT parked: it is not marked waiting, nothing is written into its
+        session, and nothing interrupts it — if the slow step returns, it
+        simply goes on. The episode is recorded as told only once the line
+        is settled, so a failed send is tried again at a later walk; and it
+        is recorded under the time this attempt was handed, so an attempt
+        that completes late can never mark a later episode as told."""
+        try:
+            logger.info("job %s has shown no activity since %.0f; telling "
+                        "the operator", rec.id[:8], active_ts)
+            if await self._post_parked(rec, _silent_line(rec)):
+                self.told[rec.id] = active_ts
+        finally:
+            self.telling.discard(rec.id)
 
     # -- session death -------------------------------------------------------
 

@@ -11789,20 +11789,6 @@ def _resolve_engagement_driver(rec: Any) -> Any | None:
     return getattr(agent_mod, "active_engagement_driver", None)
 
 
-def _session_is_working(driver: Any, engagement_id: str) -> bool:
-    """A job whose session has a turn running, or that Casa is recovering —
-    what the stale reap and the idle suspension both skip."""
-    for probe in ("turn_open", "recovering"):
-        fn = getattr(driver, probe, None)
-        try:
-            if callable(fn) and fn(engagement_id) is True:
-                return True
-        except Exception:  # noqa: BLE001 — no reading, not working
-            logger.debug("%s probe failed for %s", probe, engagement_id[:8],
-                         exc_info=True)
-    return False
-
-
 async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
     """Cancel engagements with no user turn for ``ttl_days`` (D-4, v0.69.0).
 
@@ -11830,10 +11816,11 @@ async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
     for rec in list(_engagement_registry.active_and_idle()):
         if rec.last_user_turn_ts >= cutoff:
             continue
-        if _session_is_working(_resolve_engagement_driver(rec), rec.id):
-            # A turn is running (one can run for hours with no turn end), or
-            # Casa is recovering the job's session: a working job is never
-            # stale.
+        if background_jobs.session_in_use(
+                _resolve_engagement_driver(rec), rec, now):
+            # A turn is running (one can run for hours with no turn end, with
+            # or without activity), or Casa is recovering the job's session:
+            # a job whose session is in use is never stale.
             continue
         idle_days = int((now - rec.last_user_turn_ts) // 86400)
         logger.info(
@@ -11888,7 +11875,8 @@ _UNREAD_REFUSAL = ("An operator message reaches you at your next step. Read "
     "something is worth telling; Casa keeps the latest note and reports it if "
     "the job is cancelled or fails. Optional: the job runs and finishes "
     "whether or not you call it. `done`/`remaining` are optional: pass them "
-    "when this work has a real unit and a known total.",
+    "when this work has a real unit and a known total; Casa adds them to "
+    "the saved note.",
     {"type": "object", "properties": {
         "summary": {"type": "string"},
         "done": {"type": "integer", "minimum": 0},
@@ -11908,11 +11896,11 @@ async def report_job_progress(args: dict) -> dict:
         for value in (done, remaining)
     ):
         return _result({"ok": False, "kind": "invalid_arguments"})
-    summary = (summary.splitlines() or [""])[0][:300]
-    # Recorded before any await: the record's "Last progress" (the parking
-    # line, a failed end) and the turn-end guard's step-ceiling rule read it.
-    rec.origin["job"]["last_summary"] = summary
-    background_jobs.note_progress(rec.id)
+    # Recorded before any await: a cancelled or failed end reads it as the
+    # job's "Last progress". A note and nothing more: no rule of the
+    # turn-end guard depends on whether the job reported.
+    rec.origin["job"]["last_summary"] = background_jobs.progress_note(
+        summary, done, remaining)
     await _engagement_registry.persist_origin(rec.id)
     return _result({"ok": True})
 

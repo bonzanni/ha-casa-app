@@ -1,18 +1,22 @@
-"""The turn-end guard, parking, the one automatic resume and the boot resume
-of a background job (``background_jobs.JobRunner``).
+"""The turn-end guard, parking, the job's derived state, the silent watch,
+the one automatic resume and the boot resume of a background job
+(``background_jobs.JobRunner``).
 
 A job is one long session: Casa never ends it on its own judgement. When a
-turn ends without the job finishing, Casa continues it (a step-ceiling stop
-after reported progress, or one retry after an API fault), nudges it once,
+turn ends without the job finishing, Casa continues it (a step-ceiling stop,
+up to a generous backstop, or one retry after an API fault), nudges it once,
 or parks it — it then waits for the operator, who gets one line in their
-direct chat with Cancel. The collaborators are small fakes that record what
-the runner asked of them; the real driver is exercised in
-``test_job_session_driver.py``."""
+direct chat with Cancel. A job whose open turn shows no activity for an hour
+is told to the operator once and left alone. The collaborators are small
+fakes that record what the runner asked of them; the real driver is exercised
+in ``test_job_session_driver.py``."""
 
 from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +25,7 @@ from claude_agent_sdk import ResultMessage
 import background_jobs as bj
 import job_inbox
 from channels.tg_address import TgAddress
+from drivers.in_casa_driver import JobFacts
 from error_kinds import ErrorKind
 
 pytestmark = pytest.mark.asyncio
@@ -40,9 +45,13 @@ class Driver:
         self.reserved = 0
         self.recovered: list[dict] = []
         self.recover_error: BaseException | None = None
+        self.facts: JobFacts | None = None
 
     def submit_casa(self, rec, text, **kw):
         self.writes.append(text)
+
+    def job_facts(self, eid):
+        return self.facts
 
     def inbound_unread_depth(self, eid):
         return self.unread
@@ -62,9 +71,15 @@ class Registry:
         self.persists = 0
         self.pending = False
         self.promoted: list[str] = []
+        self.live: list | None = None       # the walk's records, when a test sets them
 
     def get(self, eid):
         return self.rec if eid == self.rec.id else None
+
+    def active_and_idle(self):
+        if self.live is not None:
+            return list(self.live)
+        return [self.rec] if self.rec.status in ("active", "idle") else []
 
     async def persist_origin(self, eid):
         self.persists += 1
@@ -80,12 +95,22 @@ class Registry:
 
 class Channel:
     def __init__(self):
-        self.parked: list[str] = []
+        self.attempts: list[str] = []       # every send that was tried
+        self.parked: list[str] = []         # the lines that landed
         self.notices: list[str] = []
+        self.mid: int | None = 42           # None: the send lands nothing
+        self.error: BaseException | None = None
+        self.hold: asyncio.Event | None = None
 
     async def post_job_parked(self, rec, text):
-        self.parked.append(text)
-        return 42
+        self.attempts.append(text)
+        if self.hold is not None:
+            await self.hold.wait()
+        if self.error is not None:
+            raise self.error
+        if self.mid is not None:
+            self.parked.append(text)
+        return self.mid
 
     def endpoint(self, bot_id):
         # the transport's endpoint for the job's delivery bot: this one
@@ -133,6 +158,13 @@ def rig(monkeypatch):
 async def settle(n: int = 20) -> None:
     for _ in range(n):
         await asyncio.sleep(0)
+
+
+async def until(predicate, timeout: float = 2.0) -> None:
+    async def wait():
+        while not predicate():
+            await asyncio.sleep(0.001)
+    await asyncio.wait_for(wait(), timeout)
 
 
 # -- INV-BGJOB-017: nudge once, then park -----------------------------------
@@ -226,27 +258,72 @@ async def test_a_record_that_is_not_a_job_is_ignored(rig):
 
 # -- the step ceiling ----------------------------------------------------------
 
-async def test_a_ceiling_after_progress_continues(rig):
-    bj.note_progress(rig.rec.id)
-    rig.runner.turn_ended(rig.rec, _result("error_max_turns"))
-    assert rig.drv.writes == [bj.CONTINUE_LINE]
+CEILING = "error_max_turns"
+BACKSTOP_LINE = (
+    "«Accounting check» has run 10,000 steps over 6 h 20 min without "
+    "finishing, far more than a job normally needs. Reply to continue it, or "
+    "Cancel.")
+
+
+async def test_a_ceiling_continues_without_any_progress_call(rig):
+    """The step ceiling is a continuation boundary whatever the job
+    reported: a job that never called ``report_job_progress`` is continued."""
+    rig.runner.turn_ended(rig.rec, _result(CEILING))
+    rig.runner.turn_ended(rig.rec, _result(CEILING))
+    await settle()
+    assert rig.drv.writes == [bj.CONTINUE_LINE, bj.CONTINUE_LINE]
+    assert bj.awaiting(rig.rec) is None and rig.ch.parked == []
+
+
+async def test_the_tenth_ceiling_since_operator_input_parks_with_the_backstop_line(rig):
+    """The backstop: 10 ceilings in a row with no operator input park the
+    job with Casa's own facts (steps and running time) and none of the
+    job's words. Parking is not an end."""
+    assert bj.CEILINGS_BEFORE_PARK == 10 and bj.JOB_MAX_TURNS == 1000
+    rig.rec.started_at = time.time() - (6 * 3600 + 20 * 60)
+    rig.rec.origin["job"]["last_summary"] = "12 of 40 rows classified"
+    for _ in range(9):
+        rig.runner.turn_ended(rig.rec, _result(CEILING))
+    await settle()
+    assert rig.drv.writes == [bj.CONTINUE_LINE] * 9 and rig.ch.parked == []
+    rig.runner.turn_ended(rig.rec, _result(CEILING))
+    await settle()
+    assert rig.drv.writes == [bj.CONTINUE_LINE] * 9      # no tenth continue
+    assert bj.awaiting(rig.rec) == bj.AWAITING_STOPPED
+    assert rig.ch.parked == [BACKSTOP_LINE]
+    assert rig.rec.status == "active" and rig.finalized == []
+
+
+async def test_operator_input_resets_the_ceiling_count(rig):
+    for _ in range(9):
+        rig.runner.turn_ended(rig.rec, _result(CEILING))
+    bj.note_operator_input(rig.rec)
+    for _ in range(9):
+        rig.runner.turn_ended(rig.rec, _result(CEILING))
+    await settle()
+    assert rig.drv.writes == [bj.CONTINUE_LINE] * 18
+    assert bj.awaiting(rig.rec) is None and rig.ch.parked == []
+
+
+async def test_a_reply_to_the_backstop_continues_the_job_for_another_round(rig):
+    for _ in range(10):
+        rig.runner.turn_ended(rig.rec, _result(CEILING))
+    bj.note_operator_input(rig.rec)                     # the operator's reply
+    for _ in range(9):
+        rig.runner.turn_ended(rig.rec, _result(CEILING))
+    await settle()
+    assert rig.drv.writes == [bj.CONTINUE_LINE] * 18 and len(rig.ch.parked) == 1
     assert bj.awaiting(rig.rec) is None
 
 
-async def test_a_ceiling_without_progress_since_the_last_one_parks(rig):
-    bj.note_progress(rig.rec.id)
-    rig.runner.turn_ended(rig.rec, _result("error_max_turns"))
-    rig.runner.turn_ended(rig.rec, _result("error_max_turns"))
-    await settle()
-    assert rig.drv.writes == [bj.CONTINUE_LINE]
-    assert bj.awaiting(rig.rec) == bj.AWAITING_STOPPED
-    assert len(rig.ch.parked) == 1 and rig.finalized == []
-
-
-async def test_a_first_ceiling_with_no_progress_parks(rig):
-    rig.runner.turn_ended(rig.rec, _result("error_max_turns"))
-    await settle()
-    assert rig.drv.writes == [] and len(rig.ch.parked) == 1
+@pytest.mark.parametrize("started_at", [None, 0.0, "yesterday", 6000.0])
+async def test_the_backstop_line_without_a_usable_start_time_leaves_the_time_out(
+        rig, started_at):
+    """No start time, a zero one, a non-number, or one after now."""
+    rig.rec.started_at = started_at
+    assert bj._backstop_line(rig.rec, 5000.0) == (
+        "«Accounting check» has run 10,000 steps without finishing, far more "
+        "than a job normally needs. Reply to continue it, or Cancel.")
 
 
 # -- API faults ----------------------------------------------------------------
@@ -377,6 +454,248 @@ async def test_a_job_not_resumable_after_a_restart_ends_error(rig):
     await rig.runner.resume_at_boot(rig.rec)
     assert rig.finalized[0]["outcome"] == "error"
     assert rig.finalized[0]["text"] == "could not be resumed after a restart"
+
+
+# -- INV-BGJOB-028: one derived state -----------------------------------------------
+
+NOW = 1_000_000.0
+FRESH = NOW - 10
+STALE = NOW - bj.SILENT_AFTER_S - 1
+
+
+@pytest.mark.parametrize("status,waiting,facts,state", [
+    # ended reads the record's status alone, before everything else
+    ("completed", None, JobFacts(True, True, FRESH), bj.JOB_ENDED),
+    ("cancelled", "asked", None, bj.JOB_ENDED),
+    ("error", None, JobFacts(True, False, STALE), bj.JOB_ENDED),
+    # recovering before an open turn and before waiting
+    ("active", None, JobFacts(True, True, STALE), bj.JOB_RECOVERING),
+    ("active", "asked", JobFacts(False, True, None), bj.JOB_RECOVERING),
+    # an open turn: working up to the limit, silent past it
+    ("active", None, JobFacts(True, False, FRESH), bj.JOB_WORKING),
+    ("active", None, JobFacts(True, False, NOW - bj.SILENT_AFTER_S), bj.JOB_WORKING),
+    ("active", None, JobFacts(True, False, STALE), bj.JOB_SILENT),
+    ("active", None, JobFacts(True, False, None), bj.JOB_WORKING),
+    # an open turn is matched BEFORE waiting: the job asked and works on
+    ("active", "asked", JobFacts(True, False, FRESH), bj.JOB_WORKING),
+    ("active", "approval", JobFacts(True, False, STALE), bj.JOB_SILENT),
+    ("active", "stopped", JobFacts(True, False, FRESH), bj.JOB_WORKING),
+    # no open turn: waiting when it waits for the operator, else resting
+    ("active", "asked", JobFacts(False, False, FRESH), bj.JOB_WAITING),
+    ("idle", "stopped", JobFacts(False, False, None), bj.JOB_WAITING),
+    ("active", None, JobFacts(False, False, STALE), bj.JOB_RESTING),
+    ("idle", None, JobFacts(False, False, None), bj.JOB_RESTING),
+    # no facts reads as no open turn and not recovering
+    ("active", None, None, bj.JOB_RESTING),
+    ("idle", "approval", None, bj.JOB_WAITING),
+])
+async def test_the_state_of_a_job_is_the_first_match(status, waiting, facts, state):
+    rec = _rec(**({bj.AWAITING_KEY: waiting} if waiting else {}))
+    rec.status = status
+    assert bj.job_state(rec, facts, NOW) == state
+
+
+@pytest.mark.parametrize("facts,in_use", [
+    (JobFacts(True, False, FRESH), True),       # working
+    (JobFacts(True, False, STALE), True),       # silent
+    (JobFacts(False, True, None), True),        # recovering
+    (JobFacts(False, False, STALE), False),     # resting
+    (None, False),
+])
+async def test_a_working_silent_or_recovering_session_is_in_use(rig, facts, in_use):
+    rig.drv.facts = facts
+    assert bj.session_in_use(rig.drv, rig.rec, NOW) is in_use
+
+
+async def test_a_driver_that_gives_no_reading_leaves_the_session_not_in_use(rig):
+    """No driver, a driver without the accessor, one that raises, and one
+    that returns something that is not the driver's facts."""
+    def boom(eid):
+        raise RuntimeError("no reading")
+    for driver in (None, object(), SimpleNamespace(job_facts=boom),
+                   SimpleNamespace(job_facts=lambda eid: SimpleNamespace(
+                       turn_open=True, recovering=True, active_ts=FRESH))):
+        assert bj.session_in_use(driver, rig.rec, NOW) is False
+
+
+# -- INV-BGJOB-029: the silent watch -------------------------------------------------
+
+SILENT_LINE = (
+    "«Accounting check» has shown no activity for 1 h. It may be stuck on a "
+    "slow step. It carries on by itself if the step returns; Cancel stops it.")
+
+
+def _silent(rig, since: float = STALE) -> float:
+    """The job's turn is open and its session last showed activity at
+    *since*, more than the limit ago."""
+    rig.drv.facts = JobFacts(turn_open=True, recovering=False, active_ts=since)
+    return since
+
+
+async def test_a_silent_job_is_told_once_and_is_not_parked(rig):
+    since = _silent(rig)
+    rig.runner._watch_once(NOW)
+    await settle()
+    rig.runner._watch_once(NOW + bj.SILENT_CHECK_S)
+    rig.runner._watch_once(NOW + 7200)
+    await settle()
+    assert rig.ch.attempts == [SILENT_LINE] and rig.ch.parked == [SILENT_LINE]
+    assert rig.runner.told == {rig.rec.id: since} and rig.runner.telling == set()
+    # Not parked: not marked waiting, nothing written into the session,
+    # nothing persisted, nothing ended.
+    assert bj.AWAITING_KEY not in rig.rec.origin["job"]
+    assert rig.drv.writes == [] and rig.reg.persists == 0
+    assert rig.rec.status == "active" and rig.finalized == []
+
+
+@pytest.mark.parametrize("facts,waiting", [
+    (JobFacts(True, False, FRESH), None),                   # working
+    (JobFacts(True, False, NOW - bj.SILENT_AFTER_S), None),  # at the limit
+    (JobFacts(False, False, STALE), None),                  # resting, old time
+    (JobFacts(False, False, STALE), bj.AWAITING_STOPPED),   # parked
+    (JobFacts(True, True, STALE), None),                    # recovering
+    (None, bj.AWAITING_ASKED),                              # suspended, waiting
+])
+async def test_a_job_that_is_not_silent_is_not_told(rig, facts, waiting):
+    rig.drv.facts = facts
+    if waiting:
+        rig.rec.origin["job"][bj.AWAITING_KEY] = waiting
+    rig.runner._watch_once(NOW)
+    await settle()
+    assert rig.ch.attempts == [] and rig.runner.told == {}
+    assert rig.runner.telling == set()
+    assert rig.rec.origin["job"].get(bj.AWAITING_KEY) == waiting
+
+
+@pytest.mark.parametrize("failure", ["nothing_landed", "raised"])
+async def test_a_failed_send_is_tried_again_at_a_later_walk(rig, failure):
+    """The episode is recorded as told only once the line landed."""
+    since = _silent(rig)
+    if failure == "raised":
+        rig.ch.error = RuntimeError("telegram is down")
+    else:
+        rig.ch.mid = None
+    rig.runner._watch_once(NOW)
+    await settle()
+    assert rig.ch.parked == [] and rig.runner.told == {}
+    assert rig.runner.telling == set()
+    rig.ch.error, rig.ch.mid = None, 42
+    rig.runner._watch_once(NOW + bj.SILENT_CHECK_S)
+    await settle()
+    assert rig.ch.attempts == [SILENT_LINE] * 2 and rig.ch.parked == [SILENT_LINE]
+    assert rig.runner.told == {rig.rec.id: since}
+
+
+async def test_a_later_silent_episode_is_told_again(rig):
+    """An episode is named by the activity time it began at: a frame gives a
+    later time, so the next silence is another episode."""
+    _silent(rig)
+    rig.runner._watch_once(NOW)
+    await settle()
+    later = NOW + 100                       # a frame: the job works again
+    rig.drv.facts = JobFacts(True, False, later)
+    rig.runner._watch_once(NOW + bj.SILENT_CHECK_S)
+    await settle()
+    assert rig.ch.parked == [SILENT_LINE]
+    rig.runner._watch_once(later + bj.SILENT_AFTER_S + 1)    # ... and stalls again
+    await settle()
+    assert rig.ch.parked == [SILENT_LINE] * 2
+    assert rig.runner.told == {rig.rec.id: later}
+
+
+async def test_an_attempt_that_completes_late_records_only_its_own_episode(rig):
+    """While one attempt's send is held, the job works again and falls
+    silent again: no second attempt starts meanwhile, the late attempt
+    records the episode it was about, and the later one still gets its own
+    line."""
+    first = _silent(rig)
+    rig.ch.hold = asyncio.Event()
+    rig.runner._watch_once(NOW)
+    await settle()
+    assert rig.runner.telling == {rig.rec.id} and rig.runner.told == {}
+    later = NOW + 100
+    rig.drv.facts = JobFacts(True, False, later)
+    rig.runner._watch_once(later + bj.SILENT_AFTER_S + 1)
+    await settle()
+    assert rig.ch.attempts == [SILENT_LINE]         # one attempt outstanding
+    rig.ch.hold.set()
+    await settle()
+    assert rig.runner.told == {rig.rec.id: first} and rig.runner.telling == set()
+    rig.runner._watch_once(later + bj.SILENT_AFTER_S + 1 + bj.SILENT_CHECK_S)
+    await settle()
+    assert rig.ch.parked == [SILENT_LINE] * 2
+    assert rig.runner.told == {rig.rec.id: later}
+
+
+async def test_a_silent_job_with_no_delivery_is_settled_without_a_post(rig):
+    rig.rec.delivery = None
+    since = _silent(rig)
+    rig.runner._watch_once(NOW)
+    rig.runner._watch_once(NOW + bj.SILENT_CHECK_S)
+    await settle()
+    assert rig.ch.attempts == [] and rig.ch.notices == []
+    assert rig.runner.told == {rig.rec.id: since} and rig.runner.telling == set()
+
+
+async def test_a_quiet_run_that_goes_silent_stops_being_quiet(rig):
+    rig.rec.origin["job"]["quiet"] = True
+    _silent(rig)
+    rig.runner._watch_once(NOW)
+    await settle()
+    assert rig.reg.promoted == [rig.rec.id]
+    assert rig.ch.parked == [SILENT_LINE]
+
+
+async def test_a_job_that_is_no_longer_live_is_forgotten(rig):
+    _silent(rig)
+    rig.runner._watch_once(NOW)
+    await settle()
+    assert rig.rec.id in rig.runner.told
+    rig.rec.status = "completed"
+    rig.runner.telling.add(rig.rec.id)
+    rig.runner._watch_once(NOW + bj.SILENT_CHECK_S)
+    await settle()
+    assert rig.runner.told == {} and rig.runner.telling == set()
+    assert rig.ch.attempts == [SILENT_LINE]
+
+
+async def test_a_failure_for_one_job_does_not_stop_the_walk(rig):
+    class Broken(SimpleNamespace):
+        @property
+        def status(self):
+            raise RuntimeError("unreadable record")
+
+    broken = Broken(id="b" * 32, origin={"job": {"title": "Broken"}})
+    rig.reg.live = [broken, rig.rec]
+    _silent(rig)
+    rig.runner._watch_once(NOW)
+    await settle()
+    assert rig.ch.parked == [SILENT_LINE]
+
+
+async def test_the_watch_walks_on_its_cadence_until_casa_stops_it(rig, monkeypatch):
+    """The watch is one task: a second start starts nothing, and Casa's stop
+    cancels it. The cadence is shortened by its own constant."""
+    monkeypatch.setattr(bj, "SILENT_CHECK_S", 0.01)
+    assert bj.SILENT_AFTER_S == 3600
+    rig.drv.facts = JobFacts(True, False, time.time() - bj.SILENT_AFTER_S - 60)
+    rig.runner.start_watch()
+    task = rig.runner._watch_task
+    rig.runner.start_watch()
+    assert task is not None and rig.runner._watch_task is task
+    await until(lambda: rig.ch.parked == [SILENT_LINE])
+    bj.stop_watch()
+    await settle()
+    assert task.cancelled() and rig.runner._watch_task is None
+
+
+async def test_casa_starts_the_watch_with_the_runner_and_stops_it_at_shutdown():
+    """Nothing else starts the watch: without these two calls a silent job
+    is never told and nobody notices."""
+    import casa_core
+    assert "job_runner.start_watch()" in inspect.getsource(casa_core.main)
+    assert "background_jobs.stop_watch()" in inspect.getsource(
+        casa_core._shutdown_cleanup)
 
 
 # -- the brief and the start line ----------------------------------------------

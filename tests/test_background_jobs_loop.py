@@ -1,7 +1,6 @@
-"""``report_job_progress`` on a live job record: argument checks, the line's
+"""``report_job_progress`` on a live job record: argument checks, the note's
 format, what is persisted, who holds the tool, and the refusal outside a live
-job. The turn-end guard that reads the reported progress is pinned in
-``test_job_turn_guard.py``."""
+job."""
 from __future__ import annotations
 
 import json
@@ -71,7 +70,6 @@ async def test_progress_rejects_invalid_arguments(job, args):
     reply = await _report(rec, {"summary": "work", **args})
     assert reply == {"ok": False, "kind": "invalid_arguments"}
     assert rec.origin["job"]["last_summary"] is None
-    assert jobs._state(rec.id).progress is False
 
 
 async def test_progress_format_persistence_and_grant(job, tmp_path):
@@ -79,10 +77,12 @@ async def test_progress_format_persistence_and_grant(job, tmp_path):
     reply = await _report(rec, {"summary": "x" * 310 + "\nnot included",
                                 "done": 0, "remaining": 9})
     assert reply == {"ok": True}
-    assert rec.origin["job"]["last_summary"] == "x" * 300
+    note = "x" * 286 + " (0 of 9 done)"
+    assert len(note) == 300
+    assert rec.origin["job"]["last_summary"] == note
     reloaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reloaded.load()
-    assert reloaded.get(rec.id).origin["job"]["last_summary"] == "x" * 300
+    assert reloaded.get(rec.id).origin["job"]["last_summary"] == note
     assert "report_job_progress" not in {
         t.name for t in tools.select_casa_tools(frozenset(tools.SPECIALIST_CASA_GRANTS))}
     assert "report_job_progress" in {

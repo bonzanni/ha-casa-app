@@ -3200,6 +3200,9 @@ async def main() -> None:
     )
     job_runner.driver = engagement_driver
     background_jobs.configure(job_runner)
+    # One task for the process: it tells the operator, once per episode,
+    # about a job whose open turn has shown no activity for an hour.
+    job_runner.start_watch()
 
     # Expose on the agent module so tools.emit_completion / cancel_engagement
     # can find it without circular imports.
@@ -4180,6 +4183,8 @@ async def _shutdown_cleanup(
     # cancelled first — the driver sweep re-finds their runs after the boot.
     import plugin_continuations
     plugin_continuations.stop_sweep()              # slice 5k: no sweep pass after the stop
+    import background_jobs
+    background_jobs.stop_watch()                    # no silent-job walk after the stop
     await plugin_continuations.CONTINUATIONS.drain()
     import plugin_stop
     await plugin_stop.drain()                       # a stop call still tearing down its stdio

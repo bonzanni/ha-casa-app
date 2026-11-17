@@ -47,8 +47,55 @@ async def test_a_progress_note_is_recorded(job):
     out = _payload(await tools.report_job_progress.handler(
         {"summary": "12 rows classified\nignored", "done": 12, "remaining": 28}))
     assert out == {"ok": True}
-    assert rec.origin["job"]["last_summary"] == "12 rows classified"
-    assert bj._state(rec.id).progress is True
+    assert rec.origin["job"]["last_summary"] == "12 rows classified (12 of 40 done)"
+
+
+@pytest.mark.parametrize("counts,note", [
+    ({}, "rows classified"),
+    ({"done": 12, "remaining": 28}, "rows classified (12 of 40 done)"),
+    ({"done": 12}, "rows classified (12 done)"),
+    ({"remaining": 28}, "rows classified (28 remaining)"),
+    ({"done": 0, "remaining": 0}, "rows classified (0 of 0 done)"),
+])
+async def test_the_saved_note_says_the_counts_the_job_passed(job, counts, note):
+    import tools
+    rec, channel = job
+    await tools.report_job_progress.handler({"summary": "rows classified", **counts})
+    assert rec.origin["job"]["last_summary"] == note
+
+
+@pytest.mark.parametrize("counts,suffix", [
+    ({}, ""),
+    ({"done": 12, "remaining": 28}, " (12 of 40 done)"),
+    ({"done": 7}, " (7 done)"),
+    ({"remaining": 123456}, " (123456 remaining)"),
+])
+async def test_the_saved_note_keeps_its_bound_with_the_counts(job, counts, suffix):
+    """The summary is cut so that it and the counts fit in 300 characters:
+    the counts are never the part that is lost."""
+    import tools
+    rec, channel = job
+    await tools.report_job_progress.handler({"summary": "x" * 400, **counts})
+    note = rec.origin["job"]["last_summary"]
+    assert len(note) == 300 == bj.PROGRESS_NOTE_MAX
+    assert note == "x" * (300 - len(suffix)) + suffix
+
+
+async def test_a_note_of_counts_alone_and_counts_too_long_to_fit():
+    assert bj.progress_note("", 3, 1) == "(3 of 4 done)"
+    assert bj.progress_note("\nsecond line", None, 5) == "(5 remaining)"
+    huge = 10 ** 400
+    assert len(bj.progress_note("rows", huge)) == 300
+
+
+async def test_a_progress_note_does_not_touch_the_turn_end_guard(job):
+    """The note is a note: no rule of the guard reads whether the job
+    reported."""
+    import tools
+    rec, channel = job
+    await tools.report_job_progress.handler({"summary": "x", "done": 1})
+    assert rec.id not in bj._states
+    assert not hasattr(bj, "note_progress")
 
 
 async def test_progress_needs_no_counts_and_no_batch(job):
