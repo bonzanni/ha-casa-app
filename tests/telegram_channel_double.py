@@ -6,7 +6,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 
-def _mk_channel_with_fake_bot(supergroup_id: int = -1001):
+def _mk_channel_with_fake_bot():
     """Build a TelegramChannel with a fake _app.bot for testing."""
     from channels.telegram import TelegramChannel
 
@@ -24,7 +24,6 @@ def _mk_channel_with_fake_bot(supergroup_id: int = -1001):
         bot_token="x:y",
         chat_id=100,
         default_agent="assistant",
-        engagement_supergroup_id=supergroup_id,
     )
     ch._app = fake_app
     return ch, fake_bot

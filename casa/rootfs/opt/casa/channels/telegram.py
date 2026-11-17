@@ -733,11 +733,6 @@ def _notice_target_from(value: Any) -> "_NoticeTarget | None":
     return _NoticeTarget(address=address, answer=value.get("answer") is True)
 
 
-_LOG_GROUP_REDIRECT = ("This group is a read-only log. Talk to me in our "
-                       "direct chat.")
-"""The one line a person who writes in the log group gets, once per boot."""
-
-
 
 # ---------------------------------------------------------------------------
 # #1036: inbound files. Arrival stores and acknowledges; it runs no agent turn.
@@ -866,16 +861,6 @@ class _IntakeQueue(asyncio.Queue):
             if not await self._channel._own_intake(item):
                 return
         await super().put(item)
-
-
-def _carries_content(msg) -> bool:
-    """A message a person sent with something in it — a file, or one of the
-    content kinds above. Chat notices (a topic opened or closed, a member
-    joining, a pin) carry none. Only consulted in the engagement supergroup: in
-    the operator's DM every non-text message is answered."""
-    if getattr(msg, "document", None) is not None or getattr(msg, "photo", None):
-        return True
-    return any(getattr(msg, attr, None) for attr in _INBOUND_KIND_WORDS)
 
 
 def _human_size(n: int) -> str:
@@ -1071,8 +1056,7 @@ class TelegramChannel(Channel):
     ``name`` is the channel kind (``"telegram"``) the conversation and memory
     keys use. The transport, not an endpoint, is registered under it.
 
-    ``is_casa`` marks Casa's own endpoint, the only one that serves the
-    agent log's forum group. ``known_bot_id`` is the bot id known before this
+    ``is_casa`` marks Casa's own endpoint. ``known_bot_id`` is the bot id known before this
     token's first ``getMe`` (persisted for Casa's bot, configured for the
     others); ``webhook_secret_for`` derives this bot's webhook secret from its
     id."""
@@ -1088,7 +1072,6 @@ class TelegramChannel(Channel):
         webhook_url: str = "",
         rate_limiter: RateLimiter | None = None,
         bot: Any = None,
-        engagement_supergroup_id: int | None = None,
         *,
         is_casa: bool = True,
         known_bot_id: int | None = None,
@@ -1162,11 +1145,8 @@ class TelegramChannel(Channel):
         # Reconnect supervisor + health probe task.
         self._supervisor: ReconnectSupervisor | None = None
         self._probe_task: asyncio.Task | None = None
-        # Test-injection bot and the optional forum group the agent log
-        # writes to (Casa's endpoint only: the log group is Casa's bot's).
+        # Test-injection bot.
         self._bot = bot
-        self.engagement_supergroup_id = (
-            engagement_supergroup_id if self.is_casa else None)
         # H5 (v0.52.0): bounded LRU of recently-seen webhook update_ids so a
         # Telegram redelivery (retry after a slow ACK) is processed at most
         # once. OrderedDict used as an insertion-ordered ring buffer.
@@ -1200,11 +1180,6 @@ class TelegramChannel(Channel):
         self._engagement_driver = None
         self._finalize_cancel = None
         self._session_registry = None   # wired in main() (Task 9); /new reset
-        # The agent log sink (agent_logs.AgentLogs), wired in main(); its
-        # check runs at every successful rebuild.
-        self._agent_logs = None
-        # The people already told, this boot, that the log group is read-only.
-        self._log_group_redirect_seen: set[int] = set()
         # The per-engagement lifecycle locks every resume owner of a job's
         # session takes (``engagement_lifecycle_lock``). Keyed by engagement
         # id; never held by a Telegram handler.
@@ -1396,8 +1371,7 @@ class TelegramChannel(Channel):
             if updated is not None:
                 app.add_handler(updated)
         # E-13: dispatch to handle_update, which routes by chat: the
-        # operator's direct chat to _handle (via _route_to_assistant), the
-        # log group to its read-only pointer.
+        # operator's direct chat to _handle (via _route_to_assistant).
         #
         # H5 (v0.52.0): block=False dispatches each update via
         # Application.create_task rather than awaiting it inline, so one
@@ -1542,12 +1516,6 @@ class TelegramChannel(Channel):
         self._typing_suspended = False
         self._typing_consecutive_failures = 0
 
-        # E-F (v0.30.0): the agent log's check MUST run after
-        # `self._app = app` (it needs the bot). Tied to every successful
-        # rebuild, so a first rebuild that failed on a transient network
-        # blip cannot leave the log off for the life of the process.
-        await self.check_agent_logs()
-
     def _observe_identity(self, app: Any) -> int:
         """The bot id ``initialize``'s ``getMe`` verified, reported to the
         transport (``on_identity``) and then recorded, in one synchronous step
@@ -1615,21 +1583,6 @@ class TelegramChannel(Channel):
         """Whether *addr* is a message of this bot — the only one that can
         edit it or reply to it."""
         return self.has_bot_id and addr.bot_id == self.bot_id
-
-    async def check_agent_logs(self) -> bool:
-        """Turn the agent log on when the forum group is configured and the
-        bot may manage its topics, and start its writer; otherwise it stays
-        off. Only Casa's own endpoint serves the log. Never raises."""
-        logs = self._agent_logs
-        if logs is None or self._app is None or not self.is_casa:
-            return False
-        try:
-            if await logs.check_enabled(self.bot, self.engagement_supergroup_id):
-                logs.start()
-                return True
-        except Exception as exc:  # noqa: BLE001 — the log is optional
-            logger.warning("agent log check failed: %s", exc)
-        return False
 
     # ------------------------------------------------------------------
     # Health probe + PTB error handler (spec 5.2 §4.2)
@@ -3492,7 +3445,7 @@ class TelegramChannel(Channel):
         self, update, _context: ContextTypes.DEFAULT_TYPE | None = None
     ) -> None:
         """PTB MessageHandler entry-point. Routes by chat_id: the operator's
-        direct chat to the assistant; the log group to its read-only pointer.
+        direct chat to the assistant; any other chat as below.
 
         The optional ``_context`` parameter exists so PTB's
         ``Application.process_update`` can call this callback with its
@@ -3512,19 +3465,12 @@ class TelegramChannel(Channel):
         if str(chat_id) == str(self.chat_id):
             return await self._route_to_assistant(update)
 
-        # 2) The log group is read-only: a person's message there, in any
-        #    topic, gets one pointer to the direct chat and reaches nothing
-        #    else.
-        if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
-            await self._redirect_from_log_group(msg)
-            return
-
-        # 3) Other chats. When telegram_chat_id is configured it is an
+        # 2) Other chats. When telegram_chat_id is configured it is an
         #    allowlist (DOCS.md: "Telegram chat ID to restrict messages
         #    to. Leave empty to accept all chats.") — drop updates from
         #    any other chat. Empty chat_id = accept all (documented opt-in).
-        #    Route 1 (the configured DM) and route 2 (the log group) already
-        #    returned above, so reaching here means this chat is neither.
+        #    Route 1 (the configured DM) already returned above, so reaching
+        #    here means this chat is not it.
         if str(self.chat_id or "").strip():
             logger.info(
                 "Dropping Telegram update from unauthorized chat_id=%s "
@@ -4303,12 +4249,6 @@ class TelegramChannel(Channel):
                     logger.warning("inbound-file reply failed: %s", type(exc).__name__)
                     return
 
-        if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
-            # Only a person's content draws the pointer. Chat notices (a topic
-            # Casa created, a member joining) are not something anyone sent.
-            if _carries_content(msg):
-                await self._redirect_from_log_group(msg)
-            return
         configured = str(self.chat_id or "").strip()
         if configured and str(chat_id) != configured:
             # The text path's rule, unchanged: an update from any other chat is
@@ -4689,34 +4629,6 @@ class TelegramChannel(Channel):
         else:
             await tell(f"I've kept {name}, but that task had already finished. "
                        "Tell me what you'd like done with it.")
-
-    async def _redirect_from_log_group(self, msg: Any) -> None:
-        """The log group is read-only. A person who writes there (text, a
-        command or a file, in any topic or in General) is pointed to the
-        direct chat once per boot, in the thread they wrote in; nothing they
-        wrote reaches a job, memory or a model. Bots are ignored. The
-        pointer is recorded with the log's posts, so retention deletes it
-        with them."""
-        user = getattr(msg, "from_user", None)
-        user_id = getattr(user, "id", None)
-        if user_id is None or getattr(user, "is_bot", False):
-            return
-        if user_id in self._log_group_redirect_seen:
-            return
-        self._log_group_redirect_seen.add(user_id)
-        kwargs: dict[str, Any] = {"chat_id": self.engagement_supergroup_id,
-                                  "text": _LOG_GROUP_REDIRECT}
-        thread_id = getattr(msg, "message_thread_id", None)
-        if isinstance(thread_id, int) and not isinstance(thread_id, bool):
-            kwargs["message_thread_id"] = thread_id
-        try:
-            sent = await self.bot.send_message(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("log group redirect send failed: %s", exc)
-            return
-        if self._agent_logs is not None:
-            self._agent_logs.note_post(kwargs["chat_id"],
-                                       getattr(sent, "message_id", None))
 
     # ------------------------------------------------------------------
     # E-12 (v0.37.0) Task 20 / v0.75.0 (W5/Sol B3,B4): inline-keyboard

@@ -36,9 +36,9 @@ _op_vault="$(bashio::config 'onepassword_default_vault')"
 [ "$_op_vault" = "null" ] && _op_vault=""
 export ONEPASSWORD_DEFAULT_VAULT="$_op_vault"
 unset _op_token _op_vault
-# #325: all three are optional (password?/str?/int?) — a cleared field makes
-# bashio yield the literal "null". Unnormalized, that is truthy for the token
-# gate in casa_core and boot-fatal for the supergroup id (int("null")).
+# #325: all are optional (password?/str?) — a cleared field makes bashio
+# yield the literal "null". Unnormalized, that is truthy for the token gate
+# in casa_core.
 _tg_token="$(bashio::config 'telegram_bot_token')"
 [ "$_tg_token" = "null" ] && _tg_token=""
 export TELEGRAM_BOT_TOKEN="$_tg_token"
@@ -48,10 +48,7 @@ export TELEGRAM_CHAT_ID="$_tg_chat_id"
 _tg_transport="$(bashio::config 'telegram_transport')"
 [ "$_tg_transport" = "null" ] && _tg_transport=""
 export TELEGRAM_TRANSPORT="${_tg_transport:-polling}"
-_tg_supergroup="$(bashio::config 'telegram_engagement_supergroup_id')"
-[ "$_tg_supergroup" = "null" ] && _tg_supergroup=""
-export TELEGRAM_ENGAGEMENT_SUPERGROUP_ID="$_tg_supergroup"
-unset _tg_token _tg_chat_id _tg_supergroup
+unset _tg_token _tg_chat_id
 # telegram_bot_api_base is optional (schema str?); bashio returns "null" when unset.
 _tg_api_base="$(bashio::config 'telegram_bot_api_base')"
 if [ "$_tg_api_base" != "null" ] && [ -n "$_tg_api_base" ]; then

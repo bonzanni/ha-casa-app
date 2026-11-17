@@ -1,7 +1,7 @@
 """What a specialist's session carries beyond its options.
 
 A specialist's session — one delegated run, or an agent's own conversation in
-its chat — gets three things its options builder does not give it:
+its chat — gets two things its options builder does not give it:
 
 * **The long-run compaction window.** A role whose requests are long
   conversations (``session.long_runs: true`` in its manifest) gets the
@@ -10,9 +10,8 @@ its chat — gets three things its options builder does not give it:
 * **Its pad** (:mod:`scratchpad`), keyed by the session: the pad tool, its
   grant and its prompt line. A stored-call turn runs Casa's one pinned call,
   so it has none. A long-run role keeps the pad's tool loaded up front.
-* **Its run in the agent's log** (a specialist's or the configurator's).
 
-:func:`session_env_and_pad` decides all three once, for one session; the
+:func:`session_env_and_pad` decides both once, for one session; the
 caller applies them to its options (:meth:`SessionExtras.apply`) and runs
 ``cleanup`` when the session's conversation ends.
 """
@@ -43,12 +42,11 @@ class PadHandle:
 @dataclasses.dataclass(frozen=True)
 class SessionExtras:
     """One session's extras: the env overrides for its options, its pad
-    (``None`` when it has none), its run in the agent's log, and the cleanup
-    that lets its pad go once nothing can resume the session."""
+    (``None`` when it has none), and the cleanup that lets its pad go once
+    nothing can resume the session."""
     env: dict
     pad: "PadHandle | None"
     cleanup: Callable[[], None]
-    log: Any
 
     def apply(self, options: Any, *, task: "str | None" = None,
               words: "str | None" = None) -> Any:
@@ -75,11 +73,8 @@ def release_pad(session_id: str) -> None:
 
 def session_env_and_pad(cfg: Any, origin: dict, *, run_id: str) -> SessionExtras:
     """The extras of the session *run_id* of the agent *cfg*, for a turn
-    whose origin is *origin*. The agent-log run starts here."""
-    import tools as tools_mod
-    log = tools_mod._DelegatedRunLog(cfg)
-    log.start()
+    whose origin is *origin*."""
     long = long_runs(cfg)
     pad = None if (origin or {}).get("stored_call") else PadHandle(run_id, eager=long)
     return SessionExtras(env=dict(LONG_RUN_ENV) if long else {}, pad=pad,
-                         cleanup=lambda: release_pad(run_id), log=log)
+                         cleanup=lambda: release_pad(run_id))

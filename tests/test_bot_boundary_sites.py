@@ -189,7 +189,6 @@ ORIGIN_SITES = {
     ("origin-builders", "agent.py", "_TurnCapture.__init__"): (1, NOISE, "reads the ingress kind (_origin_route), not a Telegram route"),
     ("origin-builders", "agent.py", "_current_origin_clearance"): (1, NOISE, "reads the ingress kind (_origin_route), not a Telegram route"),
     ("origin-builders", "agent.py", "_limit_stop_line"): (1, NOISE, "reads the ingress kind (_origin_route), not a Telegram route"),
-    ("origin-builders", "agent_logs.py", "AgentLogs._snapshot"): (1, NON_TELEGRAM, "the agent log group's own state, written through Casa's bot only"),
     ("origin-builders", "authz_grants.py", "ChallengeCoordinator.register_challenge"): (1, PRE_POST, "test_ask_scopes.py::test_a_turn_on_222_is_approved_on_222"),
     ("origin-builders", "bus.py", "MessageBus.run_agent_loop._dispatch"): (3, NOISE, "a bus response echoes its request's channel and context"),
     ("origin-builders", "bus.py", "MessageBus.unregister"): (1, NOISE, "a bus error response; no context"),
@@ -207,7 +206,6 @@ ORIGIN_SITES = {
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._on_non_text_message.reply"): (1, OUTBOUND, "a Bot API call on this endpoint's own bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._on_proposal_callback"): (1, INBOUND, "test_endpoint_isolation.py::test_a_proposal_naming_bot_111_is_refused_on_222"),
-    ("origin-builders", "channels/telegram.py", "TelegramChannel._redirect_from_log_group"): (1, OUTBOUND, "a Bot API call on this endpoint's own bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel.speak_first"): (2, FRESH, "test_own_chat_routing.py::test_the_greeting_is_casas_turn_carrying_the_opening"),
     ("origin-builders", "channels/voice/channel.py", "VoiceChannel._run_ws_utterance"): (2, FRESH, "test_bot_boundary_invariants.py::test_after_a_normal_reboot_a_turn_born_before_the_bot_connects_carries_its_id"),
     ("origin-builders", "channels/voice/channel.py", "VoiceChannel._sse_handler"): (2, FRESH, "test_bot_boundary_invariants.py::test_after_a_normal_reboot_a_turn_born_before_the_bot_connects_carries_its_id"),
@@ -335,7 +333,6 @@ IDENTITY_SITE_HITS = {
     "agent.py": {"build_restricted_webhook_options": 1},
     "agent_home.py": {"provision_agent_home": 1},
     "agent_lane.py": {"Fault": 1},
-    "agent_logs.py": {"LogKey": 1},
     "agent_registry.py": {"KnownAgent": 1},
     "approval_card.py": {"<module>": 1, "_cache_get": 2, "_cache_put": 1, "tool_fallback": 1},
     "ask_retirement.py": {"retirement_headline": 1},
@@ -394,7 +391,7 @@ IDENTITY_SITE_HITS = {
     "casa_core.py": {"main": 2},
     "configurator_continue.py": {"_continuation": 1},
     "channels/telegram.py": {
-        "TelegramChannel.__init__": 4, "TelegramChannel._ack_react": 2,
+        "TelegramChannel.__init__": 3, "TelegramChannel._ack_react": 2,
         "TelegramChannel._react_album": 1,
         "TelegramChannel._clear_typing_loop": 2,
         "TelegramChannel._dispatch_dm_turn": 3,
@@ -406,7 +403,7 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel._on_non_text_message": 5,
         "TelegramChannel._on_proposal_callback": 1, "TelegramChannel._quoted_address": 1,
         "TelegramChannel._quoted_task": 1, "TelegramChannel._record_post": 1,
-        "TelegramChannel._redirect_from_log_group": 2, "TelegramChannel._reply_note_for": 1,
+        "TelegramChannel._reply_note_for": 1,
         "TelegramChannel._resolve_file_address": 1,
         "TelegramChannel._route_task_file": 1, "TelegramChannel._route_task_file.tell": 1,
         "TelegramChannel._run_job_cancel": 1, "TelegramChannel._send_dormant_line": 1,
@@ -720,7 +717,7 @@ for _file in (
         "explanation_store.py", "scratchpad.py", "tool_descriptions.py"):
     IDENTITY_FILES[_file] = (SAFE, "install-global plugin, artifact and configuration state: "
                                    "no Telegram component")
-for _file in ("agent.py", "agent_logs.py", "casa_core.py", "job_registry.py",
+for _file in ("agent.py", "casa_core.py", "job_registry.py",
               "output_boundary.py", "ask_retirement.py"):
     IDENTITY_FILES[_file] = (NOISE, "arguments, fields and flags, not keys")
 
@@ -1189,7 +1186,6 @@ PERSISTED_WRITERS = {
                                       "test_casa_bot_id_store_round_trip",
     "own_voice_lifecycle.py": "test_own_voice_lifecycle.py::"
                               "test_an_unbound_bot_is_asked_again_after_a_restart",
-    "agent_logs.py": "stores the agent log group's posts, which only Casa's bot makes",
     "casa_core.py": "stores no Telegram record; it reads routes and addresses only",
     "reminders.py": "stores reminders; a reminder's route is decided when it fires",
     "specialist_install_consent.py": "stores consent acks; the card's message ids are "

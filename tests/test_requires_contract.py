@@ -730,7 +730,6 @@ class TestJobLaunchRequiresDenial:
         })
 
         tch = MagicMock()
-        tch.engagement_supergroup_id = -1001
         cm = MagicMock()
         cm.get.return_value = tch
         reg = MagicMock()

@@ -608,9 +608,7 @@ def conversation(world, tmp_path, monkeypatch):
         from tests.test_own_voice_conversation import _Client as Conv, _resident, _specialist
     except ImportError:
         from test_own_voice_conversation import _Client as Conv, _resident, _specialist
-    from agent_log_double import RecordingLogs
     monkeypatch.setattr(scratchpad, "PADS", scratchpad.PadStore())
-    monkeypatch.setattr(tools, "_agent_logs", RecordingLogs())
     Conv.reset()
     known = AgentRegistry.build(residents={"assistant": _resident()},
                                 specialists={"finance": _specialist()})

@@ -976,14 +976,11 @@ async def test_stop_work_is_refused_for_a_job_off_his_own_live_turn(env, jobs):
 
 def test_a_job_stop_work_ended_tells_its_narration_the_person_was_already_told():
     """The end notice of a job stopped through stop_work says he was told already, so the
-    narration need not say "Stopped." again where he asked; its log line stays the plain
-    outcome."""
+    narration need not say "Stopped." again where he asked."""
     assert tools_mod.STOP_WORK_CANCEL_TEXT == (
         "Cancelled by the operator.\n"
         "(Casa: he asked for this stop himself and was told it stopped. If he asked in this "
         "chat, what was said is enough: add nothing more, <silent/> is fine.)")
-    assert tools_mod._end_log_line("cancelled", tools_mod.STOP_WORK_CANCEL_TEXT) == (
-        "🛑 cancelled — Cancelled by the operator.")
 
 
 def test_stop_work_describes_jobs_and_browsing():

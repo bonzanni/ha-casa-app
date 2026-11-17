@@ -301,7 +301,6 @@ async def test_polling_states_the_endpoints_update_types(monkeypatch, casa, expe
     ch = TelegramChannel(bot_token="t", chat_id=str(OPERATOR), is_casa=casa,
                          default_agent="assistant" if casa else "finance",
                          known_bot_id=None if casa else 222)
-    ch.check_agent_logs = AsyncMock()
     await ch._rebuild()
     app.updater.start_polling.assert_awaited_once_with(allowed_updates=list(expected))
     # resuming after a paused restart states them again
@@ -319,7 +318,6 @@ async def test_a_webhook_states_the_endpoints_update_types(monkeypatch, casa, ex
                          known_bot_id=None if casa else 222,
                          webhook_url="https://casa.example",
                          webhook_secret_for=lambda bot: f"s-{bot}")
-    ch.check_agent_logs = AsyncMock()
     await ch._rebuild()
     kwargs = app.bot.set_webhook.await_args.kwargs
     assert kwargs["allowed_updates"] == list(expected)

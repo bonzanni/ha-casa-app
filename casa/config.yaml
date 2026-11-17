@@ -1,6 +1,6 @@
 name: "Casa"
 description: "An always-on fleet of Claude agents — assistant, butler, concierge and specialists you add"
-version: "0.373.2"
+version: "0.374.0"
 slug: casa
 url: https://github.com/bonzanni/ha-casa-app
 image: "ghcr.io/bonzanni/casa"
@@ -28,7 +28,6 @@ options:
   claude_oauth_token: ""
   telegram_bot_token: ""
   telegram_chat_id: ""
-  telegram_engagement_supergroup_id: 0
   telegram_bot_api_base: ""
   telegram_transport: "polling"
   onepassword_service_account_token: ""
@@ -63,7 +62,6 @@ schema:
   claude_oauth_token: password
   telegram_bot_token: password?
   telegram_chat_id: str?
-  telegram_engagement_supergroup_id: int?
   telegram_bot_api_base: "str?"
   telegram_transport: "list(polling|webhook)?"
   onepassword_service_account_token: password?

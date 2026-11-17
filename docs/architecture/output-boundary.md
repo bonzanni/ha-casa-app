@@ -77,8 +77,7 @@ withholds words in exactly two ruled cases, both scope properties in
 (#1252) the words written after a protected call that is waiting on the operator's approval,
 on a resident's DM, button or setup turn — on a resident's turn
 also after a synchronous delegate whose specialist left such a call waiting (#1207), whatever
-the CLI did to that delegate's result (#1274). The
-agent log withholds the same words in its producers, not in admission (INV-TG-014).
+the CLI did to that delegate's result (#1274).
 
 **Evidence is the runtime's own call, not an inference from the model's text.**
 `hooks.read_evidence_matchers(role)` adds `PostToolUse` and `PostToolUseFailure` matchers on
@@ -158,7 +157,7 @@ records it and, in doing so, answers who authored the words.
 the same way, but is outside the statement's failure value: Telegram allows the bot that one
 message only, so the refusal makes the edit Casa's failure line rather than no call at all.
 
-What it does not cover: the agent log, which is no channel method and carries no scope ([`agent-logs.md`](agent-logs.md)); the arrival replies and a plugin's delivered posts — the link
+What it does not cover: the arrival replies and a plugin's delivered posts — the link
 message, a message and a file, each Casa-composed from plugin-authored bytes — which the
 recorded lists class as notices; and the voice channel, which has not adopted the contract. The recorded lists
 catch an accidental bypass; they are not a sandbox against Casa deliberately fabricating an
@@ -246,9 +245,8 @@ the operator configured, and the caption cap stays meaningful.
 scheduled-delivery marker: the line is prepended to whatever that turn emits, and the
 channel's own rules decide what it may deliver.
 
-**An agent's log receives output.** The log's producers hand it plain text and apply no
-scope; an in-casa engagement's DM sends — `send_media` from a bound engagement — resolve
-the engagement's persisted note and nothing else.
+**An in-casa engagement sends to the DM.** Its sends — `send_media` from a bound engagement —
+resolve the engagement's persisted note and nothing else.
 
 ## Extension points
 

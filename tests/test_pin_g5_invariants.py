@@ -14,7 +14,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import casa_eval
-from agent_logs import AgentLogs
 from casa_core_middleware import cid_middleware
 from casa_eval.base import Suite, Tester
 from log_redact import RedactingFilter
@@ -126,20 +125,21 @@ def test_pin_inv_state_001_only_whitelist_admitted(tmp_path):
 
 async def test_pin_inv_state_002_missing_is_empty_corrupt_is_per_loader(tmp_path):
     """INV-STATE-002: a missing state file is a valid empty state; a corrupt
-    one is handled per-loader and inconsistently (the agent log's registry
-    archives .casabak, session registry renames .corrupt).
+    one is handled per-loader and inconsistently (Casa's bot-id store ignores
+    it and leaves it in place, session registry renames .corrupt).
 
-    Red case demonstrated: making the agent log's registry raise on a corrupt
-    file instead of archiving fails this test.
+    Red case demonstrated: making the bot-id store raise on a corrupt file, or
+    archive it aside, fails this test.
     """
-    missing = AgentLogs(display_name=str, path=str(tmp_path / "missing.json"))
-    assert (missing._topics, missing._posts) == ({}, [])
+    from channels.telegram_transport import CasaBotIdStore
+    missing = CasaBotIdStore(tmp_path / "missing.json", "111:token")
+    assert missing.known_id() is None
 
-    registry = tmp_path / "log-topics.json"
-    registry.write_text("{broken", encoding="utf-8")
-    corrupt = AgentLogs(display_name=str, path=str(registry))
-    assert (corrupt._topics, corrupt._posts) == ({}, [])
-    assert (tmp_path / "log-topics.json.casabak").exists()
+    store = tmp_path / "telegram-casa-bot.json"
+    store.write_text("{broken", encoding="utf-8")
+    assert CasaBotIdStore(store, "111:token").known_id() is None
+    assert store.read_text(encoding="utf-8") == "{broken"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["telegram-casa-bot.json"]
 
     sessions = tmp_path / "sessions.json"
     sessions.write_text("{broken", encoding="utf-8")

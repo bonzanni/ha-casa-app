@@ -32,8 +32,7 @@ turn loop itself, nor what a driver's underlying runtime does once started.
 **A delegated turn and an engagement are different things.** Delegation in its ordinary form
 is a task handed to a specialist that runs and returns — ephemeral. An engagement is a
 durable record, which outlives the call that created it. It talks to the operator in their
-direct chat ([`background-job-direct-chat.md`](background-job-direct-chat.md)) and, when a log
-group is set up, writes its work to its agent's log ([`agent-logs.md`](agent-logs.md)).
+direct chat ([`background-job-direct-chat.md`](background-job-direct-chat.md)).
 
 One launch path creates an engagement: `start_job` launches a background job through the
 one job launch owner (`tools.py::_launch_interactive_engagement`), as a `specialist` record

@@ -56,9 +56,8 @@ the appliance a household agent should be.
   - [1. Install the app](#1-install-the-app)
   - [2. Get your Claude token](#2-get-your-claude-token)
   - [3. Connect Telegram](#3-connect-telegram)
-  - [4. Agent logs *(optional)*](#4-agent-logs-optional--watch-your-agents-work)
-  - [5. Add voice *(optional)*](#5-add-voice-optional--talk-to-the-fleet-through-home-assistant-assist)
-  - [6. Reference secrets from 1Password *(optional)*](#6-reference-secrets-from-1password-optional--for-the-security-conscious)
+  - [4. Add voice *(optional)*](#4-add-voice-optional--talk-to-the-fleet-through-home-assistant-assist)
+  - [5. Reference secrets from 1Password *(optional)*](#5-reference-secrets-from-1password-optional--for-the-security-conscious)
   - [Requirements recap](#requirements-recap)
 - [The fleet](#the-fleet)
 - [Growing your own fleet](#growing-your-own-fleet)
@@ -86,9 +85,8 @@ the appliance a household agent should be.
 
 ### 💬 Channels
 
-- **Telegram** — streaming replies, slash commands, tappable buttons, background jobs you
-  steer from the same chat, and optional read-only logs of your agents' work in a forum
-  group.
+- **Telegram** — streaming replies, slash commands, tappable buttons, and background jobs
+  you steer from the same chat.
 - **Voice** — talk to the fleet from any room with an Assist satellite; slow answers still
   reach the right speaker after the fact.
 - **Not just humans** — an authenticated invoke API lets Home Assistant automations and
@@ -182,8 +180,8 @@ the appliance a household agent should be.
 
 Strictly speaking, Casa boots with just a Home Assistant installation that can run apps
 and a Claude token — but the fleet is meant to be reached, so a real install includes
-Telegram (steps 1–3). Agent logs, voice and secrets are optional extras you
-can add later, one step at a time.
+Telegram (steps 1–3). Voice and secrets are optional extras you can add later,
+one step at a time.
 
 ### 1. Install the app
 
@@ -217,23 +215,7 @@ actually talk to the fleet.
    protected tools and read private memory. Empty means an open bot where nobody is the
    operator.
 
-### 4. Agent logs *(optional — watch your agents work)*
-
-Everything that needs you — a job's start line and Cancel button, its questions, its
-result — comes to your 1:1 chat. If you also want to watch your agents work, Casa can
-keep a read-only log for each of them in a Telegram forum group:
-
-1. Create a new Telegram group (separate from your 1:1 chat with the bot) and enable
-   **Topics** in its settings — that makes it a forum supergroup.
-2. Add your Casa bot to it and promote it to admin with **Manage topics**.
-3. Find the group's chat ID (a negative number starting `-100…`): post a message in the
-   group and check `https://api.telegram.org/bot<TOKEN>/getUpdates`, or add
-   [@getidsbot](https://t.me/getidsbot) temporarily.
-4. Set `telegram_engagement_supergroup_id` to that ID.
-
-[Optional: agent logs](casa/DOCS.md#optional-agent-logs) has the details.
-
-### 5. Add voice *(optional — talk to the fleet through Home Assistant Assist)*
+### 4. Add voice *(optional — talk to the fleet through Home Assistant Assist)*
 
 1. Install the companion
    [`ha-casa-integration`](https://github.com/bonzanni/ha-casa-integration) as a custom
@@ -253,7 +235,7 @@ keep a read-only log for each of them in a Telegram forum group:
 
 Details, transports and troubleshooting: [voice pipeline](casa/DOCS.md#voice-pipeline).
 
-### 6. Reference secrets from 1Password *(optional — for the security-conscious)*
+### 5. Reference secrets from 1Password *(optional — for the security-conscious)*
 
 Instead of pasting tokens into the configuration, set
 `onepassword_service_account_token` (from a
@@ -268,8 +250,7 @@ startup; plaintext never lands in your config. Details:
   Home Assistant 2025.4 or newer, on an **amd64** (x86-64) or **aarch64** (arm64)
   machine.
 - A **Claude Max subscription** for the OAuth token the agents run on.
-- A **Telegram bot** (free, two minutes with @BotFather); optionally a forum group for
-  agent logs.
+- A **Telegram bot** (free, two minutes with @BotFather).
 - Optional, per the steps above: the companion voice integration and a 1Password service
   account.
 
@@ -334,7 +315,7 @@ The install and identity mechanics are documented in the
 Casa is one repository in a small constellation. Everything below is public. Specialists,
 plugins and personas install straight from these repos when you ask the assistant in chat,
 which hands the job to the configurator; the voice integration installs into Home Assistant
-([step 5](#5-add-voice-optional--talk-to-the-fleet-through-home-assistant-assist)).
+([step 4](#4-add-voice-optional--talk-to-the-fleet-through-home-assistant-assist)).
 
 ### Companion apps & integrations
 

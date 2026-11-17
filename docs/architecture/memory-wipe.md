@@ -125,8 +125,7 @@ session id yet. The driver refuses to resume a record so marked
 tool fence refuses its tool calls (`casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`).
 What the operator sees depends on what the job was doing:
 
-- **Working**: at boot its agent's log gets the usual `↻ Resuming after a restart`, the
-  resume is refused, and the job ends as an error, "could not be resumed after a restart",
+- **Working**: at boot the resume is refused, and the job ends as an error, "could not be resumed after a restart",
   with its last reported progress, if any (`background_jobs.py::JobRunner.resume_at_boot`).
 - **Waiting for the operator with nothing journaled**: boot leaves it alone, as it leaves
   any such job. Their next message is accepted, the resume it needs is refused, and the job

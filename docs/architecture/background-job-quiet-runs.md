@@ -14,8 +14,7 @@ interacts with the operator, which ends its quietness. What a job is is
 [`background-jobs.md`](background-jobs.md); how its session runs is
 [`background-job-session.md`](background-job-session.md). How a schedule starts a job is
 [`job-triggers.md`](job-triggers.md). How a plugin's delivered slots reach the operator is
-[`plugin-delivered-slots.md`](plugin-delivered-slots.md). Its agent log, when one is
-configured, is [`agent-logs.md`](agent-logs.md).
+[`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 
 ## Mental model
 
@@ -25,8 +24,7 @@ accounting check runs on its schedule, and most runs find nothing new. When the 
 `Started by: scheduled` in its prompts) says nothing in the direct chat, and its completed end
 is told to no one. The plugin speaks for itself instead: its `operator_message`,
 `operator_proposal`, `operator_file` and `operator_link` slots still reach the operator's DM. A
-run that finds something new can therefore still say so. Its agent log, when a log group is
-set up, is written like any job's — the log is read-only and needs no one.
+run that finds something new can therefore still say so.
 
 **Quiet is decided once, at launch, and recorded.** `background_jobs.initial_job_state`
 stamps `origin["job"]["quiet"]` when the declaration has the option and the starter is
@@ -61,7 +59,7 @@ schedule's fire, and a protected call binds to that operator as every job's does
 
 ## Contracts & invariants
 
-**INV-BGJOB-025**: A run of a job declaring `quietWhenScheduled` that the scheduler started posts nothing in the operator's direct chat except its plugin's delivered slots and Casa's tellings that need the operator — an approval challenge, a cancelled or failed end; a completed end is told to no one and arms no end notification; its agent log is written like any job's; every other run, and every job without the option, is told as before.
+**INV-BGJOB-025**: A run of a job declaring `quietWhenScheduled` that the scheduler started posts nothing in the operator's direct chat except its plugin's delivered slots and Casa's tellings that need the operator — an approval challenge, a cancelled or failed end; a completed end is told to no one and arms no end notification; every other run, and every job without the option, is told as before.
 
 A cancelled or failed quiet run is told as any scheduled job's end is: through the resident's
 notification, with its durable obligation and boot replay unchanged. A launch that fails on a

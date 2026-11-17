@@ -787,7 +787,6 @@ class TestInteractiveEngagementPermitRelease:
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_supergroup_id = -1001
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -838,7 +837,6 @@ class TestInteractiveEngagementPermitRelease:
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_supergroup_id = -1001
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -925,22 +923,6 @@ class TestInteractiveEngagementPermitRelease:
         snap = telem.snapshot("finance")
         assert snap.total_cost_usd == pytest.approx(0.07)
         assert snap.total_input_tokens == 30
-
-    async def test_a_long_specialist_turn_logs_every_message_whole(
-        self, monkeypatch,
-    ):
-        """A job's turn can run for hours: every message of it is logged
-        whole, one entry each, whatever the output cap; none is dropped."""
-        import specialist_limits as sl
-        from agent_log_double import RecordingLogs
-
-        monkeypatch.setattr(sl, "_MAX_OUTPUT_CHARS", 20)
-        logs = RecordingLogs()
-        parts = ["a" * 15, "b" * 15, "c" * 15]
-        await _run_one_turn(_engagement("e1", "specialist", "finance"),
-                            _FakeDriverClient(texts=parts), agent_logs=logs)
-
-        assert logs.texts() == parts
 
 
 def _engagement(eid, kind, role):

@@ -102,8 +102,7 @@ async def _handler_ctx(tmp_path, fake_telegram_bot):
         "executor", "configurator", "in_casa", "t",
         {"user_id": 77})
     client = _OneShotClient()
-    ch = TelegramChannel(known_bot_id=111, bot=fake_telegram_bot, chat_id=100,
-                         engagement_supergroup_id=-1001)
+    ch = TelegramChannel(known_bot_id=111, bot=fake_telegram_bot, chat_id=100)
     drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery,
                        lifecycle_lock=ch.engagement_lifecycle_lock)
@@ -144,12 +143,12 @@ class TestInboundIngressReservation:
         assert drv.inbound_unread_texts(rec.id) == []
         await drv.cancel(rec)
 
-    async def test_a_message_in_the_log_group_takes_nothing(
+    async def test_a_message_in_another_chat_takes_nothing(
         self, tmp_path, fake_telegram_bot,
     ):
-        """A message or a command written in the log group — even in the
-        thread an older version used as this job's topic — takes no ticket
-        and no reservation and never reaches the client."""
+        """A message or a command written in a group chat that is not the
+        configured direct chat — even in a forum thread — takes no ticket and
+        no reservation and never reaches the client."""
         ch, reg, rec, drv, client = await _handler_ctx(
             tmp_path, fake_telegram_bot)
         for text in ("/help", "please reconsider"):
@@ -244,8 +243,7 @@ class TestInCasaCompletionInboundGate:
         )
         agent_mod.active_engagement_driver = drv
 
-        ch = TelegramChannel(known_bot_id=111, bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
+        ch = TelegramChannel(known_bot_id=111, bot=fake_telegram_bot, chat_id=100)
         ch._engagement_registry = reg
         ch._engagement_driver = drv
         return ch, reg, rec, drv, client, tch

@@ -909,7 +909,7 @@ class TestDeliverSystemTurn:
         reg = engagement_fixture.registry
         ch = TelegramChannel(
             known_bot_id=111,
-            bot=fake_telegram_bot, chat_id=100, engagement_supergroup_id=-1001,
+            bot=fake_telegram_bot, chat_id=100,
         )
         ch._engagement_registry = reg
         drv = InCasaDriver(

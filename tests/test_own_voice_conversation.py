@@ -6,8 +6,8 @@ resident and on the same session machinery: its session key is
 ``(telegram, role, chat)``, its turns go through the warm pool and the resume
 decision, ``/new`` ends only its own session. Its surface is the specialist's,
 the one its tasks get (``tools._build_specialist_options``), with the session
-extras a task gets (``specialist_session``): the long-run compaction window,
-its pad, its run in the agent's log. What it writes is captured as the
+extras a task gets (``specialist_session``): the long-run compaction window
+and its pad. What it writes is captured as the
 specialist's. Casa's notes for its chat are drained into its next turn, once.
 
 Two bots over one transport (``two_endpoints``): 111 is Casa's (Ellen,
@@ -29,7 +29,6 @@ import scratchpad
 import specialist_session
 import tools as tools_mod
 from agent import Agent
-from agent_logs import LogKey
 from bus import BusMessage, MessageType
 from config import (
     AgentConfig, CharacterConfig, MemoryConfig, SessionConfig, ToolsConfig,
@@ -47,7 +46,7 @@ from test_agent_process import (
 )
 from test_memory_capture import events, mem  # noqa: F401 — fixture
 from test_scratchpad import pads  # noqa: F401 — fixture
-from test_specialist_session import bindings, logs  # noqa: F401 — fixtures
+from test_specialist_session import bindings  # noqa: F401 — fixtures
 from two_endpoints import CASA_BOT, FINANCE_BOT, OPERATOR, build_two_endpoints, calls
 
 try:
@@ -131,7 +130,7 @@ def _dm(text, *, role="finance", bot=FINANCE_BOT, mid="7", **context):
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch, pads, logs, bindings):  # noqa: F811
+def world(tmp_path, monkeypatch, pads, bindings):  # noqa: F811
     """Alex's conversation and Ellen's, over one session registry and the
     two-bot transport; Alex has an inbox."""
     _Client.reset()
@@ -159,7 +158,7 @@ def world(tmp_path, monkeypatch, pads, logs, bindings):  # noqa: F811
     ellen = _agent(_resident())
     with patch("sdk_client_pool._default_make_client", _Client):
         yield SimpleNamespace(alex=alex, ellen=ellen, registry=registry,
-                              eps=eps, agent=_agent, pads=pads, logs=logs)
+                              eps=eps, agent=_agent, pads=pads)
     agent_inbox._reset_for_tests()
     chat_notes.reset()
 
@@ -263,9 +262,8 @@ async def test_the_conversation_has_the_specialists_surface_not_the_residents(wo
 @pytest.mark.parametrize("long_runs", [True, False])
 async def test_the_conversation_has_its_tasks_session_extras(world, monkeypatch, long_runs):
     """Fido's direct conversation gets the extras his task gets: the
-    compaction window when his runs are long, the pad (eager then) keyed by
-    the conversation's session key, and a run in his agent's log with its
-    steps and words. A conversation turn is never a task."""
+    compaction window when his runs are long and the pad (eager then) keyed by
+    the conversation's session key. A conversation turn is never a task."""
     fido = world.agent(_specialist("browser", "Fido", long_runs=long_runs))
     seen: list = []
     real = specialist_session.session_env_and_pad
@@ -286,9 +284,6 @@ async def test_the_conversation_has_its_tasks_session_extras(world, monkeypatch,
     (origin, run_id), = seen
     assert run_id == key
     assert task_delivery(origin) == (False, None)
-    from drivers.turn_progress import step_log_line
-    assert world.logs.texts(LogKey("agent", "browser")) == [
-        "▶ started", step_log_line("Read"), "noted", "✓ answered"]
 
     options = _Client.made[0]
     task = real(fido.config, {}, run_id="S").apply(
@@ -300,16 +295,6 @@ async def test_the_conversation_has_its_tasks_session_extras(world, monkeypatch,
     assert (pad.get("alwaysLoad") is True) is long_runs
     assert scratchpad.GRANT in options.allowed_tools
     assert scratchpad.PROMPT_LINE in options.system_prompt
-
-
-async def test_a_failed_turn_ends_its_run_as_aborted(world, monkeypatch):
-    """The run in the agent's log ends ``⚠️ aborted`` when the turn fails."""
-    class _Broken(_Client):
-        async def query(self, text):
-            raise ValueError("boom")
-    with patch("sdk_client_pool._default_make_client", _Broken):
-        await world.alex.handle_message(_dm("hi"))
-    assert world.logs.texts(LogKey("agent", "finance")) == ["▶ started", "⚠️ aborted"]
 
 
 async def test_what_the_agent_writes_is_captured_as_the_specialists(world, mem):  # noqa: F811

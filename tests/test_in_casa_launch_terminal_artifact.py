@@ -30,8 +30,7 @@ class ScriptedCutoffClient(TurnScriptedSession):
     Yields one AssistantMessage carrying a ToolUseBlock and one UserMessage
     carrying its ToolResultBlock, then ends the iteration — exactly what the
     pinned SDK produces when the read task's ``finally`` sends ``end`` before
-    any ``ResultMessage`` arrives. No text blocks, so no words are logged
-    either.
+    any ``ResultMessage`` arrives. No text blocks.
     """
 
     frames_yielded = 0
@@ -112,35 +111,25 @@ class ScriptedCompleteClient(ScriptedCutoffClient):
 # --- the harness ------------------------------------------------------------
 
 class _Probe:
-    """Ordered, counted observation of every operator-visible effect. The
-    job's log is one of them: a ``⚠️`` line is a notice, and each logged word
-    entry counts as one ``finalize`` (the turn's words were put out)."""
+    """Ordered, counted observation of the launch's effects: each outcome of
+    the launch-death reporter (``reports``, by result name), each turn end the
+    driver hands its turn-end handler, the registry's terminal writes and the
+    driver teardowns."""
 
     def __init__(self):
         self.events: list[str] = []
-        self.notice_texts: list[str] = []
-        self.log_lines: list[str] = []
+        self.reports: list[str] = []
         self.transition_calls: list[tuple] = []
         self.mark_error_calls: list[tuple] = []
         self.driver_cancel_calls = 0
-        self.finalize_count = 0
+        self.turn_ends = 0
 
-
-class _ProbeLogs:
-    """The agent log sink, observed by a probe."""
-
-    enabled = True
-
-    def __init__(self, probe: _Probe) -> None:
-        self.probe = probe
-
-    def log(self, key, run, text):
-        self.probe.log_lines.append(text)
-        if text.startswith("⚠️"):
-            self.probe.events.append("notice")
-            self.probe.notice_texts.append(text)
-        elif not text.startswith(("🔧", "▶", "✅", "🛑", "❌", "📊", "↻")):
-            self.probe.finalize_count += 1
+    @property
+    def told(self) -> list[str]:
+        """The reporter outcomes that carry something to tell: a death it
+        reported, or a terminal write that did not persist. A lost race is
+        the winner's to tell."""
+        return [r for r in self.reports if r != "ALREADY_TERMINAL"]
 
 
 def _build(tmp_path, monkeypatch, probe, client_cls):
@@ -183,11 +172,13 @@ def _build(tmp_path, monkeypatch, probe, client_cls):
     monkeypatch.setattr(registry, "try_transition_terminal", spy_transition)
     monkeypatch.setattr(registry, "mark_error", spy_mark_error)
 
-    logs = _ProbeLogs(probe)
+    def _turn_ended(rec, result, api_error):
+        probe.turn_ends += 1
+
     driver = InCasaDriver(
-        agent_logs=logs,
         persist_session_id=registry.persist_session_id,
         record_lookup=registry.get,
+        on_turn_end=_turn_ended,
     )
     real_cancel = driver.cancel
 
@@ -200,9 +191,7 @@ def _build(tmp_path, monkeypatch, probe, client_cls):
         agent_mod, "active_engagement_driver", driver, raising=False,
     )
 
-    # No forum group is configured: a job never needs one.
     channel = MagicMock()
-    channel.engagement_supergroup_id = 0
     channel.bot = MagicMock()
 
     cm = MagicMock()
@@ -215,8 +204,18 @@ def _build(tmp_path, monkeypatch, probe, client_cls):
         specialist_registry=specialist_reg, mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=registry,
         agent_role_map={"assistant": _make_assistant_cfg()},
-        agent_logs=logs,
     )
+
+    import tools as tools_mod
+    real_report = tools_mod._report_launch_death
+
+    async def spy_report(*a, **kw):
+        result = await real_report(*a, **kw)
+        probe.reports.append(result.name)
+        probe.events.append("report")
+        return result
+
+    monkeypatch.setattr(tools_mod, "_report_launch_death", spy_report)
     return launch_job, registry, channel, driver
 
 
@@ -247,7 +246,7 @@ class TestInCasaLaunchTerminalArtifact:
         assert payload.get("status") == "pending", payload
 
         async def _turn_ended():
-            while probe.finalize_count < 1:
+            while probe.turn_ends < 1:
                 await asyncio.sleep(0.001)
         await asyncio.wait_for(_turn_ended(), 5)
 
@@ -257,10 +256,7 @@ class TestInCasaLaunchTerminalArtifact:
         assert probe.transition_calls == []
         assert probe.mark_error_calls == []
         assert probe.driver_cancel_calls == 0
-        assert probe.finalize_count == 1
-        # The job's log: its start, the step and the words; no notice.
-        assert probe.log_lines == ["▶ started", "🔧 Reading files",
-                                   "I read the file; what next?"]
-        assert probe.notice_texts == []
+        assert probe.turn_ends == 1
+        assert probe.told == []
         assert driver.is_alive(registry.get(created_id)) is True
         await driver.cancel(registry.get(created_id))

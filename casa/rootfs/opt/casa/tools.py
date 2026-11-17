@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
-    from datetime import datetime
     from trigger_registry import TriggerRegistry
 
 from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use
@@ -149,10 +148,6 @@ _specialist_telemetry: "specialist_limits.SpecialistTelemetry | None" = None
 # construction sites) — every check degrades to a no-op.
 _agent_spawn_limiter: "specialist_limits.AgentSpawnLimiter | None" = None
 _voice_job_route_cap = 5
-# The agent log sink (agent_logs.AgentLogs): each specialist's and plugin
-# worker's work, posted to its own topic in an optional forum group. ``None``
-# (tests, no Telegram) means nothing is logged.
-_agent_logs = None
 engagement_var: ContextVar[EngagementRecord | None] = ContextVar(
     "engagement_var", default=None,
 )
@@ -221,7 +216,6 @@ def init_tools(
     specialist_telemetry=None,            # Task 6 (spec §4.6)
     agent_spawn_limiter=None,             # #283 — occupancy-debt spawn cap
     voice_job_route_cap: int = 5,
-    agent_logs=None,
 ) -> None:
     """Initialize module-level references used by tool implementations.
 
@@ -248,15 +242,13 @@ def init_tools(
     disables both — ``_prelaunch`` skips the concurrency gate entirely and
     ``_run_delegated_agent`` skips cost/usage recording, matching the
     pre-Task-6 unbounded behaviour for every caller that doesn't wire them.
-
-    ``agent_logs`` is the agent log sink; ``None`` logs nothing.
     """
     global _channel_manager, _bus, _specialist_registry, _mcp_registry, \
         _agent_role_map, _agent_registry, _trigger_registry, \
         _engagement_registry, _runtime, \
         _specialist_limiter, _specialist_telemetry, \
         _agent_spawn_limiter, \
-        _voice_job_route_cap, _agent_logs  # noqa: PLW0603
+        _voice_job_route_cap  # noqa: PLW0603
     if (isinstance(voice_job_route_cap, bool)
             or not isinstance(voice_job_route_cap, int)
             or not 1 <= voice_job_route_cap <= 20):
@@ -278,13 +270,6 @@ def init_tools(
     _specialist_telemetry = specialist_telemetry
     _agent_spawn_limiter = agent_spawn_limiter
     _voice_job_route_cap = voice_job_route_cap
-    _agent_logs = agent_logs
-
-
-def _job_log(rec: Any, text: str) -> None:
-    """One line in a job's agent log (see :func:`background_jobs.log_job_line`).
-    Synchronous and never raises."""
-    background_jobs.log_job_line(_agent_logs, rec, text)
 
 
 def build_agent_role_map(residents: dict, specialists: dict, *,
@@ -4401,78 +4386,11 @@ def _int_or_none(value: object) -> int | None:
     return value
 
 
-class _DelegatedRunLog:
-    """A delegated run of a specialist or the configurator, in that agent's
-    log, named ``Request HH:MM`` by its start in Casa's local time:
-    ``▶ started`` at its start, its words and its main loop's steps as they
-    come, and ``✓ answered`` or ``⚠️ aborted`` at its end. Any other run (a
-    resident's) logs nothing.
-
-    #1207: words written after a call still waiting on the operator's
-    approval are held; they are logged when a consume of the same grant
-    clears the cut, and never when the run ends with the cut in place. Steps
-    are not held: a step names the tool, never its outcome. Silence markers
-    are not logged (``output_boundary.without_sentinels``). Every call is
-    synchronous and never waits on Telegram."""
-
-    def __init__(self, cfg: Any, *, started: "datetime | None" = None) -> None:
-        from datetime import datetime
-        from agent_logs import LogKey
-        from timekeeping import resolve_tz
-        role = getattr(cfg, "role", None)
-        self._key = (LogKey("agent", role)
-                     if getattr(cfg, "kind", "") in ("specialist", "executor")
-                     and isinstance(role, str) and role else None)
-        when = started if started is not None else datetime.now(resolve_tz())
-        self._run = f"Request {when:%H:%M}"
-        self._logged = 0
-        self._ended = False
-
-    def _log(self, text: str) -> None:
-        if self._key is not None and _agent_logs is not None:
-            _agent_logs.log(self._key, self._run, text)
-
-    def start(self) -> None:
-        self._log("▶ started")
-
-    def words(self, messages: list, cut: "int | None") -> None:
-        """Log the words not yet logged, unless an approval holds them."""
-        if cut is None:
-            self._flush(messages, len(messages))
-
-    def step(self, tool_name: str) -> None:
-        from drivers.turn_progress import step_log_line
-        self._log(step_log_line(tool_name))
-
-    def close(self, messages: list, cut: "int | None") -> None:
-        """At the run's exit: the words before any call still waiting on
-        approval; what was written after it is never logged."""
-        self._flush(messages, len(messages) if cut is None else cut)
-
-    def end(self, answered: bool) -> None:
-        if not self._ended:
-            self._ended = True
-            self._log("✓ answered" if answered else "⚠️ aborted")
-
-    def _flush(self, messages: list, stop: int) -> None:
-        # Words as the operator would see them: a leading or closing run of
-        # silence markers is dropped, and a message of markers alone adds no line.
-        from output_boundary import without_sentinels
-        for text in messages[self._logged:stop]:
-            text = without_sentinels(text)
-            if text:
-                self._log(text)
-        self._logged = max(self._logged, stop)
-
-
 def _configurator_step_line(cfg: Any, origin: dict) -> Any:
     """A step line for a configurator run (kind ``executor``), posted
     silently to the operator's DM and deleted when the run ends; ``None`` for
-    any other run, when the DM is unavailable, or when the agent log is on
-    (the run's steps go to the configurator's log instead)."""
+    any other run or when the DM is unavailable."""
     if getattr(cfg, "kind", "") != "executor":
-        return None
-    if _agent_logs is not None and _agent_logs.enabled:
         return None
     # Casa's own line, through Casa's bot in the operator's direct chat.
     channel = _casa_endpoint()
@@ -5182,11 +5100,8 @@ async def _run_delegated_turn(
     # The configurator's live step line in the
     # operator's DM, removed when the run ends.
     _steps = _configurator_step_line(cfg, parent)
-    # The session's extras: the run in its agent's log (a specialist's or the
-    # configurator's), the long-run compaction window and the pad.
+    # The session's extras: the long-run compaction window and the pad.
     _extras = specialist_session.session_env_and_pad(cfg, child_origin, run_id=run.session_id)
-    _log = _extras.log
-    _raised = False
 
     def _options_and_binding():
         res = resolution if resolution is not None \
@@ -5294,8 +5209,6 @@ async def _run_delegated_turn(
                         if msg_text:
                             text += ("\n\n" if text else "") + msg_text
                             messages.append(msg_text)
-                            _log.words(messages, approval_cut.cut)
-                        _main_loop = getattr(sdk_msg, "parent_tool_use_id", None) is None
                         for block in getattr(sdk_msg, "content", []):
                             if isinstance(block, ToolUseBlock):
                                 tool_calls[getattr(block, "id", "")] = (
@@ -5311,8 +5224,6 @@ async def _run_delegated_turn(
                                     from drivers.turn_progress import activity_for_tool
                                     _steps.step(activity_for_tool(
                                         str(getattr(block, "name", ""))))
-                                if _main_loop:
-                                    _log.step(str(getattr(block, "name", "")))
                     elif isinstance(sdk_msg, UserMessage):
                         if approval_scope is not None:
                             for block in getattr(sdk_msg, "content", None) or []:
@@ -5320,9 +5231,6 @@ async def _run_delegated_turn(
                                     approval_cut.observe(
                                         getattr(block, "tool_use_id", ""),
                                         approval_scope.approvals, len(messages))
-                            # a consume that cleared the cut releases the
-                            # words held behind it
-                            _log.words(messages, approval_cut.cut)
                         if _settle_setup_from_delegated_results(
                                 cfg, sdk_msg, tool_calls, binding):
                             await _refresh_health_after_setup_cleared()
@@ -5331,15 +5239,9 @@ async def _run_delegated_turn(
                         # below (in `finally`, so it's recorded even when the
                         # client raises before the loop reaches a ResultMessage).
                         result_msg = sdk_msg
-    except BaseException:
-        _raised = True
-        raise
     finally:
         if _steps is not None:
             _steps.finish(ok=True)        # the line goes as the answer comes
-        _log.close(messages, approval_cut.cut)
-        if _raised:
-            _log.end(False)
         # #1207: the grants this run left waiting on the operator, for a
         # synchronous launcher's fold — published however the run ended (an
         # abort or a raise leaves the keyboard up all the same). Only calls
@@ -5427,7 +5329,6 @@ async def _run_delegated_turn(
             "delegated agent %s run ended by an API error kind=%s",
             _known_role(getattr(cfg, "role", None)), _api_error.value,
         )
-        _log.end(False)
         raise ApiErrorTurn(_api_error)
 
     # Task 6 (spec §4.6): output bounding is applied by the CALLER (see
@@ -5493,9 +5394,7 @@ async def _run_delegated_turn(
             "delegated agent %s run ended by a terminal API fault kind=%s",
             _known_role(getattr(cfg, "role", None)), _caller_fault.value,
         )
-        _log.end(False)
         raise ApiErrorTurn(_caller_fault)
-    _log.end(not output.run_aborted)
 
     # The answer is captured at completion — the whole live fold — only when
     # the run's own evidence says it is complete (INV-MEM-016).
@@ -7850,7 +7749,6 @@ async def _launch_interactive_engagement(
         # driver.start() succeeds (see the `owned = None` there).
         # A job talks to the operator in their direct chat: it needs the
         # Telegram channel, and a request that came from elsewhere is refused.
-        # An optional log group adds the agent's log; jobs never need it.
         if _channel_manager is None:
             return _result({"status": "error", "kind": "no_channel_manager",
                             "message": "channel manager missing"})
@@ -8090,7 +7988,6 @@ async def _launch_interactive_engagement(
             # first means it is never written. From here the session's reader
             # owns the job.
             driver.enqueue_brief(rec, prompt)
-            _job_log(rec, "▶ started")
 
             owned = None  # __TRANSFER_INTERACTIVE__
             _record_launch_safe(agent_name)
@@ -8313,10 +8210,7 @@ async def start_job(args: dict) -> dict:
     if payload.get("status") == "pending":
         payload.update(
             job=job.qualified_name, title=job.title, agent=role,
-            message=f"Started {job.title}." + (
-                f" Progress appears in {_display_name_for_role(role)}'s "
-                + ("plugins log." if host.kind == "resident" else "log.")
-                if _agent_logs is not None and _agent_logs.enabled else ""))
+            message=f"Started {job.title}.")
         return _result(payload)
     return _result(payload) if self_host else result
 
@@ -10896,11 +10790,8 @@ async def _report_launch_death(
             "engagement reported itself; nothing to tell", rec.id[:8])
         return LaunchDeathResult.ALREADY_TERMINAL
 
-    # One line in the job's log. Inbound messages that die with the launch
-    # are not listed here: the journal's terminal branch below tells each one
-    # once.
-    _job_log(rec, "⚠️ stopped before reporting a result")
-
+    # Inbound messages that die with the launch are told by the journal's
+    # terminal branch below, each one once.
     await _cancel_driver_bounded(driver, rec)
     await _settle_job_journal(rec, driver)
     logger.warning(
@@ -11159,8 +11050,7 @@ async def _tell_engager_launch_outcome(
     ``REPORTED``: the record is terminal with the obligation armed; send the
     fact of the outcome (status error, the fault's kind and detail, no result)
     with the acknowledgement that clears the obligation — a lost live send is
-    replayed at boot. ``PERSIST_FAILED``: the record is LIVE; write one line
-    in the job's log saying so, and send an
+    replayed at boot. ``PERSIST_FAILED``: the record is LIVE; send an
     UNARMED notice of kind ``launch_outcome_uncommitted`` (there is no terminal
     write to carry an obligation). ``ALREADY_TERMINAL``: the winner owns the
     telling; nothing.
@@ -11169,7 +11059,6 @@ async def _tell_engager_launch_outcome(
         return
     origin = dict(getattr(rec, "origin", None) or {})
     if outcome is LaunchDeathResult.PERSIST_FAILED:
-        _job_log(rec, "⚠️ could not be recorded")
         complete = DelegationComplete(
             delegation_id=rec.id, agent=rec.role_or_type, status="error",
             kind=LAUNCH_UNCOMMITTED_KIND,
@@ -11624,9 +11513,6 @@ async def _finalize_engagement(
                             not _told_nowhere(engagement.origin, outcome)),
     }
 
-    # The job's log ends with its outcome and the first line of its summary.
-    _job_log(engagement, _end_log_line(outcome, text))
-
     # #632: everything from driver teardown to the finalized log runs in
     # _finalize_engagement_tail. On the in_casa self-emit path this funnel's
     # host task is one of the SDK client's own child tasks, and the teardown
@@ -11689,20 +11575,6 @@ def _with_job_cost(text: str, frozen: dict, now: float,
         line += f" · ${cost:.2f}"
     line += " " + JOB_COST_NOTE
     return f"{text}\n\n{line}" if text else line
-
-
-_END_LOG_MARKS = {"completed": "✅", "cancelled": "🛑", "error": "❌"}
-_END_LOG_SUMMARY_MAX = 300
-
-
-def _end_log_line(outcome: str, text: str) -> str:
-    """A job's last log line: its outcome, and the first line of its summary
-    cut to 300 characters."""
-    line = f"{_END_LOG_MARKS.get(outcome, '❌')} {outcome}"
-    first = ((text or "").strip().splitlines() or [""])[0].strip()
-    if len(first) > _END_LOG_SUMMARY_MAX:
-        first = first[:_END_LOG_SUMMARY_MAX - 1] + "…"
-    return f"{line} — {first}" if first else line
 
 
 def _told_nowhere(origin: Any, outcome: str) -> bool:
@@ -12013,11 +11885,10 @@ _UNREAD_REFUSAL = ("An operator message reaches you at your next step. Read "
 @tool(
     "report_job_progress",
     "Record a one-line progress note for this background job, any time "
-    "something is worth telling; it appears in your log when a log group is "
-    "set up. Optional: the job runs and finishes "
-    "whether or not you call it. `done`/`remaining` are optional and only "
-    "shown to the operator: pass them when this work has a real unit and a "
-    "known total.",
+    "something is worth telling; Casa keeps the latest note and reports it if "
+    "the job is cancelled or fails. Optional: the job runs and finishes "
+    "whether or not you call it. `done`/`remaining` are optional: pass them "
+    "when this work has a real unit and a known total.",
     {"type": "object", "properties": {
         "summary": {"type": "string"},
         "done": {"type": "integer", "minimum": 0},
@@ -12042,12 +11913,6 @@ async def report_job_progress(args: dict) -> dict:
     # line, a failed end) and the turn-end guard's step-ceiling rule read it.
     rec.origin["job"]["last_summary"] = summary
     background_jobs.note_progress(rec.id)
-    text = f"📊 {summary}"
-    if done is not None:
-        text += f" · {done} done"
-    if remaining is not None:
-        text += f" · {remaining} left"
-    _job_log(rec, text)
     await _engagement_registry.persist_origin(rec.id)
     return _result({"ok": True})
 

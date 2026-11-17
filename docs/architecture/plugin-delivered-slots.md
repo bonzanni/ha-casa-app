@@ -31,8 +31,7 @@ supplied by the plugin, with the caption beneath. That delivery is the executing
 own chat — the resident's chat for the resident's own plugin, an agent's own open chat for
 its tasks and its conversation — fixed when the task was born, and a call with none is
 refused before it runs ([`own-voice.md`](own-voice.md)); in an agent's own chat the label
-line is left out (`label_at`), the chat being the agent. It is never the agent's log —
-the log is read-only and best effort, and its posts are deleted after about two days.
+line is left out (`label_at`), the chat being the agent.
 Proven delivery replaces the result with a receipt (`casa_delivery.status` is
 `delivered`, every producer field and the reference intact); anything short of proven
 delivery — the channel down, a refused send, an exception, a bound of twenty seconds —
@@ -152,7 +151,7 @@ deposit is atomic and once — a taken reference is used, so `arm`, `redeem` and
 take all refuse it — and the broker's three matchers carry an explicit sixty-second timeout.
 
 What it does not cover: Casa's process logs. The boundary is the model — keeping the link
-out of the model's context is what stops it being echoed into whatever chat or agent log the
+out of the model's context is what stops it being echoed into whatever chat the
 model's words reach — not the process log. A sign-in or approval link is not a bearer credential: opening
 it still requires the account holder's own login at the provider, it expires, and it
 authorises once. So the client library's own loggers (request parameters at debug level,

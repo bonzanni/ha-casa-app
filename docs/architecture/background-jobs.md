@@ -19,8 +19,7 @@ How many jobs of one plugin may run at once is
 its admission, completion gate and finalization — is described by
 [`engagements.md`](engagements.md) and the documents it routes to; the per-role engagement
 slot is in [`delegation.md`](delegation.md). What a job puts in the operator's direct chat is
-[`background-job-direct-chat.md`](background-job-direct-chat.md); what it writes in its
-agent's log, when a log group is set up, is [`agent-logs.md`](agent-logs.md).
+[`background-job-direct-chat.md`](background-job-direct-chat.md).
 
 ## Mental model
 
@@ -60,7 +59,7 @@ supplies no resident persona or memory. Plugin authorization and result-contract
 apply. Its working directory is `/data/engagements/<id>/plugin-job`.
 
 Casa then writes the brief and lets the job work: one long session that keeps going until
-the job calls `emit_completion`. It posts progress with `report_job_progress` when it has
+the job calls `emit_completion`. It records progress with `report_job_progress` when it has
 something worth telling, and a specialist's job asks the operator through `ask_operator`.
 The operator's replies in their direct chat to the job's posts are written into the running
 session as they arrive. When a turn ends without the job
@@ -135,18 +134,16 @@ slot. Resident-plugin launches keep input bounds, depth, the setup-turn restrict
 spawn cap and channel checks, but do not use the delegate ACL, specialist registry or
 specialist slot. Both use `_launch_interactive_engagement` for record creation, driver
 opening and the detached launch owner. A successful start returns its `pending` envelope
-plus the job, title, host role and a one-line message, which names the agent's log
-(`<Agent>'s log`, or its `plugins log` for a resident's plugin worker) only while the log is
-on.
+plus the job, title, host role and a one-line message (`Started <title>.`).
 
 `report_job_progress(summary, done=None, remaining=None)` is granted only to a job
 engagement's session and may be called at any time in a live job. Outside one it returns
 `not_a_job`; a summary that is not a string, or a negative or boolean count, returns
 `invalid_arguments`. It records the summary's first line (at most 300 characters) as the
-job's `last_summary`, marks progress for the step-ceiling rule, logs
-`📊 <summary> · <done> done · <remaining> left` in the agent's log (counts only when given —
-they are the worker's own unit and decide nothing) and persists `origin["job"]`. Nothing is
-posted in the direct chat.
+job's `last_summary`, marks progress for the step-ceiling rule and persists `origin["job"]`;
+Casa reports the latest summary if the job is cancelled or fails. The counts are checked and
+otherwise unused — they are the worker's own unit and decide nothing. Nothing is posted in the
+direct chat.
 
 Resume options rebuild the job session and its grants from `origin["job"]`, so a resumed
 session runs exactly as the launched one did. Plugin workers additionally rebuild from the

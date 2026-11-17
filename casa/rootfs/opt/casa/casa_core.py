@@ -437,27 +437,6 @@ def _env_int_or(name: str, default: int, *, min_value: int = 0,
     return value
 
 
-def _telegram_supergroup_id_from_env(
-        env: dict[str, str] | None = None) -> int:
-    """Parse TELEGRAM_ENGAGEMENT_SUPERGROUP_ID; garbage → 0 (disabled).
-
-    Not :func:`_env_int_or`: real Telegram supergroup IDs are negative
-    (-100xxxxxxxxxx) and that helper's ``min_value`` clamp would silently
-    zero them. #325 defence-in-depth behind svc-casa/run's "null"
-    normalization — a stray "null" here must not be boot-fatal.
-    """
-    env = env if env is not None else os.environ
-    raw = env.get("TELEGRAM_ENGAGEMENT_SUPERGROUP_ID", "")
-    try:
-        return int(raw or "0")
-    except ValueError:
-        logger.warning(
-            "Invalid TELEGRAM_ENGAGEMENT_SUPERGROUP_ID=%r; "
-            "engagement supergroup disabled", raw,
-        )
-        return 0
-
-
 def _env_float_or(name: str, default: float, *, min_value: float = 0.0,
                    env: dict[str, str] | None = None) -> float:
     """Read a non-negative float from env; fall back to *default* on bad
@@ -1879,23 +1858,6 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
 
 
 # ------------------------------------------------------------------
-# Agent log retention
-# ------------------------------------------------------------------
-
-async def _agent_log_retention(channel: Any, agent_logs: Any) -> None:
-    """The agent log's periodic pass: when the log is off, check again
-    whether it can be on; then delete posts that are due. Never raises."""
-    if agent_logs is None:
-        return
-    try:
-        if not agent_logs.enabled and channel is not None:
-            await channel.check_agent_logs()
-        await agent_logs.retention_pass()
-    except Exception:  # noqa: BLE001 — never kill the scheduler job
-        logger.warning("agent log pass failed", exc_info=True)
-
-
-# ------------------------------------------------------------------
 # Authorization-grant TTL sweep (A:§3.3) — hourly, beside the engagement
 # daily sweep. GrantStore has no private loop of its own (unlike
 # session_sweeper.py, which owns one) — this scheduler job is its only
@@ -2930,17 +2892,6 @@ async def main() -> None:
     specialist_telemetry = SpecialistTelemetry(
         cost_alert_threshold=specialist_cost_alert_threshold)
 
-    # The agent log: each specialist's and plugin worker's work, posted to its
-    # own topic in the optional forum group. The Telegram channel turns it on
-    # when the group is set up and the bot may manage its topics.
-    from agent_logs import AgentLogs
-
-    def _log_display_name(role: str) -> str:
-        import tools as _names
-        return _names._display_name_for_role(role)
-
-    agent_logs = AgentLogs(display_name=_log_display_name)
-
     init_tools(
         channel_manager, bus, specialist_registry, mcp_registry,
         agent_role_map=_build_role_registry(
@@ -2954,7 +2905,6 @@ async def main() -> None:
         specialist_telemetry=specialist_telemetry,
         agent_spawn_limiter=agent_spawn_limiter,  # #283 — same instance load() restored into
         voice_job_route_cap=voice_delivery_config.route_cap,
-        agent_logs=agent_logs,
     )
     mcp_registry.register_sdk_factory(
         "casa-framework",
@@ -3152,7 +3102,6 @@ async def main() -> None:
         from channels.telegram_transport import webhook_secret_for
 
         telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-        telegram_engagement_supergroup_id = _telegram_supergroup_id_from_env()
 
         # Derive transport: webhook only possible when public_url is set
         telegram_mode = os.environ.get("TELEGRAM_TRANSPORT", "polling")
@@ -3177,14 +3126,9 @@ async def main() -> None:
             bus=bus,
             webhook_url=webhook_url,
             rate_limiter=telegram_rate_limiter,
-            engagement_supergroup_id=telegram_engagement_supergroup_id or None,
             webhook_secret_for=partial(webhook_secret_for, webhook_secret),
         )
         channel_manager.register(tg_transport)
-        # The agent log's check needs the bot, which exists only once
-        # channel_manager.start_all() runs _rebuild(); every successful
-        # rebuild runs it.
-        telegram_channel._agent_logs = agent_logs
         logger.info(
             "Telegram channel registered (transport=%s, chat_id=%s)",
             telegram_mode,
@@ -3226,12 +3170,9 @@ async def main() -> None:
     # session death, and the boot resume.
     import background_jobs
     job_runner = background_jobs.JobRunner(
-        registry=engagement_registry, channel=tg_transport,
-        agent_logs=agent_logs)
+        registry=engagement_registry, channel=tg_transport)
 
     engagement_driver = InCasaDriver(
-        # A job's words and steps go to its agent's log, never awaited.
-        agent_logs=agent_logs,
         persist_session_id=engagement_registry.persist_session_id,
         # S8: the profile a rebuilt session enforces is persisted before it opens.
         persist_plugin_profiles=engagement_registry.update_plugin_profiles,
@@ -3789,10 +3730,6 @@ async def main() -> None:
     # again now.
     _pse.kick()
 
-    # 12a. The agent log's check runs in TelegramChannel._rebuild() after
-    # `self._app = app`, so every successful rebuild re-checks it; the
-    # retention job below re-checks a log that is still off.
-
     # 13. Agent loop tasks. H10/H11 (v0.49.0): spawn through the bus so
     # the consumer tasks are tracked — reload reuses the same seam for
     # roles added after boot and cancels tracked tasks on eviction.
@@ -3917,23 +3854,6 @@ async def main() -> None:
         coalesce=True,
         max_instances=1,
         misfire_grace_time=3600,
-    )
-    # Every 30 minutes: delete the agent log's posts before Telegram stops
-    # letting the bot delete them (48 hours), and re-check a log that is
-    # off — one failed check at a rebuild would otherwise leave it off until
-    # the next rebuild.
-    async def _agent_log_pass() -> None:
-        await _agent_log_retention(telegram_channel, agent_logs)
-
-    scheduler.add_job(
-        _agent_log_pass,
-        trigger="interval",
-        id="agent_log_retention",
-        minutes=30,
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=600,
     )
     # #1162: a finished in_casa engagement's CLI transcripts — same cadence,
     # and first at scheduler start: an interval clock restarts with the
@@ -4331,15 +4251,6 @@ async def _shutdown_cleanup(
     # its consumer was cancelled above — resolve those futures now so
     # in-flight ingress handlers return before runner.cleanup() drains.
     bus.fail_pending()
-
-    # The agent log's writer stops while the bot is still up; what is still
-    # queued is lost (logs are best effort). Its registry is written once.
-    _logs = getattr(_tools_mod, "_agent_logs", None)
-    if _logs is not None:
-        try:
-            await asyncio.wait_for(_logs.stop(), timeout=5)
-        except Exception:  # noqa: BLE001 — shutdown must complete
-            logger.warning("agent log stop failed", exc_info=True)
 
     # The own-chat lifecycle's retries and reconciles start, stop and edit
     # agent endpoints: cancelled before the channels stop, so none wakes in

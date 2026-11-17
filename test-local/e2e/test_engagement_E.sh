@@ -9,7 +9,6 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 MOCK_PORT=8081
 MOCK_PID=""
 NAME="casa-eng-$$"
-SUPERGROUP_ID=-1001
 
 cleanup_all() {
     docker ps -q --filter "name=casa-eng-.*-$$" | xargs -r docker stop >/dev/null 2>&1 || true
@@ -32,12 +31,10 @@ build_image
 # We run the engagement e2e as a python harness executed via `docker exec`.
 # The container doesn't need a live Telegram application — the harness
 # constructs a TelegramChannel directly with bot_token="test" and a mock-TG
-# base URL so the agent log's `createForumTopic` / `sendMessage` and the
-# group's pointer land in the mock's state.
+# base URL so its Bot API calls land in the mock's state.
 log "E-0b: boot container with engagement wiring"
 MSYS_NO_PATHCONV=1 docker run -d --rm --name "$NAME" \
     -p "${HOST_PORT}:8080" \
-    -e TELEGRAM_ENGAGEMENT_SUPERGROUP_ID="$SUPERGROUP_ID" \
     -e TELEGRAM_BOT_API_BASE="http://host.docker.internal:${MOCK_PORT}" \
     --add-host=host.docker.internal:host-gateway \
     "$IMAGE" >/dev/null
@@ -85,7 +82,6 @@ run_harness() {
     rm -f "$host_tmp"
     local out
     if ! out=$(MSYS_NO_PATHCONV=1 docker exec -e MOCK_TG_BASE="http://host.docker.internal:${MOCK_PORT}" \
-               -e SUPERGROUP_ID="$SUPERGROUP_ID" \
                "$NAME" /opt/casa/venv/bin/python /tmp/_harness.py 2>&1); then
         printf '%s\n' "$out" >&2
         fail "$label harness exited non-zero"
@@ -96,126 +92,8 @@ run_harness() {
 }
 
 # ---------------------------------------------------------------------------
-# E-1 — The agent log: with the forum group set up, the channel's rebuild
-# turns the log on, and an agent's first line opens that agent's topic and
-# lands in it (never in General).
-# ---------------------------------------------------------------------------
-log "E-1: an agent's log line opens its topic and lands there"
-curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
-
-read -r -d '' E1_PY <<'PY' || true
-import asyncio, os, sys, json, urllib.request
-sys.path.insert(0, "/opt/casa")
-from agent_logs import AgentLogs, LogKey
-from channels.telegram import TelegramChannel
-
-def inspect():
-    with urllib.request.urlopen(os.environ["MOCK_TG_BASE"] + "/_inspect") as r:
-        return json.loads(r.read())
-
-async def main():
-    os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
-    supergroup = int(os.environ["SUPERGROUP_ID"])
-    ch = TelegramChannel(
-        bot_token="test-token", chat_id="999", default_agent="assistant",
-        bus=None, webhook_url="",
-        engagement_supergroup_id=supergroup,
-    )
-    register_casa_endpoint(ch, "e1")
-    logs = AgentLogs(display_name=lambda role: "Finance",
-                     path="/tmp/_logs_e1.json")
-    ch._agent_logs = logs
-    # Stand up the PTB Application against the mock TG URL; the rebuild
-    # checks the group (getChatMember: Manage topics) and starts the writer.
-    await ch._rebuild()
-    assert logs.enabled, "the agent log did not turn on"
-    logs.log(LogKey("agent", "finance"), "E-1 run", "▶ started")
-    state = {}
-    for _ in range(200):
-        state = inspect()
-        if any(state.get("messages_by_thread", {}).values()):
-            break
-        await asyncio.sleep(0.05)
-    topics = state.get("topics", {})
-    assert len(topics) == 1, f"expected one log topic, got {topics}"
-    (tid,) = topics
-    lines = state["messages_by_thread"].get(tid, [])
-    assert lines and "▶ started" in lines[0], f"log line not in its topic: {state}"
-    assert state["main_feed_messages"] == [], "a log line reached General"
-    await logs.stop()
-    await ch._teardown_app()
-    print("OK")
-
-asyncio.run(main())
-PY
-run_harness "E-1" "$E1_PY"
-pass "E-1 agent log line lands in the agent's topic"
-
-# ---------------------------------------------------------------------------
-# E-2 — The group is read-only: a person's message there, in any topic, gets
-# one pointer to the direct chat in the thread they wrote in, and reaches no
-# job.
-# ---------------------------------------------------------------------------
-log "E-2: a message in the log group draws one pointer and reaches no job"
-curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
-
-read -r -d '' E2_PY <<'PY' || true
-import asyncio, os, sys, json, urllib.request
-sys.path.insert(0, "/opt/casa")
-from types import SimpleNamespace
-from engagement_registry import EngagementRegistry
-from channels.telegram import TelegramChannel
-
-async def main():
-    os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
-    supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e2.json")
-    await reg.load()
-    ch = TelegramChannel(
-        bot_token="test-token", chat_id="999", default_agent="assistant",
-        bus=None, webhook_url="",
-        engagement_supergroup_id=supergroup,
-    )
-    register_casa_endpoint(ch, "e2")
-    await ch._rebuild()
-
-    class StubDriver:
-        def __init__(self): self.turns = []
-        def submit_operator(self, rec, text, *, tg_message=None, notice=None):
-            self.turns.append((rec.id, text))
-    drv = StubDriver()
-    ch._engagement_registry = reg
-    ch._engagement_driver = drv
-    await reg.create(kind="specialist", role_or_type="finance",
-                     driver="in_casa", task="", origin={"channel": "telegram"})
-
-    for text in ("hello from user", "/cancel"):
-        update = SimpleNamespace(
-            message=SimpleNamespace(
-                message_id=90001,
-                chat=SimpleNamespace(id=supergroup),
-                message_thread_id=1234,
-                text=text,
-                from_user=SimpleNamespace(id=7777, is_bot=False),
-            ),
-        )
-        await ch.handle_update(update)
-    assert drv.turns == [], f"a group message reached a job: {drv.turns}"
-    with urllib.request.urlopen(os.environ["MOCK_TG_BASE"] + "/_inspect") as r:
-        state = json.loads(r.read())
-    assert state["messages_by_thread"].get("1234") == [
-        "This group is a read-only log. Talk to me in our direct chat."], state
-    await ch._teardown_app()
-    print("OK")
-
-asyncio.run(main())
-PY
-run_harness "E-2" "$E2_PY"
-pass "E-2 log group is read-only"
-
-# ---------------------------------------------------------------------------
-# E-3 — emit_completion happy path with no group needed: _finalize_engagement
-# marks the record completed and posts the NOTIFICATION; no topic is opened.
+# E-3 — emit_completion happy path: _finalize_engagement marks the record
+# completed and posts the NOTIFICATION; no topic is opened.
 # ---------------------------------------------------------------------------
 log "E-3: emit_completion completes the job and NOTIFIES Ellen"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
@@ -421,7 +299,6 @@ from hooks import make_casa_config_guard_hook
 
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
-    supergroup = int(os.environ["SUPERGROUP_ID"])
 
     # 1. Build the hook as configurator/hooks.yaml wires it: forbid resident
     #    deletion, and forbid writes into the usual runtime-state prefixes.
@@ -493,7 +370,6 @@ async def main():
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
-        engagement_supergroup_id=supergroup,
     )
     manager = register_casa_endpoint(ch, "e10")
     await ch._rebuild()

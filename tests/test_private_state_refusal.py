@@ -93,11 +93,11 @@ def test_absent_credential_paths_refuse_nothing(
 def test_a_private_only_failure_refuses_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Confidentiality loss is not credential loss. A world-readable agent
-    log registry is an ERROR in the log; it must not be reported as a
+    """Confidentiality loss is not credential loss. A world-readable
+    scheduled-question store is an ERROR in the log; it must not be reported as a
     credential offence, or a single stubborn file would block every
     uid-dropped consumer."""
-    ledger = _expose(tmp_path, "/data/log-topics.json")
+    ledger = _expose(tmp_path, "/data/scheduled_asks.json")
     real_chmod = os.chmod
 
     def boom(path, mode, *args, **kwargs):  # noqa: ANN001

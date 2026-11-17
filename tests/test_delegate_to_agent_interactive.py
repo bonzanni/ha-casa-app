@@ -88,7 +88,6 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_supergroup_id = -1001
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -139,7 +138,6 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_supergroup_id = -1001
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -160,32 +158,6 @@ class TestJobLaunchEngagement:
         rec = reg.get(payload["engagement_id"])
         assert rec is not None
         assert all(a["name"] != "finplug" for a in rec.plugin_artifacts)
-
-    async def test_a_job_launches_with_no_log_group(self, tmp_path, monkeypatch):
-        """No forum group configured and no right to manage topics: the job
-        launches all the same."""
-        import agent as agent_mod
-        from engagement_registry import EngagementRegistry
-        from tools import init_tools
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        tch = MagicMock()
-        tch.engagement_supergroup_id = 0
-        cm = MagicMock(); cm.get.return_value = tch
-        specialist_reg = MagicMock()
-        specialist_reg.get.return_value = _make_alex_cfg()
-        init_tools(
-            channel_manager=cm, bus=MagicMock(),
-            specialist_registry=specialist_reg, mcp_registry=MagicMock(),
-            trigger_registry=MagicMock(), engagement_registry=reg,
-            agent_role_map={"assistant": _make_assistant_cfg()},
-        )
-        driver = MagicMock(); driver.open = AsyncMock()
-        agent_mod.active_engagement_driver = driver
-        res = await launch_job("x")
-        payload = json.loads(res["content"][0]["text"])
-        assert payload["status"] == "pending", payload
-        assert driver.enqueue_brief.call_count == 1
 
     @pytest.mark.parametrize("channel", ["webhook", "voice_ws"])
     async def test_a_request_from_another_channel_is_refused(
@@ -227,7 +199,6 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_supergroup_id = -1001
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -266,7 +237,6 @@ class TestInteractiveModeRetired:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_supergroup_id = -1001
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()

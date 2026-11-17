@@ -40,9 +40,7 @@ queues the brief at the head of the queue, and anything that arrived meanwhile w
 until the launcher lets go. The worker admits each write immediately before `client.query`,
 removes exactly the ticket it wrote (the head can change while a write is awaited), and
 stamps it with its ticket's uuid. One reader task per session (`InCasaDriver._read`) consumes
-`receive_messages()` for the session's whole life: it hands each message's words and each
-main-loop tool step to the agent's log, synchronously and never waiting on Telegram
-([`agent-logs.md`](agent-logs.md), INV-TG-011), detects API faults, and at each
+`receive_messages()` for the session's whole life: it detects API faults, and at each
 `ResultMessage` records the turn's cost and calls the turn-end handler.
 
 **Take-up is the CLI's own word.** Every job client runs with `--replay-user-messages`: the CLI
@@ -133,7 +131,7 @@ start over on any operator input and on restart; `awaiting` is persisted, becaus
 it. A parking post replies to the start line when the job has one and is otherwise a new post;
 either way it is filed as a job post, so a reply quoting it reaches the job
 ([`background-job-direct-chat.md`](background-job-direct-chat.md), INV-BGJOB-012). The line is
-Casa's own text (the job's title); the job's progress summaries stay in its log. A quiet run
+Casa's own text (the job's title); the job's progress summaries are not part of it. A quiet run
 that parks stops being quiet ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 The nudge offers `ask_operator` only to a specialist's job; a resident's plugin worker has no
 question tool.
@@ -167,7 +165,7 @@ the set is taken right after the registry loads, before the channels and agent l
 a job launched in the first seconds after start-up belongs to its launch and is never resumed or
 ended by boot — to `JobRunner.resume_at_boot`, which re-reads the live record first (a job
 cancelled while boot was resuming earlier ones is skipped):
-`↻ Resuming after a restart` in the agent's log, then the same recovery with Casa's restart
+the same recovery with Casa's restart
 line ("Casa restarted. Your conversation is intact up to the restart; a tool call that was
 running may or may not have finished. Continue the job."). A job waiting for the operator with
 nothing journaled is not resumed until their next input reaches it. One attempt: a failure ends
@@ -187,7 +185,7 @@ call), which is where to read whether the env took effect on a given model.
 The CLI reports `total_cost_usd` cumulatively for its own process, which starts again at zero
 after a resume, so the job's cost is `cost_base` (the record's cost when this client opened)
 plus that total, kept on `origin["job"]["cost_usd"]`. Nothing in the direct chat shows it
-while the job runs; the job's agent log is where progress is watched. The job posts no end line
+while the job runs. The job posts no end line
 of its own ([`background-job-direct-chat.md`](background-job-direct-chat.md)): the end notice to
 its requester carries `Job ran 1 h 5 min · $3.90` (the cost once a turn has ended) and asks
 the narration to mention both in its own words (`tools.JOB_COST_NOTE`); the requester's answer
@@ -218,9 +216,6 @@ resume — so a wiped job's next resume fails and the job ends as one that could
 
 **A completing turn never ends.** The teardown proceeds after the bound with the last cost known;
 nothing is reported as an error.
-
-**The agent log is best effort.** A line the log could not post is dropped and not told
-([`agent-logs.md`](agent-logs.md)).
 
 ## Extension points
 

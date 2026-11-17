@@ -47,12 +47,9 @@ async def job(tmp_path):
     channel = MagicMock()
     cm = MagicMock()
     cm.get.return_value = channel
-    from agent_log_double import RecordingLogs
-    channel.logs = RecordingLogs()
     tools.init_tools(channel_manager=cm, bus=MagicMock(),
                      specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-                     trigger_registry=MagicMock(), engagement_registry=reg,
-                     agent_logs=channel.logs)
+                     trigger_registry=MagicMock(), engagement_registry=reg)
     jobs.configure(jobs.JobRunner(registry=reg))
     yield reg, rec, channel
     jobs.configure(None)
@@ -73,7 +70,6 @@ async def test_progress_rejects_invalid_arguments(job, args):
     reg, rec, channel = job
     reply = await _report(rec, {"summary": "work", **args})
     assert reply == {"ok": False, "kind": "invalid_arguments"}
-    assert channel.logs.lines == []
     assert rec.origin["job"]["last_summary"] is None
     assert jobs._state(rec.id).progress is False
 
@@ -83,7 +79,7 @@ async def test_progress_format_persistence_and_grant(job, tmp_path):
     reply = await _report(rec, {"summary": "x" * 310 + "\nnot included",
                                 "done": 0, "remaining": 9})
     assert reply == {"ok": True}
-    assert channel.logs.texts() == ["📊 " + "x" * 300 + " · 0 done · 9 left"]
+    assert rec.origin["job"]["last_summary"] == "x" * 300
     reloaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reloaded.load()
     assert reloaded.get(rec.id).origin["job"]["last_summary"] == "x" * 300

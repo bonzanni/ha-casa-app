@@ -12,8 +12,7 @@ What a terminal engagement's engager is told, and what may be claimed about it: 
 obligation to tell the party that asked for the work — armed in the terminal write itself,
 cleared only by delivery, replayed at boot. The terminal transition that wins, its
 strictness and the side effects behind the flip are in
-[`architecture/engagement-finalization.md`](engagement-finalization.md); the line a job's end
-leaves in its agent's log is [`agent-logs.md`](agent-logs.md); how an inbound message
+[`architecture/engagement-finalization.md`](engagement-finalization.md); how an inbound message
 the engagement never took up is told is in
 [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md); what a restart
 replays is in
@@ -24,9 +23,7 @@ replays is in
 **A terminal status is not proof that anyone was told, so the telling carries its own
 evidence.** The engager's notification is an obligation the record keeps until a delivery
 acknowledgement clears it — never the bus accepting a message, never the process merely
-having tried. It fails toward telling again rather than toward silence. The line the end
-leaves in the agent's log is no telling at all: the log is optional, best effort and
-read-only, and nothing is decided from it.
+having tried. It fails toward telling again rather than toward silence.
 
 ## Contracts & invariants
 
@@ -105,7 +102,7 @@ launch whose outcome could not be recorded (the job is still open) carries no no
 
 ## Failure behavior
 
-What fails after the transition — driver teardown, the journal's settlement, the log line —
+What fails after the transition — driver teardown, the journal's settlement —
 and how the notification stopped being among the best-effort losses are stated as failure rows
 in [`architecture/engagement-finalization.md`](engagement-finalization.md); the invariant above
 is what those rows point at.

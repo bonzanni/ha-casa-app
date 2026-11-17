@@ -311,8 +311,7 @@ async def _mk_ctx(tmp_path, fake_telegram_bot):
     )
     agent_mod.active_engagement_driver = drv
 
-    ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                         engagement_supergroup_id=-1001, known_bot_id=111)
+    ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100, known_bot_id=111)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
     ch._driver_advance_high_water = AsyncMock()

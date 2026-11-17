@@ -131,7 +131,7 @@ included, by a wrapper outside the registered handler that changes no result (#1
 
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner
-(INV-ENG-001); everything observable — permits, brokers, the log line, notifications, retention —
+(INV-ENG-001); everything observable — permits, brokers, notifications, retention —
 happens after, best-effort, and is not transactional.
 
 ## Contracts & invariants
@@ -213,8 +213,7 @@ The pre-terminal refusals above all precede the teardown and always return their
 session is open and its brief is queued; the job's first turn runs after that, in the
 session's reader (INV-ENG-021, [`engagement-launch-detach.md`](engagement-launch-detach.md)).
 A launch that fails before that answer with a named fault returns that fault's kind to the
-calling turn; one cancelled after its record exists records `launch_cancelled`, writes its
-line in the agent's log, and tells the engager over the bus, since no envelope carries it (INV-ENG-030, same document). From the answer on, nothing is reported to the
+calling turn; one cancelled after its record exists records `launch_cancelled` and tells the engager over the bus, since no envelope carries it (INV-ENG-030, same document). From the answer on, nothing is reported to the
 launching call: a first turn that ends with nothing visible is a turn end the job's
 turn-end handler nudges or parks, and a session that ends is resumed once
 ([`background-job-session.md`](background-job-session.md)).

@@ -1,6 +1,6 @@
 """Minimal Telegram Bot API mock for engagement e2e.
 
-Implements just enough of the Bot API for TelegramChannel and the agent log:
+Implements just enough of the Bot API for TelegramChannel:
 - getMe → returns a stub bot user
 - getChatMember → an administrator with can_manage_topics=True (default)
 - createForumTopic → assigns incrementing message_thread_id, stores state

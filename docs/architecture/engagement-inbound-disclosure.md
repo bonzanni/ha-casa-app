@@ -39,11 +39,10 @@ didn't get through. Could you send it again?" while the job is live) for their w
 job had already finished, so your answer wasn't used." (or "Your answer didn't get through.
 Could you answer again?") for a tap. The ended form is chosen from the record's settled status. While a memory wipe's restart
 is pending, a reply is answered with the wipe's courtesy line instead, which is that message's
-one notice. Nothing is forwarded anywhere else, and nothing written in the agent-log group is
-a message to a job (INV-TG-016).
+one notice. Nothing is forwarded anywhere else.
 
-**No end-of-job list.** A terminal outcome — the end notice to the resident, the end's line in
-the agent's log, the launch-death line — lists no inbound messages. The messages that died with the job are each
+**No end-of-job list.** A terminal outcome — the end notice to the resident, the launch-death
+report's telling — lists no inbound messages. The messages that died with the job are each
 told by the journal's terminal branch, so a list would tell them twice. The driver's teardown
 leaves the journal in place, so the terminal branch still finds each entry when it runs.
 

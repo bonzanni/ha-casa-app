@@ -61,7 +61,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     result = await call()
     assert result['status'] == 'pending', result
     assert (result['agent'], result['job'], result['title']) == ('assistant', DECL.qualified_name, DECL.title)
-    assert result['message'] == "Started Classify entries."      # no log group: no log named
+    assert result['message'] == "Started Classify entries."
     await drain_launch_turns()
     rec = worker.registry.get(result['engagement_id'])
     opts = Client.instances[0].options
@@ -96,11 +96,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
                                      'path': str(worker.root), 'artifact_id': worker.host.plugin.artifact_id,
                                      # S8: the record stores the EFFECTIVE profile the build applied
                                      'profile': None},)
-    # A plugin job's lines go to its resident's plugin log.
     worker.bot.create_forum_topic.assert_not_awaited()
-    from agent_logs import LogKey
-    assert jobs.job_log_key(rec) == LogKey('plugins', 'assistant')
-    assert jobs.job_run_name(rec) == DECL.title
     # the turn end's state write runs on its own task; let it land
     await worker.registry.persist_origin(rec.id)
     loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)

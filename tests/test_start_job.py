@@ -76,7 +76,7 @@ async def runtime(tmp_path, monkeypatch):
         edit_message_text=AsyncMock(return_value=SimpleNamespace(message_id=100)),
         send_chat_action=AsyncMock(return_value=True),
     )
-    # No forum group: a job needs none. Casa's own bot, 111.
+    # Casa's own bot, 111.
     channel = TelegramChannel(chat_id='1', bot=bot, bus=bus, is_casa=True,
                               known_bot_id=BOT)
     channel._app = SimpleNamespace(bot=bot)
@@ -151,7 +151,7 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     result = await call()
     assert result['status'] == 'pending'
     assert (result['job'], result['title'], result['agent']) == (DECL.qualified_name, DECL.title, 'finance')
-    assert result['message'] == "Started Classify entries."      # no log group: no log named
+    assert result['message'] == "Started Classify entries."
     await drain_launch_turns()
     client = Client.instances[0]
     assert cli_limit(client.options) == str(jobs.JOB_MAX_TURNS)
@@ -226,20 +226,6 @@ async def test_second_engagement_from_another_chat_names_open_job(runtime, secon
     assert runtime.bot.create_forum_topic.await_count == 0
 
 
-async def test_with_a_log_group_the_start_names_the_log_and_logs_it(runtime, monkeypatch):
-    """With the agent log on, the launch logs the job's start in its
-    specialist's log and the result says where its progress appears."""
-    from agent_log_double import RecordingLogs
-    from agent_logs import LogKey
-    logs = RecordingLogs()
-    monkeypatch.setattr(tools, '_agent_logs', logs)
-    result = await call()
-    assert result['message'] == "Started Classify entries. Progress appears in Alex's log."
-    await drain_launch_turns()
-    assert logs.lines[0] == (LogKey('agent', 'finance'), DECL.title, '▶ started')
-    assert runtime.bot.create_forum_topic.await_count == 0
-
-
 async def test_sync_delegation_while_job_open(runtime):
     first = await call()
     await drain_launch_turns()
@@ -291,12 +277,11 @@ async def test_start_job_is_registered_and_granted_only_to_assistant():
             assert ('start_job' in {t.name for t in tools.select_casa_tools(frozenset(allowed))}) == (role == 'assistant')
 
 
-async def test_a_job_starts_acts_and_is_busy_refused_with_no_group(runtime):
-    """No forum group is configured: the job starts, a protected call made
-    inside it binds to the operator, and a second start of the same plugin's
-    job is refused with the Cancel-button text — no topic anywhere."""
+async def test_a_job_starts_acts_and_is_busy_refused(runtime):
+    """The job starts, a protected call made inside it binds to the operator,
+    and a second start of the same plugin's job is refused with the
+    Cancel-button text — no topic anywhere."""
     from authz_grants import GrantIdentity, resolve_grant_identity
-    assert not runtime.channel.engagement_supergroup_id
     token = agent.origin_var.set(dict(role='assistant', execution_role='assistant',
                                       channel='telegram', chat_id='1', user_id='7',
                                       cid='test', user_text='classify',

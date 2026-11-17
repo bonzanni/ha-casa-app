@@ -70,8 +70,7 @@ that same lock so a concurrent reconcile cannot re-materialize what the rollback
 removed. Agents keep a small first-publication lock for their plugin-resolution
 snapshot — it does not serialize turns. The Telegram channel re-imposes ordering per scope
 above the bus: a per-chat lock serializing `/new` with same-chat enqueue (documented in the
-Telegram map). The agent log has one writer task of its own and holds no lock the direct chat
-takes ([`agent-logs.md`](agent-logs.md)). Two
+Telegram map). Two
 cross-*thread* locks exist: plugin health's report lock, because its writers run both on
 the loop and in the thread offload; and the route-lifecycle lock in the reload module,
 which makes a role's trigger re-registration, its webhook-secret retirement and the mint that follows one operation

@@ -3,7 +3,6 @@
   "claude_oauth_token": "YOUR_TOKEN_HERE",
   "telegram_bot_token": "",
   "telegram_chat_id": "",
-  "telegram_engagement_supergroup_id": 0,
   "telegram_bot_api_base": "",
   "telegram_transport": "polling",
   "webhook_secret": "e2e-invoke-secret",

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.374.0] - 2026-11-17
+
+### Changed
+
+- The configurator's step line in your direct chat is now always shown while it works.
+
+### Removed
+
+- The agent log group: background agents no longer keep a read-only log in a Telegram forum group, and the app option `telegram_engagement_supergroup_id` is gone. Everything a job needs from you still happens in your direct chat. Not backward compatible: if you had set the option, Home Assistant warns about it at boot until you remove it from the app's stored options by hand. Casa no longer reads `/data/log-topics.json`, and posts already in the log group are no longer deleted by Casa; delete them or the group yourself if you like.
+- A job's progress notes (`report_job_progress`) are no longer posted anywhere. Casa still keeps the latest note and reports it if the job is cancelled or fails.
+
 ## [0.373.2] - 2026-11-14
 
 ### Fixed
