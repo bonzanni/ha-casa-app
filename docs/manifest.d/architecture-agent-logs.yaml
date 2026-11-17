@@ -1,5 +1,0 @@
-# Manifest shard: the agent-logs document (born in its own shard: the A-D shard stands just
-# under the index ceiling).
-- doc: architecture/agent-logs.md
-  summary: "Retired: the optional read-only agent logs in a Telegram forum group, removed with the telegram_engagement_supergroup_id option."
-  when_changing: nothing; this retired document is deleted in a docs-only change
