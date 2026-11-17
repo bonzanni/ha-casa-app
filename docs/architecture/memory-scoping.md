@@ -97,14 +97,10 @@ Inheritance at creation is only half the rule, because a job is *steerable*. It 
 only in the direct chat: a reply quoting one of its posts goes into it when the sender is the
 authenticated operator who started it, in that chat (INV-BGJOB-012,
 [`background-job-direct-chat.md`](background-job-direct-chat.md)), and a tap on its buttons is
-resolved for that operator alone. Nothing written in the agent-log group reaches a job
-(INV-TG-016, [`agent-logs.md`](agent-logs.md)). So the job keeps reading at the clearance of
+resolved for that operator alone. So the job keeps reading at the clearance of
 the turn that started it, and its session, which holds what it read there, takes direction
 only from the operator who started it.
 
-What this deliberately does not do: the agent log, when one is set up, is readable by every
-member of its group, so what a job's agent writes there is a disclosure the group carries
-regardless; the operator decides who is in it.
 
 ## Contracts & invariants
 

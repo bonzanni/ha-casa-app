@@ -1,6 +1,6 @@
 """The job tools in a job's one long session: ``report_job_progress`` is a
-plain, optional progress line; an approval left pending marks the job as
-waiting for the operator, so the turn-end guard does not nudge it."""
+plain, optional progress note Casa keeps; an approval left pending marks the
+job as waiting for the operator, so the turn-end guard does not nudge it."""
 
 from __future__ import annotations
 
@@ -25,15 +25,12 @@ async def job(tmp_path):
         "specialist", "finance", "in_casa", "t",
         {"role": "assistant", "channel": "telegram",
          "job": bj.initial_job_state(decl, started_by="operator")})
-    from agent_log_double import RecordingLogs
     channel = MagicMock()
-    channel.logs = RecordingLogs()
     cm = MagicMock()
     cm.get.return_value = channel
     tools.init_tools(channel_manager=cm, bus=MagicMock(),
                      specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-                     trigger_registry=MagicMock(), engagement_registry=reg,
-                     agent_logs=channel.logs)
+                     trigger_registry=MagicMock(), engagement_registry=reg)
     bj.configure(bj.JobRunner(registry=reg))
     token = tools.engagement_var.set(rec)
     yield rec, channel
@@ -44,15 +41,12 @@ def _payload(result):
     return json.loads(result["content"][0]["text"])
 
 
-async def test_a_progress_line_is_logged_and_recorded(job):
+async def test_a_progress_note_is_recorded(job):
     import tools
-    from agent_logs import LogKey
     rec, channel = job
     out = _payload(await tools.report_job_progress.handler(
         {"summary": "12 rows classified\nignored", "done": 12, "remaining": 28}))
     assert out == {"ok": True}
-    assert channel.logs.lines == [(LogKey("agent", "finance"), "Accounting check",
-                                   "📊 12 rows classified · 12 done · 28 left")]
     assert rec.origin["job"]["last_summary"] == "12 rows classified"
     assert bj._state(rec.id).progress is True
 
@@ -62,7 +56,7 @@ async def test_progress_needs_no_counts_and_no_batch(job):
     rec, channel = job
     assert _payload(await tools.report_job_progress.handler(
         {"summary": "reading the ledger"}))["ok"] is True
-    assert channel.logs.texts() == ["📊 reading the ledger"]
+    assert rec.origin["job"]["last_summary"] == "reading the ledger"
     assert "batch" not in tools.report_job_progress.description.lower()
     assert "progressed" not in tools.report_job_progress.input_schema["properties"]
 

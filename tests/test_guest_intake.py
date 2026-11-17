@@ -275,7 +275,6 @@ async def test_casas_bot_registers_no_guest_handler(monkeypatch, casa, count):
     ch = TelegramChannel(bot_token="t", chat_id=str(OPERATOR), is_casa=casa,
                          default_agent="assistant" if casa else "finance",
                          known_bot_id=None if casa else OWN_BOT)
-    ch.check_agent_logs = AsyncMock()
     await ch._rebuild()
     guest = [kw for cb, kw in made if cb == ch._on_guest_message]
     assert guest == [{"block": False}] * count

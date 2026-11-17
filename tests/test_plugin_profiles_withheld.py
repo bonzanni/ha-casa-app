@@ -135,7 +135,6 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     tch = MagicMock()
-    tch.engagement_supergroup_id = -1001
     cm = MagicMock(); cm.get.return_value = tch
     specialist_reg = MagicMock(); specialist_reg.get.return_value = alex
     bus = MagicMock(); bus.notify = AsyncMock()

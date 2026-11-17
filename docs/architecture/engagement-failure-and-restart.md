@@ -46,8 +46,7 @@ three outcomes, because that fault is true of this launch whoever won the record
 
 A launch that ends without a named fault — cancelled after its record exists, or caught by
 Casa's stop — is the launch-death reporter's instead (INV-ENG-030, in
-[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)), which also writes
-the line in the agent's log these arms do not.
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)).
 
 ## Failure behavior
 

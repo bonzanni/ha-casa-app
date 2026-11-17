@@ -1,9 +1,8 @@
 """The channel's seams into a background job: the operator's reply in their
 direct chat, a tapped answer. Each seam journals, admits and queues the
 message through the driver's synchronous ``submit_operator`` and returns — no
-Telegram handler waits on the job's session. Nothing written in the log group
-reaches a job. A message the job did not accept draws one "not delivered"
-line.
+Telegram handler waits on the job's session. A message the job did not accept
+draws one "not delivered" line.
 
 REAL ``TelegramChannel``, ``EngagementRegistry`` and ``InCasaDriver``; the
 CLI is the ``FakeCLI`` of ``test_job_session_driver`` (a write can be held in
@@ -34,9 +33,6 @@ ENDED_REPLY_NOTICE = ("The job had just finished, so your message didn't get thr
 OPERATOR = 100
 #: The bot the rig's channel is: journaled notices name it.
 BOT = 111
-MEMBER = 555
-SUPERGROUP = -1001
-TOPIC = 77
 
 
 class _Bot:
@@ -58,14 +54,6 @@ async def _reply(rig, text, *, message_id=900):
         rig.rec, text, chat_id=OPERATOR, message_id=message_id)
 
 
-def _topic_update(text, *, user=OPERATOR, message_id=900):
-    msg = SimpleNamespace(
-        text=text, message_id=message_id, message_thread_id=TOPIC,
-        chat=SimpleNamespace(id=SUPERGROUP),
-        from_user=SimpleNamespace(id=user, first_name="Someone"))
-    return SimpleNamespace(message=msg)
-
-
 @pytest.fixture
 async def rig(tmp_path, monkeypatch):
     from channels.telegram import TelegramChannel
@@ -83,8 +71,7 @@ async def rig(tmp_path, monkeypatch):
               "job": jobs.initial_job_state(decl, started_by="operator")}
     rec = await reg.create("specialist", "finance", "in_casa", "Check", origin)
     bot = _Bot()
-    ch = TelegramChannel(bot=bot, chat_id=str(OPERATOR),
-                         engagement_supergroup_id=SUPERGROUP, known_bot_id=BOT)
+    ch = TelegramChannel(bot=bot, chat_id=str(OPERATOR), known_bot_id=BOT)
     driver = drv.InCasaDriver(
         record_lookup=reg.get, begin_turn_delivery=reg.begin_turn_delivery,
         lifecycle_lock=ch.engagement_lifecycle_lock)
@@ -126,21 +113,6 @@ async def test_a_resume_in_progress_does_not_block_a_message(rig):
     async with lock:
         assert await asyncio.wait_for(_reply(rig, "hello"), 2)
         assert [e["text"] for e in job_inbox.load(rig.rec.id)] == ["hello"]
-
-
-@pytest.mark.parametrize("user", [OPERATOR, MEMBER])
-async def test_a_message_in_the_log_group_never_reaches_the_job(rig, user):
-    """Even in the thread an older version used as this job's topic: one
-    pointer to the direct chat, and nothing journaled, admitted or written."""
-    await rig.ch.handle_update(_topic_update("restate the task", user=user))
-    assert [(m["chat_id"], m["thread"], m["text"]) for m in rig.bot.sent] == [
-        (SUPERGROUP, TOPIC,
-         "This group is a read-only log. Talk to me in our direct chat.")]
-    assert job_inbox.load(rig.rec.id) == []
-    assert rig.drv.inbound_unread_depth(rig.rec.id) == 0
-    await asyncio.sleep(0.01)
-    assert rig.cli.written == []
-    assert rig.reg.get(rig.rec.id).origin["_origin_clearance"] == "private"
 
 
 async def test_a_message_the_journal_cannot_take_is_told_once(rig, tmp_path,

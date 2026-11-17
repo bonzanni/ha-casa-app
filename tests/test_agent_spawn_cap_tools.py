@@ -33,7 +33,6 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 def _channel(ok=True):
     ch = MagicMock()
-    ch.engagement_supergroup_id = -100123 if ok else 0
     return ch
 
 

@@ -40,10 +40,6 @@ fi
 # is gone from config.yaml's schema and the real svc-casa/run no longer
 # exports it either.
 
-# The agent log's forum group (0 = no logs; always export so consumers can check).
-val=$(jq -r '.telegram_engagement_supergroup_id // 0' "$OPTIONS")
-printf '%s' "$val" > "${S6_ENV}/TELEGRAM_ENGAGEMENT_SUPERGROUP_ID"
-
 # Static version for test mode
 printf 'dev' > "${S6_ENV}/CASA_VERSION"
 

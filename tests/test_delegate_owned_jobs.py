@@ -164,7 +164,7 @@ async def test_a_specialists_own_start_returns_no_engagement_id_pending_or_busy(
     started = await start_as(_delegated_turn_origin())
     assert started["status"] == "pending", started
     assert "engagement_id" not in started and "topic_id" not in started
-    assert started["message"] == "Started Classify transactions."    # no log group
+    assert started["message"] == "Started Classify transactions."
     again = await start_as(_delegated_turn_origin())
     assert again["kind"] == "job_busy", again
     assert "engagement_id" not in again and "topic_id" not in again

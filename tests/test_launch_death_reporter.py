@@ -2,9 +2,8 @@
 
 A launch that ends after its record exists without a running job — cancelled
 while its session opens, or caught by Casa's stop — is reported by ONE owner,
-``tools._report_launch_death``: one strict terminal transition, then one line
-in the job's log (synchronous: it never waits on Telegram), and the bounded
-driver teardown. Everything here exists to make one specific mutation of that
+``tools._report_launch_death``: one strict terminal transition, then the
+bounded driver teardown and the journal's settle. Everything here exists to make one specific mutation of that
 owner fail; the mapping is named on each test. (A launch turn that is cut off
 once the session runs is a session loss, owned by session recovery, and is
 pinned with the job session.)
@@ -104,11 +103,11 @@ async def _cancel_while_opening(launcher, driver, monkeypatch, *, during=None):
 
 
 class TestEveryBoundIsRealAndEveryCountIsOne:
-    """MUTATIONS: drop the death line / remove the driver.cancel bound → the
+    """MUTATIONS: drop the death report / remove the driver.cancel bound → the
     matching case below fails. A wedged counterparty is an Event that is never
     set; no asyncio.sleep is patched."""
 
-    async def test_the_death_line_is_logged_once_and_the_teardown_runs(
+    async def test_the_death_is_reported_once_and_the_teardown_runs(
         self, tmp_path, monkeypatch,
     ):
         import tools as tools_mod
@@ -120,7 +119,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
         await _cancel_while_opening(launcher, driver, monkeypatch)
         await asyncio.wait_for(_drain_owner(), 15)
 
-        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
+        assert probe.told == ["REPORTED"]
         assert probe.driver_cancel_calls == 1
         assert not tools_mod._LAUNCH_DEATH_TASKS
         created_id = next(iter(registry._records))
@@ -148,7 +147,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
-        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
+        assert probe.told == ["REPORTED"]
         assert probe.driver_cancel_calls == 1
 
 
@@ -163,7 +162,7 @@ class TestTheStrictTransitionIsTheAuthority:
         failure and still returns True, which would report a death over a
         record disk still calls `active`. The strict
         primitive rolls the record back and re-raises, and the reporter then
-        logs no death over a live record. It DOES retire the driver's
+        reports no death over a live record. It DOES retire the driver's
         session, so `is_alive` never hands the next message to a client the
         launch abandoned.
         """
@@ -190,9 +189,9 @@ class TestTheStrictTransitionIsTheAuthority:
         rec = registry.get(created_id)
         assert rec.status == "active", rec.status      # rolled fully back
         assert rec.completed_at is None
-        # The reporter logs no death over a live record; its owner logs one
-        # line saying the outcome could not be recorded — that is the one.
-        assert probe.notice_texts == ["⚠️ could not be recorded"]
+        # The reporter reports no death over a live record: its outcome is
+        # that the terminal write did not persist.
+        assert probe.told == ["PERSIST_FAILED"]
         assert probe.driver_cancel_calls == 1
         assert driver.is_alive(rec) is False
 
@@ -227,7 +226,7 @@ class TestTheStrictTransitionIsTheAuthority:
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "completed"
         assert len(probe.transition_calls) == 2     # the winner's, then the loser's
-        assert probe.notice_texts == []
+        assert probe.told == []
 
 
 class TestCancellationHasAnOwner:
@@ -282,18 +281,18 @@ class TestCancellationHasAnOwner:
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
         assert registry.get(created_id).origin["error_kind"] == "launch_cancelled"
-        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
+        assert probe.told == ["REPORTED"]
         assert settled == [created_id]
 
-    async def test_a_cancelled_launch_now_posts_before_it_closes(
+    async def test_a_cancelled_launch_is_reported(
         self, tmp_path, monkeypatch,
     ):
         """MUTATION: drop the reporter from the cancellation compensator →
         this fails.
 
         Before #678 a cancelled launch ended having said NOTHING: the operator
-        could not tell whether the task had mutated anything. Its log says so
-        before the session is torn down.
+        could not tell whether the task had mutated anything. Its death is
+        reported, and the session is torn down.
         """
         import tools as tools_mod
         probe = _Probe()
@@ -320,8 +319,8 @@ class TestCancellationHasAnOwner:
         rec = registry.get(created_id)
         assert rec.status == "error", rec.status
         assert rec.origin["error_kind"] == "launch_cancelled"
-        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
-        assert probe.events.index("notice") < probe.events.index("teardown")
+        assert probe.told == ["REPORTED"]
+        assert "teardown" in probe.events
 
 
 class TestTheBoundaries:
@@ -329,8 +328,8 @@ class TestTheBoundaries:
         self, tmp_path, monkeypatch,
     ):
         """A message the operator sent while the launch was dying is not
-        listed in the death notice: the notice names the launch's fault only.
-        What the message is owed is the journal's to tell."""
+        listed in the outcome told to the engager: it names the launch's fault
+        only. What the message is owed is the journal's to tell."""
         probe = _Probe()
         launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
@@ -342,9 +341,12 @@ class TestTheBoundaries:
                 rec, "wait, also remove the old config", **_MESSAGE_7))
         await _drain_owner()
 
-        assert len(probe.notice_texts) == 1
-        notice = probe.notice_texts[0]
-        assert "wait, also remove the old config" not in notice, notice
+        import tools as tools_mod
+        assert probe.told == ["REPORTED"]
+        told = [c.args[0].content for c in tools_mod._bus.notify.call_args_list]
+        assert len(told) == 1
+        assert told[0].kind == "launch_cancelled"
+        assert "wait, also remove the old config" not in told[0].message, told[0]
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
 

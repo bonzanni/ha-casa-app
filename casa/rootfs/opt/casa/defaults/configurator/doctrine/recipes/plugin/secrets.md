@@ -198,7 +198,7 @@ then reloads the roles.
 
 - Setting the var without surfacing it through `get_item_fields` first.
   A mistyped field id resolves to an empty string and the MCP server fails
-  to start with no clear error in the agent log — copy ids from the result.
+  to start with no clear error — copy ids from the result.
 - Using `op://` syntax for a literal value, or omitting `op://` for a
   vault reference. The resolver only follows the prefix — anything
   else passes through verbatim.

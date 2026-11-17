@@ -1,7 +1,7 @@
-"""A specialist session's extras — the long-run compaction window, its pad, its
-run in the agent's log — decided once by ``specialist_session`` and applied as
-the delegated runner applied them inline: the same env, the same pad under the
-same key, the same log lines, for a long-run role and an ordinary one."""
+"""A specialist session's extras — the long-run compaction window and its pad —
+decided once by ``specialist_session`` and applied as the delegated runner
+applied them inline: the same env and the same pad under the same key, for a
+long-run role and an ordinary one."""
 from __future__ import annotations
 
 import dataclasses
@@ -16,8 +16,6 @@ import plugin_bindings
 import scratchpad
 import specialist_session
 import tools as tools_mod
-from agent_log_double import RecordingLogs
-from agent_logs import LogKey
 from authz_grants import GrantIdentity
 from scratchpad import GRANT, PROMPT_LINE, SERVER
 from test_memory_capture import mem  # noqa: F401 — fixture
@@ -50,13 +48,6 @@ def _shape(options):
 
 
 @pytest.fixture
-def logs(monkeypatch):
-    sink = RecordingLogs()
-    monkeypatch.setattr(tools_mod, "_agent_logs", sink)
-    return sink
-
-
-@pytest.fixture
 def bindings(monkeypatch, tmp_path):
     store = plugin_bindings.BindingStore(str(tmp_path / "b.json"))
     monkeypatch.setattr(plugin_bindings, "BINDINGS", store)
@@ -74,7 +65,7 @@ def _cfg(long_runs, kind="specialist"):
 @pytest.mark.parametrize("long_runs", [False, True])
 @pytest.mark.parametrize("stored_call", [False, True])
 @pytest.mark.parametrize("first", [True, False])
-def test_the_extras_equal_the_inline_code_they_replaced(pads, bindings, logs, monkeypatch,  # noqa: F811
+def test_the_extras_equal_the_inline_code_they_replaced(pads, bindings, monkeypatch,  # noqa: F811
                                                         long_runs, stored_call, first):
     cfg = _cfg(long_runs)
     origin = {"stored_call": {"run_id": "r"}} if stored_call else {}
@@ -93,9 +84,8 @@ def test_the_extras_equal_the_inline_code_they_replaced(pads, bindings, logs, mo
     assert base.env == {"A": "1"}                                            # the options are copied, never changed
 
 
-def test_the_run_starts_in_the_agents_log_and_cleanup_lets_an_unheld_pad_go(pads, bindings, logs):  # noqa: F811
+def test_cleanup_lets_an_unheld_pad_go(pads, bindings):  # noqa: F811
     extras = specialist_session.session_env_and_pad(_cfg(False), {}, run_id="S1")
-    assert logs.texts(LogKey("agent", "browser")) == ["▶ started"]
     extras.apply(ClaudeAgentOptions(system_prompt="x"), task="t")
     assert pads.keys() == ["S1"]
     extras.cleanup()
@@ -112,7 +102,7 @@ def test_the_run_starts_in_the_agents_log_and_cleanup_lets_an_unheld_pad_go(pads
     assert pads.keys() == ["S2"]
 
 
-def test_a_conversation_session_is_keyed_by_its_own_key(pads, bindings, logs):  # noqa: F811
+def test_a_conversation_session_is_keyed_by_its_own_key(pads, bindings):  # noqa: F811
     """An agent's own conversation takes the same extras, its pad keyed by its session."""
     extras = specialist_session.session_env_and_pad(_cfg(True), {}, run_id="conversation:browser")
     assert extras.env == {LONG: "200000"} and extras.pad.key == "conversation:browser"
@@ -133,8 +123,8 @@ async def _delegate(conv, origin=None):  # noqa: F811
 
 
 @pytest.mark.parametrize("long_runs", [False, True])
-async def test_a_delegated_run_has_the_env_the_pad_and_the_log_lines(conv, pads, logs,  # noqa: F811
-                                                                       long_runs):
+async def test_a_delegated_run_has_the_env_and_the_pad(conv, pads,  # noqa: F811
+                                                        long_runs):
     conv.roles["browser"].session.long_runs = long_runs
     seen: list = []
 
@@ -150,15 +140,12 @@ async def test_a_delegated_run_has_the_env_the_pad_and_the_log_lines(conv, pads,
     assert sent_prompt(opts) == f"x\n\n{PROMPT_LINE}"
     assert seen == [[opts.session_id]]                 # the pad is the run's session's
     assert pads.keys() == []                           # and goes with the run
-    lines = logs.texts(LogKey("agent", "browser"))
-    assert lines[0] == "▶ started" and lines[-1] == "✓ answered"
 
 
-async def test_a_stored_call_run_has_no_pad_but_keeps_its_env(conv, pads, logs):  # noqa: F811
+async def test_a_stored_call_run_has_no_pad_but_keeps_its_env(conv, pads):  # noqa: F811
     conv.roles["browser"].session.long_runs = True
     origin = {**ORIGIN, "stored_call": {"run_id": "r", "runtime_name": "x", "canonical": "{}",
                                         "label": "go"}}
     await _delegate(conv, origin)
     (opts,) = conv.h.launches
     assert SERVER not in opts.mcp_servers and opts.env.get(LONG) == "200000"
-    assert logs.texts(LogKey("agent", "browser"))[0] == "▶ started"

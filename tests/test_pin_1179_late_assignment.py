@@ -67,7 +67,6 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
         return ResolutionResult(registry_valid=True, plugins=list(after))
 
     tch = MagicMock()
-    tch.engagement_supergroup_id = -1001
     cm = MagicMock()
     cm.get.return_value = tch
     reg = MagicMock()

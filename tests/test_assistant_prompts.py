@@ -1267,11 +1267,16 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # cancel work a specialist carries on by itself, such as browsing, call
 # stop_work yourself". The eight other carriers byte-identical. No retention
 # claim.
+# REMOVED (the agent log group is gone), `assistant:text` only: the job
+# paragraph loses "and when the result's message says so, progress appears in
+# the agent's log", and the Engagements section loses its sentence on each
+# agent's read-only log in a log group. Nothing added; the eight other carriers
+# byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "3417be6f6f005d548ecb29b4038436abb34bef29647b7bbd27d862abe294a94b",
+        "e20bebecdac92d5bf5fd44a3c54ddca851c360ac5d3ef7aae6cca34b7e02f2f1",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":

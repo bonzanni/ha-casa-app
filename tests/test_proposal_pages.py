@@ -255,8 +255,7 @@ def _channel_with_bot():
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=MagicMock(message_id=12345))
     bot.edit_message_text = AsyncMock()
-    ch = TelegramChannel(bot_token="x:y", chat_id=100, default_agent="assistant",
-                         engagement_supergroup_id=-1001, known_bot_id=BOT)
+    ch = TelegramChannel(bot_token="x:y", chat_id=100, default_agent="assistant", known_bot_id=BOT)
     ch._app = MagicMock()
     ch._app.bot = bot
     return ch, bot

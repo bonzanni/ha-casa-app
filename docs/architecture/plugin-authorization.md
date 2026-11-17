@@ -186,12 +186,9 @@ resident wrote after the delegate's result: the child's outcome reaches the resi
 by delegation id ([`delegation.md`](delegation.md)), even when the CLI rewrote the delegate's
 result before the turn read it (#1274), while the delegate's result is unchanged. On a
 specialist job and a plugin background job, the hook runs in the engagement client's SDK
-reader, so under an engagement it records on that client's running turn — the holder bound
-before the client was entered (`in_casa_driver._EngagementTurn`), live only while its turn
-runs — and the reader holds back from the agent's log every word written after that call's
-result (INV-TG-014). A job turn whose every word was withheld this way is waiting on the operator:
-the keyboard is what it showed, and the job's turn-end handler neither nudges nor parks it
-while the approval is outstanding
+reader with the job bound (`tools.engagement_var`), so a call it leaves waiting marks the job
+as waiting for the operator: the keyboard is what it showed, and the job's turn-end handler
+neither nudges nor parks it while the approval is outstanding
 ([`background-job-session.md`](background-job-session.md), INV-BGJOB-017).
 
 What it does not cover: a synchronous wait that degraded to pending and an async delegation

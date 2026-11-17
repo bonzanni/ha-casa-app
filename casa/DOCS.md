@@ -38,7 +38,6 @@ A fresh install ships with no specialists installed; see [Installing a specialis
 |--------|-------------|
 | `telegram_bot_token` | Telegram bot token from @BotFather. Enables the Telegram channel. |
 | `telegram_chat_id` | Telegram chat ID to restrict messages to. Leave empty to accept all chats. **Setting it is a security control**, not just a filter: this id is the operator identity, so only the sender whose Telegram user id matches it is attributed as the operator and reads memory at private clearance — any other accepted sender is recorded under its own `telegram:<id>` identity and reads at public clearance only, as does any engagement they start. Protected plugin tools (v0.139.0) can only be authorized by the configured operator: a non-operator sender's protected call is denied outright, and with the option empty (accept-all) no sender is the operator, so protected tools are denied for everyone — the add-on logs a warning at startup in that mode. Set this id unless you specifically want an open bot. |
-| `telegram_engagement_supergroup_id` | Optional forum group where each agent keeps a read-only log (see [Optional: agent logs](#optional-agent-logs)). A negative integer. `0` = no logs; everything else works without it. |
 
 ### Memory
 
@@ -532,11 +531,9 @@ tokens if they change. To change it:
 1. Create the new bot in BotFather.
 2. In BotFather's Mini App, turn on **Bot Management Mode** for it.
 3. Put its token in `telegram_bot_token`.
-4. If you use agent logs, add the new bot to the agent logs group as an admin
-   with **Manage topics** (see [Optional: agent logs](#optional-agent-logs)).
-5. Restart Casa, then open the new bot's chat and say hi, so it can write to
+4. Restart Casa, then open the new bot's chat and say hi, so it can write to
    you.
-6. Ask the new assistant to give each specialist a new handle (above), then
+5. Ask the new assistant to give each specialist a new handle (above), then
    delete the old bots, the assistant's old bot included, in BotFather.
 
 ### Guests: asking a specialist in a group (v0.370.0)
@@ -591,8 +588,7 @@ heading stands; a guest answer gets the core doctrine and that section only.
 Some plugins declare long work — classifying a year of transactions, say — as a
 background job. Ask the assistant for it as usual: she starts the job and replies
 straight away. The job runs as one long session: it keeps working until it is
-finished. Everything that needs you happens in your DM; if you set up a log group,
-you can also watch the job work there (see [Optional: agent logs](#optional-agent-logs)).
+finished. Everything that needs you happens in your DM.
 A job you asked for puts a 👍 on
 your message that asked for it (v0.373.0); if Telegram does not take the 👍, you get one
 silent line instead — "📊 Finance started «…»." When a specialist's job
@@ -739,8 +735,8 @@ Telegram does not take the 👍, Casa says what it saved in words, as before ("G
 Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When that is
 full a new file is refused rather than an old one dropped — the oldest go after seven days.
 Anything else you send, such as a sticker, a voice message, a `.zip` or a `.docx`, gets
-a short reply saying what she can take. Files work only in the direct chat, not in
-the agent-log group, and only the assistant can read them — except a file you send to a
+a short reply saying what she can take. Files work only in the direct chat, and only
+the assistant can read them — except a file you send to a
 specialist on purpose, which goes to that specialist instead (see *A file for a specialist*
 below).
 
@@ -934,7 +930,6 @@ The terminal is an unauthenticated **root** shell, so it is reachable only throu
 
 - **App won't start**: Check the log for "claude_oauth_token is required". You must set the token before starting.
 - **No Telegram messages**: Verify `telegram_bot_token` and `telegram_chat_id` are correct. The bot must have been started (`/start` in Telegram).
-- **No agent logs**: see [Optional: agent logs](#optional-agent-logs). Background jobs work without them.
 - **Old Telegram records ignored after an upgrade**: Casa stores every Telegram message it keeps
   (a job's posts and buttons, a pending scheduled question, a plugin's delivery records) together
   with the bot that sent or received it, and it does not convert records an older version wrote
@@ -999,46 +994,9 @@ request that was made: approving lets that one call, or that one install, go
 ahead and nothing else. Nothing written inside a request — an email subject, a
 plugin's description — can turn into a link or formatting on the card.
 
-## Optional: agent logs
-
-If you want to watch your agents work, Casa can keep a read-only log for each of
-them in a Telegram forum group: one topic per specialist, one for the configurator,
-and one per resident that runs plugin jobs ("Ellen · plugins"). Each line names the
-run it belongs to — what it says, each step it takes, how it ended:
-
-```
-Q3 accounting · ▶ started
-Q3 accounting · 🔧 Searching memory
-Q3 accounting · 📊 Classified 25 · 25 done · 16 left
-Q3 accounting · ✅ completed — Tagged 41 rows; 2 need your decision.
-```
-
-Everything that needs you stays in your direct chat: a job's questions, approvals,
-its result. Reply to a job's message
-there to steer it. Nothing you write in the log group reaches an agent: anyone who
-writes there gets one pointer back to the direct chat.
-
-To set it up:
-
-1. Create a Telegram group, turn **Topics** on in its settings (Telegram makes it a
-   supergroup).
-2. Add your Casa bot and make it an admin with **Manage topics**.
-3. Find the group's chat ID — a negative number starting with `-100`. Post a message
-   in the group and open
-   `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`; it is `message.chat.id`.
-4. Set `telegram_engagement_supergroup_id` to that number and restart the app.
-
-Casa creates the topics as agents start working. Each post disappears about two days
-after it was sent. The logs are visible to every member of the group, and an agent's
-words can mention private things, so choose who is in it. Leave the option at `0` and
-there are no logs; everything else works the same.
-
-If no logs appear, check the app log for `agent log: logging is off:` — it says why
-(most often, the bot lacks **Manage topics**). Casa checks again every half hour.
-
 ## Configurator (v0.12.0)
 
-The `configurator` knows Casa's configuration surface and changes it on your behalf. It ships with Casa (you cannot edit it in `/config`) and needs no log group: it works in your 1:1 chat with Ellen.
+The `configurator` knows Casa's configuration surface and changes it on your behalf. It ships with Casa (you cannot edit it in `/config`) and works in your 1:1 chat with Ellen.
 
 ### What's supported
 

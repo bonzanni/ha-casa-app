@@ -1,10 +1,9 @@
-"""Regression test for v0.18.1: bashio->env wiring of telegram_engagement_supergroup_id.
+"""Regression test for v0.18.1: bashio->env wiring of the app options.
 
 Reads the s6-overlay/s6-rc.d/svc-casa/run script and asserts every
 schema option that casa_core.py::os.environ.get reads is exported.
-Catches the v0.11.0 -> v0.18.0 regression where
-telegram_engagement_supergroup_id was added to schema + casa_core but
-not to the run script."""
+Catches the v0.11.0 -> v0.18.0 regression where an option was added to
+schema + casa_core but not to the run script."""
 
 from pathlib import Path
 
@@ -26,14 +25,12 @@ def _read_run_script() -> str:
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
     "TELEGRAM_TRANSPORT",
-    "TELEGRAM_ENGAGEMENT_SUPERGROUP_ID",  # v0.18.1 - was missing pre-fix
     "TELEGRAM_BOT_API_BASE",  # was missing pre-fix; option was dead in prod
 ])
 def test_run_script_exports_telegram_env_var(var):
     """svc-casa/run must export every TELEGRAM_* env var that
     casa_core.py reads at startup. Regression guard for v0.11.0 ->
-    v0.18.0 regression where TELEGRAM_ENGAGEMENT_SUPERGROUP_ID was
-    silently dropped."""
+    v0.18.0 regression where an exported option was silently dropped."""
     script = _read_run_script()
     # Match `export VAR=` or `export VAR="..."` patterns
     assert (
@@ -134,20 +131,15 @@ def test_run_script_execs_venv_python():
 @pytest.mark.parametrize("option,var", [
     ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
     ("telegram_chat_id", "TELEGRAM_CHAT_ID"),
-    ("telegram_engagement_supergroup_id", "TELEGRAM_ENGAGEMENT_SUPERGROUP_ID"),
 ])
 def test_run_script_null_normalizes_telegram_optionals(option, var):
-    """#325: the three Telegram options are OPTIONAL (password?/str?/int?) in
+    """#325: the Telegram options are OPTIONAL (password?/str?) in
     config.yaml, so a cleared field makes `bashio::config` yield the literal
-    string "null". Exported unguarded:
+    string "null". Exported unguarded, TELEGRAM_BOT_TOKEN="null" is truthy in
+    casa_core's `if telegram_token:` gate, so the Telegram channel constructs
+    with a garbage token.
 
-    - TELEGRAM_BOT_TOKEN="null" is truthy in casa_core's `if telegram_token:`
-      gate, so the Telegram channel constructs with a garbage token;
-    - TELEGRAM_ENGAGEMENT_SUPERGROUP_ID="null" defeats the `or "0"` fallback
-      and `int("null")` raises ValueError → svc-casa exits → the finish
-      script stops the add-on → crash-loop from an ordinary config edit.
-
-    Guard: none of the three may be exported straight from bashio; each must
+    Guard: neither may be exported straight from bashio; each must
     normalize the "null" sentinel to empty, like the neighboring optionals."""
     script = _read_run_script()
     assert f"bashio::config '{option}'" in script, (
@@ -155,8 +147,8 @@ def test_run_script_null_normalizes_telegram_optionals(option, var):
     )
     assert f'export {var}="$(bashio::config' not in script, (
         f"{var} must not be exported straight from bashio — a cleared "
-        f'optional yields the literal "null" (boot-fatal for the supergroup '
-        f"id, garbage-truthy for the token/chat id)"
+        f'optional yields the literal "null" (garbage-truthy for the '
+        f"token/chat id)"
     )
     # The normalization must be bound to this var's read: between the
     # bashio read and the export there must be a "null" comparison.
@@ -165,24 +157,6 @@ def test_run_script_null_normalizes_telegram_optionals(option, var):
     assert '"null"' in block, (
         f'{var} must normalize the "null" sentinel before exporting'
     )
-
-
-def test_supergroup_id_parse_tolerates_garbage_and_keeps_negatives():
-    """#325 defence-in-depth: even if a "null" (or other garbage) reaches the
-    env, casa_core must not die parsing TELEGRAM_ENGAGEMENT_SUPERGROUP_ID —
-    and real Telegram supergroup IDs are NEGATIVE (-100xxxxxxxxxx), so the
-    parse must not clamp them to 0 (which would silently disable engagement
-    routing — the reason `_env_int_or(min_value=0)` is NOT usable here)."""
-    import casa_core
-
-    assert casa_core._telegram_supergroup_id_from_env(
-        {"TELEGRAM_ENGAGEMENT_SUPERGROUP_ID": "null"}) == 0
-    assert casa_core._telegram_supergroup_id_from_env(
-        {"TELEGRAM_ENGAGEMENT_SUPERGROUP_ID": ""}) == 0
-    assert casa_core._telegram_supergroup_id_from_env({}) == 0
-    assert casa_core._telegram_supergroup_id_from_env(
-        {"TELEGRAM_ENGAGEMENT_SUPERGROUP_ID": "-1001234567890"}
-    ) == -1001234567890
 
 
 def test_run_script_null_normalizes_the_model_options():

@@ -84,8 +84,7 @@ whole job, so never tell the person it cannot. Use `start_job`
 for such a job only when the delegation reports that it could not start it. For
 any other listed job, use `start_job(job=..., task=..., context=...)`. When it
 returns pending, tell the person it has started: its questions and its result
-come to this chat, and when the result's message says so, progress appears in
-the agent's log. They steer it by replying here to any of the job's
+come to this chat. They steer it by replying here to any of the job's
 messages, and stop it by asking you: call stop_work. If it is refused, say
 why, naming the running engagement if one is given. Never do the work of a job that is not a delegate's
 own through `delegate_to_agent` instead. A running job does not block quick

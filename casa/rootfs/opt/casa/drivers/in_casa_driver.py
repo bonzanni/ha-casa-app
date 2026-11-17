@@ -9,9 +9,8 @@ next turn when no boundary is left (measured). Casa therefore never
 serialises turns. Per live job session:
 
 - **One reader** consumes ``client.receive_messages()`` for the session's
-  whole life: it puts each turn's words and steps in the agent's log,
-  detects API faults, discharges the tickets the CLI echoes back as taken up, and calls
-  the injected turn-end handler at every ``ResultMessage`` and the
+  whole life: it detects API faults, discharges the tickets the CLI echoes
+  back as taken up, and calls the injected turn-end handler at every ``ResultMessage`` and the
   session-lost handler when the stream ends without Casa's teardown.
 - **One delivery worker** per job (it outlives a session replacement) is
   the ONLY writer: it takes items from the job's queue in order, resumes the
@@ -51,20 +50,16 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-import background_jobs
 from claude_runtime import with_system_prompt_file
 from drivers.driver_protocol import DriverProtocol
-from drivers.turn_progress import step_log_line
 from error_kinds import ErrorKind, api_error_kind, result_api_error_kind
 from engagement_registry import LAUNCH_CWD_KEY, EngagementRecord
 import job_inbox
 import sdk_logging
 import task_input
 from log_cid import cid_var, new_cid
-from output_boundary import ApprovalCut
 
 if TYPE_CHECKING:
-    from agent_logs import AgentLogs
     from channels.tg_address import TgAddress
 
 logger = logging.getLogger(__name__)
@@ -109,26 +104,12 @@ class _EngagementTurn:
     task rendering the first turn's cid.
 
     ``value`` is the running (or last) turn's cid and renders as the record's
-    cid; it is not cleared between turns. ``approvals`` is the authorization
-    hook's per-call record for the running turn (#1252/#1207: tool_use_id →
-    ("pending" | "consumed", GrantKey)), a fresh dict from the turn's start
-    to its end and None between turns."""
+    cid; it is not cleared between turns."""
 
-    __slots__ = ("value", "approvals")
+    __slots__ = ("value",)
 
     def __init__(self) -> None:
         self.value = "-"
-        self.approvals: dict[str, tuple[str, Any]] | None = None
-
-    def note_approval(self, tool_use_id: Any, kind: str, key: Any) -> None:
-        """#1207: SYNCHRONOUS — record what the authorization hook decided for
-        one call ("pending": its deny left a keyboard up; "consumed": it spent
-        the operator's grant). The hook reaches THIS holder through its own
-        context — the SDK reader of the client the holder was bound to before
-        ``__aenter__`` — so the record lands on that client's running turn and
-        no other; between turns it is dropped."""
-        if tool_use_id and self.approvals is not None:
-            self.approvals[str(tool_use_id)] = (kind, key)
 
     def __str__(self) -> str:
         return self.value
@@ -412,11 +393,6 @@ class _Segment:
     cid: str
     capture: Any = None                 # _EngagementCapture | None
     capture_ready: Any = None           # its registration task
-    # The turn's text-bearing messages not yet in the log: those written
-    # after a call still waiting on the operator's approval are held here
-    # until the cut clears (#1207). The ApprovalCut's indices count into it.
-    messages: list = field(default_factory=list)
-    approval_cut: ApprovalCut = field(default_factory=ApprovalCut)
     api_error: ErrorKind | None = None
     idx: int = 0
     started_ms: float = field(default_factory=lambda: time.monotonic() * 1000)
@@ -486,16 +462,13 @@ class _JobLane:
 class InCasaDriver(DriverProtocol):
     """Holds one continuous ClaudeSDKClient session per live job.
 
-    ``agent_logs`` is the agent log sink: the reader puts each turn's words
-    and steps in the job's log with its synchronous ``log()``, never waiting
-    on Telegram. ``None`` logs nothing. Injected, like the registry hooks and
-    the job callbacks, to keep the driver pure/testable.
+    The registry hooks and the job callbacks are injected to keep the driver
+    pure/testable.
     """
 
     def __init__(
         self,
         *,
-        agent_logs: "AgentLogs | None" = None,
         persist_session_id: SessionIdPersister | None = None,
         persist_plugin_profiles: "Callable[[str, dict], Awaitable[None]] | None" = None,
         result_observer: "ResultObserver | None" = None,
@@ -508,7 +481,6 @@ class InCasaDriver(DriverProtocol):
         on_operator_written: "Callable[[EngagementRecord], None] | None" = None,
         launch_in_flight: "Callable[[str], bool] | None" = None,
     ) -> None:
-        self._agent_logs = agent_logs
         self._persist_session_id = persist_session_id
         # S8: persists the rows a rebuilt session's plan decided onto the
         # record's plugin_artifacts — called after the options are built and
@@ -1201,7 +1173,6 @@ class InCasaDriver(DriverProtocol):
     def _open_segment(self, session: _JobSession, rec: Any) -> _Segment:
         cid = new_cid()
         session.holder.value = cid
-        session.holder.approvals = {}
         session.turn_open = True
         segment = _Segment(cid=cid)
         capture = _EngagementCapture.for_turn(rec)
@@ -1281,24 +1252,16 @@ class InCasaDriver(DriverProtocol):
                         block, idx=segment.idx, started_ms=segment.started_ms,
                         name=segment.tool_names.get(
                             getattr(block, "tool_use_id", ""), ""))
-                    # #1207: the hook's record for a call is read at its result.
-                    segment.approval_cut.observe(
-                        getattr(block, "tool_use_id", ""),
-                        session.holder.approvals or {}, len(segment.messages))
-            # A consume that cleared the cut releases the words held behind it.
-            self._log_words(segment, rec)
             return
         if not isinstance(sdk_msg, AssistantMessage):
             return
         segment.idx += 1
         sdk_logging.log_assistant_message(sdk_msg, idx=segment.idx)
-        steps: list[str] = []
         for block in getattr(sdk_msg, "content", []) or []:
             if isinstance(block, ToolUseBlock):
                 segment.tool_names[getattr(block, "id", "")] = getattr(block, "name", "?")
                 sdk_logging.log_tool_use(block, idx=segment.idx,
                                          started_ms=segment.started_ms)
-                steps.append(str(getattr(block, "name", "")))
         # #568/#595: an API-level fault arrives as an assistant message whose
         # text is the CLI's own error prose. Never streamed; recorded (main
         # loop only, first one wins) so the turn ends with its kind.
@@ -1317,29 +1280,6 @@ class InCasaDriver(DriverProtocol):
             except Exception:  # noqa: BLE001
                 logger.warning("answer capture failed for %s", rec.id[:8],
                                exc_info=True)
-        msg_text = "".join(b.text for b in getattr(sdk_msg, "content", [])
-                           if isinstance(b, TextBlock))
-        if msg_text:
-            segment.messages.append(msg_text)
-            self._log_words(segment, rec)
-        if getattr(sdk_msg, "parent_tool_use_id", None) is None:
-            # The main loop's steps, after the words written before them. A
-            # step names the tool, never its outcome, so it is not held.
-            for name in steps:
-                background_jobs.log_job_line(
-                    self._agent_logs, rec, step_log_line(name))
-
-    def _log_words(self, segment: _Segment, rec: Any) -> None:
-        """#1207: put the turn's words in the job's log, unless a call is
-        waiting on the operator's approval. Nothing written after such a call
-        is logged; a consume of the same grant clears the cut, and the words
-        written meanwhile are logged then. Synchronous: the log never makes
-        the reader wait."""
-        if segment.approval_cut.cut is not None:
-            return
-        held, segment.messages = segment.messages, []
-        for text in held:
-            background_jobs.log_job_line(self._agent_logs, rec, text)
 
     async def _end_segment(self, session: _JobSession, rec: Any,
                            result: Any) -> None:
@@ -1347,15 +1287,14 @@ class InCasaDriver(DriverProtocol):
         detach the segment, clear ``turn_open``, stamp activity, drop the
         journal entries the turn took up — so a write landing during the
         awaits below opens a new turn rather than being folded into this one.
-        Without a result (the stream ended mid-turn) only the log and the
-        capture are closed."""
+        Without a result (the stream ended mid-turn) only the capture is
+        closed."""
         segment = session.segment
         if segment is None:
             if result is None:
                 return
             segment = self._open_segment(session, rec)
         session.segment = None
-        session.holder.approvals = None
         if result is not None:
             session.turn_open = False
             self._stamp(rec.id)
@@ -1371,13 +1310,6 @@ class InCasaDriver(DriverProtocol):
                     logger.warning("result_observer raised for engagement %s",
                                    rec.id[:8], exc_info=True)
             self._signal_turn_end(session)
-        # The turn's words that are not held: a turn that ends while a call
-        # still waits on the operator's approval never logs what it wrote
-        # after that call.
-        cut = segment.approval_cut.cut
-        for text in segment.messages[:cut]:
-            background_jobs.log_job_line(self._agent_logs, rec, text)
-        segment.messages = []
         if segment.capture is not None:
             try:
                 await asyncio.shield(segment.capture_ready)

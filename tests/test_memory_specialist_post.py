@@ -214,21 +214,6 @@ async def test_a_link_posted_as_a_button_leaves_a_line(mem, roles):
 # The real channel, wired to a real in_casa driver whose client answers with
 # a canary, against a real store.
 
-SUPERGROUP = -1001
-TOPIC = 555
-
-
-def _topic_update(text: str, *, user_id: int = OPERATOR_CHAT, message_id=900,
-                  thread_id: int = TOPIC):
-    u = MagicMock()
-    u.message.chat.id = SUPERGROUP
-    u.message.text = text
-    u.message.message_thread_id = thread_id
-    u.message.from_user = SimpleNamespace(id=user_id, first_name="Nicola",
-                                          is_bot=False)
-    u.message.message_id = message_id
-    return u
-
 
 def _done():
     from claude_agent_sdk import ResultMessage
@@ -275,7 +260,6 @@ async def topic(tmp_path, roles, mem, monkeypatch):
 
     def channel(chat_id=str(OPERATOR_CHAT)):
         ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id, known_bot_id=BOT,
-                             engagement_supergroup_id=SUPERGROUP,
                              default_agent="assistant")
         ch._engagement_registry = reg
         ch._engagement_driver = drv
@@ -301,26 +285,6 @@ async def _say(ch, update):
     await ch.handle_update(update)
     await _settled(ch._engagement_driver,
                    list(ch._engagement_registry._records.values()))
-
-
-async def test_a_message_in_the_log_group_reaches_no_job_and_no_memory(
-        topic, mem):
-    """The log group is read-only: whatever is written there — by the
-    operator or another member, a command, in a job's old topic or in
-    General — reaches no job and no memory. Each person gets one pointer to
-    the direct chat."""
-    ch = topic.channel()
-    ch.bot.send_message = AsyncMock()
-    await _say(ch, _topic_update("Saturday please, and the link"))
-    await _say(ch, _topic_update("/help", message_id=902))
-    await _say(ch, _topic_update("adjust it", message_id=903,
-                                 thread_id=TOPIC + 2))
-    await _say(ch, _topic_update("me too", user_id=7, message_id=904))
-    assert all(c.query_prompts == [] for c in topic.clients.values())
-    assert await captured_events(mem) == []
-    sends = ch.bot.send_message.await_args_list
-    assert [c.kwargs["text"] for c in sends] == [
-        "This group is a read-only log. Talk to me in our direct chat."] * 2
 
 
 async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_their_message(

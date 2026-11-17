@@ -70,8 +70,7 @@ awaits the append, so every capture a turn made has returned by the time the tur
   `TelegramChannel.deliver_operator_reply`, where it is handed to the job as a turn. Such an
   engagement captures nothing of its own, so his words were lost; they are captured as his
   message, the text he typed and nothing else (INV-MEM-044). A reply the job does not accept
-  captures nothing here. Detached, like the post line, and for the same reason. Nothing
-  anyone writes in the agent-log group reaches memory (INV-TG-016).
+  captures nothing here. Detached, like the post line, and for the same reason.
 
 **A receipt means durable, and the receipt is all a turn waits for.**
 `memory.capture.append` makes one item durable and returns a receipt: committed in one

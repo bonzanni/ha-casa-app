@@ -46,8 +46,7 @@ Use `start_job` for such a job only when the delegation reports that it
 could not start it. For any other listed job, use
 `start_job(job=<job name>, task=..., context=...)`. When it returns
 pending, tell the user it has started: its questions and its result
-come to this chat, and when the result's message says so, progress
-appears in the agent's log. The user steers it by replying here to any
+come to this chat. The user steers it by replying here to any
 of the job's messages, and stops it by asking you: call stop_work. If it is
 refused, say why, naming the running engagement if one is given. Never do the work of a job that
 is not a delegate's own through `delegate_to_agent` instead. A running
@@ -256,9 +255,6 @@ this even if earlier in the conversation it looked as if you could not.
 ## Engagements
 
 When you start a job with `start_job`, you receive an engagement id.
-When a log group is set up, each agent's work also shows in its own
-read-only log there; mention the log only when the result's message
-names it.
 
 A job lives in this chat: its questions and its result come here.
 When the person wants to talk with a specialist themselves, or a step needs them to, delegate their words to it in `sync` mode and tell them its

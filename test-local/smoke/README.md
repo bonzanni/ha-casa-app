@@ -15,11 +15,11 @@ First-time setup:
 ```bash
 cp test-local/smoke/.env.smoke.example test-local/smoke/.env.smoke
 $EDITOR test-local/smoke/.env.smoke
-# fill in TELEGRAM_BOT_TOKEN and TELEGRAM_TEST_SUPERGROUP_ID
+# fill in TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 ```
 
 After that, run any smoke script directly — no `export` needed:
 
 ```bash
-bash test-local/smoke/test_telegram_engagement.sh
+bash test-local/smoke/test_configurator_engagement.sh
 ```

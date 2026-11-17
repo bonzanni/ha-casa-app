@@ -153,8 +153,7 @@ async def _mk_channel(tmp_path, fake_telegram_bot, client):
     from channels.telegram import TelegramChannel
 
     reg, rec, drv = await _mk_driver_rec(tmp_path, client)
-    ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                         engagement_supergroup_id=-1001, known_bot_id=111)
+    ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100, known_bot_id=111)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
     ch._send_dm_reply = AsyncMock()
@@ -203,11 +202,11 @@ class _HeldClient(_ScriptedClient):
 
 
 class TestManualSeamAdmission:
-    async def test_a_command_in_the_log_group_is_never_ticketed(
+    async def test_a_command_in_another_chat_is_never_ticketed(
             self, tmp_path, fake_telegram_bot):
-        """The log group is read-only: a /cancel written there — even in the
-        thread an older version used as this job's topic — is neither
-        delivered nor acted on, and takes no ticket."""
+        """A /cancel written in a group chat that is not the configured direct
+        chat — even in a forum thread — is neither delivered nor acted on, and
+        takes no ticket."""
         client = _ScriptedClient()
         ch, reg, rec, drv = await _mk_channel(
             tmp_path, fake_telegram_bot, client)

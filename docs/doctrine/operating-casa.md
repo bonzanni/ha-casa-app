@@ -66,7 +66,7 @@ at the end of the run. A completion text is written for him too: it says in plai
 found or changed and what is left for him, and a commit SHA, a result field or a reload scope stays
 out of it. It is also all the engaging agent reads of the
 engagement, so a task that only asks for information completes as soon as it is answered,
-with the findings in that text rather than in a turn's closing words, which only the agent's log shows.
+with the findings in that text rather than in a turn's closing words, which no one reads.
 The configurator's prompt carries this rule (its Output discipline,
 `casa/rootfs/opt/casa/defaults/configurator/prompt.md`) and, for how a run ends, its
 completion doctrine (`casa/rootfs/opt/casa/defaults/configurator/doctrine/completion.md`); its role
@@ -110,11 +110,6 @@ either way. See `architecture/engagement-completion-gate.md`.
 **Finishing is not delivering.** An engagement can be terminally complete while its
 completion message never reached anyone. If it matters that a person *knows*, confirm rather
 than inferring it from your own success.
-
-**The agent log is not a delivery.** A line in an agent's log, when a log group is set up, is
-best effort and read-only: it can be dropped, it disappears after about two days, and nothing
-is decided from it. Whatever needs the operator goes to their direct chat. See
-`architecture/agent-logs.md`.
 
 **Do not infer your capabilities from your persona.** Persona text is presentation and is not
 validated against what you can actually do — it can name a tool you do not have. What you can

@@ -19,15 +19,14 @@ the job never took up draws is
 [`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md); what a quiet scheduled
 run changes, and how interacting with one ends its quietness, is
 [`background-job-quiet-runs.md`](background-job-quiet-runs.md); how a reply to a post that is
-no task's carries Casa's reply note is [`telegram.md`](telegram.md); the optional agent log,
-where a job can be watched, is [`agent-logs.md`](agent-logs.md); stopping a job by asking the
-agent (`stop_work`) is [`plugin-stop.md`](plugin-stop.md).
+no task's carries Casa's reply note is [`telegram.md`](telegram.md); stopping a job by asking
+the agent (`stop_work`) is [`plugin-stop.md`](plugin-stop.md).
 
 ## Mental model
 
-**The direct chat is where a job needs the operator; its log is where it can be watched.** A
-running job says nothing in the DM unless it needs a decision or has its result. Everything
-here works with no log group configured, and nothing here reads one (INV-BGJOB-023). A job the operator
+**The direct chat is where a job needs the operator.** A running job says nothing in the DM
+unless it needs a decision or has its result. Everything here happens in that chat, and no
+forum topic is opened for it (INV-BGJOB-023). A job the operator
 started (directly, or through an agent acting on their message — the record's starter is
 `operator`) puts 👍 on his message that asked for it (`tools._acknowledge_job_start`, through
 `TelegramTransport.react_job_request`): the origin's `_tg_request`, stamped at ingress, reacted
@@ -138,7 +137,7 @@ What it does not cover: a file without a caption, which is stored in the chat's 
 acknowledged and starts no turn, so no note is attached; and a reply to an ended job whose
 record the tombstone has pruned, which gets the note any reply would.
 
-**INV-BGJOB-023**: With no log group configured, a job is started, binds its protected calls to the operator in its origin, asks, takes the operator's replies and taps, and ends with its keyboards retired; neither its launch, its grant identity nor its busy refusal requires a log group.
+**INV-BGJOB-023**: A job is started, binds its protected calls to the operator in its origin, asks, takes the operator's replies and taps, and ends with its keyboards retired, all in the operator's direct chat; neither its launch, its grant identity nor its busy refusal opens or needs a forum topic.
 
 **INV-BGJOB-013**: A specialist job's question is a filed post whose option buttons carry the engagement id, a random question id redrawn until the record holds no question with it, and the option's index, and whose Cancel button carries the engagement id; job buttons are matched before the generic callback parser; a tap is resolved against the record only — the operator whose job it is, a record that counts as live, a question id it holds and an option it has — and takes the inbound reservation before its first await, so a successful completion is refused from that instant; a question id the record does not hold delivers nothing and answers "This question is no longer active — reply in words".
 
@@ -180,6 +179,14 @@ kind if it carries buttons, so it is steerable and retired like the others. **An
 a job post** gets its own `v1|job_…` prefix, matched in `_parse_job_callback` before the generic
 parser.
 
+**A surface that shows a job's activity elsewhere** — a thread in the bot chat, for example —
+would post through the job's delivery (`rec.delivery`) and be filed through `record_job_post`
+like every job post, so a reply to it routes to the job. Its events are where the session
+already produces them: the launch (`tools._launch_interactive_engagement`, once the brief is
+queued), the session reader `InCasaDriver._read` (each message's words and each main-loop tool
+step), `report_job_progress`, the resume at boot (`JobRunner.resume_at_boot`) and the finalize
+funnel (`tools._finalize_engagement`).
+
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
@@ -216,7 +223,6 @@ parser.
 - `tests/test_ended_job_replies.py`
 
 **Related**
-- [`architecture/agent-logs.md`](../architecture/agent-logs.md)
 - [`architecture/background-jobs.md`](../architecture/background-jobs.md)
 - [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)

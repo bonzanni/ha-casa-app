@@ -121,7 +121,7 @@ UNARMED notice of kind `launch_outcome_uncommitted` — there is no terminal wri
 obligation. The consumer has a branch for that kind that says the engagement is still open and
 did not fail, and never routes it through the failure narration.
 
-**INV-ENG-030**: A launch that ends after its record exists and before it answered — its launcher cancelled, or Casa's stop latched while its session opened — is reported by one owner, the launch-death reporter, which asks the registry one strict terminal question and lets its three outcomes decide: a durable win writes one line in the job's log, tears the driver down under a bound and settles the job's message journal; a lost race performs no side effect; a rolled-back persist leaves the record live with the client retired. The path writes only `error`, never `completed`.
+**INV-ENG-030**: A launch that ends after its record exists and before it answered — its launcher cancelled, or Casa's stop latched while its session opened — is reported by one owner, the launch-death reporter, which asks the registry one strict terminal question and lets its three outcomes decide: a durable win tears the driver down under a bound and settles the job's message journal; a lost race performs no side effect; a rolled-back persist leaves the record live with the client retired. The path writes only `error`, never `completed`.
 
 The reporter (`tools.py::_report_launch_death`) is the finalization funnel's order applied to
 a launch — mark strictly, tell, then tear down under a bound — and deliberately not the funnel
@@ -135,9 +135,9 @@ over a record disk still calls `active`. The reporter runs as an anchored task t
 shielded: a terminal transition whose write committed keeps its durable state and re-raises on
 cancellation, so an inline owner could commit the flip and then never post, while a
 compensating second owner would correctly lose the transition and do nothing. The teardown
-carries its own bound, so one wedged counterparty never strands the rest, and the log line is
-queued synchronously, never awaited. The line names no inbound message: a message the
-operator sent meanwhile is the journal's to tell, once (INV-ENG-029).
+carries its own bound, so one wedged counterparty never strands the rest. The telling names no
+inbound message: a message the operator sent meanwhile is the journal's to tell, once
+(INV-ENG-029).
 
 **One envelope.** The finalization funnel, the boot replay and the cancellation owner each
 build their own `DelegationComplete` — they differ in text, result availability, elapsed time
@@ -156,9 +156,9 @@ request itself, and the delivery acknowledgement.
 | `open()` raises, or another named fault before it | The tool call answers its named fault, the abort armed and acknowledged on return when it won its transition; a lost transition leaves the winner's obligation untouched; no brief is queued. |
 | The tool call is cancelled inside an inline abort | The abort finishes anchored; if it won, its completion tells the engager live with the acknowledgement; the cancellation owner finds the record terminal and tells nobody. |
 | The stop latches while `open()` is suspended | The ledger cancels the tool call; if the client's connect consumed that cancellation, the latch check reports `launch_cancelled` inline, armed, acknowledged on return, and queues no brief. |
-| The tool call is cancelled after its record exists | The cancellation owner reports through the launch-death reporter (strict transition, log line, bounded teardown, journal settled) and tells the engager live with the acknowledgement that clears the obligation. |
+| The tool call is cancelled after its record exists | The cancellation owner reports through the launch-death reporter (strict transition, bounded teardown, journal settled) and tells the engager live with the acknowledgement that clears the obligation. |
 | The bus drops the engager's role | The message is dropped silently by the bus; the obligation stays armed; boot replays it (INV-ENG-018). |
-| The terminal write of the cancellation rolls back | Record live, one log line, client retired, unarmed `launch_outcome_uncommitted` to the engager; the consumer says "still open". |
+| The terminal write of the cancellation rolls back | Record live, client retired, unarmed `launch_outcome_uncommitted` to the engager; the consumer says "still open". |
 | A launcher is cancelled after the drains are marked complete | Its compensation is not minted; logged; boot re-idles the live record. A named-fault arm it reaches before the cancellation lands spawns no abort either: it is refused as the cancellation it is. |
 | A launcher is cancelled or fails before its record exists | Nothing to compensate: the creation rolled its record back, nothing else was opened, and nothing is anchored for the stop to drain. |
 | The tool call's task is cancelled after it returned | Nothing: the session belongs to the job. |

@@ -52,7 +52,7 @@ or line.
 **One decision per specialist session** (`specialist_session.session_env_and_pad`). A
 delegated run and an agent's own conversation in its own chat ([`own-voice.md`](own-voice.md))
 get their extras from one function: the long-run compaction window for a `long_runs` role, the
-pad keyed by the session (none for a stored call), and the run in the agent's log, applied by
+pad keyed by the session (none for a stored call), applied by
 `SessionExtras.apply`. A delegated run's pad is its run's session; a conversation's is its
 session key, kept while that session lives and released when the session ends — `/new`, or a
 fresh session — unless a binding still holds it (`release_pad`).

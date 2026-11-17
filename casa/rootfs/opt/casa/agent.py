@@ -238,7 +238,7 @@ _explain_draft_var: ContextVar[dict | None] = ContextVar(
 
 # A specialist's own conversation runs on a specialist session: the turn
 # decides its extras once (``specialist_session.session_env_and_pad``: the
-# long-run compaction window, the pad, the run in its agent's log) and the
+# long-run compaction window and the pad) and the
 # options build of that same turn applies them. Same-task, like the draft
 # above; ``None`` on every other agent's turn.
 _session_extras_var: ContextVar[Any] = ContextVar(
@@ -2359,11 +2359,9 @@ class Agent:
         turn_state: dict[str, Any] = {}
         turn_capture: _TurnCapture | None = None
         # A specialist conversation's session extras, decided once the turn
-        # is admitted to run (inside the session gate, below); its run in the
-        # agent's log is closed in the finally.
+        # is admitted to run (inside the session gate, below).
         session_extras: Any = None
         extras_token = None
-        turn_completed = False
         try:
             # Resolve cwd to the agent-home (Plan 4b §5.1). Residents live at
             # /config/agent-home/<role>/; configured cwd on
@@ -2381,7 +2379,6 @@ class Agent:
                 response_text = await self._guest_turn(
                     msg, origin=origin_snapshot, scope=scope,
                     user_text=user_text, report=report, turn_state=turn_state)
-                turn_completed = True
                 return response_text
 
             # Task 9: build this turn's persisted user identity ONCE, from the
@@ -2551,8 +2548,6 @@ class Agent:
                         msg.context.get("synthetic") != "plugin_setup"),
                     scope=scope, capture=capture_message,
                     observe=capture_observe,
-                    run_log=(session_extras.log
-                             if session_extras is not None else None),
                 )
                 turn_state["state"] = state
                 # #521: keep EVERY attempt's state — a setup tool can run in
@@ -2674,8 +2669,6 @@ class Agent:
                         msg.context.get("synthetic") != "plugin_setup"),
                     scope=scope, capture=capture_message,
                     observe=capture_observe,
-                    run_log=(session_extras.log
-                             if session_extras is not None else None),
                 )
                 turn_state["state"] = state
                 turn_state.setdefault("states", []).append(state)
@@ -2801,7 +2794,7 @@ class Agent:
                         return None
                 # A specialist's conversation: this turn's session extras,
                 # keyed by its session key (its pad lives as long as its
-                # session); its run in the agent's log starts here.
+                # session).
                 if self._runs_specialist_session:
                     import specialist_session
                     session_extras = specialist_session.session_env_and_pad(
@@ -2988,22 +2981,8 @@ class Agent:
             if _pending_budget is not None:
                 self._budget_tracker.record(*_pending_budget)
 
-            turn_completed = True
             return response_text or None
         finally:
-            if session_extras is not None:
-                # The run's words up to any call still waiting on the
-                # operator's approval, then how it ended.
-                _won = turn_state.get("state") or {}
-                _cut = _won.get("approval_cut")
-                try:
-                    session_extras.log.close(
-                        list(_won.get("messages") or ()),
-                        _cut.cut if isinstance(_cut, ApprovalCut) else None)
-                    session_extras.log.end(turn_completed)
-                except Exception:  # noqa: BLE001 — a log line never fails a turn
-                    logger.warning("agent log run of %s not closed",
-                                   self.config.role, exc_info=True)
             if extras_token is not None:
                 _session_extras_var.reset(extras_token)
             # #521: correlate a Casa-dispatched setup turn's outcome with its
@@ -3901,15 +3880,8 @@ class Agent:
         scope: TurnScope | None = None,
         capture: Callable[[str, Any], Awaitable[None]] | None = None,
         observe: Callable[[Any], Awaitable[None]] | None = None,
-        run_log: Any = None,
     ):
         """Build the per-turn ``on_message(sdk_msg)`` handler + its ``state``.
-
-        ``run_log``, when given, is the turn's run in its agent's log (a
-        specialist's conversation): it is handed each main-loop step as the
-        call is made and the turn's words as they are written, held behind a
-        call still waiting on the operator's approval, as a delegated run's
-        are.
 
         ``capture``, when given, is awaited with each text-bearing message's
         folded text (and the message) before that text is emitted: the
@@ -4116,9 +4088,6 @@ class Agent:
                                 idx=state["idx"],
                                 started_ms=state["started_ms"],
                             )
-                            if run_log is not None and getattr(
-                                    sdk_msg, "parent_tool_use_id", None) is None:
-                                run_log.step(str(getattr(block, "name", "")))
                 elif isinstance(sdk_msg, UserMessage):
                     for block in getattr(sdk_msg, "content", []) or []:
                         if isinstance(block, ToolResultBlock):
@@ -4171,11 +4140,6 @@ class Agent:
                                 state["approval_cut"].observe(
                                     getattr(block, "tool_use_id", ""),
                                     scope.approvals, len(state["messages"]))
-                                if run_log is not None:
-                                    # a consume that cleared the cut releases
-                                    # the words held behind it
-                                    run_log.words(state["messages"],
-                                                  state["approval_cut"].cut)
                             # #1003: a NON-error result from a plugin tool in
                             # an ordinary turn is evidence a released setup
                             # obligation may rest on. Handed over HERE — under
@@ -4250,9 +4214,6 @@ class Agent:
                         state["messages"].append(msg_text)
                         if capture is not None:
                             await capture(msg_text, sdk_msg)
-                        if run_log is not None:
-                            run_log.words(state["messages"],
-                                          state["approval_cut"].cut)
                     # The canonical fold supersedes any in-flight partial for
                     # this message (AR-A/AR-B): reset before computing the
                     # cumulative so a stale partial never bleeds into message

@@ -22,7 +22,6 @@ from two_endpoints import CASA_BOT
 
 PDF = b"%PDF-1.4\n" + b"x" * 64
 OPERATOR = 100
-SUPERGROUP = -1001
 
 
 @pytest.fixture(autouse=True)
@@ -161,7 +160,6 @@ def _update(msg):
 def _channel(fake_telegram_bot, chat_id=OPERATOR):
     from channels.telegram import TelegramChannel
     return TelegramChannel(bot=fake_telegram_bot, chat_id=chat_id,
-                           engagement_supergroup_id=SUPERGROUP,
                            default_agent="assistant", known_bot_id=CASA_BOT)
 
 
@@ -222,16 +220,6 @@ async def test_a_pin_is_answered_not_silent(fake_telegram_bot, wired):
         "I can't do anything with that — I only take PDFs, images, and text or CSV files."]
 
 
-async def test_a_file_in_the_log_group_draws_the_pointer_in_its_thread(fake_telegram_bot, wired):
-    ch = _channel(fake_telegram_bot)
-    await ch._on_non_text_message(_update(_msg(
-        chat_id=SUPERGROUP, thread=555, document=_doc())))
-    sg = fake_telegram_bot._supergroups[SUPERGROUP]
-    assert sg.messages_by_thread[555] == [
-        "This group is a read-only log. Talk to me in our direct chat."]
-    assert wired.list_files() == []
-
-
 async def test_a_non_operator_is_refused_and_nothing_is_fetched(fake_telegram_bot, wired, monkeypatch):
     fetch = AsyncMock()
     monkeypatch.setattr(ai, "fetch_telegram_file", fetch)
@@ -246,27 +234,6 @@ async def test_no_inbox_means_an_honest_refusal(fake_telegram_bot):
     await ch._on_non_text_message(_update(_msg(document=_doc())))
     assert _replies(fake_telegram_bot) == [
         "I couldn't save that one. Nothing's been kept — try sending it again."]
-
-
-async def test_a_notice_in_the_engagement_group_draws_nothing(fake_telegram_bot, wired):
-    """Topic lifecycle notices — many caused by Casa's own topic actions — are
-    not something anyone sent; a refusal to each would be noise in the topic."""
-    ch = _channel(fake_telegram_bot)
-    await ch._on_non_text_message(_update(_msg(
-        chat_id=SUPERGROUP, thread=555, forum_topic_closed=NS())))
-    await ch._on_non_text_message(_update(_msg(
-        chat_id=SUPERGROUP, thread=555, pinned_message=_msg(document=_doc()))))
-    sg = fake_telegram_bot._supergroups.get(SUPERGROUP)
-    assert sg is None or not any(sg.messages_by_thread.values())
-    assert _replies(fake_telegram_bot) == []
-
-
-async def test_a_bot_file_in_the_engagement_group_draws_nothing(fake_telegram_bot, wired):
-    ch = _channel(fake_telegram_bot)
-    await ch._on_non_text_message(_update(_msg(
-        chat_id=SUPERGROUP, thread=555, is_bot=True, document=_doc())))
-    sg = fake_telegram_bot._supergroups.get(SUPERGROUP)
-    assert sg is None or not any(sg.messages_by_thread.values())
 
 
 async def test_a_file_from_another_chat_is_dropped_like_text(fake_telegram_bot, wired, monkeypatch):

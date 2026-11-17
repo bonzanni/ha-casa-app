@@ -33,9 +33,8 @@ _ORIGIN = {"role": "assistant", "channel": "telegram",
            "chat_id": "c1", "cid": "x", "user_text": "hi"}
 
 
-def _channel(*, supergroup=-100123):
+def _channel():
     channel = MagicMock()
-    channel.engagement_supergroup_id = supergroup
     channel.bot = MagicMock()
     return channel
 
@@ -64,21 +63,11 @@ def _payload(result):
 
 
 class TestEngageExecutorReal:
-    async def test_no_log_group_still_launches(self, tmp_path, monkeypatch):
-        """No forum group: the launch neither refuses nor sets anything up
-        in the group; the job starts."""
-        import agent as agent_mod
-        channel = _channel(supergroup=0)
-        _wire(channel, _registry(tmp_path))
-        monkeypatch.setattr(agent_mod, "active_engagement_driver",
-                            MagicMock(open=AsyncMock()), raising=False)
-        payload = _payload(await launch_job("t", origin=dict(_ORIGIN)))
-        assert payload["status"] == "pending", payload
 
     async def test_non_telegram_origin_gets_accurate_error(self, tmp_path):
         """R-2 (v0.69.7): a non-Telegram origin is told jobs originate from
         Telegram."""
-        _wire(_channel(supergroup=0), _registry(tmp_path))
+        _wire(_channel(), _registry(tmp_path))
         payload = _payload(await launch_job(
             "t", origin={**_ORIGIN, "channel": "webhook"}))
         assert payload["kind"] == "engagement_wrong_origin"

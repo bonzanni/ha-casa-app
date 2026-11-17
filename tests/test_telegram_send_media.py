@@ -17,8 +17,7 @@ def _mk_channel():
         setattr(fake_bot, m, AsyncMock(return_value=MagicMock(message_id=7)))
     fake_app = MagicMock()
     fake_app.bot = fake_bot
-    ch = TelegramChannel(bot_token="x:y", chat_id=100, default_agent="assistant",
-                         engagement_supergroup_id=-1001)
+    ch = TelegramChannel(bot_token="x:y", chat_id=100, default_agent="assistant")
     ch._app = fake_app
     ch._stop_typing = MagicMock()          # avoid touching the typing machinery
     return ch, fake_bot

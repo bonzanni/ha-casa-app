@@ -57,10 +57,6 @@ configuration:
     name: Enable Web Terminal
     description: >-
       Expose a web terminal in the ingress panel for shell access to the container.
-  telegram_engagement_supergroup_id:
-    name: "Agent log group chat ID"
-    description: >-
-      Optional forum group where each agent keeps a read-only log. 0 = no logs.
   telegram_bot_api_base:
     name: "Telegram Bot API base URL"
     description: "Override the Telegram Bot API endpoint (e.g. a self-hosted Bot API server). Leave blank for api.telegram.org."

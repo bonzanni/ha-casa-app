@@ -31,10 +31,7 @@ asking, sent with the file: the stored file's caption becomes one ordinary turn 
 which is why the size cap is set by the request, not by Telegram's download limit.
 
 **Only the operator's direct chat, only a closed set of kinds.** A file is downloaded only
-from the operator in the direct chat. In the agent-log group a person's content — a file, a
-photo, a sticker, a voice message and the like — draws the log group's one pointer to the
-direct chat per person per boot and is never fetched, while chat notices and bot messages draw
-nothing (INV-TG-016, [`agent-logs.md`](agent-logs.md)). An update from any other chat is
+from the operator in the direct chat. An update from any other chat is
 logged and dropped, exactly as a text message from it is; a sender who is not the operator
 in the configured chat is refused. In the direct chat a document is accepted when its final filename suffix is one of `.pdf`, `.png`,
 `.jpg`, `.jpeg`, `.txt`, `.md` or `.csv`, and a photo is accepted as its largest size. Each
@@ -216,7 +213,7 @@ says why, or the uncertainty reply). A file that goes into a task is never store
 default agent's inbox; what the task is told and every refusal on that path are
 [`own-voice.md`](own-voice.md)'s.
 
-What it does not cover: a file sent in the agent-log group (never fetched, INV-TG-016); files
+What it does not cover: files
 for residents other than the Telegram default agent; a `📎` arming across a restart (memory-only,
 like the proposal keyboards — the next file is the default agent's).
 

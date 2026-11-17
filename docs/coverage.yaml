@@ -9,8 +9,6 @@
   doc: architecture/inbound-files.md
 - item: casa/rootfs/opt/casa/agent_lane.py
   doc: architecture/agent-lane.md
-- item: casa/rootfs/opt/casa/agent_logs.py
-  doc: architecture/agent-logs.md
 - item: casa/rootfs/opt/casa/agent_loader.py
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/approval_records.py
@@ -395,8 +393,6 @@
   doc: reference/operator-options.md
 - item: option:telegram_chat_id
   doc: reference/operator-options.md
-- item: option:telegram_engagement_supergroup_id
-  doc: reference/operator-options.md
 - item: option:telegram_transport
   doc: reference/operator-options.md
 - item: option:voice_agent_model
@@ -750,8 +746,6 @@
 - item: env:TELEGRAM_BOT_TOKEN
   doc: reference/operator-options.md
 - item: env:TELEGRAM_CHAT_ID
-  doc: reference/operator-options.md
-- item: env:TELEGRAM_ENGAGEMENT_SUPERGROUP_ID
   doc: reference/operator-options.md
 - item: env:TELEGRAM_TRANSPORT
   doc: reference/operator-options.md

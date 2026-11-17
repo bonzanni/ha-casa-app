@@ -36,17 +36,15 @@ delivering rather than like a configuration error. This is deliberate fail-close
 the route would otherwise accept forged updates from anyone who found the URL. Polling does
 not use that route.
 
-**Two kinds of inbound message go to different places.** A direct message becomes an ordinary
-turn on the bus. A message a person writes in the optional agent-log group reaches nothing: it
-draws one pointer to the direct chat per person per boot (INV-TG-016, in
-[`agent-logs.md`](agent-logs.md)). Both are *text*: the text
+**A direct message becomes an ordinary turn on the bus.** A message from any other chat is
+logged and dropped when `telegram_chat_id` is set, and is routed like a direct message when it
+is empty. The text
 handler is one of two message handlers, and the other takes every new non-text message — a
 file, a photo, a sticker, a pin. In the operator's chat it stores an accepted file and
 acknowledges it with a 👍 (INV-FILE-005) — or, when the file carries a caption, runs one ordinary turn with the caption
 as the operator's words, admitted through the text handler's own dispatch tail
 (`_dispatch_dm_turn`, INV-FILE-004) — and answers everything else with a one-line refusal;
-outside that chat it follows the text path, and in the log group it draws the same one
-pointer ([`inbound-files.md`](inbound-files.md)). The two filters
+outside that chat it follows the text path ([`inbound-files.md`](inbound-files.md)). The two filters
 are disjoint, so each update reaches exactly one handler. Both take new messages only: an
 edited message, a channel post and a business message reach neither, so editing a message
 already sent never starts a second turn. For a job,
@@ -80,11 +78,6 @@ can in principle swap; and a message dispatched *before* the `/new` is not order
 lock at all — an already-in-flight turn races the reset and is handled by the session
 registry's session-id checks instead: the reset removes only the session it snapshotted.
 
-**The agent log has one writer of its own.** A background agent's words and steps go to
-its topic in the optional log group through a synchronous sink and one writer task with its
-own request budget; nothing on the direct-chat path waits on it
-([`agent-logs.md`](agent-logs.md), INV-TG-011).
-
 **Text leaves for the Bot API through one request seam, and a character the platform cannot
 carry is replaced there.** The client library sends every request as UTF-8 form data, so a
 string parameter still carrying a lone surrogate — a JSON `\ud800` escape in a model or tool
@@ -106,8 +99,7 @@ The first five then make zero Bot API calls and return the method's own failure 
 `NOT_DELIVERED`, `None`, or `UnadmittedText` from `send_media`; `guest_finish` still owes the
 group its one edit and makes it Casa's failure line ([`guest-summons.md`](guest-summons.md)). `edit_dm_message` stays string-typed, because it re-renders a body admitted
 when it was posted or replaces it with a Casa status; the arrival replies and the
-delivered-link message are outside the contract, and so is the agent log, which is no channel
-method and posts plain text. The contract is INV-OUT-001 in
+delivered-link message are outside the contract. The contract is INV-OUT-001 in
 [`output-boundary.md`](output-boundary.md), which also records every call site.
 
 **An answer can reply to a message Casa names**, on its first message

@@ -387,7 +387,7 @@ def test_render_paged_unclosed_fence_stays_literal_across_pages():
 # RC3 — telegram.py delivery paths use the planner
 # --------------------------------------------------------------------------
 
-def _mk_channel(supergroup_id: int = -1001):
+def _mk_channel():
     from channels.telegram import TelegramChannel
 
     fake_bot = MagicMock()
@@ -397,7 +397,6 @@ def _mk_channel(supergroup_id: int = -1001):
     fake_app.bot = fake_bot
     ch = TelegramChannel(
         bot_token="x:y", chat_id=100, default_agent="assistant",
-        engagement_supergroup_id=supergroup_id,
     )
     ch._app = fake_app
     return ch, fake_bot

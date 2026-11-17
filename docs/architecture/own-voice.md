@@ -174,8 +174,7 @@ the scoped session key of its own chat, the pool, the resume decision, the sweep
 the serial gate — with the specialist's surface: its options come from
 `tools._build_specialist_options` (its inbox, its own `start_job` and hand-off grants, its
 plugins under its profile), plus the session's extras every specialist session gets
-(`specialist_session.session_env_and_pad`: the long-run compaction window, its pad, its
-run in the agent's log). What it writes is captured with speaker kind `specialist`. Its
+(`specialist_session.session_env_and_pad`: the long-run compaction window and its pad). What it writes is captured with speaker kind `specialist`. Its
 turns come from the operator's direct messages in its chat, from his summons of its bot in a
 chat it is not a member of — a turn of this same conversation whose final text alone is
 shown there ([`guest-summons.md`](guest-summons.md)); a friend's summons in a group he allowed

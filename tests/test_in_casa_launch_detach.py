@@ -105,11 +105,11 @@ async def test_the_engager_gets_pending_before_the_launch_turn_starts(tmp_path, 
     assert driver.is_alive(registry.get(created_id)) is True
 
     GatedClient.gate.set()
-    await _until(lambda: probe.finalize_count == 1)
+    await _until(lambda: probe.turn_ends == 1)
     assert GatedClient.frames_yielded == 4
     # the session's reader ran the turn; the launch reported nothing
     assert registry.get(created_id).status == "active"
-    assert probe.notice_texts == []
+    assert probe.told == []
     await driver.cancel(registry.get(created_id))
 
 
@@ -143,7 +143,7 @@ async def test_cancelling_the_tool_task_after_return_does_not_cancel_the_turn(tm
     assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
     task.cancel()                           # a finished task: nothing to cancel
     GatedClient.gate.set()
-    await _until(lambda: probe.finalize_count == 1)
+    await _until(lambda: probe.turn_ends == 1)
     assert GatedClient.frames_yielded == 4   # the turn ran to its end regardless
     assert GatedClient.result_messages_yielded == 1
     created_id = next(iter(registry._records))
@@ -174,7 +174,7 @@ async def test_the_stop_drains_a_running_owner_and_reports_the_cancellation(tmp_
     assert rec.status == "error"
     assert rec.origin["error_kind"] == "launch_cancelled"
     assert rec.origin.get("shutdown_reason")
-    assert probe.notice_texts == ["⚠️ stopped before reporting a result"]       # one line in the job's log
+    assert probe.told == ["REPORTED"]
     assert [m.content.kind for m in bus.messages] == ["launch_cancelled"]
     assert registry.launch_drains_complete() is True
 
@@ -211,7 +211,7 @@ async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
     await tools_mod.drain_launch_death_reports()
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "error"
-    assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
+    assert probe.told == ["REPORTED"]
     assert registry.get(created_id).terminal_notification_pending is False  # acked on return
     assert bus.messages == []                          # the envelope was the telling
     assert all(t.done() or t is asyncio.current_task() for t in asyncio.all_tasks())
@@ -308,11 +308,11 @@ async def test_a_job_engagement_launch_returns_pending_before_its_turn(tmp_path,
     assert payload["status"] == "pending", payload
     assert GatedClient.frames_yielded == 0
     GatedClient.gate.set()
-    await _until(lambda: probe.finalize_count == 1)
+    await _until(lambda: probe.turn_ends == 1)
     assert GatedClient.frames_yielded == 4
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "active"     # the job runs on
-    assert probe.notice_texts == []
+    assert probe.told == []
     await driver.cancel(registry.get(created_id))
 
 
@@ -382,7 +382,7 @@ async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_p
     created_id = next(iter(registry._records))
     rec = registry.get(created_id)
     assert rec.status == "active"                                  # rolled back, live
-    assert probe.notice_texts == ["⚠️ could not be recorded"]
+    assert probe.told == ["PERSIST_FAILED"]
     assert [m.content.kind for m in bus.messages] == ["launch_outcome_uncommitted"]
     assert rec.terminal_notification_pending is False
 
@@ -412,7 +412,7 @@ async def test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing
     rec = registry.get(created_id)
     assert rec.status == "cancelled"
     assert rec.terminal_notification_pending is True                # still the funnel's
-    assert probe.notice_texts == []
+    assert probe.told == []
 
 
 # --- diff round 1 (Astra J3): a losing inline abort acknowledges nothing ------------
@@ -614,7 +614,7 @@ async def test_a_cancellation_before_the_record_leaves_nothing_to_drain(tmp_path
     assert not [x for x in tools_mod._LAUNCH_DEATH_TASKS if not x.done()]
     await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
     assert registry._records == {}
-    assert probe.log_lines == []
+    assert probe.told == []
 
 
 async def test_a_failure_before_the_record_leaves_nothing_to_drain(tmp_path, monkeypatch):

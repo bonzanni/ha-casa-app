@@ -95,9 +95,8 @@ funnel's first post-flip await, so a post-terminal record rewrite (clearance low
 cannot alter what the completion notice says.
 
 **Nothing cancellable stands between the flip and the tail.** Once the transition returns a
-win, the funnel releases the concurrency permit, freezes the payload inputs and queues the
-end's line in the agent's log ([`agent-logs.md`](agent-logs.md)) — all synchronous — and then
-runs or detaches the tail. The log line is no telling: it is optional and best effort.
+win, the funnel releases the concurrency permit and freezes the payload inputs — both
+synchronous — and then runs or detaches the tail.
 
 **INV-ENG-002**: A strict terminal transition never leaves the persisted and in-memory records disagreeing; on a write failure it restores the prior state and raises.
 
@@ -219,13 +218,11 @@ than being handed a success for a transition that did not happen. Distinguishing
 retryable outcome from the precondition failure matters where it is surfaced: one says
 "read your messages", the other says "try again".
 
-**Two callers race.** The loser is absorbed as already-terminal. No duplicate end line in
-the log and no duplicate notification.
+**Two callers race.** The loser is absorbed as already-terminal. No duplicate notification.
 
-**Driver teardown or the log line fails after the transition.** Both are caught and
-logged. **The terminal state stays committed** — so an engagement can be genuinely finished
-while its agent's log never shows the end. Those are best-effort effects *after* the
-authoritative state change, by design.
+**Driver teardown fails after the transition.** It is caught and logged. **The terminal
+state stays committed** — a best-effort effect *after* the authoritative state change, by
+design.
 
 **The notification is no longer among them.** It used to be: the outcome went to the bus
 fire-and-forget, so a resident that was never told stayed never told, across every restart,
