@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import inspect
 import time
 from types import SimpleNamespace
 
@@ -689,13 +688,72 @@ async def test_the_watch_walks_on_its_cadence_until_casa_stops_it(rig, monkeypat
     assert task.cancelled() and rig.runner._watch_task is None
 
 
-async def test_casa_starts_the_watch_with_the_runner_and_stops_it_at_shutdown():
-    """Nothing else starts the watch: without these two calls a silent job
-    is never told and nobody notices."""
+async def test_putting_the_runner_to_work_starts_its_watch(rig):
+    """Executed, not read: the function casa_core's ``main`` calls once the
+    driver exists attaches the driver, installs the runner and leaves its
+    watch task running. Nothing else starts the watch."""
     import casa_core
-    assert "job_runner.start_watch()" in inspect.getsource(casa_core.main)
-    assert "background_jobs.stop_watch()" in inspect.getsource(
-        casa_core._shutdown_cleanup)
+    bj.configure(None)
+    runner = bj.JobRunner(registry=rig.reg, channel=rig.ch)
+    casa_core._start_job_runner(runner, rig.drv)
+    try:
+        task = runner._watch_task
+        assert bj._runner is runner and runner.driver is rig.drv
+        assert isinstance(task, asyncio.Task)
+        await settle()
+        assert not task.done()              # it is waiting for its first walk
+    finally:
+        runner.stop_watch()
+
+
+async def test_main_puts_the_runner_to_work_unconditionally():
+    """The one edge the case above cannot witness: ``main`` calling the
+    function. A STRUCTURAL pin, weaker than an execution and said so here: it
+    reads ``main``'s AST and requires the call to sit as a direct statement
+    of ``main``'s own body, so a call that is deleted, or nested under any
+    conditional, fails."""
+    import ast
+    import inspect
+    import casa_core
+    tree = ast.parse(inspect.getsource(casa_core))
+    main = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.AsyncFunctionDef) and n.name == "main")
+    calls = [st for st in main.body
+             if isinstance(st, ast.Expr) and isinstance(st.value, ast.Call)
+             and isinstance(st.value.func, ast.Name)
+             and st.value.func.id == "_start_job_runner"]
+    assert len(calls) == 1, "main must call _start_job_runner once, unconditionally"
+
+
+async def test_the_graceful_stop_cancels_the_watch(rig, monkeypatch):
+    """Executed, not read: Casa's real cleanup at a graceful stop cancels the
+    runner's watch, so no walk runs during the teardown."""
+    from unittest.mock import AsyncMock, MagicMock
+    import casa_core
+    import plugin_continuations
+    import tools
+    rig.runner.start_watch()
+    task = rig.runner._watch_task
+    await settle()
+    assert isinstance(task, asyncio.Task) and not task.done()
+    # The cleanup declares the stop to the continuation sweep too: a module
+    # flag, put back after this test.
+    monkeypatch.setattr(plugin_continuations, "_stopping", False)
+    monkeypatch.setattr(casa_core, "_drain_broker_before_channel_shutdown", AsyncMock())
+    monkeypatch.setattr(casa_core, "_close_butler_ha_facade", AsyncMock())
+    monkeypatch.setattr(tools, "stop_engagement_launches", AsyncMock())
+    monkeypatch.setattr(tools, "drain_delegation_settlements", AsyncMock())
+    engagement_registry = MagicMock(begin_launch_shutdown=MagicMock(return_value=0),
+                                    drain_launches=AsyncMock())
+    await casa_core._shutdown_cleanup(
+        job_registry=MagicMock(close=AsyncMock()), engagement_registry=engagement_registry,
+        scheduler=MagicMock(shutdown=MagicMock()), session_sweeper=MagicMock(stop=AsyncMock()),
+        runtime=MagicMock(agents={}), ha_facade=None,
+        bus=MagicMock(begin_shutdown=MagicMock(), agent_loop_tasks=MagicMock(return_value=[]),
+                      fail_pending=MagicMock(), live_dispatch_tasks=MagicMock(return_value=[])),
+        loop_tasks=[], channel_manager=MagicMock(stop_all=AsyncMock()), runners=[])
+    await settle()
+    assert task.cancelled() and rig.runner._watch_task is None
 
 
 # -- the brief and the start line ----------------------------------------------

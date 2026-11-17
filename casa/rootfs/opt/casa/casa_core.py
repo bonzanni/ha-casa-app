@@ -1976,6 +1976,18 @@ async def _close_disabled_specialist_engagements(engagement_registry: Any,
     return left_open
 
 
+def _start_job_runner(job_runner, engagement_driver) -> None:
+    """Put the job runner to work once its driver exists: attach the driver,
+    install the runner as the process's, and start its silent watch — one
+    task for the process, which tells the operator, once per episode, about
+    a job whose open turn has shown no activity for an hour. The graceful
+    stop (``_shutdown_cleanup``) cancels the watch."""
+    import background_jobs
+    job_runner.driver = engagement_driver
+    background_jobs.configure(job_runner)
+    job_runner.start_watch()
+
+
 async def _resume_background_jobs(registry, channel, skip=frozenset(),
                                   only=None) -> None:
     """Resume open in-casa jobs once channels and residents are running: each
@@ -3198,11 +3210,7 @@ async def main() -> None:
         # delivery worker writes nothing until the launcher's finally.
         launch_in_flight=engagement_registry.launch_in_flight,
     )
-    job_runner.driver = engagement_driver
-    background_jobs.configure(job_runner)
-    # One task for the process: it tells the operator, once per episode,
-    # about a job whose open turn has shown no activity for an hour.
-    job_runner.start_watch()
+    _start_job_runner(job_runner, engagement_driver)
 
     # Expose on the agent module so tools.emit_completion / cancel_engagement
     # can find it without circular imports.
