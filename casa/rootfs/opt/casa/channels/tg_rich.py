@@ -26,7 +26,7 @@ module changes only what Telegram would otherwise misread or drop:
   line break: a backslash goes before it, the hard line break of CommonMark,
   since Telegram otherwise joins the two lines into one. A line already
   ending in a hard break or a ``<br>``, a line holding only a list marker,
-  and a summary's title written on lines of its own (Telegram shows the
+  and a summary's title written over several lines (Telegram shows the
   backslash there) are left alone. Line breaks are sent as ``"\\n"``.
 
 Code is never touched. Where code is, and where tables are, is decided by
@@ -233,6 +233,14 @@ class _Reading(NamedTuple):
                                       # which a backslash makes a hard one
 
 
+def _escaped(s: str, i: int) -> bool:
+    """The character at *i* follows an odd run of backslashes."""
+    j = i
+    while j > 0 and s[j - 1] == "\\":
+        j -= 1
+    return (i - j) % 2 == 1
+
+
 def _row_cells(src: str, begin: int, end: int) -> list[list[int]]:
     """The cells of the table row ``src[begin:end]`` as GitHub-flavoured
     Markdown reads it: split on every pipe not right after a backslash, code
@@ -281,18 +289,6 @@ def _read(text: str, *, units: bool = False) -> _Reading:
     # line is an empty quote line after a table.
     plain = text.replace("\0", "\ufffd") + "\n"
     src, tag_lines = _mask_folds(plain)
-    # A summary's title written on lines between a <summary> line and a
-    # </summary> line: Telegram shows a backslash there as written, so its
-    # line breaks get none.
-    titles: list[tuple[int, int]] = []
-    title_from = None
-    for begin, end in tag_lines:
-        tags = plain[begin:end].lower()
-        if title_from is not None and "</summary" in tags:
-            titles.append((title_from, begin))
-            title_from = None
-        if tags.rfind("<summary") > tags.rfind("</summary"):
-            title_from = end
     env: dict = {_SPANS: {}, _ROWS: []}
     try:
         tokens = _MD.parse(src, env)
@@ -372,7 +368,9 @@ def _read(text: str, *, units: bool = False) -> _Reading:
                 # Not after a <br>, which already breaks the line, nor after
                 # a bare list marker, which a backslash would turn into a
                 # list item.
-                if not (_BR_END.search(line) or _BARE_MARKER.fullmatch(line)):
+                br = _BR_END.search(line)
+                if not ((br and not _escaped(line, br.start()))
+                        or _BARE_MARKER.fullmatch(line)):
                     breaks.append(newline)
                 continue
             if end <= start:
@@ -398,6 +396,11 @@ def _read(text: str, *, units: bool = False) -> _Reading:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
+    # A summary's title written over several lines: Telegram shows a
+    # backslash there as written, so its line breaks get none.
+    titles = [m.span() for m in _SUMMARY.finditer(text)
+              if "\n" in m.group(0) and not _escaped(text, m.start())
+              and not any(start <= m.start() < end for start, end in merged)]
     breaks = [b for b in breaks if not any(start <= b < end for start, end in titles)]
     return _Reading(merged, found_units, fences, wide, sorted(breaks))
 
