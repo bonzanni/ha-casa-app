@@ -256,7 +256,7 @@ async def test_the_channel_edits_the_message_with_the_new_keyboard():
     assert mid == TAPPED
     (kw,) = rich_edits(bot)
     assert (kw["chat_id"], kw["message_id"]) == (OPERATOR, TAPPED)
-    assert kw["rich_message"] == {"markdown": "📊 Finance\nPair **17**?"}
+    assert kw["rich_message"] == {"markdown": "📊 Finance\\\nPair **17**?"}
     assert [r[0]["callback_data"] for r in kw["reply_markup"]["inline_keyboard"]] == [
         "v1|proposal|rid9|0", "v1|proposal|rid9|1"]
     assert bot.send_message.await_count == bot.edit_message_text.await_count == 0

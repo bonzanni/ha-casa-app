@@ -57,6 +57,16 @@ classifies content and never validates the agent's Markdown before sending it.
 - **An escaping backslash goes with the character it escaped.** For both characters, a
   backslash run of odd length before it loses one backslash, so `living\_room` becomes
   `living&#95;room` and `\<5` becomes `&lt;5`.
+- **A single line break stays a line break.** Telegram reads a line break inside a
+  paragraph as CommonMark does, as a space, so lines written one under another (a call
+  summary, a quote of several lines, a list item continued on the next line, a fold's body)
+  would arrive as one paragraph. Each such soft line break outside code gets a backslash
+  before it, CommonMark's hard line break. A line that already ends in two spaces, a
+  backslash or a `<br>` is left alone, and so is a line holding only a list marker, which
+  the backslash would turn into a list item, and so are the lines of a summary's title
+  written over several lines, where Telegram shows the backslash as written and joins the
+  title. An escaped `\<br>` is text, so its line still gets the backslash. Code, table rows and HTML blocks are not
+  touched, and line breaks go out as `\n`.
 - **A time link becomes a `<tg-time>` tag** (below).
 - **A table whose rows have more cells than its header gets a wider header** and delimiter
   row, padded with empty cells to the widest row; GitHub-flavoured Markdown would drop the

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.376.1] - 2026-11-18
+
+### Fixed
+
+- Lines written one under another stay on their own lines; since 0.376.0 Telegram joined them into one paragraph.
+
 ## [0.376.0] - 2026-11-18
 
 ### Changed
