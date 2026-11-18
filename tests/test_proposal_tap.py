@@ -46,6 +46,33 @@ class _FakeBot:
         self.markups.append(kwargs)
         return True
 
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        """A rich send or edit, recorded beside the plain ones with the
+        Markdown it carries as its ``text`` (its keyboard in JSON form)."""
+        record = {**api_kwargs, "text": api_kwargs["rich_message"]["markdown"]}
+        if endpoint == "editMessageText":
+            self.edited.append(record)
+            return True
+        self.sent.append(record)
+        return types.SimpleNamespace(message_id=501)
+
+
+def _on_rich_send(env, send):
+    """Route the fake bot's rich sends to ``send(**api_kwargs)``; its rich
+    edits are still recorded in ``edited``."""
+    record = env.bot.do_api_request
+
+    async def do_api_request(endpoint, *, api_kwargs, return_type=None):
+        if endpoint != "sendRichMessage":
+            return await record(endpoint, api_kwargs=api_kwargs, return_type=return_type)
+        return await send(**api_kwargs)
+    env.bot.do_api_request = do_api_request
+
+
+def _rid_of(api_kwargs) -> str:
+    """The request id in a sent card's first button."""
+    return api_kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"].split("|")[2]
+
 
 async def _noop(*a, **k):
     return None
@@ -143,9 +170,11 @@ async def test_the_keyboard_is_posted_with_one_button_per_label_and_the_message_
                                                  post=rec)
     assert mid == 501
     (sent,), = [env.bot.sent]
-    rows = sent["reply_markup"].inline_keyboard
-    assert [b.text for row in rows for b in row] == ["Yes", "No"]
-    assert [b.callback_data for row in rows for b in row] == [f"v1|proposal|{RID}|0", f"v1|proposal|{RID}|1"]
+    assert sent["rich_message"] == {"markdown": "📊 Finance\nPair **17**?"}
+    rows = sent["reply_markup"]["inline_keyboard"]
+    assert [b["text"] for row in rows for b in row] == ["Yes", "No"]
+    assert [b["callback_data"] for row in rows for b in row] == [
+        f"v1|proposal|{RID}|0", f"v1|proposal|{RID}|1"]
     assert filed.filed == [("d-1", TgAddress(BOT, OPERATOR, 501))]     # under its task
 
 
@@ -362,7 +391,7 @@ async def test_a_supersede_during_a_pending_send_marks_the_late_keyboard_replace
         if n == 1:
             await gate.wait()                           # the first keyboard's send is in flight…
         return types.SimpleNamespace(message_id=500 + n)
-    env.bot.send_message = slow_send
+    _on_rich_send(env, slow_send)
     hook = rb.make_result_hook(_map(), client_id="c1", store=store)
     _open(store, call="c-1")
     ref1, _ = store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal(revision="r1")))
@@ -385,37 +414,43 @@ async def test_a_supersede_during_a_pending_send_marks_the_late_keyboard_replace
 # --- diff round 2 (Astra B S2): a proposal leaves room for its settlement line -------------
 
 async def test_a_maximal_proposals_settlement_edit_fits_telegrams_limit(env, monkeypatch):
+    """The largest card the deposit admits still takes its settle line whole:
+    measured in the prepared bytes of a rich message, with the widest label
+    (32 underscores, each sent as ``&#95;``)."""
     import json
     import tools as tools_mod
-    from text_util import utf16_len
+    from channels.tg_rich import RICH_BUDGET_BYTES, prepare
     from test_proposal_slot import LABEL, SLOT, _map, _open, _post, _proposal
     store = rb.ReferenceStore(now=lambda: 1000.0)
     monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(env.ch))
     monkeypatch.setattr(tools_mod, "_agent_role_map",
                         {"finance": types.SimpleNamespace(character=types.SimpleNamespace(name="Finance"))})
     hook = rb.make_result_hook(_map(), client_id="c1", store=store)
-    label32 = "🙂" * 32                                    # 32 characters, 64 UTF-16 units: the widest label admitted
-    # the largest body the deposit admits with that label: find it by probing the deposit
-    body_units = 4096
-    while True:
-        _open(store, call=f"c-{body_units}")
-        ref, err = store.deposit(client_id="c1", slot=SLOT, value=json.dumps(
-            _proposal(text="🙂" * (body_units // 2), buttons=[{"label": label32, "call": {"tool": "apply", "arguments": {}}}])))
-        if err is None:
-            break
-        store.close_call("c1", f"c-{body_units}")
-        body_units -= 2
-    composed = f"{LABEL}\n" + "🙂" * (body_units // 2)
-    assert utf16_len(composed) <= 4096 - rb.PROPOSAL_SETTLE_RESERVE
-    out = await hook(_post(json.dumps({SLOT: ref})), f"c-{body_units}", {})
+    label32 = "_" * 32                                     # 32 characters, 160 prepared bytes
+    room = RICH_BUDGET_BYTES - rb.PROPOSAL_SETTLE_RESERVE_BYTES - len(
+        prepare(f"{LABEL}\n").encode("utf-8"))
+    widest = room // 5                                     # each body "_" prepares to 5 bytes
+
+    def deposit(n):
+        _open(store, call=f"c-{n}")
+        return store.deposit(client_id="c1", slot=SLOT, value=json.dumps(
+            _proposal(text="_" * n, buttons=[{"label": label32, "call": {"tool": "apply", "arguments": {}}}])))
+    assert deposit(widest + 1) == (None, "bad_proposal")
+    store.close_call("c1", f"c-{widest + 1}")
+    ref, err = deposit(widest)
+    assert err is None
+    composed = f"{LABEL}\n" + "_" * widest
+    out = await hook(_post(json.dumps({SLOT: ref})), f"c-{widest}", {})
     assert "casa_delivery" in out["hookSpecificOutput"]["updatedToolOutput"]
     (rid,) = env.broker.pending(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}")
     assert await _tap(env, _cq(data=f"v1|proposal|{rid}|0")) == "✔"
     await _settle()
     (edit,) = env.bot.edited
-    assert edit["text"].endswith(f"\n⏳ {label32}") and utf16_len(edit["text"]) <= 4096
-    # #1341: the line the tap settles it to afterwards is the same length
-    assert utf16_len(edit["text"].replace("\n⏳ ", "\n☑ ")) == utf16_len(edit["text"])
+    # sent whole, not cut to the budget with "…"
+    assert edit["rich_message"] == {"markdown": prepare(f"{composed}\n\n⏳ {label32}")}
+    assert len(edit["text"].encode("utf-8")) <= RICH_BUDGET_BYTES
+    # #1341: the line the tap settles it to afterwards is the same size
+    assert len("☑".encode("utf-8")) == len("⏳".encode("utf-8"))
 
 
 # --- diff round 5 (Terra S2): the keyboard edit fails -------------------------------------
@@ -509,7 +544,7 @@ def _post_args(revision=""):
 
 async def _post(env, monkeypatch, send, *, revision=""):
     """Run the real ``_post_proposal`` through the real channel, whose bot's
-    ``send_message`` is *send*. Returns (result, rid)."""
+    rich send is *send*. Returns (result, rid)."""
     import tools as tools_mod
     monkeypatch.setattr(tools_mod, "_channel_manager", _Manager(env.ch), raising=False)
     sent = []
@@ -517,10 +552,9 @@ async def _post(env, monkeypatch, send, *, revision=""):
     async def _send(**kwargs):
         sent.append(kwargs)
         return await send(**kwargs)
-    env.bot.send_message = _send
+    _on_rich_send(env, _send)
     result = await rb._post_proposal(*_post_args(revision))
-    rid = sent[-1]["reply_markup"].inline_keyboard[0][0].callback_data.split("|")[2]
-    return result, rid
+    return result, _rid_of(sent[-1])
 
 
 def _live(env):
@@ -600,7 +634,7 @@ async def test_a_cancelled_caller_unregisters_as_today(env, monkeypatch):
     async def slow(**kwargs):
         started.set()
         await asyncio.sleep(3600)
-    env.bot.send_message = slow
+    _on_rich_send(env, slow)
     task = asyncio.create_task(rb._post_proposal(*_post_args()))
     await started.wait()
     task.cancel()
@@ -644,10 +678,10 @@ async def test_a_tap_before_an_on_time_send_returns_binds_the_same_id_once(env, 
     release, rid_box = asyncio.Event(), []
 
     async def held(**kwargs):
-        rid_box.append(kwargs["reply_markup"].inline_keyboard[0][0].callback_data.split("|")[2])
+        rid_box.append(_rid_of(kwargs))
         await release.wait()
         return types.SimpleNamespace(message_id=780)
-    env.bot.send_message = held
+    _on_rich_send(env, held)
     task = asyncio.create_task(rb._post_proposal(*_post_args()))
     while not rid_box:
         await asyncio.sleep(0)
@@ -702,8 +736,48 @@ async def test_a_flood_limited_card_edit_is_retried_once(failures, landed, calls
     monkeypatch.setattr(tg_mod, "asyncio", _Asyncio())
     ch, bot = _mk_channel_with_fake_bot()
     exc = RetryAfter(3) if error == "flood" else NetworkError("link lost")
-    bot.edit_message_text = AsyncMock(side_effect=[exc] * failures + [None])
+    bot.do_api_request = AsyncMock(side_effect=[exc] * failures + [None])
     assert await ch.edit_dm_message(OPERATOR, 501, "card\n☑ Yes") is landed
-    assert bot.edit_message_text.await_count == calls
-    assert bot.edit_message_text.await_args.kwargs["message_id"] == 501
+    assert bot.do_api_request.await_count == calls
+    assert bot.do_api_request.await_args.args[0] == "editMessageText"
+    assert bot.do_api_request.await_args.kwargs["api_kwargs"]["message_id"] == 501
     assert waits == [3.0 if error == "flood" else 1.0]
+
+
+# --- a settle line after a trailing table, list or quote is its own paragraph -------------
+
+_TABLE_CARD = "📊 Finance\nPay these?\n\n| Item | € |\n| --- | --- |\n| Nimbus | 49.99 |"
+
+
+def _gfm_html(markdown: str) -> str:
+    """What a GitHub-flavoured Markdown parser (CommonMark with tables) makes of it."""
+    from markdown_it import MarkdownIt
+    return MarkdownIt("commonmark").enable("table").render(markdown)
+
+
+async def test_a_tap_on_a_card_ending_in_a_table_adds_its_line_below_the_table(env):
+    from channels.tg_rich import prepare
+    env.register(meta={"text": _TABLE_CARD})
+    assert await _tap(env, _cq(data=f"v1|proposal|{RID}|0")) == "✔"
+    await _settle()
+    (edit,) = env.bot.edited
+    assert edit["rich_message"] == {"markdown": prepare(f"{_TABLE_CARD}\n\n⏳ Yes")}
+    html = _gfm_html(edit["text"])
+    assert "<p>⏳ Yes</p>" in html and "⏳" not in html.split("</table>")[0]
+
+
+async def test_a_superseded_card_ending_in_a_table_says_so_below_the_table(env):
+    env.register(meta={"text": _TABLE_CARD, "revision": "r1"})
+    env.broker.cancel_where(namespace="proposal", reason="superseded", predicate=lambda r: True)
+    await _settle()
+    assert env.bot.edited[-1]["text"].endswith("49.99 |\n\n↻ replaced")
+    assert "<p>↻ replaced</p>" in _gfm_html(env.bot.edited[-1]["text"])
+
+
+@pytest.mark.parametrize("body", [_TABLE_CARD, "📊 Finance\n- a\n- b", "📊 Finance\n> quoted"],
+                         ids=["table", "list", "quote"])
+async def test_a_mark_after_a_trailing_block_is_its_own_paragraph(env, body):
+    assert await env.ch.mark_proposal(_meta(text=body), "☑ Paid") is True
+    (edit,) = env.bot.edited
+    assert edit["text"] == f"{body}\n\n☑ Paid"
+    assert "<p>☑ Paid</p>" in _gfm_html(edit["text"])

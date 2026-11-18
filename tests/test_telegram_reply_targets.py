@@ -4,9 +4,9 @@ Two reserved context keys carry Telegram message addresses
 (``[bot_id, chat_id, message_id]``): ``_tg_request`` is the operator's own
 inbound message, stamped at ingress and copied into the turn's origin;
 ``_reply_to`` is a reply target Casa chose. When a delivery context carries a
-``_reply_to`` on this endpoint's bot and in the chat being sent to, the first
-physical message of the answer is a Telegram reply to it — sent even when the
-target is gone — and every later page is a plain message.
+``_reply_to`` on this endpoint's bot and in the chat being sent to, the
+first message of the answer is a Telegram reply to it — sent even when the
+target is gone — and every later message is a plain one.
 """
 from __future__ import annotations
 
@@ -29,12 +29,22 @@ OTHER_BOT = BOT + 1
 
 
 def _two_pages(rich: bool) -> str:
-    """A text ``render_paged`` delivers as two pages."""
-    return (("**bold** " * 60 if rich else "") + "word " * 1000).strip()
+    """A text sent as two rich messages."""
+    from channels.tg_rich import split
+    text = (("**bold** " * 60 if rich else "") + "word " * 8000).strip()
+    assert len(split(text)) == 2
+    return text
 
 
 def _sends(ch) -> list[dict]:
-    return ch._app.bot.sent
+    """Each rich message sent: its ``api_kwargs``, the Markdown as ``text``."""
+    sends = []
+    for kw in ch._app.bot.rich:
+        assert kw["endpoint"] == "sendRichMessage"
+        rich = kw["rich_message"]
+        sends.append(dict(kw, text=rich.get("markdown", rich)))
+    assert ch._app.bot.sent == []                    # nothing through send_message
+    return sends
 
 
 @pytest.mark.parametrize("rich", [True, False], ids=["rich", "plain"])
@@ -44,36 +54,36 @@ async def test_a_reply_target_makes_the_first_page_a_reply(rich):
     await ch.send_response(_admitted(_two_pages(rich)), ctx)
     sends = _sends(ch)
     assert len(sends) == 2
-    assert sends[0]["reply_parameters"].message_id == 7
-    assert sends[0]["reply_parameters"].allow_sending_without_reply is True
+    assert sends[0]["reply_parameters"]["message_id"] == 7
+    assert sends[0]["reply_parameters"]["allow_sending_without_reply"] is True
     assert "reply_parameters" not in sends[1]
 
 
 async def test_a_single_plain_page_carries_the_target():
-    # no entities and no post record: send_response hands it to send()
     ch, _bus = _channel()
     await ch.send_response(_admitted("All filed."), {"chat_id": OPERATOR,
                                                     "_reply_to": [BOT, OPERATOR, 7]})
     (sent,) = _sends(ch)
-    assert sent["reply_parameters"].message_id == 7
-    assert sent["reply_parameters"].allow_sending_without_reply is True
+    assert sent["reply_parameters"]["message_id"] == 7
+    assert sent["reply_parameters"]["allow_sending_without_reply"] is True
 
 
 async def test_a_single_rich_page_carries_the_target_on_its_plain_retry_too():
+    from channels.tg_rich import plain_blocks
     ch, _bus = _channel()
     bot = ch._app.bot
-    real = bot.send_message
+    real = bot.do_api_request
 
-    async def refuse_entities(**kw):
-        if "entities" in kw:
-            raise BadRequest("can't parse entities")
-        return await real(**kw)
-    bot.send_message = refuse_entities
+    async def refuse_markdown(endpoint, *, api_kwargs, return_type=None):
+        if "markdown" in api_kwargs["rich_message"]:
+            raise BadRequest("Rich_message_parse_failed")
+        return await real(endpoint, api_kwargs=api_kwargs, return_type=return_type)
+    bot.do_api_request = refuse_markdown
     await ch.send_response(_admitted("**All** filed."), {"chat_id": OPERATOR,
                                                         "_reply_to": [BOT, OPERATOR, 7]})
     (sent,) = _sends(ch)
-    assert sent["text"] == "**All** filed."
-    assert sent["reply_parameters"].message_id == 7
+    assert sent["rich_message"] == {"blocks": plain_blocks("**All** filed.")}
+    assert sent["reply_parameters"]["message_id"] == 7
 
 
 async def test_a_task_posts_single_page_carries_the_target():
@@ -82,16 +92,16 @@ async def test_a_task_posts_single_page_carries_the_target():
     await ch.send_response(_admitted("All filed."), {
         "chat_id": OPERATOR, "_reply_to": [BOT, OPERATOR, 7], "_post": post})
     (sent,) = _sends(ch)
-    assert sent["reply_parameters"].message_id == 7
+    assert sent["reply_parameters"]["message_id"] == 7
 
 
-async def test_send_puts_the_target_on_its_first_chunk_only():
+async def test_send_puts_the_target_on_its_first_message_only():
     ch, _bus = _channel()
-    await ch.send(_admitted("line\n" * 1500), {"chat_id": str(OPERATOR),
-                                               "_reply_to": [BOT, OPERATOR, 7]})
+    await ch.send(_admitted(_two_pages(False)), {"chat_id": str(OPERATOR),
+                                                 "_reply_to": [BOT, OPERATOR, 7]})
     sends = _sends(ch)
     assert len(sends) == 2
-    assert sends[0]["reply_parameters"].message_id == 7
+    assert sends[0]["reply_parameters"]["message_id"] == 7
     assert "reply_parameters" not in sends[1]
 
 
@@ -220,16 +230,17 @@ async def test_a_marked_answer_replies_to_his_message_with_the_quote():
     assert len(sends) == 1
     assert sends[0]["text"] == "Tue works."
     rp = sends[0]["reply_parameters"]
-    assert (rp.message_id, rp.quote) == (9, "Tue")
-    assert rp.allow_sending_without_reply is True
+    assert (rp["message_id"], rp["quote"]) == (9, "Tue")
+    assert rp["allow_sending_without_reply"] is True
 
 
 async def test_a_bare_marker_replies_without_a_quote():
     ch, _bus = _channel()
     await ch.send_response(_marked("<reply/>**Both** work."), dict(_ASKED))
     (sent,) = _sends(ch)
-    assert sent["text"] == "Both work."
-    assert (sent["reply_parameters"].message_id, sent["reply_parameters"].quote) == (9, None)
+    assert sent["text"] == "**Both** work."
+    assert (sent["reply_parameters"]["message_id"],
+            sent["reply_parameters"].get("quote")) == (9, None)
 
 
 @pytest.mark.parametrize("quote", ["Tuesday", "T" * 1025], ids=["not-his-words", "too-long"])
@@ -238,60 +249,39 @@ async def test_a_quote_not_in_his_message_gives_a_plain_reply(quote):
     ctx = dict(_ASKED, _operator_words="Mon and Tue? " + "T" * 1025)
     await ch.send_response(_marked(f'<reply quote="{quote}"/>Tue works.'), ctx)
     (sent,) = _sends(ch)
-    assert sent["reply_parameters"].message_id == 9
-    assert sent["reply_parameters"].quote is None
+    assert sent["reply_parameters"]["message_id"] == 9
+    assert sent["reply_parameters"].get("quote") is None
 
 
-@pytest.mark.parametrize("refusal", ["Bad Request: QUOTE_TEXT_INVALID",
-                                     "Bad Request: something else"], ids=["quote", "other"])
-@pytest.mark.parametrize("text", ['<reply quote="Tue"/>Tue works.',
-                                  '<reply quote="Tue"/>**Tue** works.'], ids=["plain", "rich"])
-async def test_a_refused_quote_is_resent_without_it(text, refusal):
-    ch, _bus = _channel()
-    bot = ch._app.bot
-    real = bot.send_message
+def _refuse_every_send(ch) -> list[dict]:
     tries = []
 
-    async def refuse_quote(**kw):
-        tries.append(kw)
-        rp = kw.get("reply_parameters")
-        if rp is not None and rp.quote:
-            raise BadRequest(refusal)
-        return await real(**kw)
-    bot.send_message = refuse_quote
-    await ch.send_response(_marked(text), dict(_ASKED))
-    assert len(tries) == 2
-    assert tries[0]["reply_parameters"].quote == "Tue"
-    assert tries[1]["reply_parameters"].quote is None
-    assert tries[1]["reply_parameters"].message_id == 9
-    assert tries[1]["text"] == "Tue works."
-    assert ("entities" in tries[1]) == ("entities" in tries[0])   # same rendering
+    async def refuse(endpoint, *, api_kwargs, return_type=None):
+        tries.append(api_kwargs)
+        raise BadRequest("Bad Request: chat not found")
+    ch._app.bot.do_api_request = refuse
+    return tries
 
 
 async def test_a_refusal_of_the_resend_without_the_quote_propagates():
+    """The quoted reply, then without the quote; the unformatted resend the
+    same way; then the refusal propagates."""
     ch, _bus = _channel()
-    tries = []
-
-    async def refuse(**kw):
-        tries.append(kw)
-        raise BadRequest("Bad Request: chat not found")
-    ch._app.bot.send_message = refuse
+    tries = _refuse_every_send(ch)
     with pytest.raises(BadRequest):
         await ch.send_response(_marked('<reply quote="Tue"/>Tue works.'), dict(_ASKED))
-    assert [t["reply_parameters"].quote for t in tries] == ["Tue", None]
+    assert [(t["reply_parameters"].get("quote"), next(iter(t["rich_message"])))
+            for t in tries] == [("Tue", "markdown"), (None, "markdown"),
+                                ("Tue", "blocks"), (None, "blocks")]
 
 
-async def test_a_refusal_without_a_quote_is_not_resent():
+async def test_a_refusal_without_a_quote_is_resent_only_unformatted():
     ch, _bus = _channel()
-    tries = []
-
-    async def refuse(**kw):
-        tries.append(kw)
-        raise BadRequest("Bad Request: chat not found")
-    ch._app.bot.send_message = refuse
+    tries = _refuse_every_send(ch)
     with pytest.raises(BadRequest):
         await ch.send_response(_marked("<reply/>Tue works."), dict(_ASKED))
-    assert len(tries) == 1
+    assert [next(iter(t["rich_message"])) for t in tries] == ["markdown", "blocks"]
+    assert all("quote" not in t["reply_parameters"] for t in tries)
 
 
 async def test_casa_s_target_wins_over_the_marker():
@@ -299,8 +289,8 @@ async def test_casa_s_target_wins_over_the_marker():
     await ch.send_response(_marked('<reply quote="Tue"/>Tue works.'),
                            dict(_ASKED, _reply_to=[BOT, OPERATOR, 7]))
     (sent,) = _sends(ch)
-    assert sent["reply_parameters"].message_id == 7
-    assert sent["reply_parameters"].quote is None
+    assert sent["reply_parameters"]["message_id"] == 7
+    assert sent["reply_parameters"].get("quote") is None
 
 
 @pytest.mark.parametrize("request_", [[OTHER_BOT, OPERATOR, 9], [BOT, OPERATOR + 1, 9], None],
@@ -327,5 +317,5 @@ async def test_the_marker_rides_only_the_answer_not_other_sends_of_its_context()
     await ch.send_response(_marked('<reply quote="Tue"/>' + _two_pages(True)), ctx)
     await ch.send(_admitted("a line of Casa's own"), ctx)
     sends = _sends(ch)
-    assert sends[0]["reply_parameters"].quote == "Tue"
+    assert sends[0]["reply_parameters"]["quote"] == "Tue"
     assert all("reply_parameters" not in s for s in sends[1:])

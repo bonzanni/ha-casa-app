@@ -162,7 +162,15 @@ def _alex_endpoint(bus):
         sent.append(kw)
         return SimpleNamespace(message_id=next(counter))
 
+    async def do_api_request(endpoint, *, api_kwargs, return_type=None):
+        # A rich message is recorded beside the plain ones, its Markdown as
+        # the text.
+        sent.append(dict(api_kwargs, endpoint=endpoint,
+                         text=api_kwargs["rich_message"].get("markdown")))
+        return SimpleNamespace(message_id=next(counter))
+
     bot = SimpleNamespace(send_message=AsyncMock(side_effect=send_message),
+                          do_api_request=AsyncMock(side_effect=do_api_request),
                           send_chat_action=AsyncMock(return_value=True),
                           send_document=AsyncMock(return_value=SimpleNamespace(message_id=1)))
     ch = TelegramChannel(chat_id=str(OPERATOR), bot=bot, bus=bus, default_agent="finance",
@@ -270,6 +278,12 @@ def _alex_texts(world):
     return [m["text"] for m in world.alex.sent]
 
 
+def _start_md(brief: str) -> str:
+    """The start post's Markdown: who asked, then the brief's one line quoted."""
+    from channels.tg_rich import prepare
+    return prepare(f"**Ellen** asked:\n> {brief}")
+
+
 def _casa_sends(world):
     return [c for c in world.casa.calls if c[0] in ("send", "send_response", "send_media")]
 
@@ -299,7 +313,7 @@ async def test_a_task_of_alexs_open_chat_shows_there_whole_and_ellen_gets_her_bo
     # Alex's chat: the start line, then the whole answer, marker included,
     # no echo; every landed message filed under the task
     texts = _alex_texts(world)
-    assert texts[0] == "Ellen asked:\nHow much on groceries in October?"
+    assert texts[0] == _start_md("How much on groceries in October?")
     answer = "".join(texts[1:])
     assert MARKER in answer and ECHO.strip() not in answer
     assert len(texts) >= 3                       # paged
@@ -322,16 +336,16 @@ async def test_a_reply_while_the_task_is_pending_reaches_its_session_after_the_b
     _FakeSpecialistClient.reset(response="€420, mostly Albert Heijn.")
     Client.hold = asyncio.Event()
     outcomes = []
-    real_send = world.alex._app.bot.send_message.side_effect
+    real_send = world.alex._app.bot.do_api_request.side_effect
 
-    async def send_then_reply(**kw):
-        sent = await real_send(**kw)
+    async def send_then_reply(endpoint, **kw):
+        sent = await real_send(endpoint, **kw)
         if not outcomes:          # the start line just landed
             did = world.opened[0][0]
             outcomes.append(task_input.submit(did, "[replying to «Ellen asked…»] only Lidl"))
         return sent
 
-    world.alex._app.bot.send_message.side_effect = send_then_reply
+    world.alex._app.bot.do_api_request.side_effect = send_then_reply
     task = asyncio.ensure_future(_delegate("async"))
     for _ in range(200):
         await asyncio.sleep(0.01)
@@ -604,7 +618,7 @@ def _answer_note(link=None):
     """Ellen's close-the-loop note for Alex's answer, as the result carries it."""
     where = f" ({link}); you may link it as [{NAME}'s chat]({link})" if link else ""
     return tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME, where=where)
-START = "Ellen asked:\nHow much on groceries in October?"
+START = _start_md("How much on groceries in October?")
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
@@ -636,7 +650,7 @@ async def test_a_task_posts_its_closing_message_not_its_notes(world, monkeypatch
 async def test_a_brief_wrapped_in_quotes_loses_its_outer_pair_in_the_quote_box(world, wrapped):
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync", task=wrapped)
-    assert _alex_texts(world)[0] == "Ellen asked:\nHow much on groceries in October?"
+    assert _alex_texts(world)[0] == _start_md("How much on groceries in October?")
     # the executor's note keeps the brief as written
     (line,) = chat_notes.drain(FINANCE_BOT, OPERATOR)
     assert line == f"Ellen asked you: {wrapped.strip()} — you answered"
@@ -652,15 +666,13 @@ async def test_a_brief_wrapped_in_quotes_loses_its_outer_pair_in_the_quote_box(w
 async def test_a_brief_not_wrapped_in_one_pair_is_shown_as_written(world, brief):
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync", task=brief)
-    assert _alex_texts(world)[0] == f"Ellen asked:\n{brief}"
+    assert _alex_texts(world)[0] == _start_md(brief)
 
 
 async def test_the_requesters_name_is_bold(world):
-    from telegram import MessageEntity
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync")
-    name = world.alex.sent[0]["entities"][0]
-    assert (name.type, name.offset, name.length) == (MessageEntity.BOLD, 0, len("Ellen"))
+    assert world.alex.sent[0]["text"].startswith("**Ellen** asked:\n")
 
 
 # ---------------------------------------------------------------------------
@@ -673,93 +685,56 @@ LONG_TASK = ("Look at every grocery line in October 💶 and tell me how much we
 
 
 async def test_the_start_post_quotes_the_whole_task_silently(world):
-    from telegram import MessageEntity
-    from text_util import utf16_len
     assert len(LONG_TASK) > 200
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync", task=LONG_TASK)
     s = world.alex.sent[0]
-    assert s["text"] == f"Ellen asked:\n{LONG_TASK}"
-    name, e = s["entities"]
-    assert (name.type, name.offset, name.length) == (MessageEntity.BOLD, 0, 5)
-    assert e.type == MessageEntity.EXPANDABLE_BLOCKQUOTE
-    # the quote covers the request exactly, in UTF-16 units (the 💶 counts two)
-    assert (e.offset, e.length) == (utf16_len("Ellen asked:\n"), utf16_len(LONG_TASK))
+    assert s["endpoint"] == "sendRichMessage"
+    assert s["text"] == _start_md(LONG_TASK)
     assert s["disable_notification"] is True
 
 
 RICH_TASK = "Pay the **💶 rent** by [Monday](time:2026-11-16T09:00+01:00), please."
 
 
-async def test_the_start_post_shows_the_briefs_formatting_inside_the_quote(world):
-    """The brief is rendered as an answer is: bold and a time link show as formatting
-    inside the expandable quote, at offsets shifted past the who-asked line."""
-    from telegram import MessageEntity
-    from text_util import utf16_len
+async def test_the_start_post_carries_the_brief_as_written_with_its_time_tappable(world):
+    """The brief goes inside the Markdown quote as written, so its bold shows
+    there; its time link becomes a time tag, a tappable time."""
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync", task=RICH_TASK)
     s = world.alex.sent[0]
-    body = "Pay the 💶 rent by Monday, please."
-    assert s["text"] == f"Ellen asked:\n{body}"
-    head = utf16_len("Ellen asked:\n")
-    name, quote, bold, when = s["entities"]
-    assert (name.type, name.offset, name.length) == (MessageEntity.BOLD, 0, len("Ellen"))
-    assert (quote.type, quote.offset, quote.length) == (
-        MessageEntity.EXPANDABLE_BLOCKQUOTE, head, utf16_len(body))
-    assert (bold.type, bold.offset, bold.length) == (
-        MessageEntity.BOLD, head + utf16_len("Pay the "), utf16_len("💶 rent"))
-    assert (when.type, when.offset, when.length) == (
-        MessageEntity.DATE_TIME, head + utf16_len("Pay the 💶 rent by "), len("Monday"))
+    assert s["text"] == _start_md(RICH_TASK)
+    assert s["text"].startswith("**Ellen** asked:\n> Pay the **💶 rent** by ")
+    assert '<tg-time unix="' in s["text"]
     assert s["disable_notification"] is True
 
 
 async def test_a_start_post_whose_formatting_is_refused_is_sent_plain(world):
-    from telegram import MessageEntity
     from telegram.error import BadRequest
-    from text_util import utf16_len
+    from channels.tg_rich import plain_blocks
     _FakeSpecialistClient.reset(response="€420.")
-    real = world.alex._app.bot.send_message.side_effect
+    real = world.alex._app.bot.do_api_request.side_effect
 
-    async def refuse_rich_starts(**kw):
-        if kw.get("disable_notification") and len(kw.get("entities") or []) > 2:
-            raise BadRequest("can't parse entities")
-        return await real(**kw)
+    async def refuse_rich_starts(endpoint, *, api_kwargs, return_type=None):
+        if api_kwargs.get("disable_notification") and "markdown" in api_kwargs["rich_message"]:
+            raise BadRequest("Rich_message_parse_failed")
+        return await real(endpoint, api_kwargs=api_kwargs, return_type=return_type)
 
-    world.alex._app.bot.send_message.side_effect = refuse_rich_starts
+    world.alex._app.bot.do_api_request.side_effect = refuse_rich_starts
     await _delegate("sync", task=RICH_TASK)
     s = world.alex.sent[0]
-    assert s["text"] == f"Ellen asked:\n{RICH_TASK}"
-    _name, e = s["entities"]
-    assert (e.type, e.offset, e.length) == (
-        MessageEntity.EXPANDABLE_BLOCKQUOTE, utf16_len("Ellen asked:\n"), utf16_len(RICH_TASK))
+    assert s["rich_message"] == {"blocks": plain_blocks(
+        f"**Ellen** asked:\n> {RICH_TASK}")}
+    assert s["disable_notification"] is True
     assert world.alex.filed[0][2].slot == "task-start"
 
 
-async def test_a_rich_task_too_long_for_one_message_keeps_the_formatting_that_fits(world):
-    from telegram import MessageEntity
-    from text_util import utf16_len
-    task = "**Early** " + "💶" * 2039 + " **late**"   # renders, but past the post's budget
+async def test_a_task_at_the_task_cap_is_quoted_whole(world):
+    task = "💶 " * 2000                      # 4000 characters (the task cap), 16,000 bytes
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync", task=task)
     s = world.alex.sent[0]
-    assert utf16_len(s["text"]) <= 4096 and s["text"].endswith("…")
-    _name, quote, *rest = s["entities"]
-    assert quote.type == MessageEntity.EXPANDABLE_BLOCKQUOTE
-    assert quote.offset + quote.length == utf16_len(s["text"])
-    assert [(e.type, e.offset, e.length) for e in rest] == [
-        (MessageEntity.BOLD, utf16_len("Ellen asked:\n"), len("Early"))]
-
-
-async def test_a_task_too_long_for_one_message_is_clipped_to_fit(world):
-    from text_util import utf16_len
-    task = "💶 " * 2000                      # 4000 characters (the task cap), 6000 UTF-16 units
-    _FakeSpecialistClient.reset(response="€420.")
-    await _delegate("sync", task=task)
-    s = world.alex.sent[0]
-    assert utf16_len(s["text"]) <= 4096
-    assert s["text"].startswith("Ellen asked:\n💶 ") and s["text"].endswith("…")
-    _name, e = s["entities"]
-    assert e.offset + e.length == utf16_len(s["text"])
+    assert s["text"] == _start_md(task)
 
 
 async def test_the_answer_replies_to_the_start_post_and_notifies(world):
@@ -768,8 +743,8 @@ async def test_the_answer_replies_to_the_start_post_and_notifies(world):
     start_mid = world.alex.filed[0][1]
     a = world.alex.sent[1]
     assert a["text"] == "€420, mostly Albert Heijn."
-    assert a["reply_parameters"].message_id == start_mid
-    assert a["reply_parameters"].allow_sending_without_reply is True
+    assert a["reply_parameters"]["message_id"] == start_mid
+    assert a["reply_parameters"]["allow_sending_without_reply"] is True
     assert not a.get("disable_notification")
     assert tools._TASK_REPLY_TO == {}            # taken at the task's end
 
@@ -779,7 +754,7 @@ async def test_a_long_answer_replies_only_with_its_first_page(world):
     await _delegate("sync")
     pages = world.alex.sent[1:]
     assert len(pages) >= 2
-    assert pages[0]["reply_parameters"].message_id == world.alex.filed[0][1]
+    assert pages[0]["reply_parameters"]["message_id"] == world.alex.filed[0][1]
     assert all("reply_parameters" not in p for p in pages[1:])
 
 
@@ -793,14 +768,14 @@ async def test_the_start_post_is_filed_under_the_task_with_slot_task_start(world
 
 async def test_a_task_whose_start_post_failed_answers_plain(world):
     _FakeSpecialistClient.reset(response="€420.")
-    real = world.alex._app.bot.send_message.side_effect
+    real = world.alex._app.bot.do_api_request.side_effect
 
-    async def refuse_the_start(**kw):
-        if kw.get("disable_notification"):
+    async def refuse_the_start(endpoint, *, api_kwargs, return_type=None):
+        if api_kwargs.get("disable_notification"):
             raise RuntimeError("telegram down")
-        return await real(**kw)
+        return await real(endpoint, api_kwargs=api_kwargs, return_type=return_type)
 
-    world.alex._app.bot.send_message.side_effect = refuse_the_start
+    world.alex._app.bot.do_api_request.side_effect = refuse_the_start
     await _delegate("sync")
     (a,) = world.alex.sent
     assert a["text"] == "€420." and "reply_parameters" not in a

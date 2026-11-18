@@ -107,6 +107,17 @@ class _FakeBot:
         self.markups.append(kwargs)
         return True
 
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        """A card's rich edit, recorded beside the plain ones by ``edit``."""
+        assert endpoint == "editMessageText"
+        return await self.edit(**api_kwargs)
+
+    async def edit(self, **api_kwargs):
+        """Record one rich edit with the Markdown it carries as its ``text``
+        (its keyboard in JSON form); tests replace it to delay or refuse edits."""
+        self.edited.append({**api_kwargs, "text": api_kwargs["rich_message"]["markdown"]})
+        return True
+
 
 async def _noop(*a, **k):
     return None
@@ -252,7 +263,7 @@ def _card_edits(env) -> list[dict]:
 
 
 def _buttons(edit) -> list:
-    return [b for row in edit["reply_markup"].inline_keyboard for b in row]
+    return [b for row in edit["reply_markup"]["inline_keyboard"] for b in row]
 
 
 # -- 1. the declaration -----------------------------------------------------------------
@@ -384,12 +395,12 @@ async def test_the_flight_is_held_until_the_card_and_line_are_done(env):
     rp = env.use(_plugin(env.tmp / "p"))
     env.admit()
     gate = asyncio.Event()
-    real_edit = env.bot.edit_message_text
+    real_edit = env.bot.edit
 
     async def slow_edit(**kwargs):
         await gate.wait()
         return await real_edit(**kwargs)
-    env.bot.edit_message_text = slow_edit
+    env.bot.edit = slow_edit
     await _tap(env)
     for _ in range(200):
         if _calls(rp):
@@ -477,7 +488,7 @@ async def test_each_outcome_has_its_mark_and_line(env, outcome, mark, line):
     if mark is None:
         assert edits == []                  # the card keeps its Stop
     else:
-        assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n{mark}"
+        assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n\n{mark}"
     lines = _lines(env)
     if line is None:
         assert lines == []
@@ -679,7 +690,7 @@ async def test_the_twenty_minute_cards_stop_is_called_directly(env):
     assert [c["args"] for c in _calls(rp)] == [{"ref": "request:k1"}]
     assert env.lane_uses == [] and env.taps == [] and env.turns == []
     marks = [e for e in env.bot.edited if e.get("message_id") == 601]
-    assert [e["text"] for e in marks] == ["📊 Fido\nStill going.\n☑ Stopped"]
+    assert [e["text"] for e in marks] == ["📊 Fido\nStill going.\n\n☑ Stopped"]
     assert len(_card_edits(env)) == 1               # the start card is marked too
     (line,) = _lines(env)
     assert _replied_to(line) == 601
@@ -692,12 +703,12 @@ async def test_the_twenty_minute_cards_stop_starts_before_any_card_edit(env):
     rp = env.use(_plugin(env.tmp / "p"))
     env.admit()
     gate = asyncio.Event()
-    real_edit = env.bot.edit_message_text
+    real_edit = env.bot.edit
 
     async def slow_edit(**kwargs):
         await gate.wait()
         return await real_edit(**kwargs)
-    env.bot.edit_message_text = slow_edit
+    env.bot.edit = slow_edit
     meta = _proposal_meta()
     finish = env.ch.proposal_finish_hook(rid="r" * 32, req=types.SimpleNamespace(meta=meta))
     hook = asyncio.ensure_future(finish({"outcome": "answered", "option_index": 1}))
@@ -710,7 +721,7 @@ async def test_the_twenty_minute_cards_stop_starts_before_any_card_edit(env):
     await hook
     await _quiet(env)
     marks = [e["text"] for e in env.bot.edited if e.get("message_id") == 601]
-    assert marks == ["📊 Fido\nStill going.\n☑ Stopped"]                   # no ⏳ line
+    assert marks == ["📊 Fido\nStill going.\n\n☑ Stopped"]                   # no ⏳ line
     assert env.lane_uses == [] and env.taps == []
 
 
@@ -1105,7 +1116,7 @@ async def test_a_request_that_ends_on_its_own_marks_its_card_and_posts_no_line(e
     passes = _sweeping(env, monkeypatch, lambda: [_ended_entry(b)])
     await pc.sweep_once()
     edits = _card_edits(env)
-    assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n☑ Ended"
+    assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n\n☑ Ended"
     assert _buttons(edits[0]) == []                      # no Stop left on it
     assert env.bot.sent == []                            # his answer tells him the rest
     assert env.turns == [] and env.lane_uses == []
@@ -1122,7 +1133,7 @@ async def test_a_status_card_admitted_by_his_words_is_marked_too(env, monkeypatc
     run_admission.CONFIRMATIONS.set_card(CID, TgAddress(BOT, OPERATOR, CARD_MID), status_text)
     _sweeping(env, monkeypatch, [_ended_entry(b)])
     await pc.sweep_once()
-    assert [e["text"] for e in _card_edits(env)] == [f"{status_text}\n☑ Ended"]
+    assert [e["text"] for e in _card_edits(env)] == [f"{status_text}\n\n☑ Ended"]
 
 
 @pytest.mark.parametrize("case", ["other_plugin", "unknown_binding", "not_a_request_ref",
@@ -1173,7 +1184,7 @@ async def test_a_card_that_cannot_be_edited_is_tried_once(env, monkeypatch):
     async def _refuse(**kwargs):
         tries.append(kwargs)
         raise BadRequest("Message to edit not found")
-    env.bot.edit_message_text = _refuse
+    env.bot.edit = _refuse
     c, b = env.admit()
     _sweeping(env, monkeypatch, [_ended_entry(b)])
     await pc.sweep_once()
@@ -1190,7 +1201,7 @@ async def test_with_no_channel_yet_the_next_pass_marks_it(env, monkeypatch):
     assert run_admission.CONFIRMATIONS.peek(CID).card == [BOT, OPERATOR, CARD_MID]
     monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(env.ch), raising=False)
     await pc.sweep_once()
-    assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n☑ Ended"]
+    assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n\n☑ Ended"]
 
 
 async def test_while_the_bot_is_rebuilt_the_next_pass_marks_it(env, monkeypatch):
@@ -1204,7 +1215,7 @@ async def test_while_the_bot_is_rebuilt_the_next_pass_marks_it(env, monkeypatch)
     assert run_admission.CONFIRMATIONS.peek(CID).card == [BOT, OPERATOR, CARD_MID]
     env.ch._app = app
     await pc.sweep_once()
-    assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n☑ Ended"]
+    assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n\n☑ Ended"]
 
 
 async def test_a_stop_tap_after_the_natural_end_still_says_it_had_ended(env, monkeypatch):
@@ -1298,7 +1309,7 @@ async def test_a_card_sent_with_a_reply_keyboard_cannot_be_edited_and_is_a_quiet
     async def _refuse(**kwargs):
         tries.append(kwargs)
         raise BadRequest("Message can't be edited")
-    env.bot.edit_message_text = _refuse
+    env.bot.edit = _refuse
     with caplog.at_level(logging.INFO):
         assert await env.ch.edit_dm_message(OPERATOR, CARD_MID, "x\n☑ Stopped") is False
         assert await env.ch.edit_dm_message(OPERATOR, CARD_MID, "**x**") is False

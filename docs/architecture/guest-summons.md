@@ -143,11 +143,13 @@ terminal budget (10 minutes). Every edit is serialized on one lock, and only the
 terminal call — finish, decline, fail, asked elsewhere — edits; a later one returns that
 outcome. The terminal edit honours Telegram's full `RetryAfter`, backs off on network errors
 from one second, doubling, and gives up after `GUEST_TERMINAL_BUDGET_S` (5 minutes) as
-not delivered; "not modified" counts as delivered, "message to edit not found" as not. Text is
-cut before rendering to fit `GUEST_TEXT_LIMIT` (4096 UTF-16 units) with an ellipsis — at the
-last whitespace when that keeps at least three quarters of it, otherwise at the limit — and
-the rendered form falls back to plain text when it still does not fit or its entities are
-refused. `meta` holds the facts the log line reads (kind, role, caller, group).
+not delivered; "not modified" counts as delivered, "message to edit not found" as not. The
+terminal edit is a rich message (`tg_rich.edit_rich`, by the inline message id): the text goes
+as Markdown, cut with a closing ellipsis when its prepared UTF-8 bytes pass
+`RICH_BUDGET_BYTES`, and any refusal of it makes the same edit again as plain paragraph
+blocks; when those are refused too, the answer goes as a plain-text edit cut to 4096 UTF-16
+units, with one warning. The placeholder, the ticker and the waiting line stay plain. `meta` holds the facts the
+log line reads (kind, role, caller, group).
 
 **One log line per summons** (`GUEST_SUMMONS_LOG`): role, caller id, chat id and title,
 outcome and milliseconds. The outcome is `<kind>_answered`, `_declined`, `_asked_elsewhere`

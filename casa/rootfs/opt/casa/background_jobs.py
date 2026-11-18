@@ -630,15 +630,15 @@ def _job_rules(*, can_ask: bool = True) -> str:
         "- When nothing is left, call emit_completion with a summary for the "
         "operator. If it is refused because a message has not reached you "
         "yet, read the message that arrives, then call it again.\n"
-        "- " + _time_link_guide()
+        "- " + _format_guide()
     )
 
 
-def _time_link_guide() -> str:
-    """The renderer's time-link instruction, imported when the rules are built: this module
+def _format_guide() -> str:
+    """The Telegram formatting guide, imported when the rules are built: this module
     stays importable without the renderer's Markdown dependency."""
-    from channels.tg_richtext import TIME_LINK_GUIDE
-    return TIME_LINK_GUIDE
+    from channels.tg_rich import FORMAT_GUIDE
+    return FORMAT_GUIDE
 
 
 # ---------------------------------------------------------------------------

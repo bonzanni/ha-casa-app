@@ -15,7 +15,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from telegram import InlineKeyboardMarkup
+from telegram_channel_double import rich_edits
 from telegram.error import BadRequest, NetworkError
 
 import pinned_run as pr
@@ -173,7 +173,8 @@ async def test_the_finish_hook_records_the_terminal_line_of_a_bound_record():
     hook = ch.proposal_finish_hook(rid="r1", req=SimpleNamespace(meta=meta))
     await hook({"outcome": "cancelled", "reason": "superseded"})
     assert meta["settled_line"] == "↻ replaced"
-    assert bot.edit_message_text.await_args.kwargs["text"] == "card\n↻ replaced"
+    (edit,) = rich_edits(bot)
+    assert edit["rich_message"] == {"markdown": "card\n\n↻ replaced"}
 
 
 # --- the fallback: today's sequence, visibly ----------------------------------------
@@ -253,24 +254,22 @@ async def test_the_channel_edits_the_message_with_the_new_keyboard():
     mid = await ch.replace_operator_proposal(OPERATOR, TAPPED, "📊 Finance\nPair **17**?",
                                              ["Yes", "No"], "rid9")
     assert mid == TAPPED
-    kw = bot.edit_message_text.await_args.kwargs
+    (kw,) = rich_edits(bot)
     assert (kw["chat_id"], kw["message_id"]) == (OPERATOR, TAPPED)
-    assert kw["text"] == "📊 Finance\nPair 17?" and kw["entities"]
-    kbd = kw["reply_markup"]
-    assert isinstance(kbd, InlineKeyboardMarkup)
-    assert [r[0].callback_data for r in kbd.inline_keyboard] == ["v1|proposal|rid9|0",
-                                                                 "v1|proposal|rid9|1"]
-    assert bot.send_message.await_count == 0
+    assert kw["rich_message"] == {"markdown": "📊 Finance\nPair **17**?"}
+    assert [r[0]["callback_data"] for r in kw["reply_markup"]["inline_keyboard"]] == [
+        "v1|proposal|rid9|0", "v1|proposal|rid9|1"]
+    assert bot.send_message.await_count == bot.edit_message_text.await_count == 0
 
 
 async def test_the_channel_reports_a_refused_edit_as_nothing_landed():
     ch, bot = _channel_with_bot()
-    bot.edit_message_text.side_effect = BadRequest("Message to edit not found")
+    bot.do_api_request.side_effect = BadRequest("Message to edit not found")
     assert await ch.replace_operator_proposal(OPERATOR, TAPPED, "plain", ["Ok"], "r") is None
 
 
 async def test_the_channel_reports_a_lost_link_as_unconfirmed():
     ch, bot = _channel_with_bot()
-    bot.edit_message_text.side_effect = NetworkError("connection reset")
+    bot.do_api_request.side_effect = NetworkError("connection reset")
     with pytest.raises(UnconfirmedDelivery):
         await ch.replace_operator_proposal(OPERATOR, TAPPED, "plain", ["Ok"], "r")

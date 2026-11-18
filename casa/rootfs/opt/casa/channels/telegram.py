@@ -52,10 +52,7 @@ from telegram.error import (
     TimedOut,
 )
 
-from channels.tg_richtext import (
-    missing_link_targets, plain_text, plain_with_link_targets, render,
-    render_paged,
-)
+from channels.tg_richtext import render
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -86,9 +83,11 @@ from channels.tg_address import (
 # pair and the stored row, shared with the transport that hands them out.
 from channels.telegram_transport import _post_parts as _job_post_parts
 from channels.telegram_draft import DraftStream, DraftTooLong
+from channels import tg_rich
+from channels.tg_rich import is_message_refusal
 from output_boundary import Admitted, ReplyMark, UnadmittedText
 from media_policies import MEDIA_POLICIES
-from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
+from text_util import replace_lone_surrogates, utf16_len
 from channels.telegram_supervisor import ReconnectSupervisor
 from log_cid import cid_var, new_cid
 from provenance import (
@@ -166,6 +165,19 @@ def _proposal_keyboard(labels: list, rid: str, urls: "list | None" = None):
         for i, label in enumerate(labels)])
 
 
+def quoted_text(msg: Any) -> str | None:
+    """The readable text of a message someone replied to: its text, else its
+    caption, else, for a rich message (whose ``text`` is ``None``), its blocks
+    flattened to plain text. ``None`` when it has none."""
+    text = getattr(msg, "text", None) or getattr(msg, "caption", None)
+    if text:
+        return text
+    rich = (getattr(msg, "api_kwargs", None) or {}).get("rich_message")
+    if isinstance(rich, dict):
+        return tg_rich.flatten(rich) or None
+    return None
+
+
 def _replying_to(quoted_text: "str | None", text: str) -> str:
     """The operator's reply as a task receives it: the first line of the post
     it answers, then his words."""
@@ -188,23 +200,6 @@ def reply_note(who: str, posted: str | None, quoted_text: str | None) -> str:
     return (f"The person sent this as a reply to {who}{when}, which read:\n"
             f"«{body}»\n"
             "Their words answer that message, which may not be your latest one.")
-
-
-def _cannot_be_edited(exc: BaseException) -> bool:
-    """Telegram's refusal to edit a message at all — one sent with a reply keyboard is never
-    editable, such as a card an earlier version of Casa sent with one. Not an error: no
-    retry, no warning."""
-    return "can't be edited" in str(exc).lower()
-
-
-def _plain(text):
-    """#1330: ``plain_text`` for a send without entities, keeping the
-    admission of model text — the plain transports refuse a bare string, and
-    consuming an escape is rendering, not new text."""
-    shown = plain_text(text)
-    if shown is not text and isinstance(text, Admitted):
-        return text.with_text(shown)
-    return shown
 
 
 # Telegram typing indicator lasts ~5 s; resend every 4 s to keep it alive.
@@ -314,29 +309,6 @@ class _SurrogateSafeRequest(HTTPXRequest):
             request_data = _NormalisedRequestData(request_data)
         return await super().do_request(
             url, method, request_data=request_data, **timeouts)
-
-
-# M11 (v0.52.0): MarkdownV2 escaping for permission-relay text. Telegram
-# rejects a message with parse_mode="MarkdownV2" if reserved chars in the
-# dynamic text are unescaped ("can't parse entities", HTTP 400) — and the
-# engagement_permission_relay hook treats that failure as an auto-DENY. We
-# escape locally (rather than importing telegram.helpers.escape_markdown) so
-# the code is stub-independent under tests; the char sets match PTB 22.8's
-# escape_markdown(version=2). Outside a code entity every reserved char must
-# be backslash-escaped; inside a ``` / ` (pre/code) entity only backtick and
-# backslash are special.
-_MDV2_SPECIALS = frozenset("_*[]()~`>#+-=|{}.!\\")
-_MDV2_PRE_SPECIALS = frozenset("`\\")
-
-
-def _escape_mdv2(text: str) -> str:
-    """Escape MarkdownV2 reserved characters in general (non-code) text."""
-    return "".join("\\" + c if c in _MDV2_SPECIALS else c for c in text)
-
-
-def _escape_mdv2_pre(text: str) -> str:
-    """Escape MarkdownV2 reserved characters inside a pre/code entity."""
-    return "".join("\\" + c if c in _MDV2_PRE_SPECIALS else c for c in text)
 
 
 # ---------------------------------------------------------------------------
@@ -1991,7 +1963,7 @@ class TelegramChannel(Channel):
             return None
         if quoted_from.id != self.bot_id:
             return None
-        text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
+        text = quoted_text(quoted)
         if not text:
             return None
         import chat_notes
@@ -2777,7 +2749,7 @@ class TelegramChannel(Channel):
                 posted = date.astimezone(resolve_tz()).strftime("%Y-%m-%d %H:%M")
             except (TypeError, ValueError, AttributeError):
                 posted = None
-        text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
+        text = quoted_text(quoted)
         return reply_note(who, posted, text)
 
     # ------------------------------------------------------------------
@@ -2836,8 +2808,7 @@ class TelegramChannel(Channel):
         import task_input
         user = update.effective_user
         chat = strict_positive_id(chat_id)
-        quoted = update.message.reply_to_message
-        quoted_text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
+        quoted_body = quoted_text(update.message.reply_to_message)
         rec = None
         if ref.kind == "job":
             reg = self._engagement_registry
@@ -2855,12 +2826,12 @@ class TelegramChannel(Channel):
         if rec is not None:
             await self.deliver_operator_reply(
                 rec, update.message.text, chat_id=chat,
-                message_id=update.message.message_id, quoted_text=quoted_text,
+                message_id=update.message.message_id, quoted_text=quoted_body,
                 user_name=getattr(user, "first_name", None) or "unknown",
                 user_id=user.id)
             return "taken"
         # ``said``: the operator's own words, kept for whoever asked for the task
-        if task_input.submit(ref.task_id, _replying_to(quoted_text, update.message.text),
+        if task_input.submit(ref.task_id, _replying_to(quoted_body, update.message.text),
                              said=update.message.text) == "ended":
             return "ended"
         return "taken"
@@ -3117,7 +3088,7 @@ class TelegramChannel(Channel):
                     return
                 if not isinstance(chat_id, int):
                     return
-                await self._edit_proposal_message(meta, f"{text}\n{line}")
+                await self._edit_proposal_message(meta, f"{text}\n\n{line}")
                 return
             if not isinstance(chat_id, int) or not isinstance(message_id, int):
                 return
@@ -3136,7 +3107,7 @@ class TelegramChannel(Channel):
                 # failed edit is told with past facts only — never "applying your tap",
                 # never where the next file goes; nothing is dispatched
                 import chat_notes
-                edited = await self._edit_proposal_message(meta, f"{text}\n☑ {label}")
+                edited = await self._edit_proposal_message(meta, f"{text}\n\n☑ {label}")
                 if not edited:
                     logger.warning("arm_file keyboard edit failed (rid=%s); telling by notice", rid[:8])
                     await self.deliver_casa_notice(chat_id, chat_notes.bounded_line(
@@ -3152,12 +3123,12 @@ class TelegramChannel(Channel):
                     return
             except Exception:  # noqa: BLE001 — never raise into the hook drain
                 logger.exception("stop tap failed (rid=%s)", rid[:8])
-                await self._edit_proposal_message(meta, f"{text}\n✖ failed")
+                await self._edit_proposal_message(meta, f"{text}\n\n✖ failed")
                 return
             # #1341: a call tap's card says it is working, not settled — the
             # call's answer decides what it becomes (☑, ✖, or the next card in
             # place); handle_tap writes that line
-            edited = await self._edit_proposal_message(meta, f"{text}\n⏳ {label}")
+            edited = await self._edit_proposal_message(meta, f"{text}\n\n⏳ {label}")
             if not edited:
                 # the keyboard could not be edited away (Terra, diff round 5):
                 # the operator still sees which button won BEFORE any effect —
@@ -3171,7 +3142,7 @@ class TelegramChannel(Channel):
                 await self._dispatch_proposal_tap(meta=meta, idx=idx, request_id=rid)
             except Exception:  # noqa: BLE001 — never raise into the hook drain
                 logger.exception("proposal tap dispatch failed (rid=%s)", rid[:8])
-                await self._edit_proposal_message(meta, f"{text}\n✖ failed")
+                await self._edit_proposal_message(meta, f"{text}\n\n✖ failed")
 
         def _settle(outcome: dict) -> Any:
             # #1201: the broker calls this synchronously inside its own
@@ -3336,11 +3307,13 @@ class TelegramChannel(Channel):
     async def mark_proposal(self, meta: dict, line: str) -> bool:
         """S5 §10: the proposal message's last line — ``⏳ <label>`` replaced
         by ``☑ <label>``, ``✖ <reason>`` or ``⌛ expired`` — edited in place from the live
-        meta's text; the keyboard stays gone. True when the edit landed."""
+        meta's text; the keyboard stays gone. The line is a paragraph of its own, as
+        every settle line is, so it never joins a trailing table, list or quote. True
+        when the edit landed."""
         chat_id, message_id = meta.get("chat_id"), meta.get("message_id")
         if not isinstance(chat_id, int) or not isinstance(message_id, int):
             return False
-        return await self._edit_proposal_message(meta, f"{meta.get('text', '')}\n{line}")
+        return await self._edit_proposal_message(meta, f"{meta.get('text', '')}\n\n{line}")
 
     async def _edit_proposal_message(self, meta: dict, text: str) -> bool:
         """A proposal message's settle or mark edit, its keyboard removed. A photo
@@ -3831,62 +3804,42 @@ class TelegramChannel(Channel):
 
     async def post_task_start(self, chat_id: int, who: str, body: Any, *,
                               post: Any) -> "int | None":
-        """A task's silent start post: Casa's line "*who* asked:", the name in
-        bold, then
-        the admitted *body*, the request as its requester wrote it, inside one
-        expandable quote. The body is rendered as an answer is, so its
-        formatting shows inside the quote; one Telegram refuses to format is
-        sent plain. A request too long for one message is clipped to fit,
-        ending in ``…``, keeping the formatting that ends before the cut.
-        Filed under the task as it lands, so a reply to it reaches the task.
-        Returns the message id, or ``None`` when nothing landed."""
+        """A task's silent start post, one rich message: Casa's line "*who*
+        asked:", the name in bold, then the admitted *body*, the request as
+        its requester wrote it, as a Markdown block quote. A request too
+        long for one message is clipped to fit, ending in ``…``; one Telegram
+        refuses is resent unformatted. Filed under the task as it lands, so a
+        reply to it reaches the task. Returns the message id, or ``None`` when
+        nothing landed."""
         if _unadmitted("post_task_start", body):
             return None
         if self.bot is None:
             return None
-        display, rich = render(str(body))
-        tries = [(display, rich)] if rich is not None else []
-        tries.append((str(_plain(body)), []))
-        sent = None
         try:
-            for n, (quote, entities) in enumerate(tries, 1):
-                text, entities = self._task_start_message(who, quote, entities)
-                try:
-                    sent = await self.bot.send_message(
-                        chat_id=chat_id, text=text, entities=entities,
-                        disable_notification=True)
-                    break
-                except BadRequest as exc:  # nothing posted: the plain send cannot duplicate
-                    if n == len(tries):
-                        raise
-                    logger.warning("task start post rich send fell back to plain: %s",
-                                   type(exc).__name__)
+            sent = await tg_rich.send_rich(
+                self.bot, chat_id, self._task_start_markdown(who, str(body)),
+                record=lambda landed: self._record_post(chat_id, landed, post),
+                disable_notification=True)
         except Exception as exc:  # noqa: BLE001 — a start post is never the task's fault
             logger.warning("task start post not delivered: %s", type(exc).__name__)
             return None
-        self._record_post(chat_id, sent, post)
-        mid = getattr(sent, "message_id", None)
+        mid = getattr(sent[0], "message_id", None) if sent else None
         return mid if type(mid) is int else None
 
     @staticmethod
-    def _task_start_message(who: str, quote: str, entities: list) -> "tuple[str, list]":
-        """The start post's text and entities: "*who* asked:" with *who* in
-        bold, then *quote* with its UTF-16 *entities* inside one expandable
-        quote. A quote past the message's budget is cut to fit with ``…``, and
-        an entity that does not end before the cut is dropped."""
-        from telegram import MessageEntity
-        head = f"{who} asked:"
-        shift = utf16_len(head) + 1
-        budget = _TG_MAX_LENGTH - shift
-        if utf16_len(quote) > budget:
-            quote = quote[:utf16_prefix_end(quote, 0, budget - 1)].rstrip()
-            kept = utf16_len(quote)
-            entities = [e for e in entities if e.offset + e.length <= kept]
-            quote += "…"
-        box = MessageEntity(type=MessageEntity.EXPANDABLE_BLOCKQUOTE, offset=shift,
-                            length=utf16_len(quote))
-        name = MessageEntity(type=MessageEntity.BOLD, offset=0, length=utf16_len(who))
-        return f"{head}\n{quote}", [name, box, *MessageEntity.shift_entities(shift, entities)]
+    def _task_start_markdown(who: str, quote: str) -> str:
+        """The start post's Markdown: "*who* asked:" with *who* in bold, then
+        *quote* as a block quote, every line behind ``>`` (a blank line as
+        ``>`` alone), so its paragraphs and formatting show inside it. A quote
+        past the message's budget is cut to fit, ending in ``…``."""
+        def compose(q: str) -> str:
+            lines = (f"> {line}" if line.strip() else ">" for line in q.split("\n"))
+            return f"**{who}** asked:\n" + "\n".join(lines)
+        markdown = compose(quote)
+        if len(tg_rich.prepare(markdown).encode("utf-8")) <= tg_rich.RICH_BUDGET_BYTES:
+            return markdown
+        room = tg_rich.RICH_BUDGET_BYTES - len(tg_rich.prepare(compose("…")).encode("utf-8"))
+        return compose(tg_rich.split(quote, room)[0].rstrip() + "…")
 
     def _job_request_post(self, rec) -> "TgAddress | None":
         """The operator's message that asked for the job (its origin's
@@ -3952,21 +3905,9 @@ class TelegramChannel(Channel):
         rows.append([InlineKeyboardButton(
             text="Cancel job", callback_data=job_cancel_callback(rec.id))])
         kbd = InlineKeyboardMarkup(rows)
-        display, entities = render(body)
         try:
-            if entities is not None:
-                try:
-                    msg = await self.bot.send_message(
-                        chat_id=chat, text=display, entities=entities,
-                        reply_markup=kbd)
-                except BadRequest as exc:
-                    logger.warning("job question rich send fell back to plain: %s",
-                                   type(exc).__name__)
-                    msg = await self.bot.send_message(
-                        chat_id=chat, text=str(body), reply_markup=kbd)
-            else:
-                msg = await self.bot.send_message(
-                    chat_id=chat, text=_plain(body), reply_markup=kbd)
+            # The buttons ride on the last message, the one filed as the job's.
+            msg = (await tg_rich.send_rich(self.bot, chat, body, reply_markup=kbd))[-1]
         except Exception as exc:  # noqa: BLE001 — the tool reports the failure
             logger.warning("job question not posted: %s", type(exc).__name__)
             return None
@@ -4614,8 +4555,7 @@ class TelegramChannel(Channel):
                 quoted = getattr(msg, "reply_to_message", None) if how == "reply" else None
                 await self.deliver_operator_reply(
                     rec, text, chat_id=chat, message_id=mid,
-                    quoted_text=(getattr(quoted, "text", None) or getattr(quoted, "caption", None))
-                    if quoted is not None else None,
+                    quoted_text=quoted_text(quoted),
                     user_name=getattr(user, "first_name", None) or "unknown", user_id=user.id)
                 return
         elif task_input.submit(
@@ -4854,13 +4794,16 @@ class TelegramChannel(Channel):
         urls: "list | None" = None, entities: "list | None" = None,
         danger: "Collection[int]" = (),
     ) -> int | None:
-        """Post a plain-text question to a DM chat with one tappable button
-        per option (resident_ask).
+        """Post a question to a DM chat with one tappable button per option
+        (resident_ask).
 
-        Chat-addressed (no topic thread), plain send (operator-/agent-authored free text, no MarkdownV2
-        escaping pass). ``callback_data`` is ``v1|resident_ask|<request_id>|<i>``
-        where ``i`` is the option's position. Returns the Telegram
-        ``message_id``, or ``None`` on send failure — the broker's
+        Chat-addressed (no topic thread). The body is sent as a rich message
+        (``channels.tg_rich.send_rich``), resent unformatted when Telegram
+        refuses it; a body past one message's budget is split, and the
+        keyboard rides on the last message. ``callback_data`` is
+        ``v1|resident_ask|<request_id>|<i>`` where ``i`` is the option's
+        position. Returns the ``message_id`` of the message carrying the
+        keyboard, or ``None`` on send failure — the broker's
         ``ensure_posted`` treats ``None`` as a delivery failure (r10-B3).
 
         ``short_labels`` (v0.81.0, W-R3b; v0.84.0 round 4 D2): when True, derive
@@ -4908,13 +4851,9 @@ class TelegramChannel(Channel):
             )]
             for i in range(len(options))
         ])
-        # v0.109.0 (G1): render the BODY rich — agent-authored ask bodies are markdown-heavy
-        # and this was the dominant literal-``**`` DM surface. Buttons and
-        # ``callback_data`` are untouched (index-addressed). Single-shot
-        # ``render()``: no markup / over caps ⇒ ``plain_text`` sends plain
-        # (#1330). An entity ``BadRequest`` posted NOTHING (Telegram rejected the
-        # send), so ONE plain retry with the original text cannot duplicate the
-        # ask; any other failure keeps the delivery-failure contract (None).
+        # The caller's own entities: sent exactly as computed. Otherwise the
+        # body goes out as a rich message (below), the keyboard on its last
+        # message; buttons and ``callback_data`` are untouched (index-addressed).
         if entities is not None:
             literal = replace_lone_surrogates(text)
             try:
@@ -4938,33 +4877,18 @@ class TelegramChannel(Channel):
                 return None
             await self._guest_waiting()
             return msg.message_id
-        display, entities = render(text)
         try:
-            if entities is not None:
-                try:
-                    msg = await self.bot.send_message(
-                        chat_id=chat_id, text=display, entities=entities,
-                        reply_markup=kbd,
-                    )
-                except BadRequest as exc:
-                    logger.warning(
-                        "post_dm_keyboard rich send fell back to plain "
-                        "(chat=%s): %s", chat_id, exc,
-                    )
-                    msg = await self.bot.send_message(
-                        chat_id=chat_id, text=text, reply_markup=kbd,
-                    )
-            else:
-                msg = await self.bot.send_message(
-                    chat_id=chat_id, text=_plain(text), reply_markup=kbd,
-                )
+            sent = await tg_rich.send_rich(self.bot, chat_id, text, reply_markup=kbd)
         except Exception as exc:  # noqa: BLE001 — delivery failure, not fatal
             logger.warning(
-                "post_dm_keyboard send failed (chat=%s): %s", chat_id, exc,
+                "post_dm_keyboard send failed (chat=%s): %s", chat_id, type(exc).__name__,
             )
             return None
+        if not sent:
+            return None
         await self._guest_waiting()
-        return msg.message_id
+        # The message that carries the keyboard, the one a settle edit rewrites.
+        return sent[-1].message_id
 
     async def _guest_waiting(self) -> None:
         """A keyboard just reached the operator's chat — a question, a card,
@@ -5002,17 +4926,17 @@ class TelegramChannel(Channel):
         buttons: "list[tuple[str, str]] | None" = None, urls: "list | None" = None,
         literal: bool = False, danger: "Collection[int]" = (),
     ) -> bool:
-        """Plain (no parse_mode, no reply_markup) text edit of a posted DM
-        message — resident_ask finish-hook target.
+        """Edit a posted DM message's text — resident_ask finish-hook target.
 
         Chat-addressed. "Message is not modified" (an identical re-edit) is tolerated
         as success, not an error, since the desired end state already holds.
 
-        v0.109.0 (G1): the edited body renders rich (the settle-edit rewrites
-        the ask body posted by ``post_dm_keyboard`` — plain here would resurrect
-        literal markers on settle). An entity ``BadRequest`` retries the SAME
-        EDIT plain with the original text — never a new message (Sol+Terra
-        design round: an edit must not become a duplicate post).
+        The edited body goes out as one rich message
+        (``channels.tg_rich.edit_rich``), as ``post_dm_keyboard`` posted it, and a
+        message first sent as plain text edits into a rich one alike. Text past
+        one message's budget is cut, ending in ``…``; a refused edit is resent
+        unformatted as the SAME EDIT — never a new message (an edit must not
+        become a duplicate post).
 
         #569: the edit carries an EXPLICIT EMPTY ``InlineKeyboardMarkup([])``,
         so the settled question drops its buttons. A bare ``edit_message_text``
@@ -5030,6 +4954,8 @@ class TelegramChannel(Channel):
         ``caption`` (slice 5b): the message is a photo whose caption is the text
         (a proposal with a photo), so the same edit goes through
         ``editMessageCaption`` — Telegram refuses ``editMessageText`` on a photo.
+        A caption cannot be rich: it is rendered with entities, and an entity
+        ``BadRequest`` retries the same edit with the display text alone.
 
         ``buttons``: ``(label, callback data)`` pairs the
         edited message carries instead of the empty keyboard — the one caller
@@ -5054,34 +4980,33 @@ class TelegramChannel(Channel):
              for i, (label, data) in enumerate(buttons or [])])
         if literal:
             display, entities = replace_lone_surrogates(text), None
-            fallback_text = display
-        else:
+        elif caption:
             display, entities = render(text)
-            fallback_text = text if entities is not None else _plain(text)
+        else:
+            display = entities = None          # a rich edit
         for attempt in (1, 2):
             try:
+                if display is None:
+                    # A message first sent as plain text edits into a rich one too.
+                    await tg_rich.edit_rich(self.bot, text, chat_id=chat_id,
+                                            message_id=message_id, reply_markup=cleared)
+                    return True
                 if entities is not None:
                     try:
-                        if caption:
-                            await self.bot.edit_message_caption(
-                                chat_id=chat_id, message_id=message_id, caption=display,
-                                caption_entities=entities, reply_markup=cleared,
-                            )
-                        else:
-                            await self.bot.edit_message_text(
-                                chat_id=chat_id, message_id=message_id, text=display,
-                                entities=entities, reply_markup=cleared,
-                            )
+                        await self.bot.edit_message_caption(
+                            chat_id=chat_id, message_id=message_id, caption=display,
+                            caption_entities=entities, reply_markup=cleared,
+                        )
                         return True
                     except BadRequest as exc:
                         if "not modified" in str(exc).lower():
                             return True
-                        if _cannot_be_edited(exc):
+                        if is_message_refusal(exc):
                             logger.info("edit_dm_message: message can't be edited "
                                         "(chat=%s message_id=%s)", chat_id, message_id)
                             return False
                         logger.warning(
-                            "edit_dm_message rich edit fell back to plain "
+                            "edit_dm_message caption edit fell back to plain "
                             "(chat=%s message_id=%s): %s",
                             chat_id, message_id, exc,
                         )
@@ -5094,15 +5019,14 @@ class TelegramChannel(Channel):
                     )
                 else:
                     await self.bot.edit_message_text(
-                        chat_id=chat_id, message_id=message_id,
-                        text=fallback_text,
+                        chat_id=chat_id, message_id=message_id, text=display,
                         reply_markup=cleared,
                     )
                 return True
             except BadRequest as exc:
                 if "not modified" in str(exc).lower():
                     return True
-                if _cannot_be_edited(exc):
+                if is_message_refusal(exc):
                     logger.info("edit_dm_message: message can't be edited "
                                 "(chat=%s message_id=%s)", chat_id, message_id)
                     return False
@@ -5360,13 +5284,6 @@ class TelegramChannel(Channel):
         return ReplyParameters(message_id=target.message_id, quote=quote,
                                allow_sending_without_reply=True)
 
-    def _first_message_kw(self, context: dict, chat_id: Any, message: Any) -> dict:
-        """The extra arguments of an answer's first ``send_message``: its
-        reply, when :meth:`_reply_parameters` gives one. Every later message
-        of the same answer is sent without them."""
-        reply = self._reply_parameters(context, chat_id, message)
-        return {"reply_parameters": reply} if reply is not None else {}
-
     async def _send_message(self, **kw):
         """``send_message``; when Telegram refuses a message whose reply
         carries a quote (a quote that is not exact text of the message
@@ -5386,7 +5303,8 @@ class TelegramChannel(Channel):
             return await self._app.bot.send_message(**kw)
 
     async def send(self, message: str, context: dict[str, Any]) -> DeliveryOutcome:
-        """Send a complete message (block mode fallback).
+        """Send a complete message as rich messages (block mode fallback): an
+        agent's ``send_message`` text and Casa's own notices alike.
 
         #556: reports whether anything reached Telegram. The availability guard
         below returns NORMALLY having made zero Bot API calls, which a caller
@@ -5403,23 +5321,19 @@ class TelegramChannel(Channel):
             logger.warning("Telegram channel not started; cannot send message")
             return DeliveryOutcome.NOT_DELIVERED
 
-        outcome = DeliveryOutcome.NOT_DELIVERED
-        first = self._first_message_kw(context, target_chat, message)
-        for chunk in _split_message(message):
-            await self._send_message(
-                chat_id=target_chat,
-                text=chunk,
-                **first,
-            )
-            first = {}
-            # The head landed. Stamp it where it survives a LATER chunk raising:
-            # a raising method returns no enum at all, so the returned value
-            # cannot carry this fact (#556 design §2.2).
-            if outcome is DeliveryOutcome.NOT_DELIVERED:
-                context["_delivery_head_sent"] = True
-                outcome = DeliveryOutcome.DELIVERED
-        # An empty split (whitespace-only input) correctly stays NOT_DELIVERED.
-        return outcome
+        sent = await self._send_rich(
+            target_chat, message,
+            reply_parameters=self._reply_parameters(context, target_chat, message),
+            record=lambda _sent: self._stamp_head(context))
+        # Whitespace-only input sends nothing and correctly stays NOT_DELIVERED.
+        return DeliveryOutcome.DELIVERED if sent else DeliveryOutcome.NOT_DELIVERED
+
+    @staticmethod
+    def _stamp_head(context: dict) -> None:
+        """The head of an answer landed. Stamped where it survives a LATER
+        message raising: a raising method returns no enum at all, so the
+        returned value cannot carry this fact (#556)."""
+        context["_delivery_head_sent"] = True
 
     async def send_media(
         self, content: bytes, kind: str, filename: str, context: dict[str, Any],
@@ -5453,44 +5367,9 @@ class TelegramChannel(Channel):
         self._record_post(target_chat, sent, post)
 
     # ------------------------------------------------------------------
-    # Rich-text response delivery (v0.70.0). ONLY reached via the
-    # response-provenant methods below (agent.py gates on error_kind is None);
-    # send() stays plain for tools, bus
-    # routing, notices, permission prompts, and error text.
+    # Rich delivery: replies, send() text and plugin posts go out as rich
+    # messages through _send_rich.
     # ------------------------------------------------------------------
-
-    def _plain_fallback_chunks(self, display, entities) -> list[str]:
-        """The plain form of a rich page, as physical messages (#831).
-
-        Ordinarily ONE chunk: the display with every TEXT_LINK destination
-        re-attached, which is byte-identical to the display when the page
-        carries no link. The reconstruction is longer than the display, so a
-        page already at the 4096-unit budget can overflow — and then the first
-        chunk is the display EXACTLY as before and the destinations follow, one
-        url per line. That shape is deliberate: ``_split_message`` cuts at the
-        last newline before the limit and otherwise hard-cuts, so splitting the
-        inline form would cut a url across two messages and lose it again.
-
-        Only the MULTI-PAGE senders use this. Every single-page path keeps
-        retrying with its authored text.
-        """
-        text = plain_with_link_targets(display, entities)
-        if utf16_len(text) <= _TG_MAX_LENGTH:
-            return [text]
-        # A destination longer than one whole message cannot be delivered by
-        # this platform in ANY shape, and emitting it anyway would hand the
-        # reader fragments of an address instead of an address (both reviewers,
-        # measured: a 5,021-unit url hard-cut into unusable pieces). Drop it
-        # and say so in the log; the targets that DO fit still go out whole.
-        targets = []
-        for url in missing_link_targets(display, entities):
-            if utf16_len(url) > _TG_MAX_LENGTH:
-                logger.warning(
-                    "link destination exceeds one message and cannot be "
-                    "delivered plain: %d units", utf16_len(url))
-                continue
-            targets.append(url)
-        return [display, *_split_message("\n".join(targets))]
 
     def _record_post(self, chat_id, sent, post) -> None:
         """File each landed message of a task under its task — as it lands, one
@@ -5560,6 +5439,27 @@ class TelegramChannel(Channel):
                 record(sent)
             return True
 
+    async def _send_rich(self, chat_id: int, markdown: str, *, reply_markup=None,
+                         reply_parameters=None, record=None, **kw) -> list:
+        """:func:`channels.tg_rich.send_rich` through this channel's bot."""
+        return await tg_rich.send_rich(
+            self._app.bot, chat_id, markdown, reply_markup=reply_markup,
+            reply_parameters=reply_parameters, record=record, **kw)
+
+    async def _edit_rich(self, chat_id: int | None, message_id: int | None, markdown: str,
+                         *, inline_message_id: str | None = None, reply_markup=None):
+        """:func:`channels.tg_rich.edit_rich` through this channel's bot."""
+        return await tg_rich.edit_rich(
+            self._app.bot, markdown, chat_id=chat_id, message_id=message_id,
+            inline_message_id=inline_message_id, reply_markup=reply_markup)
+
+    async def _send_rich_draft(self, chat_id: int, draft_id: int, markdown: str, *,
+                               can_stop: bool, keep_on_stop: bool) -> float | None:
+        """:func:`channels.tg_rich.send_rich_draft` through this channel's bot."""
+        return await tg_rich.send_rich_draft(
+            self._app.bot, chat_id, draft_id, markdown,
+            can_stop=can_stop, keep_on_stop=keep_on_stop)
+
     async def deliver_operator_link(
         self, chat_id: int, text: str, entities, plain: str, *, post=None, button=None,
     ) -> DeliveryOutcome:
@@ -5567,8 +5467,8 @@ class TelegramChannel(Channel):
         the chat of a capability call's grant identity — for a plugin slot
         declared ``operator_link``. The result broker composes ``text`` (the
         display text), ``entities`` (its one ``text_link``) and ``plain``
-        (the fallback that spells the URL out) and never goes through
-        ``render_paged``: the caption and label are sent as the bytes they
+        (the fallback that spells the URL out) and never goes through the
+        Markdown renderer: the caption and label are sent as the bytes they
         are. Returns ``NOT_DELIVERED`` when the channel is not started;
         ``DELIVERED`` on any normal return of ``_send_one`` (its bool only
         says whether the plain retry happened); an exception — including a
@@ -5613,114 +5513,50 @@ class TelegramChannel(Channel):
     # notice class).
     # ------------------------------------------------------------------
 
-    def _plan_operator_message(self, text: str):
-        """The WHOLE physical plan of *text*, judged before the first send:
-        every page ``render_paged`` gives, with the plain chunks a refused
-        page would be resent as. ``None`` — refuse with zero sends — when
-        the plan has more than ``MAX_MESSAGE_PAGES`` pages or any element
-        of it would not reach the operator complete: a page over the
-        budget, a fallback chunk over it, a ``text_link`` destination over
-        one message, or a destination the plain fallback's chunks would
-        carry in pieces. The destination checks read the RENDERED ENTITIES
-        directly: ``_plain_fallback_chunks`` filters an oversized
-        destination silently and returns no sign that it did, and its
-        splitter can cut a fitting destination across two chunks, so a plan
-        judged from its chunks' lengths alone would miss exactly the
-        elements it must refuse."""
-        from result_broker import MAX_MESSAGE_PAGES
-        pages = render_paged(text)
-        if len(pages) > MAX_MESSAGE_PAGES:
-            logger.warning("operator message refused: %d pages over the cap of %d",
-                           len(pages), MAX_MESSAGE_PAGES)
-            return None
-        plan = []
-        for display, entities in pages:
-            if utf16_len(display) > _TG_MAX_LENGTH:
-                logger.warning("operator message refused: a page over the budget")
-                return None
-            chunks = [display]
-            if entities:
-                chunks = self._plain_fallback_chunks(display, entities)
-                if any(utf16_len(chunk) > _TG_MAX_LENGTH for chunk in chunks):
-                    logger.warning("operator message refused: a fallback chunk over the budget")
-                    return None
-                # Each chunk fitting is not each destination arriving. The
-                # destinations are read from the RENDERED ENTITIES and each
-                # must occur WHOLE in some chunk: the helper filters a
-                # destination longer than one message silently (it is then
-                # in no chunk), and its splitter cuts the joined overflow
-                # form at a newline or hard, so two destinations that each
-                # fit can leave the second across two messages. Either way
-                # the plan is refused.
-                for url in missing_link_targets(display, entities):
-                    if not any(url in chunk for chunk in chunks):
-                        logger.warning(
-                            "operator message refused: a link destination the "
-                            "plain fallback would split across messages")
-                        return None
-            plan.append((display, entities, chunks))
-        return plan
-
     async def deliver_operator_message(self, chat_id: int, text: str, *,
                                        post=None, silent: bool = False) -> DeliveryOutcome:
         """S3: post *text* — Casa's label line and the plugin's body, as the
         result broker composed it — to *chat_id*, the chat of a capability
-        call's grant identity, for a slot declared ``operator_message``.
-        Two steps: the plan is judged whole (``_plan_operator_message``),
-        then every page goes in order the way ``send_response``'s
-        MULTI-PAGE loop sends, whatever the page count — ``_send_one``
-        sends the rendered page and, if the platform refuses its entities,
-        resends chunk 1 plain, and this method then sends every remaining
-        fallback chunk itself. The single-page retry with the AUTHORED text
-        is never used: it is not bounded by the page budget. ``DELIVERED``
-        only when every page and every fallback chunk it needed returned
-        normally; a refused plan is ``NOT_DELIVERED`` with zero sends; any
-        exception, on a page or on a tail chunk, propagates and the broker
-        reads it as not proven. ``silent`` sends every one of those messages
-        (rendered page, plain resend, tail chunk) without a notification."""
+        call's grant identity, for a slot declared ``operator_message``, as
+        rich messages (:meth:`_send_rich`). The message count is judged
+        before the first send: more than ``MAX_MESSAGE_PAGES`` is refused
+        with zero sends (``NOT_DELIVERED``). ``DELIVERED`` only when every
+        message, and any unformatted resend of one Telegram refused, returned
+        normally; any exception propagates and the broker reads it as not
+        proven. Every landed message is filed under *post*. ``silent`` sends
+        every message without a notification."""
         if self._app is None:
             logger.warning(
                 "Telegram channel not started; cannot deliver operator message")
             return DeliveryOutcome.NOT_DELIVERED
-        plan = self._plan_operator_message(text)
-        if plan is None:
+        from result_broker import MAX_MESSAGE_PAGES
+        pages = len(tg_rich.split(text))
+        if pages > MAX_MESSAGE_PAGES:
+            logger.warning("operator message refused: %d pages over the cap of %d",
+                           pages, MAX_MESSAGE_PAGES)
             return DeliveryOutcome.NOT_DELIVERED
-        # S4 §2: every physical message is filed under ``post`` as it lands.
+        # Every message is filed under ``post`` as it lands.
         def _landed(sent):
             self._record_post(chat_id, sent, post)
         quiet = {"disable_notification": True} if silent else {}
-        for display, entities, chunks in plan:
-            if not entities:
-                _landed(await self._app.bot.send_message(
-                    chat_id=chat_id, text=display, **quiet))
-                continue
-            fell_back = await self._send_one(chat_id, chunks[0], display, entities,
-                                             record=_landed, **quiet)
-            if fell_back:
-                for chunk in chunks[1:]:
-                    _landed(await self._app.bot.send_message(
-                        chat_id=chat_id, text=chunk, **quiet))
+        await self._send_rich(chat_id, text, record=_landed, **quiet)
         return DeliveryOutcome.DELIVERED
 
     async def deliver_operator_page(self, chat_id: int, text: str, *,
                                     post=None) -> DeliveryOutcome:
-        """#1377: one plain page before a card — *text* is Casa's label line and
-        the page as the result broker composed it, one message by the deposit's
-        rule. Sent as exactly ONE message, rendered rich like the card; when the
-        platform refuses its entities the authored text is resent plain as one
-        message (``_send_one``), never split into fallback chunks, so a reply on
-        the page quotes the page whole. Filed under *post* as it lands."""
+        """#1377: one page before a card — *text* is Casa's label line and the
+        page as the result broker composed it, one message by the deposit's
+        rule. Sent as one rich message like the card (:meth:`_send_rich`);
+        when the platform refuses it the text is resent unformatted as one
+        message, so a reply on the page quotes the page whole. Filed under
+        *post* as it lands."""
         if self._app is None:
             logger.warning("Telegram channel not started; cannot deliver operator page")
             return DeliveryOutcome.NOT_DELIVERED
 
         def _landed(sent):
             self._record_post(chat_id, sent, post)
-        display, entities = render(text)
-        if entities is not None:
-            await self._send_one(chat_id, text, display, entities, record=_landed)
-        else:
-            _landed(await self._app.bot.send_message(chat_id=chat_id, text=_plain(text)))
+        await self._send_rich(chat_id, text, record=_landed)
         return DeliveryOutcome.DELIVERED
 
     async def deliver_operator_question(self, chat_id: int, text: str, labels: list,
@@ -5797,12 +5633,12 @@ class TelegramChannel(Channel):
     async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
                                         rid: str, *, post=None, photo=None, urls=None):
         """S5 §3.3: post *text* (Casa's label line and the proposal body, as the
-        result broker composed it — ONE page by the deposit's rule) with one
-        button per label, ``callback_data = v1|proposal|<rid>|<i>``, rendered
-        rich with the plain fallback ``post_dm_keyboard`` uses, and file the
-        sent message under *post* (so a reply to the proposal of a task reaches
-        the task). Returns the message id, or ``None`` when
-        nothing landed.
+        result broker composed it — ONE message by the deposit's rule) with one
+        button per label, ``callback_data = v1|proposal|<rid>|<i>``, as a rich
+        message (:meth:`_send_rich`) with the keyboard as its reply markup, and
+        file the sent message under *post* (so a reply to the proposal of a
+        task reaches the task). Returns the id of the message carrying the
+        keyboard, or ``None`` when nothing landed.
 
         Slice 5b: with *photo* — ``(bytes, file name)`` the result broker claimed
         from the plugin outbox through the photo policy — the card is ONE photo
@@ -5817,43 +5653,42 @@ class TelegramChannel(Channel):
         # the text is the broker's composition of a validated deposit (the S3
         # delivered-slot class, as ``deliver_operator_message``): not model text
         kbd = _proposal_keyboard(labels, rid, urls)
-        display, entities = render(text)
         try:
-            if photo is not None:
-                content, filename = photo
-                try:
-                    msg = await self._app.bot.send_photo(
-                        chat_id, InputFile(BytesIO(content), filename=filename),
-                        caption=display, caption_entities=entities, reply_markup=kbd)
-                except BadRequest as exc:
-                    if entities is None:
-                        raise
-                    logger.warning("deliver_operator_proposal photo caption fell back to plain "
-                                   "(chat=%s): %s", chat_id, exc)
-                    msg = await self._app.bot.send_photo(
-                        chat_id, InputFile(BytesIO(content), filename=filename),
-                        caption=display, reply_markup=kbd)
-            elif entities is not None:
-                try:
-                    msg = await self._app.bot.send_message(
-                        chat_id=chat_id, text=display, entities=entities, reply_markup=kbd)
-                except BadRequest as exc:
-                    logger.warning("deliver_operator_proposal rich send fell back to plain "
-                                   "(chat=%s): %s", chat_id, exc)
-                    msg = await self._app.bot.send_message(
-                        chat_id=chat_id, text=text, reply_markup=kbd)
-            else:
-                msg = await self._app.bot.send_message(
-                    chat_id=chat_id, text=_plain(text), reply_markup=kbd)
+            if photo is None:
+                sent = await self._send_rich(
+                    chat_id, text, reply_markup=kbd,
+                    record=lambda landed: self._record_post(chat_id, landed, post))
+                if not sent:
+                    return None
+                # the keyboard rides on the last message: the card's own id
+                mid = getattr(sent[-1], "message_id", None)
+                return mid if isinstance(mid, int) else None
+            # a photo's caption cannot be rich: it keeps rendered entities
+            display, entities = render(text)
+            content, filename = photo
+            try:
+                msg = await self._app.bot.send_photo(
+                    chat_id, InputFile(BytesIO(content), filename=filename),
+                    caption=display, caption_entities=entities, reply_markup=kbd)
+            except BadRequest as exc:
+                if entities is None:
+                    raise
+                logger.warning("deliver_operator_proposal photo caption fell back to plain "
+                               "(chat=%s): %s", chat_id, exc)
+                msg = await self._app.bot.send_photo(
+                    chat_id, InputFile(BytesIO(content), filename=filename),
+                    caption=display, reply_markup=kbd)
         except NetworkError as exc:
             if isinstance(exc, BadRequest):
-                logger.warning("deliver_operator_proposal send failed (chat=%s): %s", chat_id, exc)
+                logger.warning("deliver_operator_proposal send failed (chat=%s): %s",
+                               chat_id, type(exc).__name__)
                 return None
             # #1305: a transport failure after the request was sent may have
             # landed the card; the result broker keeps it registered
             raise UnconfirmedDelivery(type(exc).__name__) from exc
         except Exception as exc:  # noqa: BLE001 — not proven
-            logger.warning("deliver_operator_proposal send failed (chat=%s): %s", chat_id, exc)
+            logger.warning("deliver_operator_proposal send failed (chat=%s): %s",
+                           chat_id, type(exc).__name__)
             return None
         self._record_post(chat_id, msg, post)
         mid = getattr(msg, "message_id", None)
@@ -5864,9 +5699,10 @@ class TelegramChannel(Channel):
         """#1339: edit the tapped proposal *message_id* in place to *text* (the
         result broker's composition of a validated next card, as
         ``deliver_operator_proposal``) with one button per label,
-        ``callback_data = v1|proposal|<rid>|<i>``, rendered rich with the same
-        plain fallback. The broker filed the message under *post* before the
-        edit, so nothing is filed here. Returns *message_id* when the edit
+        ``callback_data = v1|proposal|<rid>|<i>``, as one rich edit
+        (:meth:`_edit_rich`) that keeps the keyboard, resent unformatted when
+        Telegram refuses it. The broker filed the message under *post* before
+        the edit, so nothing is filed here. Returns *message_id* when the edit
         landed (a "not modified" answer included), ``None`` when Telegram
         refused it; a transport failure after the request was sent raises
         ``UnconfirmedDelivery``, as for a post (#1305)."""
@@ -5876,34 +5712,14 @@ class TelegramChannel(Channel):
             logger.warning("Telegram channel not started; cannot replace operator proposal")
             return None
         kbd = _proposal_keyboard(labels, rid, urls)
-        display, entities = render(text)
         try:
-            try:
-                if entities is not None:
-                    try:
-                        await self._app.bot.edit_message_text(
-                            chat_id=chat_id, message_id=message_id, text=display,
-                            entities=entities, reply_markup=kbd)
-                        return message_id
-                    except BadRequest as exc:
-                        if "not modified" in str(exc).lower():
-                            return message_id
-                        logger.warning("replace_operator_proposal rich edit fell back to "
-                                       "plain (chat=%s): %s", chat_id, type(exc).__name__)
-                        await self._app.bot.edit_message_text(
-                            chat_id=chat_id, message_id=message_id, text=text,
-                            reply_markup=kbd)
-                else:
-                    await self._app.bot.edit_message_text(
-                        chat_id=chat_id, message_id=message_id, text=_plain(text),
-                        reply_markup=kbd)
-                return message_id
-            except BadRequest as exc:
-                if "not modified" in str(exc).lower():
-                    return message_id
-                logger.warning("replace_operator_proposal edit refused (chat=%s): %s",
-                               chat_id, type(exc).__name__)
-                return None
+            # "message is not modified" is success inside the edit
+            await self._edit_rich(chat_id, message_id, text, reply_markup=kbd)
+            return message_id
+        except BadRequest as exc:
+            logger.warning("replace_operator_proposal edit refused (chat=%s): %s",
+                           chat_id, type(exc).__name__)
+            return None
         except NetworkError as exc:
             # a transport failure after the request was sent may have landed the edit
             raise UnconfirmedDelivery(type(exc).__name__) from exc
@@ -5940,13 +5756,11 @@ class TelegramChannel(Channel):
     async def send_response(
         self, message: str, context: dict[str, Any],
     ) -> DeliveryOutcome:
-        """Block-mode agent response with rich-text rendering (plain fallback).
-
-        v2 (RC3): an oversized response paginates through ``render_paged()`` —
-        every page sends rendered (previously the whole message fell back to
-        plain raw chunks via ``send()``). Single page keeps the v0.70.0
-        contract (no entities → ``plain_text``, #1330; BadRequest → raw resend);
-        multi-page fallbacks use each page's DISPLAY.
+        """Block-mode agent response, sent as rich messages carrying the
+        agent's Markdown (:meth:`_send_rich`): one message unless the text is
+        past one message's budget. A task post's context carries the post
+        record every landed message is filed under; the reply, when the
+        context names one, rides on the first message only.
 
         The reply to an agent's greeting (:meth:`speak_first`) that Telegram
         refuses is one info line and not delivered: the operator has not
@@ -5961,57 +5775,16 @@ class TelegramChannel(Channel):
                 if context.get("synthetic") == "chat_opening":
                     self._end_greeting(delivered=False)   # it will not arrive
                 return DeliveryOutcome.NOT_DELIVERED
-            pages = render_paged(message)
-            # A task post's context carries the post record its pages are filed
-            # under as they land; every other reply carries none.
             post = context.get("_post")
 
             def _landed(sent):
                 self._record_post(target_chat, sent, post)
-            # The reply, when the context names one, rides on the first
-            # physical message only.
-            first = self._first_message_kw(context, target_chat, message)
-            if len(pages) == 1:
-                display, entities = pages[0]
-                if entities is None:
-                    if post is None:
-                        # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
-                        # it here is how a delegation path loses the distinction.
-                        return await self.send(_plain(message), context)
-                    _landed(await self._send_message(
-                        chat_id=target_chat, text=display, **first))
-                    context["_delivery_head_sent"] = True
-                    return DeliveryOutcome.DELIVERED
-                await self._send_one(target_chat, message, display, entities,
-                                     record=_landed, **first)
-                context["_delivery_head_sent"] = True
-                return DeliveryOutcome.DELIVERED
-            outcome = DeliveryOutcome.NOT_DELIVERED
-            for display, entities in pages:
-                chunks, fell_back = [display], False
-                if entities is None:
-                    _landed(await self._send_message(
-                        chat_id=target_chat, text=display, **first))
-                else:
-                    # #831: the plain retry carries this page's link destinations,
-                    # which its marker-free display cannot.
-                    chunks = self._plain_fallback_chunks(display, entities)
-                    fell_back = await self._send_one(
-                        target_chat, chunks[0], display, entities, record=_landed,
-                        **first)
-                first = {}
-                # Page 1 carries the notice: once it lands the delivery counts as
-                # shown, however the remaining pages fare. Stamped BEFORE the
-                # overflow chunks below, so a raising tail cannot erase the fact
-                # that the head is on screen.
-                if outcome is DeliveryOutcome.NOT_DELIVERED:
-                    context["_delivery_head_sent"] = True
-                    outcome = DeliveryOutcome.DELIVERED
-                if fell_back:
-                    for chunk in chunks[1:]:
-                        _landed(await self._app.bot.send_message(
-                            chat_id=target_chat, text=chunk))
-            return outcome
+                self._stamp_head(context)
+            sent = await self._send_rich(
+                target_chat, message,
+                reply_parameters=self._reply_parameters(context, target_chat, message),
+                record=_landed)
+            return DeliveryOutcome.DELIVERED if sent else DeliveryOutcome.NOT_DELIVERED
         except (Forbidden, BadRequest) as exc:
             if context.get("synthetic") != "chat_opening":
                 raise
@@ -6174,41 +5947,41 @@ class TelegramChannel(Channel):
         the draft *draft_id* in *target_chat*, with Telegram's Stop button.
 
         Returns ``None``, or the seconds a flood wait asks for. Raises
-        :class:`DraftTooLong` — before any call — when the text no longer
-        fits one message; any other failure of the call propagates to the
-        stream, which logs it once and carries on. Text that was not admitted
-        makes no call (INV-OUT-001), nor does a channel that is not started.
+        :class:`DraftTooLong` — before any call — when the prepared text no
+        longer fits one rich message; any other failure of the call
+        propagates to the stream, which logs it once and carries on. Text
+        that was not admitted makes no call (INV-OUT-001), nor does a channel
+        that is not started.
 
-        The empty text is the draft before the first word: nothing of the
-        model's is in it, and Stop removes it — an empty bubble kept in the
-        chat would say nothing. A draft with text stays after Stop until the
-        reply arrives as a message.
+        A draft with text is a rich draft, and stays after Stop until the
+        reply arrives as a message. The empty text is the draft before the
+        first word: nothing of the model's is in it, and Stop removes it — an
+        empty bubble kept in the chat would say nothing. Telegram refuses an
+        empty rich draft, so that one is a plain draft.
         """
-        empty = isinstance(text, str) and text == ""
-        if empty:
-            display, entities = "", None
-        else:
-            if _unadmitted("send_draft", text):
+        if isinstance(text, str) and text == "":
+            if self._app is None:
                 return None
-            display, entities = render(text)
-            if entities is None:
-                display = _plain(text)
-            if utf16_len(display) > _TG_MAX_LENGTH:
-                raise DraftTooLong()
+            try:
+                await self._app.bot.send_message_draft(
+                    chat_id=int(target_chat), draft_id=draft_id, text="",
+                    entities=None,
+                    # not parameters of this library version's method yet
+                    api_kwargs={"can_stop": True, "keep_on_stop": False},
+                )
+            except RetryAfter as exc:
+                wait = exc.retry_after
+                return (wait.total_seconds() if hasattr(wait, "total_seconds")
+                        else float(wait))
+            return None
+        if _unadmitted("send_draft", text):
+            return None
+        if len(tg_rich.prepare(text).encode("utf-8")) > tg_rich.RICH_BUDGET_BYTES:
+            raise DraftTooLong()
         if self._app is None:
             return None
-        try:
-            await self._app.bot.send_message_draft(
-                chat_id=int(target_chat), draft_id=draft_id, text=display,
-                entities=entities,
-                # not parameters of this library version's method yet
-                api_kwargs={"can_stop": True, "keep_on_stop": not empty},
-            )
-        except RetryAfter as exc:
-            wait = exc.retry_after
-            return (wait.total_seconds() if hasattr(wait, "total_seconds")
-                    else float(wait))
-        return None
+        return await self._send_rich_draft(
+            int(target_chat), draft_id, text, can_stop=True, keep_on_stop=True)
 
     async def _on_stop_update(self, update: Any, _context: Any = None) -> None:
         """Stop was pressed on a draft: end that draft's stream and ask the
@@ -6240,43 +6013,8 @@ class TelegramChannel(Channel):
                              stream.cid)
 
 
-_TG_MAX_LENGTH = 4096
 # The longest quote a reply may carry, in UTF-16 units (Bot API ReplyParameters).
 _TG_MAX_QUOTE = 1024
-
-
-def _split_message(text: str) -> list[str]:
-    """Split *text* into chunks that fit within Telegram's message limit.
-
-    #305: the limit is measured in UTF-16 code units (Telegram's unit — an
-    astral emoji counts 2), never Python code points, and a newline split
-    consumes exactly the ONE split newline so blank-line separation survives
-    into the next chunk. A whitespace-only chunk is never emitted (Telegram
-    rejects an effectively-empty message) — including the degenerate case of
-    whole-input whitespace, which returns ``[]`` (Sol r1: the old fast path
-    returned ``[""]``, and send() then attempted an empty Bot API message).
-    """
-    if not text.strip():
-        return []
-    if utf16_len(text) <= _TG_MAX_LENGTH:
-        return [text]
-
-    chunks: list[str] = []
-    while text:
-        hard = utf16_prefix_end(text, 0, _TG_MAX_LENGTH)
-        if hard >= len(text):
-            chunks.append(text)
-            break
-
-        split_at = text.rfind("\n", 0, hard)
-        if split_at <= 0:
-            chunks.append(text[:hard])
-            text = text[hard:]
-        else:
-            chunks.append(text[:split_at])
-            text = text[split_at + 1:]
-
-    return [c for c in chunks if c.strip()]
 
 
 class _InboundReservation:

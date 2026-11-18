@@ -33,7 +33,7 @@ from session_registry import SessionRegistry
 from test_agent_process import FakeClient, _mk_assistant, _mk_result
 from test_guest_agent_delivery import KEY, _finance_endpoint
 from test_guest_options import LOOKUP, SEARCH, _plugin
-from test_guest_reply import DECLINE, _Bot, _opened
+from test_guest_reply import DECLINE, _Bot, _opened, shown
 from test_handoff import _cfg
 from two_endpoints import FINANCE_BOT, build_two_endpoints
 
@@ -294,7 +294,7 @@ async def test_the_text_goes_through_guest_finish_and_silence_through_turn_finis
     agent, ep, reply = await _summoned(tmp_path, bot)
     await agent.handle_message(_guest_msg())
     assert bot.edits[-1]["inline_message_id"] == reply.inline_message_id
-    assert bot.edits[-1]["text"] == "pong"
+    assert shown(bot.edits[-1]) == "pong"
     assert bot.sent == []
     assert KEY not in ep._guest_replies
 
@@ -305,7 +305,7 @@ async def test_the_text_goes_through_guest_finish_and_silence_through_turn_finis
     finishes = AsyncMock(name="guest_finish")
     with patch.object(ep, "guest_finish", finishes):
         await agent.handle_message(_guest_msg())
-    assert [e["text"] for e in bot.edits] == [DECLINE]
+    assert [shown(e) for e in bot.edits] == [DECLINE]
     assert finishes.await_count == 0
     assert bot.sent == []
 
@@ -352,7 +352,7 @@ async def test_a_guest_turn_hands_the_model_no_token_callback(tmp_path, client, 
     monkeypatch.setattr(agent, "_make_on_message", _spy)
     await agent.handle_message(_guest_msg())
     assert handed == [None]
-    assert bot.edits[-1]["text"] == "pong"
+    assert shown(bot.edits[-1]) == "pong"
     assert bot.sent == [] and bot.drafts == []
 
 
@@ -363,7 +363,7 @@ async def test_no_health_notice_for_a_guest_turn(tmp_path, client, monkeypatch):
     bot = _Bot()
     agent, ep, reply = await _summoned(tmp_path, bot)
     await agent.handle_message(_guest_msg())
-    assert bot.edits[-1]["text"] == "pong"
+    assert shown(bot.edits[-1]) == "pong"
     assert bot.sent == []
     assert "finance" not in plugin_health._notice_memo
 
@@ -379,7 +379,7 @@ async def test_a_limit_stop_on_a_guest_turn_posts_no_line(tmp_path, client, monk
     monkeypatch.setattr(agent, "_send_limit_line", line)
     caplog.set_level(logging.WARNING)
     await agent.handle_message(_guest_msg())
-    assert bot.edits[-1]["text"] == "pong"
+    assert shown(bot.edits[-1]) == "pong"
     assert line.await_count == 0
     assert bot.sent == []
     [warning] = [r for r in caplog.records if "turn limit reached" in r.getMessage()]

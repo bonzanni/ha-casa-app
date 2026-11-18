@@ -16,6 +16,10 @@ def _mk_channel_with_fake_bot():
     )
     fake_bot.edit_message_text = AsyncMock()
     fake_bot.send_message_draft = AsyncMock(return_value=True)
+    # rich messages go out as raw API calls
+    fake_bot.do_api_request = AsyncMock(
+        return_value=MagicMock(message_id=12345)
+    )
 
     fake_app = MagicMock()
     fake_app.bot = fake_bot
@@ -27,6 +31,23 @@ def _mk_channel_with_fake_bot():
     )
     ch._app = fake_app
     return ch, fake_bot
+
+
+def rich_sent(bot) -> list[dict]:
+    """The ``api_kwargs`` of every ``sendRichMessage`` the fake bot took, in order."""
+    return [c.kwargs["api_kwargs"] for c in bot.do_api_request.await_args_list
+            if c.args[0] == "sendRichMessage"]
+
+
+def rich_markdown(bot) -> list[str]:
+    """The Markdown of every ``sendRichMessage`` the fake bot took, in order."""
+    return [kw["rich_message"].get("markdown") for kw in rich_sent(bot)]
+
+
+def rich_edits(bot) -> list[dict]:
+    """The ``api_kwargs`` of every rich ``editMessageText`` the fake bot took, in order."""
+    return [c.kwargs["api_kwargs"] for c in bot.do_api_request.await_args_list
+            if c.args[0] == "editMessageText"]
 
 
 class MemoryBotIdStore:

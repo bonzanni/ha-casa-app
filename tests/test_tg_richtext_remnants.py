@@ -11,12 +11,10 @@ Converged with Terra + Sol (Codex) before implementation.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from channels.tg_richtext import parse_markdown, render
-from output_boundary_testing import admitted
 
 
 # --------------------------------------------------------------------------
@@ -204,227 +202,14 @@ def test_seven_hashes_stay_literal():
 
 
 # --------------------------------------------------------------------------
-# Tables (T-a, Sol+Terra converged): confident plain tables render as PRE
+# Fences
 # --------------------------------------------------------------------------
-
-def test_plain_table_renders_as_pre():
-    # v3 (#506): reflowed — separator row dropped, cells padded per column.
-    src = "before\n| # | Item |\n|---|---|\n| 1 | first |\n| 2 | second |\nafter"
-    display, spans = parse_markdown(src)
-    table = "| # | Item   |\n| 1 | first  |\n| 2 | second |"
-    assert table in display
-    s = display.find(table)
-    assert (s, s + len(table), "pre") in spans
-
-
-def test_table_with_markers_in_cells_reflows_to_pre():
-    # v3 (#506 mode-A fix): markers no longer reject the table — cells are
-    # parsed and re-emitted marker-stripped inside the padded PRE box.
-    src = "| # | Item |\n|---|---|\n| 1 | **bold** thing |"
-    display, spans = parse_markdown(src)
-    assert any(k == "pre" for _, _, k in spans)
-    assert "**" not in display                       # markers stripped
-    assert "bold thing" in display
-
-
-def test_pipe_lines_without_separator_stay_literal():
-    src = "| a | b |\n| c | d |"
-    assert parse_markdown(src) == (src, [])
-
-
-def test_table_with_inconsistent_columns_stays_literal():
-    # #517 RETARGETED (this test's assertion FLIPPED for the short-row case).
-    # "Inconsistent columns" now splits in two: a row with MORE cells than
-    # the header is still ambiguous — truncating it would drop content — so
-    # it stays literal, which is what this test now pins. A row with FEWER
-    # cells is padded, and its own case is the next test.
-    src = "| a | b |\n|---|---|\n| x | y | z |"
-    assert parse_markdown(src) == (src, [])
-
-
-def test_517_short_data_row_is_padded_rather_than_left_literal():
-    # The case this file used to assert stayed literal. The delimiter row
-    # declares the column count, so a short DATA row is padded with empty
-    # cells and the run renders as the confident table it plainly is.
-    src = "| a | b |\n|---|---|\n| only one |"
-    display, spans = parse_markdown(src)
-    assert display == "| a        | b |\n| only one |   |"
-    assert display.count("|---|") == 0
-    assert spans == [(0, len(display), "pre")]
-
-
-def test_table_alignment_colons_accepted():
-    src = "| l | r |\n|:---|---:|\n| x | y |"
-    display, spans = parse_markdown(src)
-    assert spans and spans[0][2] == "pre"
-
 
 def test_pipes_inside_fence_untouched():
     src = "```\n| a | b |\n|---|---|\n```"
     display, spans = parse_markdown(src)
     assert display == "| a | b |\n|---|---|"
     assert spans == [(0, len(display), "pre")]
-
-
-# --------------------------------------------------------------------------
-# RC3 — delivery planner: split display, rebase spans, cap entities
-# --------------------------------------------------------------------------
-
-def _get_render_paged():
-    from channels.tg_richtext import render_paged
-    return render_paged
-
-
-def test_render_paged_single_page_matches_render():
-    render_paged = _get_render_paged()
-    pages = render_paged("say **hi** now")
-    assert len(pages) == 1
-    display, entities = pages[0]
-    assert display == "say hi now"
-    assert entities is not None and len(entities) == 1
-
-
-def test_render_paged_long_text_all_pages_rendered():
-    render_paged = _get_render_paged()
-    src = "**Heading item** with `code.py` and prose line\n" * 200  # ≫4096
-    pages = render_paged(src)
-    assert len(pages) >= 2
-    for display, entities in pages:
-        assert len(display) <= 4096
-        assert "**" not in display
-        assert entities
-
-
-def test_render_paged_span_crossing_boundary_is_split():
-    render_paged = _get_render_paged()
-    # one giant bold span longer than a page → bold on BOTH pages
-    src = "**" + ("word " * 1200).strip() + "**"  # ~6000 display chars
-    pages = render_paged(src)
-    assert len(pages) >= 2
-    for display, entities in pages:
-        assert entities, "every page keeps its share of the split span"
-        assert any(e.type == "bold" for e in entities)
-
-
-def test_render_paged_long_pre_splits_as_pre_per_page():
-    render_paged = _get_render_paged()
-    src = "```\n" + ("code line\n" * 800) + "```"
-    pages = render_paged(src)
-    assert len(pages) >= 2
-    for display, entities in pages:
-        assert entities and all(e.type == "pre" for e in entities)
-
-
-def test_render_paged_entity_cap_paginates():
-    render_paged = _get_render_paged()
-    # >100 entities worth of markup must yield pages each ≤100 entities,
-    # never a plain fallback
-    src = " ".join("**x**" for _ in range(150))
-    pages = render_paged(src)
-    assert len(pages) >= 2
-    for display, entities in pages:
-        assert entities and len(entities) <= 100
-        assert "**" not in display
-
-
-def test_render_paged_plain_text_single_page_none_entities():
-    render_paged = _get_render_paged()
-    pages = render_paged("no markup at all")
-    assert pages == [("no markup at all", None)]
-
-
-def test_render_paged_utf16_boundary_with_astral():
-    render_paged = _get_render_paged()
-    # astral-heavy text near the boundary: offsets must stay valid per page
-    src = ("🧾" * 10 + " **bold** and `code`\n") * 180
-    pages = render_paged(src)
-    for display, entities in pages:
-        assert entities
-        # UTF-16 length within Telegram limit
-        assert len(display.encode("utf-16-le")) // 2 <= 4096
-
-
-def test_render_paged_concat_covers_whole_display():
-    # Sol: no content lost or duplicated across pages (page-leading newlines
-    # at cut points are the only permitted difference)
-    render_paged = _get_render_paged()
-    from channels.tg_richtext import parse_markdown as _pm
-    src = "**Heading item** with `code.py` and prose line\n" * 200
-    whole_display, _ = _pm(src)
-    joined = "\n".join(display for display, _ in render_paged(src))
-    assert joined.replace("\n", "") == whole_display.replace("\n", "")
-
-
-def test_render_paged_never_drops_content_at_newline_runs():
-    # Terra impl-review MAJOR: an unbounded newline skip at a page cut
-    # silently discarded content — bounded to the one paragraph separator
-    render_paged = _get_render_paged()
-    src = "**x**" + "\n" * 5000 + "**tail**"
-    pages = render_paged(src)
-    joined = "".join(d for d, _ in pages)
-    assert joined.count("\n") >= 4990  # at most 2 swallowed per cut
-    assert joined.startswith("x") and joined.endswith("tail")
-
-
-def test_render_paged_pre_blank_lines_survive_page_cut():
-    render_paged = _get_render_paged()
-    body = ("chunk\n\n\n" * 600).rstrip()  # blank lines inside one huge fence
-    src = "```\n" + body + "\n```"
-    pages = render_paged(src)
-    joined = "".join(d for d, _ in pages)
-    assert joined == body  # byte-identical PRE content across pages
-
-
-def test_render_paged_unclosed_fence_stays_literal_across_pages():
-    render_paged = _get_render_paged()
-    src = "```\n" + ("unclosed fence line\n" * 400)  # ≫4096, never closed
-    pages = render_paged(src)
-    joined = "\n".join(d for d, _ in pages)
-    assert "```" in joined  # opener retained byte-for-byte (fail-literal)
-
-
-# --------------------------------------------------------------------------
-# RC3 — telegram.py delivery paths use the planner
-# --------------------------------------------------------------------------
-
-def _mk_channel():
-    from channels.telegram import TelegramChannel
-
-    fake_bot = MagicMock()
-    fake_bot.send_message = AsyncMock(return_value=MagicMock(message_id=777))
-    fake_bot.edit_message_text = AsyncMock()
-    fake_app = MagicMock()
-    fake_app.bot = fake_bot
-    ch = TelegramChannel(
-        bot_token="x:y", chat_id=100, default_agent="assistant",
-    )
-    ch._app = fake_app
-    return ch, fake_bot
-
-
-_LONG_MD = "**Heading item** with `code.py` and prose line\n" * 200  # ≫4096
-
-
-@pytest.mark.asyncio
-async def test_send_response_overflow_renders_each_chunk():
-    ch, bot = _mk_channel()
-    await ch.send_response(admitted(_LONG_MD), {"chat_id": "100"})
-    assert bot.send_message.await_count >= 2
-    for call in bot.send_message.await_args_list:
-        kw = call.kwargs
-        assert len(kw["text"]) <= 4096
-        assert "**" not in kw["text"]          # markers consumed
-        assert kw.get("entities")              # rendered, not plain
-
-
-@pytest.mark.asyncio
-async def test_plain_paths_stay_plain():
-    # error/tool/notice paths keep byte-identical literal markdown
-    ch, bot = _mk_channel()
-    await ch.send(admitted("**stars stay** `literal`"), {"chat_id": "42"})
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == "**stars stay** `literal`"
-    assert "entities" not in kw
 
 
 # --------------------------------------------------------------------------

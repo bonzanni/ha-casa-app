@@ -34,9 +34,6 @@ GUEST_TICK_S = 3.0
 # network errors) before it is given up, in seconds. The turn itself is not
 # bounded by this.
 GUEST_TERMINAL_BUDGET_S = 300.0
-# The longest guest reply text sent in one message (Telegram's message limit,
-# counted in UTF-16 code units).
-GUEST_TEXT_LIMIT = 4096
 # Words shown while a guest reply is being prepared.
 THINKING_WORDS = ("thinking", "looking that up", "checking", "weighing it",
                   "nearly there")

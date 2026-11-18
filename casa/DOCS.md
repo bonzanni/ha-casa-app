@@ -485,8 +485,8 @@ Casa's own cards keep using the specialist's name.
   its browsing, ask it there, as you would ask the assistant. Its messages
   there carry no `📊` label: the chat is the specialist.
 - **Work the assistant hands over** also appears there: a silent "Ellen
-  asked:" when it starts, with her request as she wrote it in a quote you can
-  expand (work Casa itself starts, such as a plugin's setup after an update,
+  asked:" when it starts, with her request as she wrote it, in full, in a quote
+  (work Casa itself starts, such as a plugin's setup after an update,
   shows no such message), then the specialist's closing message when it ends,
   as a reply to her request, opening "Done." or "Couldn't finish:" (its
   working notes stay out of the chat, and a specialist with nothing more to

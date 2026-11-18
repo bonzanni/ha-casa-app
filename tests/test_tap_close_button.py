@@ -164,7 +164,9 @@ async def test_a_failed_keyboard_removal_sends_nothing(tap_env, monkeypatch):
 
 def test_a_close_card_needs_no_settle_reserve_beyond_todays(labels):
     """A Close tap appends no line, so the composed-size rule is unchanged."""
-    text = "x" * (rb.PROPOSAL_TEXT_CHARS - 1)
-    with_close = rb.proposal_ok(json.dumps({"text": text, "buttons": [CONFIRM, CLOSE]}), _call())
-    without = rb.proposal_ok(json.dumps({"text": text, "buttons": [CONFIRM]}), _call())
-    assert (with_close[0] is None) == (without[0] is None)
+    from channels.tg_rich import RICH_BUDGET_BYTES
+    widest = (RICH_BUDGET_BYTES - rb.PROPOSAL_SETTLE_RESERVE_BYTES) // 5   # "_" prepares to 5 bytes
+    for text in ("_" * (widest - 40), "_" * (widest + 40)):                # either side of the bound
+        with_close = rb.proposal_ok(json.dumps({"text": text, "buttons": [CONFIRM, CLOSE]}), _call())
+        without = rb.proposal_ok(json.dumps({"text": text, "buttons": [CONFIRM]}), _call())
+        assert (with_close[0] is None) == (without[0] is None)

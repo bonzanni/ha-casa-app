@@ -208,38 +208,30 @@ holding it back. What that rule does not settle is the form, and the form is whe
 wrong in practice: a several-hundred-character address pasted into a chat is delivered and
 unusable at the same time. The residents' text doctrine therefore asks for a labelled link
 whose label names the action and the destination domain, with the address carried as the
-link's destination — the one exception being the message tool, which is not rendered, so a
-plain address is what belongs there.
+link's destination — the one exception the doctrine makes being a message sent with the
+message tool, where it asks for the plain address.
 
 Two things that shape does *not* do, both of them pre-existing properties of every labelled
 link rather than consequences of asking for one. A Telegram text reply, its draft while the
-model writes it, and a button question pass through the rich renderer, but a voice reply is
-spoken rather than rendered, and an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
-arrives as markup with its address intact. The reply is written for the chat surface either
-way; a consumer receiving it as data parses what it gets. Two things can go wrong with the
-formatting, and both are repaired in the text before it is handed to the transport: Telegram
-can refuse it,
-and the message is then re-sent as plain text carrying the same addresses; or the entities
-cannot be expressed at all, and on a paged reply the affected page is emitted with its
-destinations re-attached, beside their labels or on a page of their own that follows. A
-destination too long to be a message on its own is left out of any such reconstruction, with a
-log line. What that repair covers is the link and nothing else about the reply: text carrying
-no link has no address to re-attach. The instruction improves legibility on the surface where
-a person reads it; it conceals nothing and guarantees nothing about the transport.
+model writes it, and a button question go out as Telegram rich messages, which render the
+link, but a voice reply is spoken rather than rendered, and an `/invoke` response is returned
+to its caller verbatim as JSON, where a labelled link arrives as markup with its address
+intact. The reply is written for the chat surface either way; a consumer receiving it as data
+parses what it gets. When Telegram refuses a rich message, it is sent again as plain
+paragraphs that parse nothing, so the address still arrives, spelled out beside its label
+([`telegram-rendering.md`](../architecture/telegram-rendering.md), INV-TG-026). The
+instruction improves legibility on the surface where a person reads it; it conceals nothing
+and guarantees nothing about the transport.
 
-**A reply's shape is chosen for the channel it is read on, and the renderer is the
-backstop rather than the plan.** The same text doctrine asks a resident to reach for a
-markdown table only when the material really is a small grid — a few short columns —
-and otherwise to write one `Field: value` line per item. The reason is not that tables
-render badly: a confident table is re-emitted as a monospace box, a per-record stanza or
-plain rows precisely so that nothing is lost whichever shape arrives. The reason is that
-a wide grid on a phone reads worse than the same facts as lines, and that the choice
-belongs to whoever is composing the reply, who knows what the material is, rather than to
-a renderer inferring it from cell widths. This is guidance, not enforcement: no gate
-counts a reply's columns, and nothing here asserts that a model complies. What the system
-guarantees is the floor beneath the guidance — a table that arrives anyway still renders
-with every cell and every link destination intact, and one whose shape is genuinely
-ambiguous stays literal rather than being rendered wrongly.
+**A reply's shape is chosen by whoever composes it.** Telegram renders a table, a fold or a
+checklist natively, and Casa does not decide which one a reply needs: the agent's formatting
+guide names what is available and when each fits, and the residents' text doctrine adds its
+own advice on tables. The reason is that the choice belongs to whoever is composing the
+reply, who knows what the material is, rather than to code inferring it. This is guidance,
+not enforcement: no gate counts a reply's columns, and nothing here asserts that a model
+complies. What the system guarantees is the floor beneath the guidance — a table row with more
+cells than its header is widened so no cell is dropped, and a message Telegram refuses still
+arrives as plain text.
 
 **Recovery advice never proposes destroying what the refusal declined to touch.** A
 fail-closed refusal exists because some state is worth more than the operation being

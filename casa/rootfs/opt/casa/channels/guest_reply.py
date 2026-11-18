@@ -20,12 +20,13 @@ down during a flood wait), once or repeatedly, lets the edit land, or spend
 its budget, before the cancellation goes on — the group is never left with
 the placeholder.
 
-Text length is Telegram's: 4096 UTF-16 units for the message. The source is
-cut before rendering — the renderer drops every entity of a text whose
-rendered form exceeds the limit, and a rendered display is never longer
-than its source except for a table, whose padded cells can expand it — and
-the rendered form is measured again afterwards, falling back to the plain
-form when it does not fit.
+The terminal edit is a rich message: the text goes as Markdown, measured in
+prepared UTF-8 bytes against the rich-message budget and cut there with a
+closing "…", since the one message cannot be split; any refusal of the text
+makes the same edit again as plain paragraphs (:func:`channels.tg_rich.edit_rich`),
+and when that is refused too, as a plain-text edit cut to 4096 UTF-16 units.
+The placeholder, the ticker and the waiting line are Casa's own short lines
+and stay plain messages.
 """
 
 from __future__ import annotations
@@ -40,11 +41,10 @@ from typing import Any
 from telegram import InlineQueryResultArticle, InputTextMessageContent
 from telegram.error import BadRequest, NetworkError, RetryAfter
 
-from channels import DeliveryOutcome
+from channels import DeliveryOutcome, tg_rich
+from channels.tg_rich import is_message_refusal
 from channels.tg_richtext import plain_text, render
-from guest_groups import (
-    GUEST_TERMINAL_BUDGET_S, GUEST_TEXT_LIMIT, GUEST_TICK_S, THINKING_WORDS,
-)
+from guest_groups import GUEST_TERMINAL_BUDGET_S, GUEST_TICK_S, THINKING_WORDS
 from text_util import utf16_len, utf16_prefix_end
 
 logger = logging.getLogger(__name__)
@@ -61,29 +61,16 @@ FAIL_LINE = "Something went wrong on my side — ask me again in a bit."
 
 # The first wait after a network error; each further one doubles it.
 _NETWORK_BACKOFF_S = 1.0
-# A cut at a whitespace keeps whole words, unless the last whitespace lies
-# so early that it would discard more than a quarter of the message — then
-# the cut lands at the limit itself.
-_WHITESPACE_CUT_FLOOR = int(GUEST_TEXT_LIMIT * 0.75)
+# A plain message's length, in UTF-16 code units: the last-resort edit's.
+_PLAIN_TEXT_LIMIT = 4096
 
 
-def _cut(text: str) -> str:
-    """*text* shortened to fit one message with room for the ellipsis: cut
-    at the last whitespace at or before ``GUEST_TEXT_LIMIT - 1`` UTF-16
-    units when that keeps at least ``_WHITESPACE_CUT_FLOOR`` units, else at
-    the limit itself (never inside a surrogate pair), with "…" appended. A
-    text that fits is returned unchanged."""
-    budget = GUEST_TEXT_LIMIT - 1
-    if utf16_len(text) <= budget:
-        return text
-    end = utf16_prefix_end(text, 0, budget)
-    cut = end
-    for i in range(end - 1, -1, -1):
-        if text[i].isspace():
-            if utf16_len(text[:i]) >= _WHITESPACE_CUT_FLOOR:
-                cut = i
-            break
-    return text[:cut].rstrip() + "…"
+def _plain_cut(text: str) -> str:
+    """*text* as plain text, cut to one plain message with a closing "…"."""
+    plain = plain_text(text)
+    if utf16_len(plain) <= _PLAIN_TEXT_LIMIT:
+        return plain
+    return plain[:utf16_prefix_end(plain, 0, _PLAIN_TEXT_LIMIT - 1)] + "…"
 
 
 def _retry_after_seconds(exc: RetryAfter) -> float:
@@ -134,7 +121,9 @@ class GuestReply:
         The reply is terminal at once, its outcome delivered, so every later
         terminal call returns that outcome without touching the message.
         False, logged, with nothing set, when Telegram refuses the answer."""
-        display, entities, _plain = self._forms(text)
+        display, entities = render(text)
+        if entities is None:
+            display = plain_text(text)
         if not await self._answer(display, entities):
             return False
         done = asyncio.get_running_loop().create_future()
@@ -281,43 +270,29 @@ class GuestReply:
                 logger.warning("guest reply for %s: terminal edit failed: %s: %s",
                                self.name, type(exc).__name__, exc)
 
-    def _forms(self, text: str) -> tuple[str, Any, str]:
-        """``(display, entities, plain)``: the rendered form of the cut source
-        when it fits, else no entities; and the plain form, cut the same way,
-        for the fallback edit."""
-        plain = _cut(plain_text(text))
-        display, entities = render(_cut(text))
-        if entities is None or utf16_len(display) > GUEST_TEXT_LIMIT:
-            return plain, None, plain
-        shown = utf16_len(display)
-        entities = [e for e in entities if e.offset + e.length <= shown]
-        return display, entities, plain
-
     async def _edit_final(self, text: str) -> DeliveryOutcome:
-        display, entities, plain = self._forms(text)
+        """The answer as a rich edit of the inline message, retried through
+        flood waits and network errors within the terminal budget. When the
+        rich edit and its plain-blocks resend are both refused, the answer
+        goes as a plain-text edit instead, cut to a plain message's length."""
         started = _now()
         backoff = _NETWORK_BACKOFF_S
-        rich = entities is not None
+        rich = True
         while True:
             try:
                 if rich:
                     try:
-                        await self.bot.edit_message_text(
-                            inline_message_id=self.inline_message_id,
-                            text=display, entities=entities)
+                        await tg_rich.edit_rich(
+                            self.bot, text, inline_message_id=self.inline_message_id)
                         return DeliveryOutcome.DELIVERED
                     except BadRequest as exc:
-                        low = str(exc).lower()
-                        if "not modified" in low:
-                            return DeliveryOutcome.DELIVERED
-                        if "message to edit not found" in low:
-                            return DeliveryOutcome.NOT_DELIVERED
-                        # an entity refusal: the same edit, plain
-                        logger.info("guest reply for %s: rich edit refused (%s); "
-                                    "editing plain", self.name, exc)
+                        if is_message_refusal(exc):
+                            raise
+                        logger.warning("guest reply for %s: rich edit refused (%s); "
+                                       "editing plain text", self.name, type(exc).__name__)
                         rich = False
                 await self.bot.edit_message_text(
-                    inline_message_id=self.inline_message_id, text=plain)
+                    inline_message_id=self.inline_message_id, text=_plain_cut(text))
                 return DeliveryOutcome.DELIVERED
             except RetryAfter as exc:
                 wait = _retry_after_seconds(exc)

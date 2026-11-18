@@ -47,7 +47,7 @@ from test_agent_process import FakeClient, _make_agent
 from test_guest_intake import (  # noqa: F401 — fixtures
     FRIEND, GROUP, OPERATOR, OWN_BOT, _guest, _user, world,
 )
-from test_guest_reply import ASKED_ELSEWHERE, DECLINE, FAIL, WAITING, _Bot
+from test_guest_reply import ASKED_ELSEWHERE, DECLINE, FAIL, WAITING, _Bot, shown
 from test_handoff import _CapturingClient, _cfg
 from test_own_chat_routing import _turns
 from two_endpoints import build_two_endpoints
@@ -163,7 +163,7 @@ async def test_the_group_never_appears_as_chat_id_or_route(world, opening):
     flat = {k: v for k, v in ctx.items() if k != "_guest_chat"}
     assert not (set(flat.values()) & group_values)
     assert typing == []                              # no typing lease in any chat
-    assert bot.sent == []                            # nothing sent anywhere
+    assert bot.sent == [] and bot.rich == []         # nothing sent anywhere
 
 
 async def test_the_placeholder_goes_out_before_the_turn_is_queued(world, opening, monkeypatch):
@@ -192,7 +192,7 @@ async def test_a_refused_placeholder_queues_no_turn(world, opening, ticker):
     assert await ch._dispatch_summoned_turn(_guest()) is False
     assert _turns(bus, "finance") == []
     assert ch._guest_replies == {} and ticker == []
-    assert bot.edits == [] and bot.sent == []
+    assert bot.edits == [] and bot.sent == [] and bot.rich == []
 
 
 async def test_a_turn_the_queue_refuses_fails_the_reply(world, opening, monkeypatch):
@@ -202,7 +202,7 @@ async def test_a_turn_the_queue_refuses_fails_the_reply(world, opening, monkeypa
     hand_back = AsyncMock()
     monkeypatch.setattr(ch, "_hand_back", hand_back)
     assert await ch._dispatch_summoned_turn(_guest()) is False
-    assert [e["text"] for e in bot.edits] == [FAIL]
+    assert [shown(e) for e in bot.edits] == [FAIL]
     assert ch._guest_replies == {}
     assert intake.await_count == 0 and hand_back.await_count == 0
     assert "finance" not in bus.queues
@@ -293,7 +293,7 @@ async def test_the_markers_are_reserved_and_copied(summoned):
     assert origin["_guest_chat"] == {"id": GROUP, "title": TITLE, "type": "group"}
     assert origin["_guest_query"] == turn.context["_guest_query"]
     assert origin["chat_id"] == str(OPERATOR) and origin["_tg_bot"] == OWN_BOT
-    assert w.bot.edits[-1]["text"] == "pong"           # the real turn's text, in the group
+    assert shown(w.bot.edits[-1]) == "pong"           # the real turn's text, in the group
 
 
 async def test_a_narration_turn_carries_no_guest_markers(summoned):
@@ -404,7 +404,7 @@ async def test_a_summons_from_a_private_chat_names_the_person_not_an_empty_group
                     "chat with them.")
     assert prompt.count(note) == 1
     assert "«»" not in prompt and "the group" not in prompt
-    assert w.bot.edits[-1]["text"] == "pong"
+    assert shown(w.bot.edits[-1]) == "pong"
 
 
 async def test_a_summons_from_a_nameless_chat_says_another_chat(summoned):
@@ -473,9 +473,10 @@ async def test_an_ask_in_the_own_chat_puts_the_reply_in_waiting(summoned, broker
         await w.agent.handle_message(turn)
     assert _ask.result["status"] == "awaiting_user"
     # the question went to the operator's chat on this bot, the group was told
-    assert [m["chat_id"] for m in w.bot.sent] == [OPERATOR]
-    assert "Which quarter?" in w.bot.sent[0]["text"]
-    assert [e["text"] for e in w.bot.edits] == [WAITING, "Q3 it is, then."]
+    posted = [kw for e, kw in w.bot.rich if e == "sendRichMessage"]
+    assert [kw["chat_id"] for kw in posted] == [OPERATOR] and w.bot.sent == []
+    assert "Which quarter?" in posted[0]["rich_message"]["markdown"]
+    assert [shown(e) for e in w.bot.edits] == [WAITING, "Q3 it is, then."]
     assert turn.context["_turn_scope"].detached_ask is True
     assert w.ch._guest_replies == {}
 
@@ -487,7 +488,7 @@ async def test_a_detached_question_ends_with_ill_answer_there(summoned, broker):
         await w.agent.handle_message(turn)
     assert _ask.result["status"] == "awaiting_user"
     assert turn.context["_turn_scope"].detached_ask is True
-    assert [e["text"] for e in w.bot.edits] == [WAITING, ASKED_ELSEWHERE]
+    assert [shown(e) for e in w.bot.edits] == [WAITING, ASKED_ELSEWHERE]
     assert w.ch._guest_replies == {}
 
 
@@ -503,14 +504,19 @@ async def test_a_card_wait_then_silence_ends_in_a_decline(summoned):
         assert isinstance(mid, int)
     with patch.object(w.agent, "_process", _turn_that(_challenge, then="")):
         await w.agent.handle_message(turn)
-    assert [m["chat_id"] for m in w.bot.sent] == [OPERATOR]
-    assert [e["text"] for e in w.bot.edits] == [WAITING, DECLINE]
+    assert [kw["chat_id"] for e, kw in w.bot.rich if e == "sendRichMessage"] == [OPERATOR]
+    assert [shown(e) for e in w.bot.edits] == [WAITING, DECLINE]
     assert turn.context["_turn_scope"].detached_ask is False
 
 
 class _RefusingBot(_Bot):
-    async def send_message(self, **kw):
-        self.sent.append(kw)
+    """Every send to the operator's chat is refused; the group's edits land."""
+
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        if endpoint == "editMessageText":
+            return await super().do_api_request(endpoint, api_kwargs=api_kwargs,
+                                                return_type=return_type)
+        self.rich.append((endpoint, api_kwargs))
         raise RuntimeError("Forbidden: bot was blocked by the user")
 
 
@@ -528,8 +534,8 @@ async def test_a_failed_ask_delivery_leaves_detached_ask_false(tmp_path, world, 
     assert _ask.result == {"status": "error", "kind": "delivery_failed",
                            "message": "could not deliver the question to the operator"}
     assert turn.context["_turn_scope"].detached_ask is False
-    assert len(bot.sent) == 1                             # the one failed post
-    assert [e["text"] for e in bot.edits] == [DECLINE]     # never "waiting"
+    assert [e for e, _kw in bot.rich] == ["sendRichMessage"]   # the one failed post
+    assert [shown(e) for e in bot.edits] == [DECLINE]     # never "waiting"
 
 
 async def test_an_ordinary_turns_keyboard_touches_no_inline_message(summoned, broker):
@@ -575,7 +581,7 @@ async def test_the_opening_marker_is_stamped_and_the_chat_marked_open(world, ope
     opening.marks.clear()
     assert await ch2._dispatch_summoned_turn(_guest()) is False
     assert opening.marks == [] and opening.unopened is True
-    assert [e["text"] for e in bot2.edits] == [FAIL]
+    assert [shown(e) for e in bot2.edits] == [FAIL]
 
 
 async def test_a_summons_before_the_chat_opened_still_answers_in_the_group(summoned):
@@ -588,8 +594,8 @@ async def test_a_summons_before_the_chat_opened_still_answers_in_the_group(summo
     [prompt] = _Capturing.prompts
     assert agent_mod.CHAT_OPENING_NOTE in prompt
     assert agent_mod.GUEST_CALL_NOTE.format(title=TITLE) in prompt
-    assert w.bot.edits[-1]["text"] == "pong"          # the answer still lands in the group
-    assert w.bot.sent == []                            # and nothing in the chat
+    assert shown(w.bot.edits[-1]) == "pong"          # the answer still lands in the group
+    assert w.bot.sent == [] and w.bot.rich == []       # and nothing in the chat
 
 
 async def test_a_send_message_tool_call_lands_in_the_dm_and_the_text_edits_the_group_once(
@@ -602,9 +608,10 @@ async def test_a_send_message_tool_call_lands_in_the_dm_and_the_text_edits_the_g
         assert "Error" not in res["content"][0]["text"]
     with patch.object(w.agent, "_process", _turn_that(_card, then="The rate is 1.08.")):
         await w.agent.handle_message(turn)
-    assert [(str(m["chat_id"]), str(m["text"])) for m in w.bot.sent] == [
-        (str(OPERATOR), "Here is the breakdown.")]
-    assert [e["text"] for e in w.bot.edits] == ["The rate is 1.08."]
+    assert w.bot.sent == []
+    assert [(e, str(kw["chat_id"]), kw["rich_message"]) for e, kw in w.bot.rich] == [
+        ("sendRichMessage", str(OPERATOR), {"markdown": "Here is the breakdown."})]
+    assert [shown(e) for e in w.bot.edits] == ["The rate is 1.08."]
     assert w.bot.edits[0]["inline_message_id"] == "inl-1"
     assert w.ch._guest_replies == {}
 
@@ -736,7 +743,7 @@ async def test_parallel_runs_up_to_the_cap_then_busy(world, opening, names, capl
         # one run ends: its terminal edit frees a place for the next summons
         assert await ch.guest_finish(admitted("VAT is 21%."), None,
                                      running[0].context) is DeliveryOutcome.DELIVERED
-        assert [e["text"] for e in bot.edits] == ["VAT is 21%."]
+        assert [shown(e) for e in bot.edits] == ["VAT is 21%."]
         await ch._on_guest_message(_friend(update_id=20), None)
         for _ in range(5):
             await asyncio.sleep(0)
@@ -825,7 +832,7 @@ async def test_a_guest_turn_the_queue_refuses_fails_the_reply(world, opening, na
     ch, bus, bot = _endpoint(register=False)
     with caplog.at_level("INFO", logger="channels.telegram"):
         assert await ch._dispatch_guest_turn(_friend()) is False
-    assert [e["text"] for e in bot.edits] == [FAIL]
+    assert [shown(e) for e in bot.edits] == [FAIL]
     assert ch._guest_replies == {}
     assert "finance" not in bus.queues
     assert _outcomes(caplog) == ["guest_failed"]

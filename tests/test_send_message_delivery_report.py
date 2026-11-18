@@ -179,7 +179,7 @@ async def test_a_raised_send_becomes_an_error_result(monkeypatch):
 
 def _started_channel(bot):
     """A real `TelegramChannel` whose PTB application is started, so `send`
-    runs its chunk loop and its `_delivery_head_sent` stamping for real."""
+    runs its rich send and its `_delivery_head_sent` stamping for real."""
     from channels.telegram import TelegramChannel
 
     ch = TelegramChannel(bot=bot, chat_id=100)
@@ -199,8 +199,8 @@ async def test_a_lost_acknowledgement_is_not_reported_as_reaching_nobody(
     accepted: list[str] = []
 
     class _Bot:
-        async def send_message(self, chat_id, text):
-            accepted.append(text)     # the server processed it ...
+        async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+            accepted.append(api_kwargs["rich_message"]["markdown"])  # processed ...
             raise TimedOut()          # ... and the response was lost
 
     out = _text(await _send(monkeypatch, _CM(_started_channel(_Bot()))))
@@ -218,8 +218,8 @@ async def test_a_refusal_is_not_reported_as_possibly_delivered(monkeypatch):
     attempted: list[str] = []
 
     class _Bot:
-        async def send_message(self, chat_id, text):
-            attempted.append(text)
+        async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+            attempted.append(api_kwargs["rich_message"]["markdown"])
             raise Forbidden("bot was blocked by the user")
 
     out = _text(await _send(monkeypatch, _CM(_started_channel(_Bot()))))
@@ -229,31 +229,32 @@ async def test_a_refusal_is_not_reported_as_possibly_delivered(monkeypatch):
 
 async def test_a_last_chunk_that_raises_is_not_reported_as_stopping_the_rest(
         monkeypatch):
-    """Round 2, Astra. A message long enough to split: both chunks carry the
-    whole message and are accepted, and the LAST call's acknowledgement is the
-    one lost. There is no remainder, so "stopped the rest" names a loss that
-    did not happen."""
+    """A message long enough to split: both messages carry
+    the whole message and are accepted, and the LAST call's acknowledgement is
+    the one lost. There is no remainder, so "stopped the rest" names a loss
+    that did not happen."""
     from telegram.error import TimedOut
 
     accepted: list[str] = []
 
     class _Bot:
-        async def send_message(self, chat_id, text):
-            accepted.append(text)
-            if len(accepted) == 2:      # the final chunk's ack is lost
+        async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+            accepted.append(api_kwargs["rich_message"]["markdown"])
+            if len(accepted) == 2:      # the final message's ack is lost
                 raise TimedOut()
+            return types.SimpleNamespace(message_id=len(accepted))
 
     ch = _started_channel(_Bot())
     monkeypatch.setattr(tools, "_channel_manager", _CM(ch))
     token = agent_mod.origin_var.set(with_scope({"channel": "telegram"}))
     try:
         out = _text(await tools.send_message.handler(
-            {"message": "x " * 3000, "channel": "telegram"}))
+            {"message": "x " * 20_000, "channel": "telegram"}))
     finally:
         agent_mod.origin_var.reset(token)
 
     assert len(accepted) == 2, accepted
-    assert "".join(accepted).count("x") == 3000, len(accepted)
+    assert "".join(accepted).count("x") == 20_000, len(accepted)
     _assert_makes_no_delivery_claim(out, "TimedOut")
 
 

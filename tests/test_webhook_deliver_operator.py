@@ -445,6 +445,12 @@ class _RecordingBot:
         self.sent.append(kwargs)
         return SimpleNamespace(message_id=len(self.sent))
 
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        # A rich message is recorded like a plain one, its Markdown as the text.
+        self.sent.append(dict(api_kwargs, endpoint=endpoint,
+                              text=api_kwargs["rich_message"].get("markdown")))
+        return SimpleNamespace(message_id=len(self.sent))
+
     async def send_chat_action(self, **kwargs):
         return None
 

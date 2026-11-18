@@ -55,9 +55,10 @@ def _channel(chat_id: str = str(OPERATOR_CHAT)):
     ch._app = MagicMock()
     ids = iter(range(100, 200))
 
-    async def _send(**kw):
+    async def _send(*args, **kw):
         return SimpleNamespace(message_id=next(ids))
     ch._app.bot.send_message = AsyncMock(side_effect=_send)
+    ch._app.bot.do_api_request = AsyncMock(side_effect=_send)
     return ch
 
 

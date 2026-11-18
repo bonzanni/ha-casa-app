@@ -1,23 +1,18 @@
-"""#831 red case — a rejected multi-page rich page must still deliver its link
-destinations.
+"""A reply carrying a link reaches the operator with its destination, whatever
+Telegram makes of the formatting.
 
-The multi-page rich sender handed `render_paged`'s marker-free DISPLAY to
-its plain fallback, so when Telegram rejects a page's entities the retry
-carries the label alone and a `TEXT_LINK`'s destination reaches nobody, while
-the turn still reports DELIVERED. These pin the destination's presence in what
-was ACTUALLY sent to the Bot API — counts and payloads, never statuses.
-
-Specified by sol (red-case SPECIFY round, cluster U attempt 2). The payload
-assertions pin the PROPERTY the acceptor asked for — the destination present
-exactly once in what the retry actually sent — rather than one implementation's
-formatting of it.
+The agent's Markdown goes out as written in one rich message, so a link's
+destination travels inside it. When Telegram refuses the message, the resend
+is the same text unformatted, and the destination is still in it. These pin
+the destination's presence in what was ACTUALLY sent to the Bot API —
+counts and payloads, never statuses.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+import json
+from unittest.mock import MagicMock
 
 import pytest
-from telegram import MessageEntity
 from telegram.error import BadRequest
 
 from telegram_channel_double import _mk_channel_with_fake_bot
@@ -31,163 +26,67 @@ TAIL = "x" * 4096
 AUTHORED = f"[{LABEL}]({URL})\n\n{TAIL}"
 
 
-def _record_attempts(bot):
-    """Record every Bot API text call; reject any call carrying a TEXT_LINK.
+def _record_attempts(bot, *, refuse_markdown: bool):
+    """Record every rich send as ``(endpoint, payload as JSON)``; refuse
+    every Markdown payload when *refuse_markdown*."""
+    attempts: list[tuple[str, str]] = []
 
-    Returns the list of `(method_name, text, entity_urls)` tuples.
-    """
-    attempts: list[tuple[str, str, list[str]]] = []
+    async def _call(endpoint, *, api_kwargs, return_type=None):
+        attempts.append((endpoint, json.dumps(api_kwargs["rich_message"],
+                                              ensure_ascii=False)))
+        if refuse_markdown and "markdown" in api_kwargs["rich_message"]:
+            raise BadRequest("Rich_message_parse_failed")
+        return MagicMock(message_id=12345)
 
-    def _method(name):
-        async def _call(**kwargs):
-            ents = list(kwargs.get("entities") or [])
-            attempts.append((
-                name,
-                kwargs.get("text"),
-                [e.url for e in ents if getattr(e, "url", None)],
-            ))
-            if any(e.type == MessageEntity.TEXT_LINK for e in ents):
-                raise BadRequest("bad entity")
-            return MagicMock(message_id=12345)
-        return _call
-
-    bot.send_message = AsyncMock(side_effect=_method("send_message"))
-    bot.edit_message_text = AsyncMock(side_effect=_method("edit_message_text"))
+    bot.do_api_request.side_effect = _call
     return attempts
 
 
-def _assert_pagination_premise():
-    """The input must paginate to exactly the two pages the red cases assume."""
-    from channels.tg_richtext import render_paged
-
-    pages = render_paged(AUTHORED)
-    assert [(text, [(e.type, e.url) for e in (ents or [])])
-            for text, ents in pages] == [
-        (LABEL, [(MessageEntity.TEXT_LINK, URL)]),
-        (TAIL, []),
-    ]
-
-
-async def test_send_response_multipage_entity_fallback_keeps_link_target():
-    _assert_pagination_premise()
+async def test_a_reply_with_a_link_is_one_message_carrying_its_destination():
     ch, bot = _mk_channel_with_fake_bot()
-    attempts = _record_attempts(bot)
+    attempts = _record_attempts(bot, refuse_markdown=False)
+
+    await ch.send_response(admitted(AUTHORED), {"chat_id": "42"})
+
+    assert (
+        [endpoint for endpoint, _ in attempts],
+        sum(payload.count(URL) for _, payload in attempts),
+        sum(payload.count(LABEL) for _, payload in attempts),
+    ) == (["sendRichMessage"], 1, 1)
+    bot.send_message.assert_not_awaited()
+
+
+async def test_a_refused_reply_resends_its_link_destination():
+    ch, bot = _mk_channel_with_fake_bot()
+    attempts = _record_attempts(bot, refuse_markdown=True)
 
     await ch.send_response(admitted(AUTHORED), {"chat_id": "42"})
 
     assert (
         len(attempts),
-        sum(text.count(URL) for _, text, _ in attempts),
-        sum(text.count(LABEL) for _, text, _ in attempts),
-        [(name, urls) for name, _, urls in attempts],
-        attempts[0][1],
-        URL in attempts[1][1],
-        attempts[2][1],
-    ) == (
-        3,
-        1,
-        2,
-        [
-            ("send_message", [URL]),
-            ("send_message", []),
-            ("send_message", []),
-        ],
-        LABEL,
-        True,
-        TAIL,
-    )
+        URL in attempts[0][1],
+        '"blocks"' in attempts[1][1],
+        attempts[1][1].count(URL),
+        attempts[1][1].count(LABEL),
+    ) == (2, True, True, 1, 1)
+    bot.send_message.assert_not_awaited()
 
 
 CONVERSION_FAILURE_AUTHORED = f"\ud800[{LABEL}]({URL})\n\n{TAIL}"
 
 
-def _record_without_rejecting(bot):
-    """Record every Bot API text call and NEVER raise — the point of #834."""
-    attempts: list[tuple[str, str, list[str]]] = []
-
-    def _method(name):
-        async def _call(**kwargs):
-            ents = list(kwargs.get("entities") or [])
-            attempts.append((
-                name,
-                kwargs.get("text"),
-                [e.url for e in ents if getattr(e, "url", None)],
-            ))
-            return MagicMock(message_id=12345)
-        return _call
-
-    bot.send_message = AsyncMock(side_effect=_method("send_message"))
-    bot.edit_message_text = AsyncMock(side_effect=_method("edit_message_text"))
-    return attempts
-
-
-def _observe_fallback(ch):
-    """Record URL counts entering and leaving every #831 fallback call.
-
-    The #831 fallback must not be what delivers the destination, and
-    `(urls in, urls out, entities)` says exactly that: a fallback-created url
-    reads `(0, 1, 0)`, a renderer-created one `(1, 1, 0)`.
-    """
-    calls: list[tuple[int, int, int]] = []
-    inner = ch._plain_fallback_chunks
-
-    def _wrapped(display, entities):
-        chunks = inner(display, entities)
-        calls.append((
-            display.count(URL),
-            sum(chunk.count(URL) for chunk in chunks),
-            len(entities or ()),
-        ))
-        return chunks
-
-    ch._plain_fallback_chunks = _wrapped
-    return calls
-
-
-def _summarise(attempts, fallback_calls):
-    return (
-        len(attempts),
-        sum(text.count(URL) for _, text, _ in attempts),
-        sum(text.count(LABEL) for _, text, _ in attempts),
-        sum(bool(urls) for _, _, urls in attempts),
-        sum(text.count("\ud800") for _, text, _ in attempts),
-        sum(text.count("\ufffd") for _, text, _ in attempts),
-        [name for name, _, _ in attempts],
-        [text for _, text, _ in attempts],
-        fallback_calls,
-    )
-
-
 async def test_send_response_delivers_the_target_when_conversion_fails():
-    from channels.tg_richtext import parse_markdown
-
-    first = f"\ufffd{LABEL} ({URL})"
-
-    display, spans = parse_markdown(CONVERSION_FAILURE_AUTHORED)
-    assert (display, spans) == (
-        f"\ud800{LABEL}\n\n{TAIL}",
-        [(1, 1 + len(LABEL), f"link:{URL}")],
-    )
-
-    entity = MessageEntity(
-        type=MessageEntity.TEXT_LINK,
-        offset=1,
-        length=len(LABEL),
-        url=URL,
-    )
-    with pytest.raises(UnicodeEncodeError):
-        MessageEntity.adjust_message_entities_to_utf_16(
-            f"\ud800{LABEL}", [entity]
-        )
-
+    """A lone surrogate before the link cannot be encoded for Telegram. It is
+    replaced, and the link goes out whole in the one message sent."""
     ch, bot = _mk_channel_with_fake_bot()
-    attempts = _record_without_rejecting(bot)
-    fallbacks = _observe_fallback(ch)
+    attempts = _record_attempts(bot, refuse_markdown=False)
+
     await ch.send_response(admitted(CONVERSION_FAILURE_AUTHORED), {"chat_id": "42"})
 
-    assert _summarise(attempts, fallbacks) == (
-        2, 1, 1, 0, 0, 1,
-        ["send_message", "send_message"],
-        [first, TAIL],
-        [],
-    )
+    assert (
+        len(attempts),
+        sum(payload.count(URL) for _, payload in attempts),
+        sum(payload.count(LABEL) for _, payload in attempts),
+        sum(payload.count("\ud800") for _, payload in attempts),
+        sum(payload.count("�") for _, payload in attempts),
+    ) == (1, 1, 1, 0, 1)

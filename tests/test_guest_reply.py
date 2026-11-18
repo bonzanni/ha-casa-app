@@ -3,8 +3,9 @@ member of: the placeholder its guest query is answered with, the thinking
 ticker that keeps it alive, and the single terminal edit that replaces it.
 
 A fake bot records every ``answer_guest_query`` / ``edit_message_text`` /
-``send_message`` call and raises a scripted sequence where a test asks for
-it. The module's own ``_sleep`` and ``_now`` are patched to record waits
+``send_message`` call, and every raw ``editMessageText`` (the terminal edit,
+a rich message) beside the plain edits, and raises a scripted sequence where
+a test asks for it. The module's own ``_sleep`` and ``_now`` are patched to record waits
 rather than sleeping — never ``asyncio.sleep`` itself, which is the shared
 module attribute.
 """
@@ -22,10 +23,10 @@ import channels.guest_reply as guest_reply
 from channels import DeliveryOutcome
 from channels.guest_reply import GuestReply
 from error_kinds import ErrorKind
-from guest_groups import GUEST_TEXT_LIMIT, THINKING_WORDS
+from channels.tg_rich import RICH_BUDGET_BYTES, prepare
+from guest_groups import THINKING_WORDS
 from output_boundary import casa_text
 from output_boundary_testing import admitted
-from text_util import utf16_len
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -36,16 +37,30 @@ DECLINE = "Not something I can help with here."
 FAIL = "Something went wrong on my side — ask me again in a bit."
 
 
+def shown(edit: dict) -> str:
+    """The text an edit shows: a plain edit's ``text``, a rich edit's
+    Markdown, or its plain blocks joined by blank lines."""
+    if "text" in edit:
+        return edit["text"]
+    rich = edit["rich_message"]
+    if "markdown" in rich:
+        return rich["markdown"]
+    return "\n\n".join(block["text"] for block in rich["blocks"])
+
+
 class _Bot:
-    """A Bot API stand-in. ``edits`` scripts what each successive
-    ``edit_message_text`` does: ``None`` succeeds, an exception is raised;
-    once the script is spent every edit succeeds."""
+    """A Bot API stand-in. ``edits`` holds every edit of a message in order,
+    plain (``edit_message_text``) or rich (a raw ``editMessageText``), and
+    ``edits`` scripts what each successive one does: ``None`` succeeds, an
+    exception is raised; once the script is spent every edit succeeds.
+    ``rich`` holds every other raw call."""
 
     def __init__(self, edits=()):
         self.answers: list[dict] = []
         self.edits: list[dict] = []
         self.sent: list[dict] = []
         self.drafts: list[dict] = []
+        self.rich: list[tuple[str, dict]] = []      # (endpoint, api_kwargs) of each raw send
         self.script = list(edits)
         self.answer_error: Exception | None = None
         self._n = 0
@@ -58,6 +73,9 @@ class _Bot:
         return SentGuestMessage(inline_message_id=f"inl-{self._n}")
 
     async def edit_message_text(self, **kw):
+        return await self._edit(kw)
+
+    async def _edit(self, kw: dict):
         self.edits.append(kw)
         if self.script:
             exc = self.script.pop(0)
@@ -73,6 +91,12 @@ class _Bot:
         self.drafts.append(kw)
         return True
 
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        if endpoint == "editMessageText":
+            return await self._edit(dict(api_kwargs))
+        self.rich.append((endpoint, api_kwargs))
+        return NS(message_id=len(self.rich))
+
 
 class _SlowBot(_Bot):
     """A bot whose edits are issued at once (recorded in ``edits``, as
@@ -87,7 +111,7 @@ class _SlowBot(_Bot):
         self.most_in_flight = 0
         self._pending: list[asyncio.Future] = []
 
-    async def edit_message_text(self, **kw):
+    async def _edit(self, kw: dict):
         self.edits.append(kw)
         self.in_flight += 1
         self.most_in_flight = max(self.most_in_flight, self.in_flight)
@@ -162,10 +186,6 @@ def _warnings(caplog) -> list[logging.LogRecord]:
             if r.name == "channels.guest_reply" and r.levelno >= logging.WARNING]
 
 
-def _bold(entities):
-    return [(e.offset, e.length) for e in (entities or []) if e.type == MessageEntity.BOLD]
-
-
 # ---------------------------------------------------------------------------
 # open, ticker, waiting
 # ---------------------------------------------------------------------------
@@ -236,13 +256,13 @@ async def test_the_ticker_rotates_words_and_stops_at_finish(monkeypatch):
     r.start_ticker()
     await ticks.tick(6)
     assert ticks.waits == [3.0] * 7              # six ticks made, the seventh pending
-    texts = [e["text"] for e in bot.edits]
+    texts = [shown(e) for e in bot.edits]
     assert len(texts) == 6
     words = [t[len("Judge · "):-1] for t in texts]
     assert words == list(THINKING_WORDS[1:]) + [THINKING_WORDS[0], THINKING_WORDS[1]]
     assert all(e["inline_message_id"] == "inl-1" for e in bot.edits)
     assert await r.finish(admitted("done")) is DeliveryOutcome.DELIVERED
-    assert bot.edits[-1]["text"] == "done"
+    assert shown(bot.edits[-1]) == "done"
     n = len(bot.edits)
     await ticks.tick(3)
     assert len(bot.edits) == n
@@ -274,7 +294,7 @@ async def test_finish_is_the_only_terminal_edit():
     assert await r.decline() is DeliveryOutcome.DELIVERED
     assert await r.fail() is DeliveryOutcome.DELIVERED
     assert await r.asked_elsewhere() is DeliveryOutcome.DELIVERED
-    assert [e["text"] for e in bot.edits] == ["the answer"]
+    assert [shown(e) for e in bot.edits] == ["the answer"]
     assert r.terminal is True
 
 
@@ -286,13 +306,13 @@ async def test_waiting_is_not_terminal(monkeypatch):
     await ticks.tick(1)
     assert len(bot.edits) == 1
     await r.waiting()
-    assert bot.edits[-1]["text"] == WAITING
+    assert shown(bot.edits[-1]) == WAITING
     assert r.terminal is False
     n = len(bot.edits)
     await ticks.tick(3)
     assert len(bot.edits) == n            # the ticker stopped at waiting()
     assert await r.finish(admitted("final text")) is DeliveryOutcome.DELIVERED
-    assert bot.edits[-1]["text"] == "final text"
+    assert shown(bot.edits[-1]) == "final text"
 
 
 async def test_waiting_after_the_terminal_edits_nothing():
@@ -300,7 +320,7 @@ async def test_waiting_after_the_terminal_edits_nothing():
     r = await _opened(bot)
     await r.decline()
     await r.waiting()
-    assert [e["text"] for e in bot.edits] == [DECLINE]
+    assert [shown(e) for e in bot.edits] == [DECLINE]
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +333,7 @@ async def test_terminal_edit_waits_the_full_retry_after(monkeypatch):
     r = await _opened(bot)
     assert await r.finish(admitted("the answer")) is DeliveryOutcome.DELIVERED
     assert waits == [30.0]
-    assert [e["text"] for e in bot.edits] == ["the answer", "the answer"]
+    assert [shown(e) for e in bot.edits] == ["the answer", "the answer"]
 
 
 async def test_network_errors_back_off_doubling(monkeypatch):
@@ -353,24 +373,27 @@ async def test_not_modified_is_success_and_not_found_stops():
     assert r2.terminal is True
 
 
-async def test_an_entity_refusal_retries_the_same_edit_plain():
-    bot = _Bot(edits=[BadRequest("can't parse entities")])
+async def test_a_refused_rich_edit_is_made_again_as_plain_blocks():
+    bot = _Bot(edits=[BadRequest("Rich_message_markdown_invalid")])
     r = await _opened(bot)
     assert await r.finish(admitted("the **answer**")) is DeliveryOutcome.DELIVERED
-    assert len(bot.edits) == 2
-    assert bot.edits[0]["text"] == "the answer" and bot.edits[0].get("entities")
-    assert bot.edits[1]["text"] == "the **answer**"
-    assert not bot.edits[1].get("entities")
+    assert [e["rich_message"] for e in bot.edits] == [
+        {"markdown": "the **answer**"},
+        {"blocks": [{"type": "paragraph", "text": "the **answer**"}]}]
+    assert {e["inline_message_id"] for e in bot.edits} == {"inl-1"}
 
 
 async def test_an_unexpected_edit_error_yields_not_delivered_and_stops_the_ticker(
         caplog):
-    bot = _Bot(edits=[BadRequest("something else"), BadRequest("something else")])
+    # the rich edit, its plain blocks and the plain-text last resort, all refused
+    bot = _Bot(edits=[BadRequest("something else")] * 3)
     r = await _opened(bot, tick_s=0.01)
     r.start_ticker()
     with caplog.at_level(logging.WARNING):
         assert await r.finish(admitted("the **answer**")) is DeliveryOutcome.NOT_DELIVERED
-    assert len(_warnings(caplog)) == 1
+    first, last = _warnings(caplog)
+    assert "rich edit refused" in first.getMessage()
+    assert "terminal edit failed" in last.getMessage()
     assert r._ticker is None or r._ticker.done()
     n = len(bot.edits)
     await asyncio.sleep(0.05)
@@ -409,12 +432,12 @@ async def test_a_cancelled_caller_lets_the_terminal_land_before_the_cancellation
     caller.cancel()
     await _settle()
     assert not caller.done()                    # the cancellation waits for the edit
-    assert [e["text"] for e in bot.edits] == ["the answer"]        # the rejected one
+    assert [shown(e) for e in bot.edits] == ["the answer"]        # the rejected one
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await caller
     assert waits == [30.0]
-    assert [e["text"] for e in bot.edits] == ["the answer", "the answer"]
+    assert [shown(e) for e in bot.edits] == ["the answer", "the answer"]
     assert r.terminal is True
     assert await r.decline() is DeliveryOutcome.DELIVERED        # the landed edit's outcome
     assert len(bot.edits) == 2
@@ -434,7 +457,7 @@ async def test_turn_finished_cancelled_during_its_edit_still_lands_it():
     bot.answer()
     with pytest.raises(asyncio.CancelledError):
         await teardown
-    assert [e["text"] for e in bot.edits] == [DECLINE]
+    assert [shown(e) for e in bot.edits] == [DECLINE]
     assert "d" not in ch._guest_replies
 
 
@@ -456,7 +479,7 @@ async def test_turn_finished_cancelled_repeatedly_during_its_edit_still_lands_it
     bot.answer()
     with pytest.raises(asyncio.CancelledError):
         await teardown
-    assert [e["text"] for e in bot.edits] == [DECLINE]
+    assert [shown(e) for e in bot.edits] == [DECLINE]
     assert reply._terminal_task.done() and not reply._terminal_task.cancelled()
     assert "d" not in ch._guest_replies
 
@@ -484,7 +507,7 @@ async def test_a_cancelled_terminal_edit_lets_its_caller_go_at_once(
     r._terminal_task.cancel()
     await _settle()
     assert caller.done() and caller.cancelled()
-    assert [e["text"] for e in bot.edits] == ["the answer"]       # the rejected one only
+    assert [shown(e) for e in bot.edits] == ["the answer"]       # the rejected one only
 
 
 async def test_two_terminal_calls_at_once_make_one_edit_and_share_its_outcome():
@@ -493,13 +516,13 @@ async def test_two_terminal_calls_at_once_make_one_edit_and_share_its_outcome():
     finish = asyncio.create_task(r.finish(admitted("the answer")))
     decline = asyncio.create_task(r.decline())
     await _settle()
-    assert [e["text"] for e in bot.edits] == ["the answer"]
+    assert [shown(e) for e in bot.edits] == ["the answer"]
     assert bot.in_flight == 1
     assert not decline.done()                   # the second waits for the first's edit
     bot.answer()
     assert await finish is DeliveryOutcome.DELIVERED
     assert await decline is DeliveryOutcome.DELIVERED
-    assert [e["text"] for e in bot.edits] == ["the answer"]
+    assert [shown(e) for e in bot.edits] == ["the answer"]
     assert bot.most_in_flight == 1
 
 
@@ -511,15 +534,15 @@ async def test_a_terminal_waits_for_an_edit_still_in_flight():
     r = await _opened(bot)
     waiting = asyncio.create_task(r.waiting())
     await _settle()
-    assert [e["text"] for e in bot.edits] == [WAITING] and bot.in_flight == 1
+    assert [shown(e) for e in bot.edits] == [WAITING] and bot.in_flight == 1
     finish = asyncio.create_task(r.finish(admitted("the answer")))
     await _settle()
-    assert [e["text"] for e in bot.edits] == [WAITING]       # the final edit not issued yet
+    assert [shown(e) for e in bot.edits] == [WAITING]       # the final edit not issued yet
     assert bot.in_flight == 1
     bot.answer()                                            # the waiting edit returns
     await waiting
     await _settle()
-    assert [e["text"] for e in bot.edits] == [WAITING, "the answer"]
+    assert [shown(e) for e in bot.edits] == [WAITING, "the answer"]
     bot.answer()
     assert await finish is DeliveryOutcome.DELIVERED
     assert bot.most_in_flight == 1
@@ -539,7 +562,7 @@ async def test_a_terminal_during_a_tick_in_flight_ends_the_ticker_and_lands_last
     finish = asyncio.create_task(r.finish(admitted("the answer")))
     await _settle()
     assert ticker.done()
-    assert [e["text"] for e in bot.edits][-1] == "the answer"
+    assert [shown(e) for e in bot.edits][-1] == "the answer"
     assert bot.in_flight == 1 and bot.most_in_flight == 1
     bot.answer()
     assert await finish is DeliveryOutcome.DELIVERED
@@ -550,65 +573,93 @@ async def test_a_terminal_during_a_tick_in_flight_ends_the_ticker_and_lands_last
 
 
 # ---------------------------------------------------------------------------
-# length
+# the answer as a rich message
 # ---------------------------------------------------------------------------
 
-def _no_split_surrogate(s: str) -> bool:
-    return not any(0xD800 <= ord(c) <= 0xDFFF for c in s)
-
-
-async def test_truncation_keeps_entities_under_the_limit():
+async def test_guest_final_edit_is_rich_by_inline_message_id():
     bot = _Bot()
     r = await _opened(bot)
-    source = "**early** " + "𝄞" * 4100 + " **late**"
-    assert await r.finish(admitted(source)) is DeliveryOutcome.DELIVERED
-    edit = bot.edits[-1]
-    display, entities = edit["text"], edit.get("entities")
-    assert utf16_len(display) <= GUEST_TEXT_LIMIT
-    assert display.endswith("…")
-    assert _no_split_surrogate(display)
-    assert (0, 5) in _bold(entities)
-    assert all(e.offset + e.length <= utf16_len(display) for e in entities)
+    assert await r.finish(admitted("## Rates\n\n| a | b |\n|---|---|\n| 1 | 2 |")) \
+        is DeliveryOutcome.DELIVERED
+    [edit] = bot.edits
+    assert edit == {"inline_message_id": "inl-1", "rich_message": {
+        "markdown": "## Rates\n\n| a | b |\n|---|---|\n| 1 | 2 |"}}
+    assert bot.rich == []
 
 
-async def test_a_bold_span_across_the_cut_point_stays_within_bounds():
+async def test_guest_long_answer_not_cut_at_4096():
     bot = _Bot()
     r = await _opened(bot)
-    source = "x " * 2040 + "**" + "𝄞" * 40 + "**"
+    source = ("word " * 1800).rstrip()
+    assert len(source) > 8_900
     assert await r.finish(admitted(source)) is DeliveryOutcome.DELIVERED
-    edit = bot.edits[-1]
-    display, entities = edit["text"], edit.get("entities") or []
-    assert utf16_len(display) <= GUEST_TEXT_LIMIT
-    assert display.endswith("…")
-    assert all(e.offset + e.length <= utf16_len(display) for e in entities)
-    # the cut landed at the last whitespace before the limit: whole words only
-    assert display[:-1].rstrip() == ("x " * 2040).rstrip()
+    assert bot.edits[-1]["rich_message"] == {"markdown": source}
 
 
-async def test_a_single_long_word_is_cut_at_the_limit_not_at_an_early_space():
+async def test_guest_multibyte_answer_cut_by_prepared_bytes():
     bot = _Bot()
     r = await _opened(bot)
-    # one 4 000-character word of astral symbols (8 000 UTF-16 units) after a
-    # short lead: the last whitespace lies far before 75 % of the limit, so
-    # the cut lands at the limit itself rather than discarding the word
-    source = "**Here:** " + "𝄞" * 4000
+    source = "\u00e8" * 20_000                         # 40 000 bytes
     assert await r.finish(admitted(source)) is DeliveryOutcome.DELIVERED
-    display = bot.edits[-1]["text"]
-    assert 3072 <= utf16_len(display) <= GUEST_TEXT_LIMIT
-    assert display.endswith("…")
-    assert _no_split_surrogate(display)
-    assert (0, 5) in _bold(bot.edits[-1].get("entities"))
+    [edit] = bot.edits
+    markdown = edit["rich_message"]["markdown"]
+    assert len(prepare(markdown).encode("utf-8")) <= RICH_BUDGET_BYTES
+    assert markdown.endswith("…")
+    assert markdown[:-1] == "\u00e8" * len(markdown[:-1])
+    assert len(markdown.encode("utf-8")) > RICH_BUDGET_BYTES - 8
 
 
-async def test_a_table_that_renders_oversized_falls_back_to_plain():
-    bot = _Bot()
+async def test_guest_501_row_table_falls_back_to_plain_blocks():
+    bot = _Bot(edits=[BadRequest("Rich_message_blocks_too_many")])
     r = await _opened(bot)
-    source = "|" + "A" * 30 + "|B|\n|---|---|\n" + "|x|y|\n" * 120
-    assert utf16_len(source) == 765
+    source = "| n | v |\n|---|---|\n" + "".join(f"| {i} | x |\n" for i in range(501))
     assert await r.finish(admitted(source)) is DeliveryOutcome.DELIVERED
-    edit = bot.edits[-1]
-    assert utf16_len(edit["text"]) <= GUEST_TEXT_LIMIT
-    assert not edit.get("entities")
+    first, second = bot.edits
+    assert first["rich_message"] == {"markdown": source}
+    blocks = second["rich_message"]["blocks"]
+    assert blocks == [{"type": "paragraph", "text": source}]
+    assert second["inline_message_id"] == "inl-1"
+
+
+class _RichRefusingBot(_Bot):
+    """Every rich edit is refused; the plain edits land."""
+
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        if endpoint == "editMessageText":
+            self.edits.append(dict(api_kwargs))
+            raise BadRequest("Rich_message_invalid")
+        return await super().do_api_request(endpoint, api_kwargs=api_kwargs,
+                                            return_type=return_type)
+
+
+async def test_guest_final_edit_falls_back_to_plain_text_when_rich_is_refused(caplog):
+    bot = _RichRefusingBot()
+    r = await _opened(bot)
+    with caplog.at_level(logging.WARNING):
+        assert await r.finish(admitted("The rate is **1.08** today.")) \
+            is DeliveryOutcome.DELIVERED
+    # today's plain edit: a text with spans keeps its markers, the words all there
+    plain = [e for e in bot.edits if "text" in e]
+    assert plain == [{"inline_message_id": "inl-1", "text": "The rate is **1.08** today."}]
+    assert [e["rich_message"] for e in bot.edits if "rich_message" in e] == [
+        {"markdown": "The rate is **1.08** today."},
+        {"blocks": [{"type": "paragraph", "text": "The rate is **1.08** today."}]}]
+    assert sum("rich edit refused" in r.getMessage() for r in _warnings(caplog)) == 1
+
+
+async def test_the_plain_last_resort_is_cut_at_4096_units():
+    bot = _RichRefusingBot()
+    r = await _opened(bot)
+    assert await r.finish(admitted("\U0001F389" * 3000)) is DeliveryOutcome.DELIVERED
+    [plain] = [e for e in bot.edits if "text" in e]
+    assert plain["text"] == "\U0001F389" * 2047 + "…"
+
+
+async def test_a_message_that_cannot_be_edited_gets_no_plain_last_resort():
+    bot = _Bot(edits=[BadRequest("Message can't be edited")])
+    r = await _opened(bot)
+    assert await r.finish(admitted("the answer")) is DeliveryOutcome.NOT_DELIVERED
+    assert len(bot.edits) == 1 and "text" not in bot.edits[0]
 
 
 async def test_two_live_replies_do_not_share_state():
@@ -619,7 +670,7 @@ async def test_two_live_replies_do_not_share_state():
     await a.finish(admitted("for a"))
     assert b.terminal is False
     await b.finish(admitted("for b"))
-    assert [(e["inline_message_id"], e["text"]) for e in bot.edits] == [
+    assert [(e["inline_message_id"], shown(e)) for e in bot.edits] == [
         ("inl-1", "for a"), ("inl-2", "for b")]
 
 
@@ -648,14 +699,13 @@ async def test_guest_finish_routes_text_and_errors():
     _, ctx = await _bound(ch, bot, key="q1")
     out = await ch.guest_finish(admitted("the **answer**"), None, ctx)
     assert out is DeliveryOutcome.DELIVERED
-    assert bot.edits[-1]["text"] == "the answer"
-    assert _bold(bot.edits[-1]["entities"]) == [(4, 6)]
+    assert bot.edits[-1]["rich_message"] == {"markdown": "the **answer**"}
     assert "q1" not in ch._guest_replies
 
     _, ctx2 = await _bound(ch, bot, key="q2")
     out = await ch.guest_finish(casa_text("Rate limited by the API."), ErrorKind.RATE_LIMIT, ctx2)
     assert out is DeliveryOutcome.DELIVERED
-    assert bot.edits[-1]["text"] == FAIL
+    assert shown(bot.edits[-1]) == FAIL
     assert bot.edits[-1]["inline_message_id"] == "inl-2"
     assert "q2" not in ch._guest_replies
 
@@ -667,7 +717,7 @@ async def test_guest_finish_refuses_unadmitted_text_and_fails_the_reply(caplog):
     with caplog.at_level(logging.ERROR):
         out = await ch.guest_finish("bare model text", None, ctx)
     assert out is DeliveryOutcome.DELIVERED
-    assert [e["text"] for e in bot.edits] == [FAIL]
+    assert [shown(e) for e in bot.edits] == [FAIL]
     assert any("unadmitted model text refused: guest_finish" in r.message
                for r in caplog.records)
 
@@ -696,20 +746,20 @@ async def test_turn_finished_declines_or_says_ill_answer_there():
     _, ctx = await _bound(ch, bot, key="d")
     ctx["_turn_scope"] = NS(detached_ask=False)
     await ch.turn_finished(ctx)
-    assert bot.edits[-1]["text"] == DECLINE
+    assert shown(bot.edits[-1]) == DECLINE
     assert "d" not in ch._guest_replies
 
     _, ctx2 = await _bound(ch, bot, key="a")
     ctx2["_turn_scope"] = NS(detached_ask=True)
     await ch.turn_finished(ctx2)
-    assert bot.edits[-1]["text"] == ASKED_ELSEWHERE
+    assert shown(bot.edits[-1]) == ASKED_ELSEWHERE
     assert "a" not in ch._guest_replies
 
     # a scope without the attribute (built before it existed) declines
     _, ctx3 = await _bound(ch, bot, key="n")
     ctx3["_turn_scope"] = NS()
     await ch.turn_finished(ctx3)
-    assert bot.edits[-1]["text"] == DECLINE
+    assert shown(bot.edits[-1]) == DECLINE
 
 
 async def test_sends_after_the_terminal_go_to_the_dm():
@@ -720,7 +770,9 @@ async def test_sends_after_the_terminal_go_to_the_dm():
     n = len(bot.edits)
     assert await ch.send(casa_text("Casa's own line"), ctx) is DeliveryOutcome.DELIVERED
     assert len(bot.edits) == n
-    assert [(m["chat_id"], m["text"]) for m in bot.sent] == [(100, "Casa's own line")]
+    assert bot.sent == []
+    assert [(e, kw["chat_id"], kw["rich_message"]) for e, kw in bot.rich] == [
+        ("sendRichMessage", 100, {"markdown": "Casa's own line"})]
 
 
 async def test_create_on_token_is_none_for_a_bound_turn():

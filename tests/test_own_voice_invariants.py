@@ -89,11 +89,22 @@ class RecordingBot:
         self.calls: list[tuple[str, dict]] = []
         self._ids = itertools.count(500)
 
+    # A raw call is recorded under its endpoint's snake-case name, with its
+    # parameters; a rich message's Markdown is also kept as its "text".
+    _RAW = {"sendRichMessage": "send_rich_message", "editMessageText": "edit_message_text",
+            "sendRichMessageDraft": "send_rich_message_draft"}
+
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)
 
         async def call(*args, **kwargs):
+            nonlocal name
+            if name == "do_api_request":
+                name = self._RAW[args[0]]
+                kwargs = dict(kwargs["api_kwargs"])
+                kwargs["text"] = kwargs["rich_message"].get("markdown")
+                args = ()
             if args:
                 kwargs = {**kwargs, "_args": args}
             self.calls.append((name, kwargs))
@@ -580,7 +591,7 @@ async def test_a_task_ellen_hands_alex_shows_in_his_chat_and_ellen_gets_her_resu
     await _settled()
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     texts = world.alex.recorder.texts()
-    assert texts[0] == f"Ellen asked:\n{BRIEF}"
+    assert texts[0] == f"**Ellen** asked:\n> {BRIEF}"
     assert ANSWER in "".join(texts[1:])
     assert _ellen_texts(world) == []          # Ellen's own record only
     # every message of the task is filed under it: a reply to it finds the task

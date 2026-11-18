@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram import InlineKeyboardMarkup
 from telegram.error import BadRequest
 
 import verdict_broker
@@ -180,6 +181,15 @@ async def _settle(pred, tries=2000):
             return
         await asyncio.sleep(0)
     raise AssertionError("condition never reached")
+
+
+def _record_edits(bot, events: list) -> None:
+    """Log each rich settle edit the bot takes as ``edit:<its Markdown>``."""
+    def _edit(endpoint, *, api_kwargs, return_type=None):
+        assert endpoint == "editMessageText"
+        events.append(f"edit:{api_kwargs['rich_message']['markdown']}")
+        return True
+    bot.do_api_request = AsyncMock(side_effect=_edit)
 
 
 def _seed_resident(broker, *, kind="dm", chat_id, rid, operator_id=999,
@@ -445,9 +455,7 @@ class TestResidentFinishHookShape:
         bus = MessageBus()
         bus.register("assistant")
         ch = _mk_dm_channel(fake_telegram_bot, bus=bus)
-        fake_telegram_bot.edit_message_text = AsyncMock(
-            side_effect=lambda **kw: events.append(f"edit:{kw['text']}"),
-        )
+        _record_edits(fake_telegram_bot, events)
         mid, chat = 42, 500
         req = _seed_resident(_fresh_broker, chat_id=chat, rid="rid-ok")
 
@@ -483,9 +491,7 @@ class TestResidentFinishHookShape:
         fake_sleep = AsyncMock()
         bus = MessageBus()  # no target registered -> dispatch fails
         ch = _mk_dm_channel(fake_telegram_bot, bus=bus)
-        fake_telegram_bot.edit_message_text = AsyncMock(
-            side_effect=lambda **kw: events.append(f"edit:{kw['text']}"),
-        )
+        _record_edits(fake_telegram_bot, events)
         mid, chat = 42, 500
         req = _seed_resident(_fresh_broker, chat_id=chat, rid="rid-fail")
 
@@ -523,9 +529,7 @@ class TestResidentFinishHookShape:
         bus.register("assistant")
         ch = _mk_dm_channel(fake_telegram_bot, bus=bus)
         ch._dispatch_button_continuation = AsyncMock()
-        fake_telegram_bot.edit_message_text = AsyncMock(
-            side_effect=lambda **kw: events.append(f"edit:{kw['text']}"),
-        )
+        _record_edits(fake_telegram_bot, events)
         mid, chat = 42, 500
         req = _seed_resident(_fresh_broker, chat_id=chat, rid="rid-noans",
                              timeout_s=0.05)
@@ -554,9 +558,7 @@ class TestResidentFinishHookShape:
         bus.register("specialist:finance")
         ch = _mk_dm_channel(fake_telegram_bot, bus=bus)
         ch._dispatch_button_continuation = AsyncMock()
-        fake_telegram_bot.edit_message_text = AsyncMock(
-            side_effect=lambda **kw: events.append(f"edit:{kw['text']}"),
-        )
+        _record_edits(fake_telegram_bot, events)
         mid, chat = 42, 500
 
         def _boom(_i):
@@ -818,30 +820,31 @@ class TestDmKeyboardApis:
         ch = _mk_dm_channel(fake_telegram_bot)
         captured: dict = {}
 
-        async def _capture(chat_id, text, **kw):
-            captured["chat_id"] = chat_id
-            captured["kw"] = kw
+        async def _capture(endpoint, *, api_kwargs, return_type=None):
+            captured["endpoint"] = endpoint
+            captured["kw"] = api_kwargs
             return MagicMock(message_id=77)
 
-        fake_telegram_bot.send_message = _capture
+        fake_telegram_bot.do_api_request = _capture
         mid = await ch.post_dm_keyboard(
             chat_id=500, request_id="f" * 32, text=admitted("Q?"), options=["Yes", "No"],
         )
         assert mid == 77
-        assert captured["chat_id"] == 500
-        kbd = captured["kw"]["reply_markup"]
-        labels = [btn.text for row in kbd.inline_keyboard for btn in row]
+        assert captured["endpoint"] == "sendRichMessage"
+        assert captured["kw"]["chat_id"] == 500
+        rows = captured["kw"]["reply_markup"]["inline_keyboard"]
+        labels = [btn["text"] for row in rows for btn in row]
         assert labels == ["Yes", "No"]
-        for i, row in enumerate(kbd.inline_keyboard):
+        for i, row in enumerate(rows):
             btn = row[0]
-            assert btn.callback_data == f"v1|resident_ask|{'f' * 32}|{i}"
-            assert len(btn.callback_data.encode("utf-8")) <= 64
+            assert btn["callback_data"] == f"v1|resident_ask|{'f' * 32}|{i}"
+            assert len(btn["callback_data"].encode("utf-8")) <= 64
 
     async def test_post_dm_keyboard_send_failure_returns_none(
         self, fake_telegram_bot,
     ):
         ch = _mk_dm_channel(fake_telegram_bot)
-        fake_telegram_bot.send_message = AsyncMock(
+        fake_telegram_bot.do_api_request = AsyncMock(
             side_effect=RuntimeError("telegram down"),
         )
         mid = await ch.post_dm_keyboard(
@@ -851,23 +854,24 @@ class TestDmKeyboardApis:
 
     async def test_edit_dm_message_success(self, fake_telegram_bot):
         ch = _mk_dm_channel(fake_telegram_bot)
-        fake_telegram_bot.edit_message_text = AsyncMock()
+        fake_telegram_bot.do_api_request = AsyncMock(return_value=True)
         assert await ch.edit_dm_message(500, 42, "new") is True
         # #569: the settle edit carries an EXPLICIT EMPTY markup so the
         # question's buttons go with its text (INV-TG-007, pinned in
         # tests/test_telegram_dm_settle.py).
-        _, kwargs = fake_telegram_bot.edit_message_text.call_args
+        (call,) = fake_telegram_bot.do_api_request.await_args_list
+        assert call.args[0] == "editMessageText"
+        kwargs = call.kwargs["api_kwargs"]
         assert kwargs["chat_id"] == 500
         assert kwargs["message_id"] == 42
-        assert kwargs["text"] == "new"
-        assert list(kwargs["reply_markup"].inline_keyboard) == []
-        assert fake_telegram_bot.edit_message_text.await_count == 1
+        assert kwargs["rich_message"] == {"markdown": "new"}
+        assert kwargs["reply_markup"] == InlineKeyboardMarkup([]).to_dict()
 
     async def test_edit_dm_message_not_modified_is_success(
         self, fake_telegram_bot,
     ):
         ch = _mk_dm_channel(fake_telegram_bot)
-        fake_telegram_bot.edit_message_text = AsyncMock(
+        fake_telegram_bot.do_api_request = AsyncMock(
             side_effect=BadRequest("Message is not modified"),
         )
         assert await ch.edit_dm_message(500, 42, "same") is True
@@ -876,7 +880,7 @@ class TestDmKeyboardApis:
         self, fake_telegram_bot,
     ):
         ch = _mk_dm_channel(fake_telegram_bot)
-        fake_telegram_bot.edit_message_text = AsyncMock(
+        fake_telegram_bot.do_api_request = AsyncMock(
             side_effect=BadRequest("message to edit not found"),
         )
         assert await ch.edit_dm_message(500, 42, "x") is False

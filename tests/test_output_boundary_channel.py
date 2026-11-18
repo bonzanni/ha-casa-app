@@ -15,7 +15,7 @@ import pytest
 
 from channels import DeliveryOutcome
 from output_boundary import Admitted, IntentKind as K, UnadmittedText, casa_text
-from telegram_channel_double import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot, rich_markdown
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -78,14 +78,14 @@ async def test_casa_text_is_delivered_by_send():
     ch, bot = _mk_channel_with_fake_bot()
     ctx = {"chat_id": "42"}
     assert await ch.send(casa_text("Rate limited."), ctx) is DeliveryOutcome.DELIVERED
-    assert bot.send_message.await_args.kwargs["text"] == "Rate limited."
+    assert rich_markdown(bot) == ["Rate limited."]
 
 
 async def test_an_annotated_reply_is_delivered_with_the_line_at_its_head():
     ch, bot = _mk_channel_with_fake_bot()
     ctx = {"chat_id": "42"}
     assert await ch.send_response(_admitted("It's **€412**.", LINE), ctx) is DeliveryOutcome.DELIVERED
-    sent = bot.send_message.await_args.kwargs["text"]
+    (sent,) = rich_markdown(bot)
     assert sent.startswith(LINE)
 
 
@@ -94,4 +94,4 @@ async def test_post_dm_keyboard_posts_an_admitted_body():
     body = Admitted("Which one?\n\n1. a\n2. b", scope_id="t1", kind=K.KEYBOARD)
     assert await ch.post_dm_keyboard(chat_id=42, request_id="r", text=body,
                                      options=["a", "b"]) == 12345
-    assert bot.send_message.await_count == 1
+    assert rich_markdown(bot) == ["Which one?\n\n1. a\n2. b"]

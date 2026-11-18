@@ -132,7 +132,7 @@ proof that is not the literal `True`.
 
 **A helper's own posts under that task do not buzz.** The admission hook opens such a call quiet
 (`ReferenceStore.open_call(quiet=True)`, `_InFlight.quiet`), and an `operator_message` slot it
-delivers is posted with every page, plain resend and tail chunk sent without a notification
+delivers is posted with every rich message, and any unformatted resend of one, sent without a notification
 (`TelegramChannel.deliver_operator_message(silent=True)`); the message is delivered, filed and
 receipted exactly as otherwise. A link, a file, a question and a proposal card need the
 operator and notify as on any other turn.

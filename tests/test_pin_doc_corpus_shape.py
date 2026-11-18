@@ -895,13 +895,16 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-access-profiles row moved on again when a guest run's options
 # gained a binding to the withheld-profile rule (test_guest_options.py),
 # listed beside the profile tests that row already names.
+# The plugin-delivered-slots row was re-pinned when operator messages became
+# rich messages: INV-PLUG-045 swapped its entity-fallback and page-budget
+# bindings for the rich-message tests that replaced them, and nothing else.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "6d8736f920dac090b005b27d8317ac12d116656e57e02078eba5bdb36f11e921",
     "architecture/plugin-delivered-files.md":
         "06be628ad8c9cd6134135f26b8eb4c8e5934a528e1946133b419997878f9328e",
     "architecture/plugin-delivered-slots.md":
-        "a5e5e2693943fc701b9e5109f94ac5cc89317e11beb9f87cfe1283086df40975",
+        "ec4f47026f3cdc0731045aef376436a92664d5d8e059d9844f16ef2f857fd405",
     "architecture/plugin-events.md":
         "30ee8209c4833435cbb1d8f2243963f3cbe21716465c6ebd3689a975a93006e2",
     "architecture/plugin-access-profiles.md":

@@ -101,13 +101,13 @@ endpoint at ingress for an operator sender and copied into the turn's origin; an
 reply target Casa chose for a delivery. `send` and `send_response` read `_reply_to` through
 `TelegramChannel._reply_parameters`: when it is a message of this endpoint's bot in the chat
 being sent to, the answer's first physical message is a Telegram reply to it, sent even when
-the target is gone (`allow_sending_without_reply`), and every later page or chunk is plain. A
+the target is gone (`allow_sending_without_reply`), and every later message is not a reply. A
 target on another bot, in another chat, without a message id or malformed sends plain.
 Without a `_reply_to`, an answer whose admission kept a reply marker (`Admitted.reply`, see
 [`output-boundary.md`](output-boundary.md)) replies to `_tg_request` under the same rules. Its
 quote rides only when it is a substring of the operator's words (`_operator_words`) of at most
 1024 UTF-16 units, else the reply goes without one; a quoted message Telegram refuses, for
-any reason, is resent once without the quote (`TelegramChannel._send_message`). The marker
+any reason but its size, is resent once without the quote (`tg_rich._post_message`). The marker
 lives on the answer's own text, so Casa's other sends under the same context stay plain.
 
 **Persisted shapes are strict.** A stored record or key that should carry its bot and does not

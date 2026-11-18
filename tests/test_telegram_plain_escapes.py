@@ -7,7 +7,9 @@ plugin card escaped for markdown (``CUWVSRB8\\-0007``) showed its backslashes
 while the same card with one bold word did not. ``plain_text`` is the one
 place that decides what such a send shows; these tests pin every sender that
 takes the branch, and pin what stays authored: a text whose spans could not
-be sent (over the budgets) and the retry after Telegram refuses entities.
+be sent (over the budgets). Text cards, DM questions and their edits go as
+rich messages instead, whose Markdown Telegram parses itself: their escapes
+travel as written.
 """
 from __future__ import annotations
 
@@ -16,9 +18,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from telegram.error import BadRequest
 
+from channels.tg_rich import plain_blocks
 from channels.tg_richtext import plain_text, render
 from output_boundary_testing import admitted
-from telegram_channel_double import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot, rich_edits, rich_markdown, rich_sent
 
 pytestmark = pytest.mark.asyncio
 
@@ -42,28 +45,6 @@ async def test_plain_text_returns_the_same_object_when_nothing_changes():
     assert plain_text(adm) is adm
 
 
-async def test_a_span_less_table_shows_its_rich_display_with_every_cell():
-    # Terra x1: a separator-less table with no span re-spaces its rows from
-    # the parsed cells. The plain send shows that display, as the rich path
-    # does, and no cell content is lost.
-    text = "|  " + "x" * 30 + "   |  " + "y" * 30 + "  |\n|  a  |  b\\-c  |\n|d|e|"
-    display, entities = render(text)
-    assert entities is None
-    assert plain_text(text) == display
-    assert display.split() and "".join(display.split()) == "".join(
-        text.replace("\\-", "-").split())
-
-
-async def test_a_span_less_display_over_one_message_keeps_the_authored_text():
-    # Astra x1: a span-less table's display is padded LONGER than its text;
-    # sent as display it would exceed one message and land nothing.
-    text = "\n".join(["|a|b|c|d|e|f|g|h|i|j|"] * 100) + "\nx\\-y"
-    display, entities = render(text)
-    assert entities is None
-    assert len(text) <= 4096 < len(display)
-    assert plain_text(text) is text
-
-
 async def test_plain_text_keeps_the_authored_text_when_spans_could_not_be_sent():
     # 101 bold spans: over the entity budget, so render() sends nothing rich.
     # The authored text is what carries the formatting (and any address).
@@ -76,49 +57,66 @@ async def test_plain_text_keeps_the_authored_text_when_spans_could_not_be_sent()
 # Every single-message sender's no-entities branch
 # ---------------------------------------------------------------------------
 
-async def test_a_plain_proposal_card_shows_no_backslash():
+async def test_a_plain_photo_card_caption_shows_no_backslash():
+    """A photo card's caption cannot be rich: sent without entities, it shows
+    the display, never the authored backslashes."""
     ch, bot = _mk_channel_with_fake_bot()
     ch._record_post = MagicMock()
-    await ch.deliver_operator_proposal(100, ESCAPED, ["Yes", "No"], "rid1")
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == SHOWN
-    assert "entities" not in kw
+    bot.send_photo = AsyncMock(return_value=MagicMock(message_id=9))
+    await ch.deliver_operator_proposal(100, ESCAPED, ["Yes", "No"], "rid1",
+                                       photo=(b"\x89PNG", "p.png"))
+    kw = bot.send_photo.await_args.kwargs
+    assert kw["caption"] == SHOWN
+    assert kw["caption_entities"] is None
     assert kw["reply_markup"] is not None
 
 
-async def test_a_plain_dm_keyboard_body_shows_no_backslash():
+async def test_a_text_card_leaves_its_escapes_to_the_rich_messages_markdown():
+    ch, bot = _mk_channel_with_fake_bot()
+    ch._record_post = MagicMock()
+    await ch.deliver_operator_proposal(100, ESCAPED, ["Yes", "No"], "rid1")
+    assert rich_markdown(bot) == [ESCAPED]
+    bot.send_message.assert_not_awaited()
+
+
+async def test_a_dm_keyboard_body_leaves_its_escapes_to_the_rich_messages_markdown():
     ch, bot = _mk_channel_with_fake_bot()
     await ch.post_dm_keyboard(chat_id=100, request_id="r1",
                               text=admitted(ESCAPED), options=["Ok"])
-    assert bot.send_message.await_args.kwargs["text"] == SHOWN
+    assert rich_markdown(bot) == [ESCAPED]
+    bot.send_message.assert_not_awaited()
 
 
-async def test_a_plain_dm_edit_shows_no_backslash():
+async def test_a_dm_edit_leaves_its_escapes_to_the_rich_messages_markdown():
     ch, bot = _mk_channel_with_fake_bot()
     assert await ch.edit_dm_message(100, 5, ESCAPED) is True
-    assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
+    assert [e["rich_message"] for e in rich_edits(bot)] == [{"markdown": ESCAPED}]
+    bot.edit_message_text.assert_not_awaited()
 
 
-async def test_a_plain_reply_shows_no_backslash():
+async def test_a_reply_leaves_its_escapes_to_the_rich_messages_markdown():
+    """A reply goes as a rich message: Telegram's own Markdown consumes the
+    escapes, so they travel as written."""
     ch, bot = _mk_channel_with_fake_bot()
     await ch.send_response(admitted(ESCAPED), {"chat_id": "42"})
-    assert bot.send_message.await_args.kwargs["text"] == SHOWN
+    assert rich_markdown(bot) == [ESCAPED]
+    bot.send_message.assert_not_awaited()
 
 
 async def test_a_refused_card_still_retries_with_the_authored_text():
     ch, bot = _mk_channel_with_fake_bot()
     ch._record_post = MagicMock()
     text = "**Pair** CUWVSRB8\\-0007?"
-    bot.send_message = AsyncMock(side_effect=[BadRequest("bad entity"),
-                                              MagicMock(message_id=9)])
+    bot.do_api_request = AsyncMock(side_effect=[BadRequest("Rich_message_parse_failed"),
+                                                MagicMock(message_id=9)])
     assert await ch.deliver_operator_proposal(100, text, ["Yes"], "rid1") == 9
-    assert bot.send_message.await_args_list[-1].kwargs["text"] == text
+    # resent unformatted: the authored text as plain blocks
+    assert rich_sent(bot)[-1]["rich_message"] == {"blocks": plain_blocks(text)}
 
 
 async def test_a_rich_card_is_unchanged():
+    """A formatted card's Markdown, escapes included, goes as written."""
     ch, bot = _mk_channel_with_fake_bot()
     ch._record_post = MagicMock()
     await ch.deliver_operator_proposal(100, "**Pair** CUWVSRB8\\-0007?", ["Yes"], "rid1")
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == "Pair CUWVSRB8-0007?"
-    assert kw["entities"]
+    assert rich_markdown(bot) == ["**Pair** CUWVSRB8\\-0007?"]

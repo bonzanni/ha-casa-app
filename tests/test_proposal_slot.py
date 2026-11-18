@@ -144,7 +144,7 @@ def _post(response, tool=OFFER):
     ("not json", "bad_proposal"),
     (json.dumps([1]), "bad_proposal"),
     (json.dumps(_proposal(text="")), "bad_proposal"),
-    (json.dumps(_proposal(text="x" * 4001)), "bad_proposal"),
+    (json.dumps(_proposal(text="x" * 12_001)), "bad_proposal"),     # past MAX_MESSAGE_CHARS
     (json.dumps(_proposal(buttons=[])), "bad_proposal"),
     (json.dumps(_proposal(buttons=[{"label": "L", "call": {"tool": "apply", "arguments": {}}}] * 7)), "bad_proposal"),
     (json.dumps(_proposal(buttons=[{"label": "", "call": {"tool": "apply", "arguments": {}}}])), "bad_proposal"),
@@ -155,7 +155,7 @@ def _post(response, tool=OFFER):
     (json.dumps(_proposal(buttons=[{"label": "L", "call": {"tool": "apply", "arguments": {"n": 1.5}}}])), "bad_proposal"),
     (json.dumps(_proposal(buttons=[{"label": "L", "call": {"tool": "apply", "arguments": {"s": "a<b"}}}])), "bad_proposal"),
     (json.dumps(_proposal(revision="r" * 65)), "bad_proposal"),
-    (json.dumps(_proposal(text="😀" * 2100)), "bad_proposal"),      # one page in UTF-16 units
+    (json.dumps(_proposal(text="_" * 6_500)), "bad_proposal"),      # past one rich message once prepared
 ], ids=["not-json", "not-object", "empty-text", "long-text", "no-buttons", "seven-buttons",
         "empty-label", "long-label", "qualified-tool", "undeclared-tool", "protected-tool",
         "float-argument", "angle-bracket", "long-revision", "two-pages"])

@@ -121,11 +121,9 @@ DELIVERED_TO = "operator_chat"
 OPERATOR_LINK = "operator_link"
 # S3: a specialist's plugin output posted by Casa, labelled, verbatim. The
 # body is judged in CHARACTERS at deposit (a body over the cap is refused,
-# never truncated — truncation would be Casa retelling); the page PLAN is
+# never truncated — truncation would be Casa retelling); the message count is
 # capped separately at delivery, before the first send, because a character
-# cap does not bound a page count (emoji are two UTF-16 units each, markers
-# are bounded by the 100-entity budget: three 12,000-character bodies
-# measured 4, 7 and 11 pages).
+# cap does not bound the bytes a body prepares to.
 OPERATOR_MESSAGE = "operator_message"
 OPERATOR_FILE = "operator_file"
 # S5: a proposal — text, buttons, and per button the exact plugin tool call a
@@ -134,17 +132,24 @@ OPERATOR_FILE = "operator_file"
 OPERATOR_PROPOSAL = "operator_proposal"
 PROPOSAL_TTL_S = 3600.0          # an hour: a proposal older than a dialogue is stale
 PROPOSAL_MAX_LIVE = 32           # live proposals per chat; the 33rd deposit is withheld
-PROPOSAL_TEXT_CHARS = 4000
 PROPOSAL_MAX_BUTTONS = 6
 PROPOSAL_LABEL_CHARS = 32
 PROPOSAL_REVISION_CHARS = 64
 PROPOSAL_MAX_PAGES = 6           # #1377: plain pages a card may bring before it
 # S5 (Astra, diff rounds 2–3): the composed post leaves room for the longest
-# line Casa appends when the keyboard settles — `\n☑ <label>` with a label of
+# line Casa appends when the keyboard settles — `\n\n☑ <label>` (a paragraph
+# of its own, so it never joins a trailing table, list or quote) with a label of
 # PROPOSAL_LABEL_CHARS characters that may each be an astral code point (two
-# UTF-16 units); `\n✖ <reason>`, `\n⌛ expired` and `\n↻ replaced` are shorter —
-# else a maximal proposal could never be settled
-PROPOSAL_SETTLE_RESERVE = 1 + 2 + 2 * PROPOSAL_LABEL_CHARS
+# UTF-16 units); `\n\n✖ <reason>`, `\n\n⌛ expired` and `\n\n↻ replaced` are
+# shorter — else a maximal proposal could never be settled. A photo card
+# subtracts it from the caption's characters (``caption_fits``).
+PROPOSAL_SETTLE_RESERVE = 2 + 2 + 2 * PROPOSAL_LABEL_CHARS
+# The same line in the prepared UTF-8 bytes a text card is measured in
+# (``card_fits``): the blank line, a three-byte mark, a space, and a label whose
+# characters each prepare to at most five bytes (an astral code point is four,
+# ``_`` is sent as ``&#95;``), plus the three bytes of the "…" a rich edit
+# keeps free (``tg_rich.edit_rich``).
+PROPOSAL_SETTLE_RESERVE_BYTES = 2 + 3 + 1 + 5 * PROPOSAL_LABEL_CHARS + 3
 # Slice 5b: a proposal may carry a photo from the plugin's outbox, posted as ONE
 # message — the photo, the composed text as its caption, the keyboard. Telegram
 # takes 0–1024 caption characters after entities parsing (sendPhoto,
@@ -311,8 +316,6 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
     call replaced by its resolved identities and canonical form, or
     ``(None, reason)``."""
     import stored_calls as sc
-    from channels.tg_richtext import render_paged
-    from text_util import utf16_len
     if not isinstance(value, str) or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
         return None, "bad_proposal"
     try:
@@ -322,7 +325,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
     if not isinstance(obj, dict):
         return None, "bad_proposal"
     text = obj.get("text")
-    if not isinstance(text, str) or not text.strip() or len(text) > PROPOSAL_TEXT_CHARS:
+    if not isinstance(text, str) or not text.strip() or not card_fits(text):
         return None, "bad_proposal"
     if not _message_ok(text):
         return None, "bad_proposal"
@@ -330,7 +333,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
     pages = obj.get("pages")
     if pages is not None:
         if (not isinstance(pages, list) or not 1 <= len(pages) <= PROPOSAL_MAX_PAGES
-                or not all(isinstance(p, str) and p.strip() and len(p) <= PROPOSAL_TEXT_CHARS
+                or not all(isinstance(p, str) and p.strip() and card_fits(p)
                            and _message_ok(p) for p in pages)):
             return None, "bad_proposal"
     buttons = obj.get("buttons")
@@ -423,9 +426,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         resolved.append(kept)
     head = post_label(call.identity.enforcement_role)
     for body in [text, *(pages or ())]:
-        composed = compose_operator_message(body, head)
-        if (len(render_paged(composed)) != 1
-                or utf16_len(composed) > 4096 - PROPOSAL_SETTLE_RESERVE):
+        if not card_fits(compose_operator_message(body, head)):
             return None, "bad_proposal"
     if photo is not None and not caption_fits(compose_operator_message(text, head)):
         return None, "bad_proposal"
@@ -443,6 +444,14 @@ def _plugin_delivers_link(contract_map: Any, seg: str) -> bool:
     return any(getattr(e, "plugin_seg", None) == seg
                and OPERATOR_LINK in dict(getattr(e, "delivers", None) or {}).values()
                for e in tools.values())
+
+
+def card_fits(composed: str) -> bool:
+    """*composed* is one rich message that leaves the settle reserve free: its
+    prepared UTF-8 bytes within the rich-message budget less the reserve."""
+    from channels import tg_rich
+    budget = tg_rich.RICH_BUDGET_BYTES - PROPOSAL_SETTLE_RESERVE_BYTES
+    return len(tg_rich.split(composed, budget)) == 1
 
 
 def caption_fits(composed: str) -> bool:
@@ -501,11 +510,12 @@ def name_at(role: str, where: Any) -> str:
 
 
 def compose_operator_message(body: str, label: str) -> str:
-    """The ONE text ``render_paged`` splits: the label line, then the body
-    as deposited. Paginating the composed text budgets the header like any
-    other line, so page 1 carries it and pages 2+ are bare — no planner,
-    no reserved budget (a header added after pagination overflows a full
-    page). With no label (an agent's own chat) it is the body alone."""
+    """The ONE text the channel splits into rich messages: the label line,
+    then the body as deposited. Splitting the composed text budgets the
+    header like any other line, so message 1 carries it and the rest are
+    bare — no planner, no reserved budget (a header added after the split
+    overflows a full message). With no label (an agent's own chat) it is the
+    body alone."""
     return f"{label}\n{body}" if label else body
 
 
@@ -1642,8 +1652,6 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     and the bot stored with it are that endpoint's id, read before the count
     and the register: an endpoint with no id yet posts nothing and registers
     nothing, and the proposal is withheld as not delivered."""
-    from channels.tg_richtext import render_paged
-    from text_util import utf16_len
     from verdict_broker import BROKER
     delivery = identity.delivery
     if delivery is None:
@@ -1670,8 +1678,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
             # slice 5b: the tell joins a photo card's caption only within its budget
             fits = caption_fits(with_tell)
         else:
-            fits = (len(render_paged(with_tell)) == 1
-                    and utf16_len(with_tell) <= 4096 - PROPOSAL_SETTLE_RESERVE)
+            fits = card_fits(with_tell)
         if fits:
             text = with_tell
         else:
@@ -2038,8 +2045,8 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                         DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:
-                        from channels.tg_richtext import render_paged
-                        pages = len(render_paged(text))
+                        from channels import tg_rich
+                        pages = len(tg_rich.split(text))
                         detail = {"pages": pages}
                         _remember(detail)
                         event = PostEvent(call.tool_use_id, seg, slot,

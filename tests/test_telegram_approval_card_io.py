@@ -11,7 +11,7 @@ from telegram.error import BadRequest
 
 import channels.telegram as tg
 from output_boundary_testing import admitted
-from telegram_channel_double import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot, rich_edits, rich_sent
 
 
 def _boom(*_a, **_k):
@@ -45,10 +45,9 @@ async def test_only_the_named_buttons_go_to_telegram_red():
     await ch.post_dm_keyboard(
         chat_id=100, request_id="r2", text=admitted("Q?"), options=["Yes", "No"],
     )
-    first, second = [c.kwargs["reply_markup"].inline_keyboard
-                     for c in bot.send_message.await_args_list]
-    assert [row[0].style for row in first] == [None, "danger", None]
-    assert [row[0].style for row in second] == [None, None]
+    first, second = [kw["reply_markup"]["inline_keyboard"] for kw in rich_sent(bot)]
+    assert [row[0].get("style") for row in first] == [None, "danger", None]
+    assert [row[0].get("style") for row in second] == [None, None]
 
 
 @pytest.mark.asyncio
@@ -68,7 +67,6 @@ async def test_explicit_entities_text_has_lone_surrogates_replaced_one_for_one(m
 @pytest.mark.asyncio
 async def test_entity_bad_request_retries_the_same_text_plain(monkeypatch):
     monkeypatch.setattr(tg, "render", _boom)
-    monkeypatch.setattr(tg, "_plain", _boom)
     ch, bot = _mk_channel_with_fake_bot()
     ok = MagicMock(message_id=7)
     bot.send_message = AsyncMock(side_effect=[BadRequest("bad entity"), ok])
@@ -113,7 +111,6 @@ async def test_explicit_entities_still_refuse_unadmitted_text(monkeypatch):
 @pytest.mark.asyncio
 async def test_literal_edit_sends_markers_literally(monkeypatch):
     monkeypatch.setattr(tg, "render", _boom)
-    monkeypatch.setattr(tg, "_plain", _boom)
     ch, bot = _mk_channel_with_fake_bot()
     assert await ch.edit_dm_message(
         100, 5, "✅ Approved — **Ellen**", literal=True) is True
@@ -156,15 +153,15 @@ async def test_literal_edit_keeps_buttons(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ask_user_posts_still_render():
+    """Without caller entities an ask and its settle go as rich messages,
+    which Telegram renders."""
     ch, bot = _mk_channel_with_fake_bot()
     await ch.post_dm_keyboard(
         chat_id=100, request_id="r1", text=admitted("**Install** it?"),
         options=["Yes"],
     )
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == "Install it?"
-    assert kw["entities"][0].type == MessageEntity.BOLD
+    assert [kw["rich_message"] for kw in rich_sent(bot)] == [{"markdown": "**Install** it?"}]
     await ch.edit_dm_message(100, 5, "**done**")
-    kw = bot.edit_message_text.await_args.kwargs
-    assert kw["text"] == "done"
-    assert kw["entities"][0].type == MessageEntity.BOLD
+    assert [kw["rich_message"] for kw in rich_edits(bot)] == [{"markdown": "**done**"}]
+    bot.send_message.assert_not_awaited()
+    bot.edit_message_text.assert_not_awaited()

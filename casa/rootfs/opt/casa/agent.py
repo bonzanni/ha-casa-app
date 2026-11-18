@@ -45,7 +45,7 @@ from plugin_grants import (
 
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
-from channels.tg_richtext import TIME_LINK_GUIDE
+from channels.tg_rich import FORMAT_GUIDE
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
@@ -790,7 +790,7 @@ def _channel_context_block(channel: str) -> str:
     origin clearance the recall gate uses: anything below private on
     telegram means the sender is NOT the configured operator.
 
-    On Telegram it also teaches time links (``tg_richtext.TIME_LINK_GUIDE``)
+    On Telegram it also teaches formatting (``tg_rich.FORMAT_GUIDE``)
     and the reply marker an answer may open with
     (``output_boundary.split_reply_marker``)."""
     trust = channel_trust_display(channel)
@@ -801,7 +801,7 @@ def _channel_context_block(channel: str) -> str:
             "disclose personal, household, or operator information"
         )
     guide = (
-        "\n" + TIME_LINK_GUIDE + "\n" + REPLY_MARKER_GUIDE
+        "\n" + FORMAT_GUIDE + "\n" + REPLY_MARKER_GUIDE
         if channel == "telegram" else "")
     return (
         "\n<channel_context>\n"
@@ -1740,11 +1740,11 @@ class Agent:
             health_notice = None
 
         if text and channel is not None:
-            # Rich-text (v0.70.0) renders only genuine agent responses
-            # (error_kind is None). Error/system text stays plain via send().
-            # A streamed turn ends the same way: what the channel showed while
-            # the model wrote was ended above, and the reply is one ordinary
-            # send.
+            # A genuine agent response (error_kind is None) goes through
+            # send_response, error and system text through send(); on
+            # Telegram both go out as rich messages. A streamed turn ends the
+            # same way: what the channel showed while the model wrote was
+            # ended above, and the reply is one ordinary send.
             outcome = None
             delivered = False
             try:

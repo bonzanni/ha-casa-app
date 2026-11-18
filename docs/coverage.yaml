@@ -75,6 +75,8 @@
   doc: architecture/telegram-bots.md
 - item: casa/rootfs/opt/casa/channels/tg_address.py
   doc: architecture/telegram-bots.md
+- item: casa/rootfs/opt/casa/channels/tg_rich.py
+  doc: architecture/telegram-rendering.md
 - item: casa/rootfs/opt/casa/channels/tg_richtext.py
   doc: architecture/telegram-rendering.md
 - item: casa/rootfs/opt/casa/channels/voice/channel.py

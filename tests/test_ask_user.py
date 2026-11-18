@@ -678,7 +678,7 @@ class TestDmReadableButtons:
 
         ch = tg_mod.TelegramChannel.__new__(tg_mod.TelegramChannel)
         bot = MagicMock()
-        bot.send_message = AsyncMock(
+        bot.do_api_request = AsyncMock(
             return_value=types.SimpleNamespace(message_id=9))
         ch._bot = bot
         options = ["Call the plumber today at the emergency rate",
@@ -687,8 +687,8 @@ class TestDmReadableButtons:
             chat_id=500, request_id="rid", text=admitted("q"), options=options,
             short_labels=True, shorts=["Plumber today", "Top up myself"],
         )
-        rows = bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard
-        assert [r[0].text for r in rows] == [
+        rows = bot.do_api_request.call_args.kwargs["api_kwargs"]["reply_markup"]["inline_keyboard"]
+        assert [r[0]["text"] for r in rows] == [
             "1 · Plumber today", "2 · Top up myself"]
 
     async def test_dm_buttons_short_labeled_with_index(self):
@@ -703,7 +703,7 @@ class TestDmReadableButtons:
 
         ch = tg_mod.TelegramChannel.__new__(tg_mod.TelegramChannel)
         bot = MagicMock()
-        bot.send_message = AsyncMock(
+        bot.do_api_request = AsyncMock(
             return_value=types.SimpleNamespace(message_id=9))
         ch._bot = bot  # ``bot`` is a read-only property backed by ``_bot``
 
@@ -715,15 +715,15 @@ class TestDmReadableButtons:
             short_labels=True,
         )
         assert mid == 9
-        kbd = bot.send_message.call_args.kwargs["reply_markup"]
-        rows = kbd.inline_keyboard
+        sent = bot.do_api_request.call_args.kwargs["api_kwargs"]
+        rows = sent["reply_markup"]["inline_keyboard"]
         # v0.84.0 (D2): no agent shorts anywhere → the WHOLE set floors to the
         # numbered placeholder (never a garbled per-option elision).
-        assert [r[0].text for r in rows] == ["Option 1", "Option 2"]
-        assert [r[0].callback_data for r in rows] == [
+        assert [r[0]["text"] for r in rows] == ["Option 1", "Option 2"]
+        assert [r[0]["callback_data"] for r in rows] == [
             "v1|resident_ask|rid|0", "v1|resident_ask|rid|1"]
         # The full body is posted verbatim (short labels never replace it).
-        assert bot.send_message.call_args.kwargs["text"] == body
+        assert sent["rich_message"] == {"markdown": body}
 
     async def test_dm_settle_shows_full_chosen_option(
         self, monkeypatch, _fresh_broker,
@@ -796,6 +796,12 @@ class _FakeBot:
 
     async def edit_message_text(self, **kwargs):
         self.edited.append(kwargs)
+
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        """A rich settle edit, recorded with the Markdown it carries as its ``text``."""
+        assert endpoint == "editMessageText"
+        self.edited.append({**api_kwargs, "text": api_kwargs["rich_message"]["markdown"]})
+        return True
 
 
 def _fake_update(chat_id, text, user_id=999):

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.376.0] - 2026-11-18
+
+### Changed
+
+- Agents now answer on Telegram with real formatting: tables, headings and sections, folds you can open for detail, quotes, checklists, highlights, footnotes, and buttons that open a link or copy a value. The agent picks the shape that suits each answer; a short reply still reads as a short line. Dates and times stay tappable.
+- A long answer now arrives as one message, up to Telegram's size limit, instead of several pages. Only a very long answer is split, at a paragraph break.
+- The same applies to background job results, questions with buttons, plugin cards and messages, guest replies in a group, and the draft shown while an agent writes.
+- When a specialist starts work you handed over, its "asked:" message now shows the request in full as a quote, no longer folded.
+- A plugin's card text and the pages before it are no longer limited to 4,000 characters; each must fit one message.
+- If Telegram refuses an answer's formatting, the answer is sent again as plain text, so nothing is lost.
+- Replying to one of an agent's formatted messages still tells the agent what that message said.
+
 ## [0.375.1] - 2026-11-18
 
 ### Fixed

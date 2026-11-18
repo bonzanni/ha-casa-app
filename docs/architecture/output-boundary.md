@@ -17,7 +17,7 @@ whether its final reply is closing silence and where an untrusted webhook turn's
 — properties of the scope (INV-OUT-006) — are
 [`output-scope-properties.md`](output-scope-properties.md). It does not cover how a
 file arrives or who may read it ([`inbound-files.md`](inbound-files.md)), how a reply is
-rendered and paginated ([`telegram-rendering.md`](telegram-rendering.md)), the turn loop
+sent as rich messages and split ([`telegram-rendering.md`](telegram-rendering.md)), the turn loop
 itself ([`turn-loop.md`](turn-loop.md)), or the tools' other result contracts
 ([`tools-interface.md`](tools-interface.md)).
 
@@ -38,9 +38,7 @@ the one object. The Telegram channel's model-text methods accept only an `Admitt
 `casa_text`, whose call sites are a recorded list. Any string operation on an `Admitted`
 yields a plain `str`, which is right: derived text is not admitted text, and the one Casa
 prepend that happens after admission — the plugin-health notice — re-wraps through
-`Admitted.with_text`. The channel re-wraps the same way when it sends a text with no
-formatting span plain: its escapes are consumed, as the rich path would show them, which is
-rendering, not new words ([`telegram-rendering.md`](telegram-rendering.md), INV-TG-010).
+`Admitted.with_text`.
 
 **Admission happens when text is committed, against the evidence gathered so far.**
 `TurnScope.admit(kind, text)` applies the scope's obligations at that moment and returns
@@ -176,7 +174,7 @@ scheduled record and every settle edit derived from that body carry the same lin
 `send_media` admits the caption as `CAPTION`, with the length cap applied to the model's body
 — never to the line — and the shortened caption re-wrapped under the same admission. A
 streamed reply's final send is the same `send_response` a turn that never streamed makes, so
-its first page carries the line as any reply's does.
+its first message carries the line as any reply's does.
 
 What it does not cover: a reply about a file the turn never listed and never tried to read,
 or a message sent before the turn's first listing, gets no line; the SDK transcript and

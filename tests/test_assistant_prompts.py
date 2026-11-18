@@ -736,8 +736,6 @@ _LINK_RULE_SENTENCES = (
     "link, `[action (destination-domain)](url)`: name the action and the real "
     "destination domain in the label, rather than leaving the address standing "
     "bare.",
-    "The one exception is a message sent with the message tool, which is not "
-    "rendered: put the plain address there.",
     "Opening that page is what the link is for, so handing it to the person who "
     "must open it is passing it to its intended consumer; labelling changes only "
     "the shape of a link you were already going to hand over, never whether you "
@@ -799,11 +797,9 @@ def test_the_authorization_link_rule_reaches_only_the_resident_text_projections(
 # --------------------------------------------------------------------------
 
 _TABLE_SHAPE_SENTENCES = (
-    "A table is the right shape only for a small, tidy grid: at most three "
-    "columns, every cell a short value.",
-    "When the material is wider than that, or a cell would carry a sentence, "
-    "write one `Field: value` line per item instead, with a blank line "
-    "between items.",
+    "Records — a list of bills, readings, appointments — belong in a table: "
+    "keep it narrow enough for a phone (fewer, shorter columns); a wider one "
+    "scrolls sideways, which is fine when the data really is wide.",
     "A single fact or a two-row comparison is a sentence, not a table.",
 )
 
@@ -1272,23 +1268,28 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # the agent's log", and the Engagements section loses its sentence on each
 # agent's read-only log in a log group. Nothing added; the eight other carriers
 # byte-identical. No retention claim.
+# CHANGED (rich messages), the three `:text` carriers only: the link paragraph
+# loses its message-tool exception sentence, and the table paragraph now says
+# records belong in a narrow table (a wider one scrolls sideways) in place of
+# the three-column rule. The six other carriers byte-identical. No retention
+# claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "e20bebecdac92d5bf5fd44a3c54ddca851c360ac5d3ef7aae6cca34b7e02f2f1",
+        "471787a0e1e3b91e3f105b84bdf40cbf2374e33e07b5e17e1af05f1684c5942b",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":
         "817241ec5da254b2fef07d2d0e6c7db0073bf1965a28be8d9b6818e59bc7f60b",
     "butler:text":
-        "01472c7a4afeedb6aad34d2cff103440486c015062c348cb85b605a0b360d632",
+        "ab1ab2401ae5c28ab1f6e7d27be20b4d58021a7a2935fc7e6895ed855c919094",
     "butler:voice":
         "512f53954dae8711a83ad25b2aaec3263b71a5916f53dc59e8938925992c4c9f",
     "concierge:restricted_webhook":
         "20eaa4bac29d6149a4623b3c6b162d7645ab2e15f4e633f703aab615a4df3f12",
     "concierge:text":
-        "ddbea3a48cae0d0dab3266c2a51cd962e5d5f091c7222bed6cf214dd24751456",
+        "d19b0caf80fd1ea87513abdb790d3c99f0c2737f260470e628213378b85632d2",
     "concierge:voice":
         "21900b3787b24545667d9ca63cbf37c0ade418b8d29d6c819ae091b8dc760220",
 }
