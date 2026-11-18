@@ -41,6 +41,13 @@ def _upload_round_faults(counts: dict) -> list[str]:
     return faults
 
 
+def _only_upstream_shortfall(counts: dict) -> bool:
+    """The round's only fault is too few 200s, and every other reply is the upstream's own server
+    error: the public test server had a bad moment, not the proxy. Such a round is run again."""
+    return _upload_round_faults(counts) == [f"{counts.get('200', 0)} at 200, under {UPLOADS_OK}"] \
+        and all(r == "200" or _upstream_server_error(r) for r in counts)
+
+
 def test_an_upload_round_tolerates_only_a_few_upstream_server_errors():
     assert _upload_round_faults({"200": 100}) == []
     assert _upload_round_faults({"200": 93, "502 from no server header": 7}) == []
@@ -51,6 +58,10 @@ def test_an_upload_round_tolerates_only_a_few_upstream_server_errors():
     assert _upload_round_faults({"200": 89, "502 from no server header": 11}) == [
         "89 at 200, under 90"]
     assert _upload_round_faults({"200": 99}) == ["99 replies of 100"]
+    assert _only_upstream_shortfall({"200": 84, "502 from no server header": 16})
+    assert not _only_upstream_shortfall({"200": 93, "502 from no server header": 7})
+    assert not _only_upstream_shortfall({"200": 84, "502 from no server header": 15, "empty": 1})
+    assert not _only_upstream_shortfall({"200": 84, "502 from mitmproxy 12.3.1": 16})
 
 
 def _proxy_pid() -> int | None:
@@ -194,7 +205,8 @@ def test_repeated_concurrent_uploads_stay_well_under_the_limit():
     count, and large buffers are returned to the system when freed, so the
     proxy's memory stays below the limit and does not grow from round to round. The upstream is
     a public speed test: a few uploads it answers with its own server error are tolerated
-    (``_upload_round_faults``); any reply from the proxy itself is not."""
+    (``_upload_round_faults``), a round in which it fails more of them is run again, at most
+    twice (``_only_upstream_shortfall``); any reply from the proxy itself is not."""
     install_open_web(revision=11)
     pid = _proxy_pid()
     code = r"""
@@ -227,7 +239,10 @@ print(dict(res))
     base = _vm_data_kb(pid)
     peaks, settled = [], []
     for _ in range(3):
-        out, peak = _peak_while(pid, code)
+        for _attempt in range(3):          # a round the upstream alone spoiled is run again
+            out, peak = _peak_while(pid, code)
+            if not _only_upstream_shortfall(ast.literal_eval(out.strip())):
+                break
         assert not _upload_round_faults(ast.literal_eval(out.strip())), out
         peaks.append(peak - base)
         time.sleep(3)                       # past one timed collection

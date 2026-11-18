@@ -511,3 +511,6 @@ async def settle() -> None:
     loop = asyncio.get_running_loop()
     while pending := [t for t in _background if t.get_loop() is loop]:
         await asyncio.gather(*pending, return_exceptions=True)
+        # A gather over tasks that are all done returns without yielding, so
+        # their queued discards from _background run only after one turn.
+        await asyncio.sleep(0)

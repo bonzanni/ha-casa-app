@@ -447,6 +447,10 @@ async def test_retention_of_an_older_row_means_the_next_turn_is_fresh(env, monke
     h.body = TRANSCRIPT
     _install(monkeypatch, env.tools, h)
     await _finish(await _run(env.tools, env.cfg, h), h)
+    # The first run's detached writes (its confirmation and end) land before
+    # the continuation registers: a registration waits only LOCK_WAIT_S for
+    # the store's lock and, on a loaded machine, gave up behind them.
+    await transcript_runs.settle()
     sid = h.launches[0].session_id
     bindings = plugin_bindings.BindingStore(str(tmp_path / "b.json"))
     monkeypatch.setattr(plugin_bindings, "BINDINGS", bindings)
