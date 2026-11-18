@@ -22,6 +22,11 @@ module changes only what Telegram would otherwise misread or drop:
 * A table whose rows have more cells than its header gets a wider header, so
   Telegram does not drop the extra cells; a table inside a quote or a list
   item too.
+* A single line break inside a paragraph (a soft line break) is kept as a
+  line break: a backslash goes before it, the hard line break of CommonMark,
+  since Telegram otherwise joins the two lines into one. A line already
+  ending in a hard break or a ``<br>``, and a line holding only a list
+  marker, are left alone. Line breaks are sent as ``"\\n"``.
 
 Code is never touched. Where code is, and where tables are, is decided by
 markdown-it-py reading the text as CommonMark with GitHub's tables: fenced
@@ -131,6 +136,9 @@ _TYPE_ATTR = re.compile(r"""(?<![\w-])type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>
 _TEXT_BUTTON_TYPES = frozenset({"url", "copy_text"})
 _NEWLINE = re.compile(r"\n")
 _SPACE_RUN = re.compile(r"[ \t]+")
+# A line that already ends in a <br>: Telegram breaks the line there.
+_BR_END = re.compile(r"<br\s*/?>[ \t]*\Z", re.I)
+_BARE_MARKER = re.compile(r"[ \t>]*(?:[-+*]|\d{1,9}[.)])[ \t]*")
 _SUMMARY = re.compile(r"<summary(?:\s[^>]*)?>(.*?)</summary\s*>", re.I | re.S)
 # A fold's tag line: behind any quote markers, list markers and indentation,
 # nothing but fold tags: <details> with or without attributes, a whole
@@ -155,15 +163,18 @@ _ROWS = "tg_rich_rows"
 
 def _noting_span(kind: str, rule: Callable) -> Callable:
     """*rule*, also noting the span of inline text it consumed as *kind*:
-    ``"code"`` for a code span, ``"unit"`` for a link, image, autolink or tag.
+    ``"code"`` for a code span, ``"unit"`` for a link, image, autolink or tag,
+    ``"break"`` for a soft line break.
 
     A backtick run with no closer is ordinary text, so it is noted only when
-    it became a code span."""
+    it became a code span; a line break only when it is a soft one."""
+    token_type = {"code": "code_inline", "break": "softbreak"}.get(kind)
+
     def noted(state: Any, silent: bool) -> bool:
         start, count = state.pos, len(state.tokens)
         found = rule(state, silent)
-        if found and not silent and (kind != "code" or (
-                len(state.tokens) > count and state.tokens[-1].type == "code_inline")):
+        if found and not silent and (token_type is None or (
+                len(state.tokens) > count and state.tokens[-1].type == token_type)):
             state.env[_SPANS].setdefault(state.src, set()).add((kind, start, state.pos))
         return found
     return noted
@@ -190,7 +201,7 @@ def _parser() -> MarkdownIt:
     than all the rest of the parse."""
     md = MarkdownIt("commonmark").enable(["table", "strikethrough"]).disable("emphasis")
     for name, kind in (("backticks", "code"), ("link", "unit"), ("image", "unit"),
-                       ("autolink", "unit"), ("html_inline", "unit")):
+                       ("autolink", "unit"), ("html_inline", "unit"), ("newline", "break")):
         rule = md.inline.ruler.__rules__[md.inline.ruler.__find__(name)]
         md.inline.ruler.at(name, _noting_span(kind, rule.fn), {"alt": list(rule.alt)})
     rule = md.block.ruler.__rules__[md.block.ruler.__find__("table")]
@@ -217,6 +228,8 @@ class _Reading(NamedTuple):
     wide: list[tuple[int, int, int, int]]   # tables to widen: (header start,
                                             # header end, delimiter end, cells
                                             # the header lacks)
+    breaks: list[int]                 # the "\n" of each soft line break,
+                                      # which a backslash makes a hard one
 
 
 def _row_cells(src: str, begin: int, end: int) -> list[list[int]]:
@@ -260,19 +273,19 @@ def _read(text: str, *, units: bool = False) -> _Reading:
     they sit (quotes, list items, table cells, headings, link labels). With
     *units*, also the spans a cut must not fall inside: links, autolinks,
     tags, time links and code spans."""
-    # The parser reads line breaks as "\n"; this spelling keeps every offset
-    # it reports an offset in *text*. A final line break changes nothing in
-    # what the text parses to, and keeps markdown-it-py 4.0.0 from reading
-    # past the end of a text whose last line is an empty quote line after a
-    # table.
-    plain = text.replace("\r\n", " \n").replace("\r", "\n").replace("\0", "\ufffd") + "\n"
+    # *text* has "\n" line breaks only (:func:`_normalized`), and this
+    # spelling keeps every offset the parser reports an offset in *text*. A
+    # final line break changes nothing in what the text parses to, and keeps
+    # markdown-it-py 4.0.0 from reading past the end of a text whose last
+    # line is an empty quote line after a table.
+    plain = text.replace("\0", "\ufffd") + "\n"
     src, tag_lines = _mask_folds(plain)
     env: dict = {_SPANS: {}, _ROWS: []}
     try:
         tokens = _MD.parse(src, env)
     except Exception as exc:  # noqa: BLE001 — a parser fault must not cost the message
         logger.warning("Markdown not parsed, sent with no code found: %s", type(exc).__name__)
-        return _Reading([], [], [], [])
+        return _Reading([], [], [], [], [])
     starts = [0, *(m.end() for m in _NEWLINE.finditer(src))]
 
     def line_start(line: int) -> int:
@@ -296,6 +309,7 @@ def _read(text: str, *, units: bool = False) -> _Reading:
     code: list[tuple[int, int]] = []
     found_units: list[tuple[int, int]] = []
     fences: list[_Fence] = []
+    breaks: list[int] = []
     row_line: int | None = None    # the source line of the table row being read
     column = -1
     for token in tokens:
@@ -339,6 +353,15 @@ def _read(text: str, *, units: bool = False) -> _Reading:
         else:
             at = _inline_offsets(src, token.content, token.map[0], line_start, line_end)
         for kind, start, end in spans:
+            if kind == "break":
+                newline = at(start)
+                line = text[text.rfind("\n", 0, newline) + 1:newline]
+                # Not after a <br>, which already breaks the line, nor after
+                # a bare list marker, which a backslash would turn into a
+                # list item.
+                if not (_BR_END.search(line) or _BARE_MARKER.fullmatch(line)):
+                    breaks.append(newline)
+                continue
             if end <= start:
                 continue
             span = (at(start), at(end - 1) + 1)
@@ -362,7 +385,7 @@ def _read(text: str, *, units: bool = False) -> _Reading:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
-    return _Reading(merged, found_units, fences, wide)
+    return _Reading(merged, found_units, fences, wide, sorted(breaks))
 
 
 def _mask_folds(src: str) -> tuple[str, list[tuple[int, int]]]:
@@ -642,6 +665,12 @@ def _encode(segment: str) -> str:
     return "".join(out)
 
 
+def _normalized(markdown: str) -> str:
+    """*markdown* with its lone surrogates replaced and every line break
+    spelled ``"\\n"``, as Telegram reads ``"\\r\\n"`` and ``"\\r"`` too."""
+    return replace_lone_surrogates(markdown).replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _encode_text(piece: str) -> str:
     """A stretch of text outside code, its buttons and characters encoded."""
     return _encode(_BUTTON.sub(
@@ -650,17 +679,32 @@ def _encode_text(piece: str) -> str:
 
 def prepare(markdown: str) -> str:
     """The agent's Markdown, ready to send as a rich message."""
-    text = replace_lone_surrogates(markdown)
+    text = _normalized(markdown)
     reading = _read(text)
     if reading.wide:
         text = _widen_tables(text, reading.wide)
         reading = _read(text)
     out: list[str] = []
     pos = 0
+    breaks = iter(reading.breaks)
+    after = next(breaks, None)
+
+    def text_until(end: int) -> str:
+        # The stretch of text up to *end*, a backslash before each soft line
+        # break in it, so Telegram keeps the line break.
+        nonlocal after
+        while after is not None and after < pos:     # never inside code
+            after = next(breaks, None)
+        pieces, at = [], pos
+        while after is not None and after < end:
+            pieces += [text[at:after], "\\"]
+            at, after = after, next(breaks, None)
+        return _encode_text("".join(pieces) + text[at:end])
+
     for start, end in reading.code:
-        out += [_encode_text(text[pos:start]), text[start:end]]
+        out += [text_until(start), text[start:end]]
         pos = end
-    out.append(_encode_text(text[pos:]))
+    out.append(text_until(len(text)))
     return "".join(out)
 
 
@@ -760,7 +804,7 @@ def split(markdown: str, budget: int = RICH_BUDGET_BYTES) -> list[str]:
     drops its blank line, so parts cut that way join back with
     ``"\\n\\n"``; a cut after a space or anywhere drops nothing; a cut inside a
     fenced block closes and reopens the fence and keeps every code line."""
-    rest = replace_lone_surrogates(markdown)
+    rest = _normalized(markdown)
     parts: list[str] = []
     while not _fits(rest, budget):
         part, rest = _cut(rest, budget)

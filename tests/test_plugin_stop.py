@@ -114,8 +114,11 @@ class _FakeBot:
 
     async def edit(self, **api_kwargs):
         """Record one rich edit with the Markdown it carries as its ``text``
-        (its keyboard in JSON form); tests replace it to delay or refuse edits."""
-        self.edited.append({**api_kwargs, "text": api_kwargs["rich_message"]["markdown"]})
+        (its keyboard in JSON form); tests replace it to delay or refuse edits.
+        The ``text`` is the card as composed: the backslash that keeps each
+        single line break on the wire (tests/test_tg_rich.py) is taken off."""
+        self.edited.append({**api_kwargs,
+                            "text": api_kwargs["rich_message"]["markdown"].replace("\\\n", "\n")})
         return True
 
 

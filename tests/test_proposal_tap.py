@@ -170,7 +170,7 @@ async def test_the_keyboard_is_posted_with_one_button_per_label_and_the_message_
                                                  post=rec)
     assert mid == 501
     (sent,), = [env.bot.sent]
-    assert sent["rich_message"] == {"markdown": "📊 Finance\nPair **17**?"}
+    assert sent["rich_message"] == {"markdown": "📊 Finance\\\nPair **17**?"}
     rows = sent["reply_markup"]["inline_keyboard"]
     assert [b["text"] for row in rows for b in row] == ["Yes", "No"]
     assert [b["callback_data"] for row in rows for b in row] == [
@@ -779,5 +779,6 @@ async def test_a_superseded_card_ending_in_a_table_says_so_below_the_table(env):
 async def test_a_mark_after_a_trailing_block_is_its_own_paragraph(env, body):
     assert await env.ch.mark_proposal(_meta(text=body), "☑ Paid") is True
     (edit,) = env.bot.edited
-    assert edit["text"] == f"{body}\n\n☑ Paid"
+    # A single line break is sent as a hard one (a backslash before it).
+    assert edit["text"] == f"{body}\n\n☑ Paid".replace("Finance\nPay", "Finance\\\nPay")
     assert "<p>☑ Paid</p>" in _gfm_html(edit["text"])

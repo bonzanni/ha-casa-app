@@ -27,6 +27,8 @@ pytestmark = pytest.mark.asyncio
 
 ESCAPED = "📊 Q3\nchose CUWVSRB8\\-0007 \\(1 Oct\\)"
 SHOWN = "📊 Q3\nchose CUWVSRB8-0007 (1 Oct)"
+# As sent: the line break kept by a backslash, since Telegram joins a soft one.
+SENT = "📊 Q3\\\nchose CUWVSRB8\\-0007 \\(1 Oct\\)"
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,7 @@ async def test_a_text_card_leaves_its_escapes_to_the_rich_messages_markdown():
     ch, bot = _mk_channel_with_fake_bot()
     ch._record_post = MagicMock()
     await ch.deliver_operator_proposal(100, ESCAPED, ["Yes", "No"], "rid1")
-    assert rich_markdown(bot) == [ESCAPED]
+    assert rich_markdown(bot) == [SENT]
     bot.send_message.assert_not_awaited()
 
 
@@ -83,14 +85,14 @@ async def test_a_dm_keyboard_body_leaves_its_escapes_to_the_rich_messages_markdo
     ch, bot = _mk_channel_with_fake_bot()
     await ch.post_dm_keyboard(chat_id=100, request_id="r1",
                               text=admitted(ESCAPED), options=["Ok"])
-    assert rich_markdown(bot) == [ESCAPED]
+    assert rich_markdown(bot) == [SENT]
     bot.send_message.assert_not_awaited()
 
 
 async def test_a_dm_edit_leaves_its_escapes_to_the_rich_messages_markdown():
     ch, bot = _mk_channel_with_fake_bot()
     assert await ch.edit_dm_message(100, 5, ESCAPED) is True
-    assert [e["rich_message"] for e in rich_edits(bot)] == [{"markdown": ESCAPED}]
+    assert [e["rich_message"] for e in rich_edits(bot)] == [{"markdown": SENT}]
     bot.edit_message_text.assert_not_awaited()
 
 
@@ -99,7 +101,7 @@ async def test_a_reply_leaves_its_escapes_to_the_rich_messages_markdown():
     escapes, so they travel as written."""
     ch, bot = _mk_channel_with_fake_bot()
     await ch.send_response(admitted(ESCAPED), {"chat_id": "42"})
-    assert rich_markdown(bot) == [ESCAPED]
+    assert rich_markdown(bot) == [SENT]
     bot.send_message.assert_not_awaited()
 
 

@@ -149,8 +149,8 @@ _SCRIPT = textwrap.dedent(
             a1 = ("\ud800" + "x" * 4095 + "\n" + "\ud800" + "y" * 4095
                   + "\n" + "\ud800" + "z" * 4095)
             await run_arm("long-reply", ch.send_response(admitted(a1), CTX()),
-                          [("sendRichMessage", R + "x" * 4095 + "\n" + R + "y" * 4095
-                            + "\n" + R + "z" * 4095)],
+                          [("sendRichMessage", R + "x" * 4095 + "\\\n" + R + "y" * 4095
+                            + "\\\n" + R + "z" * 4095)],
                           outcome=DeliveryOutcome.DELIVERED)
 
             # ARM2 — a reply with a link and a surrogate after it.
@@ -168,7 +168,7 @@ _SCRIPT = textwrap.dedent(
             a5 = ("**bold** " + "x" * 4080 + "\ud800\n"
                   + "**bold** " + "y" * 4080 + "\ud800")
             await run_arm("bold-reply", ch.send_response(admitted(a5), CTX()),
-                          [("sendRichMessage", "**bold** " + "x" * 4080 + R + "\n"
+                          [("sendRichMessage", "**bold** " + "x" * 4080 + R + "\\\n"
                             + "**bold** " + "y" * 4080 + R)],
                           outcome=DeliveryOutcome.DELIVERED)
 

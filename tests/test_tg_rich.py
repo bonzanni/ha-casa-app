@@ -611,7 +611,7 @@ def test_a_fold_inside_a_quote_reads_its_body_as_markdown():
 
 def test_a_fold_tag_line_with_a_crlf_is_still_a_tag_line():
     src = "<details>\r\n<summary>S</summary>\r\n~~~\r\na_b\r\n\r\nc_d\r\n~~~\r\n</details>\r\n"
-    assert prepare(src) == src
+    assert prepare(src) == src.replace("\r\n", "\n")      # line breaks go out as "\n"
 
 
 def test_a_summary_on_lines_of_its_own_is_a_fold():
@@ -667,9 +667,11 @@ def test_a_backtick_inside_a_tag_attribute_is_not_a_code_span():
         '<details><summary title="`a_b">c&#95;d `e_f`</summary>'
 
 
-def test_a_crlf_text_maps_code_to_the_right_characters():
-    src = "a_b `c_d`\r\n> `e_f` g_h\r\n"
-    assert prepare(src) == "a&#95;b `c_d`\r\n> `e_f` g&#95;h\r\n"
+def test_a_crlf_text_goes_out_with_plain_line_breaks():
+    # Telegram reads "\r\n" as "\n"; read the same way here, a single space
+    # before "\r\n" is no hard line break.
+    src = "a_b `c_d`\r\n> `e_f` g_h\r\nnext \r\nline\rend"
+    assert prepare(src) == "a&#95;b `c_d`\n> `e_f` g&#95;h\\\nnext \\\nline\\\nend"
 
 
 # ---------------------------------------------------------------------------
@@ -734,3 +736,73 @@ def test_a_link_bigger_than_the_budget_is_still_cut():
     assert len(parts) >= 5
     assert all(len(prepare(p).encode("utf-8")) <= 1_000 for p in parts)
     assert "".join(parts) == src
+
+
+# ---------------------------------------------------------------------------
+# A single line break stays a line break
+# ---------------------------------------------------------------------------
+# Telegram joins the lines of a paragraph into one, as CommonMark reads a
+# soft line break; a backslash before the line break makes it a hard one.
+
+
+def test_lines_written_one_under_another_stay_on_their_own_lines():
+    src = "**Call from Marco** (2 min)\n**Reason:** viewing\n**Outcome:** Message left"
+    out = prepare(src)
+    assert out == ("**Call from Marco** (2 min)\\\n**Reason:** viewing\\\n"
+                   "**Outcome:** Message left")
+    assert _gfm().render(out).count("<br />") == 2
+
+
+@pytest.mark.parametrize("src, out", [
+    ("> q one\n> q two_x", "> q one\\\n> q two&#95;x"),
+    ("> > deep one\n> > deep two", "> > deep one\\\n> > deep two"),
+    ("- item_a\ncontinued", "- item&#95;a\\\ncontinued"),
+    ("1. first\n   second", "1. first\\\n   second"),
+    ("<details><summary>T</summary>\n\nline one\nline two\n\n</details>",
+     "<details><summary>T</summary>\n\nline one\\\nline two\n\n</details>"),
+    ("<details><summary>T</summary>\nline one\nline two\n</details>",
+     "<details><summary>T</summary>\nline one\\\nline two\n</details>"),
+    ("a\r\nb", "a\\\nb"),
+    ("a \nb", "a \\\nb"),
+    ("a\\\\\nb", "a\\\\\\\nb"),
+    ("`a\nb` c\nd", "`a\nb` c\\\nd"),
+    # none after a bare "1.": a backslash would make it a list item
+    ("text\n1.\nmore", "text\\\n1.\nmore"),
+])
+def test_a_soft_line_break_becomes_a_hard_one(src, out):
+    assert prepare(src) == out
+
+
+@pytest.mark.parametrize("src", [
+    "```\na_b\nc\nd\n```",
+    "    a\n    b",
+    "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |",
+    "two spaces  \nnext",
+    "backslash\\\nnext",
+    "x<br>\nnext",
+    "x<br />\nnext",
+    "first paragraph\n\nsecond paragraph",
+    "Approve the payment?\n\n✓ Approved",
+    "<aside>one\ntwo</aside>",
+    "# Heading\nbody",
+])
+def test_line_breaks_that_need_nothing_are_left_alone(src):
+    assert prepare(src) == src
+
+
+def test_the_plain_fallback_and_reading_back_keep_lines_as_written():
+    assert plain_blocks("a_b\nc") == [{"type": "paragraph", "text": "a_b\nc"}]
+    assert flatten({"blocks": [{"type": "paragraph", "text": "a\nb"}]}) == "a\nb"
+
+
+def test_a_time_link_ending_a_line_keeps_the_break_after_it():
+    unix = int(datetime.fromisoformat("2026-11-16T09:00+01:00").timestamp())
+    out = prepare("[Monday](time:2026-11-16T09:00+01:00)\nnext")
+    assert out == f'<tg-time unix="{unix}">Monday</tg-time>\\\nnext'
+
+
+def test_split_counts_the_added_backslashes():
+    src = "\n".join(f"riga {i}" for i in range(3_000))
+    parts = split(src, 2_000)
+    assert all(len(prepare(p).encode("utf-8")) <= 2_000 for p in parts)
+    assert "\n".join(parts) == src
