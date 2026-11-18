@@ -208,7 +208,8 @@ def line_for(outcome: str, role: str) -> "str | None":
 
 
 async def settle_run_card(c: Any, mark: str) -> bool:
-    """Edit the request's start or status card to its text plus *mark*, with no keyboard, so
+    """Edit the request's start or status card to its text plus *mark* (a paragraph of its
+    own, so it never joins a trailing table, list or quote), with no keyboard, so
     a card never keeps a live Stop for a request that is stopped or ended. Nothing when no
     card landed (or a natural end already forgot it, ``settle_ended``). The edit goes through
     the bot that posted the card; a bot with no endpoint any more raises
@@ -222,7 +223,7 @@ async def settle_run_card(c: Any, mark: str) -> bool:
     if b is None or transport is None:
         return False
     return bool(await transport.endpoint(card).edit_dm_message(
-        card.chat_id, card.message_id, f"{c.card_text}\n{mark}"))
+        card.chat_id, card.message_id, f"{c.card_text}\n\n{mark}"))
 
 
 async def settle_stop(c: Any, outcome: "str | None") -> None:

@@ -102,7 +102,7 @@ def test_no_pages_is_todays_card(penv, pages):
 
 
 @pytest.mark.parametrize("pages", [
-    [], ["p"] * 7, "one page", [1], [""], ["  \n"], ["x" * 4001], ["a\x00b"], ["😀" * 2100]],
+    [], ["p"] * 7, "one page", [1], [""], ["  \n"], ["x" * 12_001], ["a\x00b"], ["_" * 6_500]],
     ids=["empty", "seven", "not-a-list", "not-text", "empty-page", "blank-page", "long-page",
          "control-char", "two-messages"])
 def test_the_deposit_refuses_bad_pages(penv, pages):
@@ -255,6 +255,7 @@ def _channel_with_bot():
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=MagicMock(message_id=12345))
     bot.edit_message_text = AsyncMock()
+    bot.do_api_request = AsyncMock(return_value=MagicMock(message_id=12345))
     ch = TelegramChannel(bot_token="x:y", chat_id=100, default_agent="assistant", known_bot_id=BOT)
     ch._app = MagicMock()
     ch._app.bot = bot
@@ -271,31 +272,113 @@ async def test_a_page_is_one_rich_message_filed_under_its_post(monkeypatch):
     import task_posts_double
     filed = task_posts_double.install(monkeypatch)
     ch, bot = _channel_with_bot()
-    bot.send_message.return_value = SimpleNamespace(message_id=77)
+    from channels.tg_rich import prepare
+    bot.do_api_request.return_value = SimpleNamespace(message_id=77)
     post = _task_post()
     page = f"{LABEL}\n**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
         f"| row {i} | €{i} |" for i in range(20))
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
-    assert bot.send_message.await_count == 1 and bot.send_message.await_args.kwargs["entities"]
+    (call,) = bot.do_api_request.await_args_list
+    assert call.args[0] == "sendRichMessage"
+    assert call.kwargs["api_kwargs"]["rich_message"] == {"markdown": prepare(page)}
+    bot.send_message.assert_not_awaited()
     assert filed.filed == [("d-1", ch.address(42, 77))]
 
 
-async def test_a_page_whose_entities_are_refused_is_resent_whole_as_one_plain_message(monkeypatch):
+async def test_a_refused_page_is_resent_whole_as_one_unformatted_message(monkeypatch):
     from telegram.error import BadRequest
+    from channels.tg_rich import plain_blocks
     import task_posts_double
     filed = task_posts_double.install(monkeypatch)
     ch, bot = _channel_with_bot()
     landed = SimpleNamespace(message_id=78)
 
-    async def send(**kw):
-        if kw.get("entities"):
-            raise BadRequest("Can't parse entities")
+    async def send(endpoint, *, api_kwargs, return_type=None):
+        if "markdown" in api_kwargs["rich_message"]:
+            raise BadRequest("Rich_message_parse_failed")
         return landed
-    bot.send_message.side_effect = send
+    bot.do_api_request.side_effect = send
     post = _task_post()
     page = f"{LABEL}\n**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
         f"| row {i} | €{i} |" for i in range(20))
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
-    assert bot.send_message.await_count == 2                 # the rich try, then ONE plain message
-    assert bot.send_message.await_args.kwargs["text"] == page
+    # the rich try, then ONE unformatted message carrying the page whole
+    assert bot.do_api_request.await_count == 2
+    assert bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"] == {
+        "blocks": plain_blocks(page)}
     assert filed.filed == [("d-1", ch.address(42, 78))]
+
+
+# --- the card: one rich message with its keyboard ------------------------------------
+
+async def test_proposal_card_keeps_keyboard_as_rich_message(monkeypatch):
+    """A card is one rich message whose keyboard rides as its reply markup,
+    filed under its post as it lands."""
+    import task_posts_double
+    from channels.telegram import _proposal_keyboard
+    from channels.tg_rich import prepare
+    filed = task_posts_double.install(monkeypatch)
+    ch, bot = _channel_with_bot()
+    bot.do_api_request.return_value = SimpleNamespace(message_id=79)
+    card = f"{LABEL}\n**Pair** invoice_17 with the Adobe payment?\n\n| Payee | € |\n|---|---|\n| Adobe | 100 |"
+    mid = await ch.deliver_operator_proposal(42, card, ["Yes", "No"], "r1", post=_task_post())
+    assert mid == 79
+    (call,) = bot.do_api_request.await_args_list
+    assert call.args[0] == "sendRichMessage"
+    sent = call.kwargs["api_kwargs"]
+    assert sent["rich_message"] == {"markdown": prepare(card)}
+    assert sent["reply_markup"] == _proposal_keyboard(["Yes", "No"], "r1").to_dict()
+    bot.send_message.assert_not_awaited()
+    assert filed.filed == [("d-1", ch.address(42, 79))]
+
+
+async def test_a_replaced_card_is_one_rich_edit_that_keeps_its_keyboard():
+    from channels.telegram import _proposal_keyboard
+    from channels.tg_rich import prepare
+    ch, bot = _channel_with_bot()
+    card = f"{LABEL}\n**Card 2 of 2** · to confirm"
+    assert await ch.replace_operator_proposal(42, 501, card, ["Confirm"], "r2") == 501
+    (call,) = bot.do_api_request.await_args_list
+    assert call.args[0] == "editMessageText"
+    assert call.kwargs["api_kwargs"] == {
+        "chat_id": 42, "message_id": 501,
+        "reply_markup": _proposal_keyboard(["Confirm"], "r2").to_dict(),
+        "rich_message": {"markdown": prepare(card)}}
+    bot.edit_message_text.assert_not_awaited()
+
+
+async def test_caption_card_still_uses_entities():
+    """A photo card's text is a caption, which a rich message cannot carry: it
+    is still sent, and edited, with rendered entities."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from telegram import MessageEntity
+    ch, bot = _channel_with_bot()
+    bot.send_photo = AsyncMock(return_value=MagicMock(message_id=80))
+    bot.edit_message_caption = AsyncMock()
+    caption = f"{LABEL}\n**Pair** invoice 17?"
+    assert await ch.deliver_operator_proposal(42, caption, ["Yes"], "r1",
+                                              photo=(b"\x89PNG", "p.png")) == 80
+    kw = bot.send_photo.await_args.kwargs
+    assert kw["caption"] == f"{LABEL}\nPair invoice 17?"
+    assert [e.type for e in kw["caption_entities"]] == [MessageEntity.BOLD]
+    assert await ch.edit_dm_message(42, 80, caption + "\n☑ Yes", caption=True) is True
+    edit = bot.edit_message_caption.await_args.kwargs
+    assert [e.type for e in edit["caption_entities"]] == [MessageEntity.BOLD]
+    bot.do_api_request.assert_not_awaited()
+
+
+def test_proposal_of_9000_chars_is_accepted(card_labels):
+    """The card's text is measured against the rich-message budget, so a
+    card far past the old 4,096-unit message still deposits."""
+    from test_tap_keep_card import CONFIRM, _call
+    text = ("Pagamento già saldato — €12, verifica la fattura n. 17.\n\n" * 200)[:9000]
+    assert len(text) == 9000
+    parsed, why = rb.proposal_ok(json.dumps({"text": text, "buttons": [CONFIRM]}), _call())
+    assert why is None and parsed["text"] == text
+
+
+@pytest.fixture
+def card_labels(monkeypatch):
+    monkeypatch.setattr(tools_mod, "_agent_role_map", {
+        "finance": SimpleNamespace(character=SimpleNamespace(name="Finance"))})

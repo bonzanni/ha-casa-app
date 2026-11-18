@@ -68,6 +68,7 @@ def _fake_bot(bot_id: int) -> MagicMock:
     bot.id = bot_id
     ids = itertools.count(1000)
     bot.send_message = AsyncMock(side_effect=lambda **kw: NS(message_id=next(ids)))
+    bot.do_api_request = AsyncMock(side_effect=lambda endpoint, **kw: NS(message_id=next(ids)))
     bot.edit_message_text = AsyncMock(return_value=True)
     bot.send_message_draft = AsyncMock(return_value=True)
     bot.edit_message_reply_markup = AsyncMock(return_value=True)
@@ -324,10 +325,11 @@ async def test_a_turn_on_222_is_answered_through_222_only(pair):
     await pair.transport.turn_finished(context)
     assert out is DeliveryOutcome.DELIVERED
     assert len(calls(pair.casa)) == before == 0
-    sent = [(name, kw["text"]) for name, kw in calls(pair.finance)
-            if name in ("send_message_draft", "send_message")]
-    assert sent == [("send_message_draft", "partial"),
-                    ("send_message", "the answer")]
+    sent = [(name, kw["text"] if "text" in kw else kw["api_kwargs"]["rich_message"]["markdown"])
+            for name, kw in calls(pair.finance)
+            if name in ("send_message_draft", "send_message", "do_api_request")]
+    assert sent == [("do_api_request", "partial"),
+                    ("do_api_request", "the answer")]
 
 
 # ---------------------------------------------------------------------------

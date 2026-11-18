@@ -15,7 +15,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from channels import DeliveryOutcome
-from telegram_channel_double import _mk_channel_with_fake_bot
+from channels.tg_rich import plain_blocks, split
+from telegram_channel_double import _mk_channel_with_fake_bot, rich_sent
 from output_boundary_testing import admitted
 
 pytestmark = pytest.mark.asyncio
@@ -27,7 +28,7 @@ class TestSend:
         ctx = {"chat_id": "42"}
         assert await ch.send(admitted("hi"), ctx) is DeliveryOutcome.DELIVERED
         assert ctx["_delivery_head_sent"] is True
-        assert bot.send_message.await_count == 1
+        assert bot.do_api_request.await_count == 1
 
     async def test_send_without_app_reports_not_delivered(self):
         """The reconnect window of #556 — returns normally, sends nothing."""
@@ -36,37 +37,20 @@ class TestSend:
         ctx = {"chat_id": "42"}
         assert await ch.send(admitted("hi"), ctx) is DeliveryOutcome.NOT_DELIVERED
         assert "_delivery_head_sent" not in ctx
-        assert bot.send_message.await_count == 0
+        assert bot.send_message.await_count == bot.do_api_request.await_count == 0
+
+
+TWO_RICH_PARTS = "\n\n".join(f"row {i} **bold** " + "x" * 300 for i in range(150))
+TWO_PLAIN_PARTS = "\n\n".join(f"row {i} plain words " + "y" * 300 for i in range(150))
 
 
 class TestSendResponse:
-    async def test_plain_text_delegates_outcome_verbatim(self):
-        """Sol + Terra diff r3: the first version asserted DELIVERED, which a
-        direct send would also produce — it proved nothing about delegation.
-        The delegate is stubbed with a distinctive outcome so ONLY verbatim
-        propagation can satisfy it."""
-        ch, bot = _mk_channel_with_fake_bot()
-        ctx = {"chat_id": "42"}
-        # Sol diff r4: an ENUM sentinel is a singleton, so a delegate whose
-        # result is discarded and replaced by the same member still passes. An
-        # opaque object can only arrive here by being propagated.
-        sentinel = object()
-        called: list[str] = []
-
-        async def _fake_send(text, context):
-            called.append(text)
-            return sentinel
-
-        ch.send = _fake_send
-        assert await ch.send_response(admitted("just text"), ctx) is sentinel
-        assert called == ["just text"]
-
     async def test_rendered_single_page_is_delivered(self):
         ch, bot = _mk_channel_with_fake_bot()
         ctx = {"chat_id": "42"}
         assert await ch.send_response(admitted("**hi**"), ctx) is DeliveryOutcome.DELIVERED
         assert ctx["_delivery_head_sent"] is True
-        assert bot.send_message.await_count == 1
+        assert bot.do_api_request.await_count == 1
 
     async def test_without_app_reports_not_delivered(self):
         ch, bot = _mk_channel_with_fake_bot()
@@ -74,32 +58,26 @@ class TestSendResponse:
         ctx = {"chat_id": "42"}
         assert await ch.send_response(admitted("**hi**"), ctx) is DeliveryOutcome.NOT_DELIVERED
         assert "_delivery_head_sent" not in ctx
-        assert bot.send_message.await_count == 0
+        assert bot.send_message.await_count == bot.do_api_request.await_count == 0
 
     async def test_head_lands_then_tail_raises_keeps_the_stamp(self):
-        """Page 1 DISPLAYED the notice; the raise must not read as 'showed
+        """Message 1 DISPLAYED the notice; the raise must not read as 'showed
         nothing', or the operator is re-told something they already read."""
         from telegram.error import TimedOut
 
         ch, bot = _mk_channel_with_fake_bot()
-        long_text = "\n\n".join([f"para {i} with some words"
-                                 for i in range(600)])
-        bot.send_message.side_effect = [
+        assert len(split(TWO_PLAIN_PARTS)) == 2
+        bot.do_api_request.side_effect = [
             MagicMock(message_id=1), TimedOut("network")]
         ctx = {"chat_id": "42"}
         with pytest.raises(TimedOut):
-            await ch.send_response(admitted(long_text), ctx)
+            await ch.send_response(admitted(TWO_PLAIN_PARTS), ctx)
         assert ctx["_delivery_head_sent"] is True
-        assert bot.send_message.await_count == 2
-
-
-THREE_RICH_PAGES = "\n".join(f"row {i} **bold**" for i in range(280))
-THREE_PLAIN_PAGES = "\n".join(f"row {i} plain words" for i in range(500))
+        assert bot.do_api_request.await_count == 2
 
 
 def _silenced(bot) -> list:
-    return [call.kwargs.get("disable_notification")
-            for call in bot.send_message.await_args_list]
+    return [kw.get("disable_notification") for kw in rich_sent(bot)]
 
 
 class TestDeliveriesThatDoNotNotify:
@@ -107,43 +85,34 @@ class TestDeliveriesThatDoNotNotify:
     notification. Every physical message of the delivery carries the flag, and
     a delivery that is not silent sends exactly what it sent before."""
 
-    @pytest.mark.parametrize("text", [THREE_RICH_PAGES, THREE_PLAIN_PAGES],
-                             ids=["rich-pages", "plain-pages"])
+    @pytest.mark.parametrize("text", [TWO_RICH_PARTS, TWO_PLAIN_PARTS],
+                             ids=["rich-parts", "plain-parts"])
     async def test_every_page_of_a_silent_message_is_sent_without_a_notification(self, text):
-        from channels.tg_richtext import render_paged
-
-        assert len(render_paged(text)) == 3
+        assert len(split(text)) == 2
         loud, loud_bot = _mk_channel_with_fake_bot()
         assert await loud.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
         ch, bot = _mk_channel_with_fake_bot()
         assert await ch.deliver_operator_message(
             42, text, silent=True) is DeliveryOutcome.DELIVERED
-        assert bot.send_message.await_count == loud_bot.send_message.await_count == 3
-        assert _silenced(bot) == [True, True, True]
+        assert len(rich_sent(bot)) == len(rich_sent(loud_bot)) == 2
+        assert _silenced(bot) == [True, True]
         # the flag is the only difference
-        for quiet, heard in zip(bot.send_message.await_args_list,
-                                loud_bot.send_message.await_args_list):
-            assert {k: v for k, v in quiet.kwargs.items()
-                    if k != "disable_notification"} == heard.kwargs
+        for quiet, heard in zip(rich_sent(bot), rich_sent(loud_bot)):
+            assert {k: v for k, v in quiet.items() if k != "disable_notification"} == heard
 
-    async def test_the_plain_resend_of_a_refused_page_and_its_tail_are_silent_too(self):
-        """The platform refuses a page's entities: the page is resent plain,
-        and what did not fit follows as its own message."""
+    async def test_the_unformatted_resend_of_a_refused_message_is_silent_too(self):
+        """The platform refuses the message: it is resent unformatted, silent
+        like the first try."""
         from telegram.error import BadRequest
-        from channels.tg_richtext import render_paged
 
-        url = "https://e.example/" + "q" * 60
-        text = "a" * 4050 + f"[t]({url})"
-        (display, _entities), = render_paged(text)
+        text = "a" * 50 + "[t](https://e.example/q)"
         ch, bot = _mk_channel_with_fake_bot()
-        bot.send_message.side_effect = [
-            BadRequest("can't parse entities"), MagicMock(message_id=1),
-            MagicMock(message_id=2)]
+        bot.do_api_request.side_effect = [
+            BadRequest("Rich_message_parse_failed"), MagicMock(message_id=1)]
         assert await ch.deliver_operator_message(
             42, text, silent=True) is DeliveryOutcome.DELIVERED
-        assert [c.kwargs["text"] for c in bot.send_message.await_args_list] == [
-            display, display, url]
-        assert _silenced(bot) == [True, True, True]
+        assert [kw["rich_message"] for kw in rich_sent(bot)][1] == {"blocks": plain_blocks(text)}
+        assert _silenced(bot) == [True, True]
 
     @pytest.mark.parametrize("silent", [{}, {"silent": False}],
                              ids=["not-asked", "asked-not-to"])
@@ -152,18 +121,15 @@ class TestDeliveriesThatDoNotNotify:
 
         ch, bot = _mk_channel_with_fake_bot()
         assert await ch.deliver_operator_message(
-            42, THREE_RICH_PAGES, **silent) is DeliveryOutcome.DELIVERED
+            42, TWO_RICH_PARTS, **silent) is DeliveryOutcome.DELIVERED
         assert await ch.deliver_operator_message(
-            42, THREE_PLAIN_PAGES, **silent) is DeliveryOutcome.DELIVERED
-        bot.send_message.side_effect = [
-            BadRequest("can't parse entities"), MagicMock(message_id=1),
-            MagicMock(message_id=2)]
-        url = "https://e.example/" + "q" * 60
+            42, TWO_PLAIN_PARTS, **silent) is DeliveryOutcome.DELIVERED
+        bot.do_api_request.side_effect = [
+            BadRequest("Rich_message_parse_failed"), MagicMock(message_id=1)]
         assert await ch.deliver_operator_message(
-            42, "a" * 4050 + f"[t]({url})", **silent) is DeliveryOutcome.DELIVERED
-        assert bot.send_message.await_count == 9
-        assert not any("disable_notification" in call.kwargs
-                       for call in bot.send_message.await_args_list)
+            42, "a" * 50 + "[t](https://e.example/q)", **silent) is DeliveryOutcome.DELIVERED
+        assert len(rich_sent(bot)) == 6
+        assert not any("disable_notification" in kw for kw in rich_sent(bot))
 
     async def test_a_silent_run_card_carries_no_keyboard(self):
         ch, bot = _mk_channel_with_fake_bot()

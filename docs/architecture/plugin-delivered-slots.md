@@ -52,11 +52,10 @@ optional caption (a file), and returns the reference as for any capability. Afte
 structural check the same hook posts it to the chat of the call's grant identity, headed by
 a label Casa derives — a fixed glyph and the persona display name the `<delegates>` block
 advertises for the call's execution role — which the plugin cannot set, prefix or suppress.
-A message is the label line and the body, rendered in Casa's own dialect and paginated as
-ONE text, so page 1 carries the header and later pages are bare like a long reply's; its
-whole physical plan — every page, every plain chunk a refused page would be resent as, every
-link destination — is judged before the first send, and a plan that cannot be sent complete
-is refused with zero sends. A file is claimed from the plugin outbox exactly as `send_media`
+A message is the label line and the body, sent as ONE text of rich messages and split like
+a long reply, so the first message carries the header and later ones are bare; the number of
+messages it splits into is judged before the first send, and too many is refused with zero
+sends. A file is claimed from the plugin outbox exactly as `send_media`
 claims it, passed through the kind's media policy, sent once with the label line and the
 plugin's caption beneath, and consumed on every outcome. Proven delivery replaces the result
 with the receipt (`pages` for a message, `kind` for a file); anything short withholds the
@@ -69,10 +68,10 @@ operator has the post, the resident has the fact of it.
 
 **Every physical message of a post is filed as it lands.** The hook hands the channel a
 record of the poster (the call's enforcement role and operator, the slot, the tool-use id,
-the echo owner) and the channel files each page, each fallback chunk, the media message and
+the echo owner) and the channel files each message of a post, a fallback resend included, the media message and
 the link message under the task that posted it the moment its send returns — so the
-operator's reply on any of them goes into that task while it lives, a page that landed before
-a later page failed included ([`own-voice.md`](own-voice.md), INV-OWN-004). A reply on a post
+operator's reply on any of them goes into that task while it lives, a message that landed
+before a later one failed included ([`own-voice.md`](own-voice.md), INV-OWN-004). A reply on a post
 of no live task is the chat's own agent's turn, its words unchanged, with Casa's note of what
 it replied to (INV-DESK-004). A background job's posts are also filed on the job's engagement
 record as they land, and while the job lives a reply to one goes into the job
@@ -88,26 +87,22 @@ text, and ONE inline URL button whose text is the label and the destination host
 `BadRequest` — which sent nothing — does the channel send the labelled-link message
 instead: the label line first, as on its messages, then the label and the destination host
 as the link text, one `text_link` entity, the caption beneath, without a link preview (the
-link text already names the host), through the same one-retry primitive a rendered
-response uses (an entity the platform refuses is resent as the plain text, which spells
-the URL out). Either landed message is filed under the post. The channel reports the link
+link text already names the host), through the channel's one-retry primitive (`_send_one`: an entity the platform refuses is
+resent as the plain text, which spells the URL out). Either landed message is filed under the post. The channel reports the link
 delivered on any normal return and lets any other exception propagate — a `TimedOut` on
 the button message is never followed by a second send — and the broker reads anything but
-a normal return as not proven (INV-PLUG-025). Nothing here goes through the markdown
-renderer or pagination; the message is bounded by the broker's own validation of the three
+a normal return as not proven (INV-PLUG-025). Nothing here goes through the rich-message
+preparation or the split; the message is bounded by the broker's own validation of the three
 parts.
 
 **The channel's part for a message and a file.** For a slot declared
 `operator_message` the broker composes the specialist's label line and the plugin's body as
-ONE text, and the channel judges the whole physical plan before the first send — every page
-the paginator gives, each page's plain fallback chunks, and every `text_link` destination
-read from the rendered entities and looked for whole in those chunks, since the fallback
-helper filters an oversized destination silently and its splitter can cut a fitting one
-across two messages — refusing with zero sends when the plan has more than six pages or any
-element would not reach the operator complete. It then sends every page the way the multi-page
-response loop does (the single-page authored-text retry is never used) and reports
-delivered only when every page and every fallback chunk returned normally; a refused plan
-is not delivered, and an exception on any page or chunk propagates (INV-PLUG-045). A call
+ONE text, and the channel counts the messages `tg_rich.split` cuts it into before the first
+send, refusing with zero sends when there are more than six (`MAX_MESSAGE_PAGES`). It then
+sends the text as rich messages (`tg_rich.send_rich`), each falling back as any rich message
+does ([`telegram-rendering.md`](telegram-rendering.md), INV-TG-026), and reports delivered
+only when every send returned normally; a refused count is not delivered, and an exception
+on any message propagates (INV-PLUG-045). A call
 opened quiet sends all of them without a notification
 ([`plugin-operator-calls.md`](plugin-operator-calls.md)). For
 `operator_file` the channel sends bytes the broker has already claimed from the plugin
@@ -194,25 +189,17 @@ character (Unicode category Cc) but newline and tab — spaces of every width, j
 marks are text — within the broker's byte cap — a body over the cap is refused
 (`bad_message`), never truncated, because truncation would be Casa retelling. Caption,
 label and kind are ignored for a message slot: the label is Casa's. The character cap does
-not bound the page count (a body of emoji is two UTF-16 units per character; a body of
-markers is bounded by the entity budget), so the plan is capped separately at delivery,
-before the first send: the channel renders the composed text through the same paginator a
-long reply uses and refuses — zero sends, the result withheld — when it has more than six
-pages, or when any element of it would not reach the operator complete: a page over the
-platform's budget, a plain fallback chunk over it, a `text_link` destination longer than
-one message, or a destination the fallback chunks would carry in pieces. The destination
-checks read the rendered entities directly, because the shared fallback helper filters an
-oversized destination silently and returns no sign that it did, and its splitter cuts the
-joined overflow form at a newline or hard — so two destinations that each fit one message
-can leave the second split across two; every destination must occur whole in some chunk.
-Every page then goes the way the multi-page response loop sends — the rendered page, then
-its plain chunks if the platform refused the entities — and the single-page retry with the
-authored text is never used, since it is not bounded by the page budget. The receipt counts
-the pages of the plan that was judged, so nothing the plan would have had to drop, shorten
-or skip can sit under a positive receipt.
+not bound the bytes the body prepares to (an astral character is four bytes, an underscore
+is sent as five), so the message count is capped separately at delivery, before the first
+send: the channel splits the composed text exactly as the send will and refuses — zero
+sends, the result withheld — when it has more than six parts. The rich message carries a link
+destination as the plugin wrote it, and a refused part's plain-block resend parses nothing,
+so the address arrives as text there; only a single line past the budget is cut hard. The receipt's `pages` counts
+the parts of the plan that was judged.
 
-What it does not cover: a multi-page post whose later page fails is withheld though its
-first page may have left — the same honest asymmetry the link accepts, and the receipt
+What it does not cover: a size refusal that halves a part, which can land more messages
+than the plan counted; and a multi-message post whose later message fails, withheld though its
+first may have left — the same honest asymmetry the link accepts, and the receipt
 remains the only positive claim. Nothing is retried, persisted or edited; a post is one
 shot. The hook's cancellation by the CLI's deadline, and Casa's own logs, are outside it as
 they are for a link.
@@ -259,10 +246,8 @@ has a policy for) or `bad_caption` (not one printable line, or a composed captio
 media cap): no reference is minted and the result is withheld as any bad capability result
 is. A message slot ignores caption, label and kind rather than refusing them.
 
-**A message plan cannot be sent complete.** More pages than the cap, a page or a fallback
-chunk over the platform's budget, or a link destination no chunk carries whole (longer than
-one message, or split by the plain fallback): the channel refuses with zero sends, the
-result is withheld and the deposit dropped.
+**A message is too long.** More than six messages once split: the channel refuses with zero
+sends, the result is withheld and the deposit dropped.
 
 **Delivery is not proven.** The channel is not started, the send returns without proof,
 raises, or exceeds the bound: the result is replaced by a notice telling the model the

@@ -1,10 +1,12 @@
-"""Fail-literal Markdown → Telegram-entity renderer (v3, 2026-08-12 rework).
+"""Fail-literal Markdown → Telegram-entity renderer for single messages.
 
-Hybrid architecture, converged with Sol + Terra over three design rounds:
+Agent text goes out as Telegram rich messages (``channels.tg_rich``). This
+renderer serves what still carries classic entities: photo and file captions,
+the approval card and Casa-composed cards.
 
-* BLOCK segmentation is casa's own line-based scanner — fenced code blocks
+* BLOCK segmentation is casa's own line-based scanner for fenced code blocks
   (an UNCLOSED fence keeps its whole remainder byte-literal, bypassing every
-  other pass) and confident table runs. Byte-fidelity doctrine lives here.
+  other pass). Byte-fidelity doctrine lives here.
 * INLINE semantics run through markdown-it-py (already a casa dependency),
   invoked PER LINE with a restricted rule set (backticks, escape, emphasis,
   link). Construct scope stays one line; a fail-literal cutoff never leaks
@@ -17,19 +19,19 @@ Rendered constructs:
   - ATX headings        ## Heading               → BOLD line (hashes stripped)
   - labelled links      [label](https://…)       → TEXT_LINK (#404)
   - time links          [label](time:<ISO 8601>) → DATE_TIME over the label
-  - markdown tables     | a | b |                → padded PRE box, per-record
-                                                   stanza, or inline rows (#506)
+
+A Markdown table has no entity form and stays literal text.
 
 Doctrine (pinned):
   - Underscores are ALWAYS literal (protects ``mcp__tool__names`` and
     snake_case): ``_x_`` / ``__x__`` re-emit their markers byte-for-byte.
   - Link URLs are http(s) only. A line containing a link with any other
     scheme, an empty label, or image syntax (unescaped ``![``) renders
-    FULLY LITERAL — titles and all (round-3 rule; nothing is dropped).
+    FULLY LITERAL — titles and all (nothing is dropped).
   - The one other link target is ``time:`` followed by an ISO 8601 moment
-    (``time_instant``). It never makes a line literal: a moment Casa can read
-    becomes a DATE_TIME entity over the label, and one it cannot read leaves
-    the label as plain text. Casa never looks for times in free text.
+    (``tg_rich.time_instant``). It never makes a line literal: a moment Casa
+    can read becomes a DATE_TIME entity over the label, and one it cannot read
+    leaves the label as plain text. Casa never looks for times in free text.
   - Bot API nesting: BOLD/ITALIC never contain or intersect CODE,
     TEXT_LINK or DATE_TIME (the ATOMS) — emphasis is SPLIT AROUND those
     atoms at emission. Inside a link label, inner constructs render as
@@ -37,66 +39,30 @@ Doctrine (pinned):
   - The parser NEVER raises; anything ambiguous or unsupported degrades to
     literal text, and any entity-conversion failure degrades to plain.
 
-Tables (#506): a confident table (separatored, or separator-less with >= 3
-consistent rows — v0.109 shape) is re-emitted from parsed cells (``\\|`` is
-cell content; unescaped pipes split, even inside backticks — GFM rule).
-Three forms, chosen so content and URLs are NEVER dropped: a padded PRE box
-(narrow, link-free), a per-record ``Header: value`` stanza (wide or
-link-bearing, real non-empty header, >= 1 data row), or inline rows with
-entities intact (every remaining case).
-
-Raggedness is judged against the DELIMITER (#517), because a delimiter row
-declares the column count while a bare run of pipes only implies one. Under a
-delimiter a short data row is padded with empty cells, as GFM specifies; a row
-with MORE cells than the header still leaves the whole run literal, since GFM
-would truncate it and truncation drops content. Without a delimiter every row
-must match exactly and nothing is padded — a guess is not a declaration. A
-link in the header no longer refuses the stanza either: the label carries it
-as a TEXT_LINK with the bold split around it, unless that column is blank in
-every record, in which case the run stays inline so the destination survives.
-
-``render()`` returns one message; ``render_paged()`` is the delivery planner —
-it parses ONCE, cuts the display at preferred boundaries (paragraph → line →
-space → hard), clips/rebases spans per page (a span crossing a cut becomes one
-entity per page; PRE included, and a split TEXT_LINK carries its URL on every
-page), and enforces BOTH the 4096 UTF-16-unit length budget AND the
-100-entity budget per page.
+``render()`` returns one message, within the 4096 UTF-16-unit length budget
+and the 100-entity budget, or no entities at all.
 """
 from __future__ import annotations
 
 import bisect
-import logging
 import re
 from datetime import datetime, timezone
 
 from markdown_it import MarkdownIt
 from telegram import MessageEntity
 
-from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
-from timekeeping import resolve_tz
+from channels.tg_rich import time_instant
+from text_util import utf16_len
 
 # kind: pre/code/bold/italic, "link:<url>" or "time:<unix seconds>" (the
-# datum rides in the kind so the pagination clip/rebase logic carries it
-# across page cuts unchanged).
+# datum rides in the kind).
 Span = tuple[int, int, str]
-
-logger = logging.getLogger(__name__)
 
 MAX_LEN = 4096
 MAX_ENTITIES = 100
 
 _LINK_KIND = "link:"
 _TIME_KIND = "time:"
-
-TIME_LINK_GUIDE = (
-    "time_links: in the messages the person reads in this chat (answers, questions, progress "
-    "notes, summaries) write every date or time as a Markdown link whose target is time: and "
-    "the moment in ISO 8601 with its UTC offset, a T between date and time and no spaces, "
-    "keeping your own words as the label, for example "
-    "[Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or [16 November](time:2026-11-16). "
-    "Telegram makes it tappable. Everywhere else (files, "
-    "emails, tool fields, records) write dates plainly.")
-_TABLE_PRE_MAX_WIDTH = 40  # padded monospace wider than a phone → stanza
 
 _KIND = {
     "pre": MessageEntity.PRE,
@@ -130,22 +96,6 @@ def _normalize_link_keeping_time(url: str) -> str:
 _MD.normalizeLink = _normalize_link_keeping_time
 
 
-def time_instant(target: str) -> "int | None":
-    """The unix second a ``time:`` link target names, or ``None``.
-
-    The target is ``time:`` and an ISO 8601 date or date-time. One with no
-    UTC offset, or a date alone (its local midnight), is read in Casa's
-    timezone. Anything unparseable, or before 1970, gives ``None``."""
-    try:
-        moment = datetime.fromisoformat(target[len(_TIME_KIND):].strip())
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=resolve_tz())
-        seconds = int(moment.timestamp())
-    except (ValueError, TypeError, OverflowError, OSError):
-        return None
-    return seconds if seconds >= 0 else None
-
-
 def _is_atom(kind: str) -> bool:
     """A span emphasis is split around: CODE, TEXT_LINK and DATE_TIME."""
     return kind == "code" or kind.startswith((_LINK_KIND, _TIME_KIND))
@@ -156,7 +106,7 @@ def parse_markdown(src: str) -> tuple[str, list[Span]]:
     display_parts: list[str] = []
     spans: list[Span] = []
     pos = 0
-    for kind, content in _split_blocks(src):
+    for kind, content in _split_fenced(src):
         if kind == "pre":
             display_parts.append(content)
             spans.append((pos, pos + len(content), "pre"))
@@ -164,11 +114,6 @@ def parse_markdown(src: str) -> tuple[str, list[Span]]:
         elif kind == "literal":
             display_parts.append(content)
             pos += len(content)
-        elif kind == "table":
-            text, tspans = content
-            display_parts.append(text)
-            spans.extend((pos + s, pos + e, k) for s, e, k in tspans)
-            pos += len(text)
         else:
             text, inline = _parse_text(content)
             display_parts.append(text)
@@ -178,17 +123,6 @@ def parse_markdown(src: str) -> tuple[str, list[Span]]:
     return "".join(display_parts), spans
 
 
-def _split_blocks(src: str):
-    """Fence split, then confident-table split inside the text blocks."""
-    blocks = []
-    for kind, content in _split_fenced(src):
-        if kind == "text":
-            blocks.extend(_split_tables(content))
-        else:
-            blocks.append((kind, content))
-    return blocks
-
-
 def _split_fenced(src: str) -> list[tuple[str, str]]:
     """Split into ('pre', inner), ('literal', chunk) and ('text', chunk)
     blocks, line-based.
@@ -196,7 +130,7 @@ def _split_fenced(src: str) -> list[tuple[str, str]]:
     A fence opens on a line whose stripped text is ``` optionally followed by a
     language token (no spaces, no backticks) and closes on a line whose stripped
     text is exactly ```. An UNCLOSED fence keeps the opener and remainder as a
-    'literal' block — byte-for-byte, and exempt from table detection and the
+    'literal' block — byte-for-byte, and exempt from the
     inline pass (round-3 rule). Separator newlines are preserved as ordinary
     text, never part of the PRE span.
     """
@@ -420,282 +354,6 @@ def _parse_text(text: str) -> tuple[str, list[Span]]:
     return "".join(parts), rest + _merge_same_kind(emph)
 
 
-# ---------------------------------------------------------------------------
-# Tables (#506).
-# ---------------------------------------------------------------------------
-
-_TABLE_SEP_CELL_RE = re.compile(r"\s*:?-{3,}:?\s*")
-
-
-def _split_cells(stripped_row: str) -> list[str]:
-    """Cells of a bordered row: split on UNESCAPED pipes. A pipe is escaped
-    only when preceded by an ODD run of backslashes — ``\\|`` is cell
-    content, ``\\\\|`` is a literal backslash then a structural pipe
-    (diff-review round 1). Escapes stay in the cell source; the inline
-    escape pass renders them."""
-    inner = stripped_row[1:-1]
-    cells: list[str] = []
-    cur: list[str] = []
-    i = 0
-    while i < len(inner):
-        ch = inner[i]
-        if ch == "\\":
-            j = i
-            while j < len(inner) and inner[j] == "\\":
-                j += 1
-            run = j - i
-            if j < len(inner) and inner[j] == "|" and run % 2 == 1:
-                cur.append(inner[i:j + 1])  # escaped pipe is cell content
-                i = j + 1
-            else:
-                cur.append(inner[i:j])
-                i = j
-        elif ch == "|":
-            cells.append("".join(cur))
-            cur = []
-            i += 1
-        else:
-            cur.append(ch)
-            i += 1
-    cells.append("".join(cur))
-    return cells
-
-
-def _table_shape(
-    stripped_rows: list[str],
-) -> "tuple[str, list[list[str]]] | None":
-    """CONFIDENT markdown table shape AND its normalized cells, or None.
-
-    Returns ``('sep', rows)`` (header + ``|---|`` delimiter row, delimiter
-    DROPPED from the result) or ``('nosep', rows)`` (v0.109, deliberately
-    NARROW: >= 3 rows, consistent counts, >= 2 columns, every row non-empty).
-    Markers inside cells do not disqualify — cells are re-emitted from a
-    parse, not passed through verbatim (#506 mode-A fix).
-
-    **This is the ONE normalization point** (#517). Every returned matrix is
-    rectangular, so ``_render_table``'s per-column indexing is total rather
-    than conditionally-total — "the parser never raises" stops depending on
-    two functions agreeing about the bar.
-
-    Under a delimiter the column count is DECLARED, so a short DATA row is
-    padded with empty cells, exactly as GFM specifies. A row with MORE cells
-    than the header still rejects the whole run: GFM truncates it, and
-    truncation drops content, which the table doctrine forbids outright.
-    Without a delimiter there is no declaration — only an inference from row
-    shapes — so the ``nosep`` branch keeps its exact-count bar and NEVER
-    pads.
-    """
-    if len(stripped_rows) < 2:
-        return None
-    cells = [_split_cells(row) for row in stripped_rows]
-    ncols = len(cells[0])
-    sep = cells[1]
-    if all(_TABLE_SEP_CELL_RE.fullmatch(c) for c in sep):
-        data = cells[2:]
-        if len(sep) != ncols or any(len(row) > ncols for row in data):
-            return None
-        return "sep", [cells[0]] + [
-            row + [""] * (ncols - len(row)) for row in data
-        ]
-    if len(stripped_rows) < 3 or ncols < 2:
-        return None
-    ok = all(
-        len(row) == ncols and any(c.strip() for c in row) for row in cells
-    )
-    return ("nosep", cells) if ok else None
-
-
-def _split_tables(text: str) -> list[tuple[str, object]]:
-    """Split ('text', chunk) blocks around confident table blocks, each
-    pre-rendered to ('table', (display, spans)). A candidate block is >= 2
-    CONTIGUOUS lines that (stripped) start AND end with an unescaped ``|``;
-    it must match a ``_table_shape`` or the lines stay ordinary text
-    (fail-literal). The last row's line ending stays ordinary text."""
-    lines = text.splitlines(keepends=True)
-    blocks: list[tuple[str, object]] = []
-    text_buf: list[str] = []
-
-    def flush() -> None:
-        if text_buf:
-            blocks.append(("text", "".join(text_buf)))
-            text_buf.clear()
-
-    def bordered(stripped: str) -> bool:
-        return (
-            len(stripped) >= 2
-            and stripped.endswith("|")
-            # a closing border is escaped only under ODD backslash parity
-            and _backslash_run_before(stripped, len(stripped) - 1) % 2 == 0
-        )
-
-    i = 0
-    while i < len(lines):
-        # The candidate group is the run of CONSECUTIVE pipe-starting lines;
-        # one row without an unescaped closing border poisons the WHOLE run
-        # (diff-review round 2: no valid-prefix table may form from it).
-        j = i
-        while j < len(lines):
-            stripped = lines[j].rstrip("\r\n").strip()
-            if stripped.startswith("|"):  # even a bare "|" joins the run
-                j += 1
-            else:
-                break
-        rows = [lines[k].rstrip("\r\n").strip() for k in range(i, j)]
-        shape = (
-            _table_shape(rows)
-            if j - i >= 2 and all(bordered(r) for r in rows)
-            else None
-        )
-        if shape:
-            kind, body_cells = shape
-            flush()
-            blocks.append(("table", _render_table(body_cells, kind == "sep")))
-            ending = lines[j - 1][len(lines[j - 1].rstrip("\r\n")):]
-            if ending:
-                text_buf.append(ending)
-            i = j
-        elif j > i:
-            text_buf.extend(lines[i:j])  # rejected run stays text, whole
-            i = j
-        else:
-            text_buf.append(lines[i])
-            i += 1
-
-    flush()
-    return blocks
-
-
-def _render_table(
-    body_cells: list[list[str]], separatored: bool,
-) -> tuple[str, list[Span]]:
-    """Re-emit a confident table in ONE of three forms — chosen so cell
-    content and link URLs are NEVER dropped (design rounds 1-3):
-
-    1. padded PRE box: link-free AND padded width <= 40 (cell entity spans
-       are discarded — the Bot API forbids entities inside PRE; the
-       marker-stripped monospace box is the honest render);
-    2. per-record ``Header: value`` stanza: wide or link-bearing, and the
-       header is REAL (separatored), non-empty, link-free, with >= 1 data
-       row — values keep their entity spans, the bold header label splits
-       around header CODE spans;
-    3. inline rows: every remaining case — cells re-emitted between literal
-       pipes with their entity spans intact.
-    """
-    rendered: list[list[tuple[str, list[Span]]]] = []
-    for row in body_cells:
-        rrow = []
-        for cell in row:
-            r = _inline_line(cell.strip())
-            rrow.append(r if r is not None else (cell.strip(), []))
-        rendered.append(rrow)
-
-    ncols = len(rendered[0])
-    widths = [max(len(row[c][0]) for row in rendered) for c in range(ncols)]
-    # A PRE box carries no entity, so a link's address or a time's
-    # tappability would be lost in it.
-    has_link = any(
-        k.startswith((_LINK_KIND, _TIME_KIND))
-        for row in rendered for _, sp in row for _, _, k in sp
-    )
-    padded_width = sum(widths) + 3 * (ncols - 1) + 4
-
-    if not has_link and padded_width <= _TABLE_PRE_MAX_WIDTH:
-        text = "\n".join(
-            "| " + " | ".join(
-                row[c][0].ljust(widths[c]) for c in range(ncols)
-            ) + " |"
-            for row in rendered
-        )
-        return text, [(0, len(text), "pre")]
-
-    header, data = rendered[0], rendered[1:]
-    # `_render_stanza` SKIPS a record line whose value is blank, LABEL
-    # included — so a column blank in EVERY data row contributes no line at
-    # all and its header cell is emitted nowhere. Such a run stays in the
-    # inline form, where every header cell, and any destination it carries,
-    # survives. #517 diff-review round 1 (sol S2): this must be judged per
-    # COLUMN and over ALL columns, not only the link-bearing ones. A weaker
-    # linked-columns-only guard let a padded short row drop a plain header
-    # cell (`| A | B |` + `|---|---|` + `| x |` renders `A: x`, losing `B`),
-    # and the same hole was already reachable at exact cell counts with an
-    # explicitly blank cell. This predicate subsumes the older ">= 1 non-empty
-    # rendered value" clause it replaces (diff-review round 2 of #506), since
-    # a table always has at least one column.
-    columns_survive = all(
-        any(row[c][0].strip() for row in data) for c in range(ncols)
-    )
-    header_ok = (
-        separatored
-        and data
-        and columns_survive
-        and all(h[0].strip() for h in header)
-    )
-    if header_ok:
-        return _render_stanza(header, data)
-
-    parts: list[str] = []
-    spans: list[Span] = []
-    pos = 0
-    for row in rendered:
-        line_cells: list[str] = []
-        cursor = pos + 2  # "| "
-        for c in range(ncols):
-            disp, csp = row[c]
-            spans.extend((cursor + s, cursor + e, k) for s, e, k in csp)
-            line_cells.append(disp)
-            cursor += len(disp) + 3  # " | "
-        parts.append("| " + " | ".join(line_cells) + " |")
-        pos += len(parts[-1]) + 1  # "\n"
-    return "\n".join(parts), spans
-
-
-def _render_stanza(
-    header: list[tuple[str, list[Span]]],
-    data: list[list[tuple[str, list[Span]]]],
-) -> tuple[str, list[Span]]:
-    parts: list[str] = []
-    spans: list[Span] = []
-    pos = 0
-    first_record = True
-    for row in data:
-        lines_of_record: list[str] = []
-        for c, (vdisp, vspans) in enumerate(row):
-            hdisp, hspans = header[c]
-            if not vdisp.strip():
-                continue
-            if not lines_of_record and not first_record:
-                parts.append("\n")
-                pos += 1
-            line = hdisp + ": " + vdisp
-            label_end = len(hdisp) + 1  # includes the colon
-            # The label's ATOMS — CODE, TEXT_LINK, DATE_TIME — are re-emitted with
-            # their own kind, and the label's BOLD is their COMPLEMENT, so
-            # bold can never contain or intersect either (emission doctrine,
-            # ":28-31"). The link case is #517: a header link rides onto
-            # every record's label rather than refusing the stanza. Code and
-            # link spans from one cell are disjoint by the inline pass's own
-            # rules (a code-wrapped link is pure code; a link-wrapped code is
-            # pure link), which is what `_subtract_intervals` assumes.
-            atoms = sorted((s, e, k) for s, e, k in hspans if _is_atom(k))
-            holes = [(s, e) for s, e, _ in atoms]
-            spans.extend((pos + s, pos + e, k) for s, e, k in atoms)
-            spans.extend(
-                (pos + s, pos + e, "bold")
-                for s, e in _subtract_intervals(0, label_end, holes)
-            )
-            vbase = pos + label_end + 1
-            spans.extend((vbase + s, vbase + e, k) for s, e, k in vspans)
-            parts.append(line + "\n")
-            pos += len(line) + 1
-            lines_of_record.append(line)
-        if lines_of_record:
-            first_record = False
-    text = "".join(parts)
-    if text.endswith("\n"):  # the block's own line ending is emitted outside
-        text = text[:-1]
-    return text, [sp for sp in spans if sp[1] <= len(text)]
-
-
 def _subtract_intervals(
     start: int, end: int, holes: list[tuple[int, int]],
 ) -> list[tuple[int, int]]:
@@ -740,13 +398,13 @@ def _merge_same_kind(spans: list[Span]) -> list[Span]:
 
 
 # ---------------------------------------------------------------------------
-# Delivery: single-message render + the paged delivery planner.
+# Delivery: single-message render.
 # ---------------------------------------------------------------------------
 
 
 def _utf16_units(s: str) -> int:
-    # #305: delegates to the shared text_util measurement so the rich
-    # paginator, the plain splitter, and the authz size gate use ONE unit.
+    # #305: delegates to the shared text_util measurement so the renderer
+    # and the authz size gate use ONE unit.
     return utf16_len(s)
 
 
@@ -792,8 +450,7 @@ def render(text: str) -> tuple[str, "list[MessageEntity] | None"]:
     None when the message must be sent plain (no spans, over limits, or invalid).
 
     v2: judged on DISPLAY length — a raw text whose markers push it past 4096
-    but whose display fits still renders. Single-message contract; callers
-    that may exceed one message use ``render_paged()``.
+    but whose display fits still renders. Single-message contract.
 
     When entities is None, send ``plain_text(text)`` — not *display*, which
     has lost the formatting of a text over the limits, and not *text*, which
@@ -813,12 +470,10 @@ def plain_text(text: str) -> str:
     """What a single message sent WITHOUT entities shows for *text* (#1330).
 
     A text with no span: its display, exactly as the rich path would show it —
-    the backslash escapes consumed, a table re-emitted from its parsed cells
-    (row spacing, the delimiter row), a NUL replaced. Without a span there is
+    the backslash escapes consumed, a NUL replaced. Without a span there is
     no link address to lose; a plugin card escaped for markdown no longer
     shows its backslashes just because it carries no bold word. A display that
-    would not fit one message (a table's padding can make it LONGER than the
-    text) is not used: the authored text goes out as before.
+    would not fit one message is not used: the authored text goes out as before.
 
     A text WITH spans that are not being sent (over the limits, or not
     convertible): the authored text, unchanged — its markers are the only
@@ -830,291 +485,3 @@ def plain_text(text: str) -> str:
     if spans or display == text or _utf16_units(display) > MAX_LEN:
         return text
     return display
-
-
-def _link_spans(display: str, entities) -> "list[tuple[int, int, str]]":
-    """``(python_start, python_end, url)`` for every TEXT_LINK in *entities*
-    whose url is not already visible inside its own label, in display order.
-
-    ``[]`` on anything unusable — the callers below are plain-fallback paths
-    and must degrade rather than raise (#831). Entity offsets are UTF-16 units
-    (``MessageEntity.adjust_message_entities_to_utf_16`` was applied when the
-    entities were built), so each boundary converts back through
-    ``text_util.utf16_prefix_end``, the shared measurement helper, and is
-    round-trip checked: an offset that does not map back to itself lands
-    inside a surrogate pair and the entity is dropped rather than guessed at.
-    """
-    try:
-        out: list[tuple[int, int, str]] = []
-        for ent in entities or []:
-            if getattr(ent, "type", None) != MessageEntity.TEXT_LINK:
-                continue
-            url = getattr(ent, "url", None)
-            offset, length = getattr(ent, "offset", None), getattr(ent, "length", None)
-            if not url or type(offset) is not int or type(length) is not int:
-                continue
-            if offset < 0 or length <= 0:
-                continue
-            start = utf16_prefix_end(display, 0, offset)
-            end = utf16_prefix_end(display, start, length)
-            if _utf16_units(display[:start]) != offset:
-                continue
-            if _utf16_units(display[start:end]) != length:
-                continue
-            if url in display[start:end]:
-                # An autolink whose label IS the address already carries it.
-                continue
-            out.append((start, end, url))
-        out.sort(key=lambda span: span[0])
-        return out
-    except Exception:  # noqa: BLE001 — never raise on a fallback path
-        return []
-
-
-def plain_with_link_targets(display: str, entities) -> str:
-    """*display* with every TEXT_LINK destination re-attached, as ``label (url)``.
-
-    #831: ``render_paged`` pages are marker-free DISPLAY slices, so a multi-page
-    sender whose entities Telegram rejects has only the display to retry with —
-    and a ``TEXT_LINK``'s url is the ONE datum a display cannot carry (``_KIND``
-    is closed to pre/code/bold/italic, and ``_spans_to_entities`` emits only
-    those plus TEXT_LINK). Reconstructing from ``(display, entities)`` is
-    therefore lossless, needs no authored source, and leaves ``render_paged``
-    and its two-tuple shape untouched.
-
-    Insertions run right-to-left so an earlier index is never invalidated.
-    Non-link entities are ignored: their information is already in the display.
-    NEVER raises — an exception here would turn a formatting nuisance into a
-    lost turn — and returns *display* unchanged when there is nothing to add.
-    """
-    spans = _link_spans(display, entities)
-    if not spans:
-        return display
-    out = display
-    for _, end, url in reversed(spans):
-        out = f"{out[:end]} ({url}){out[end:]}"
-    return out
-
-
-def missing_link_targets(display: str, entities) -> list[str]:
-    """The destinations ``plain_with_link_targets`` would add, in order, without
-    duplicates — the overflow form, one url per line, used when the inline
-    reconstruction does not fit one message (#831)."""
-    seen: list[str] = []
-    for _, _, url in _link_spans(display, entities):
-        if url not in seen:
-            seen.append(url)
-    return seen
-
-
-def _advance_by_utf16(display: str, start: int, budget: int) -> int:
-    """Largest index ``end`` such that ``display[start:end]`` fits *budget*
-    UTF-16 units (shared implementation: ``text_util.utf16_prefix_end``)."""
-    return utf16_prefix_end(display, start, budget)
-
-
-def _preferred_cut(display: str, start: int, end: int) -> int:
-    """Pick a cut in ``(start, end]`` preferring paragraph, then line, then
-    space boundaries; hard cut at *end* otherwise."""
-    para = display.rfind("\n\n", start + 1, end)
-    if para > start:
-        return para
-    line = display.rfind("\n", start + 1, end)
-    if line > start:
-        return line
-    space = display.rfind(" ", start + 1, end)
-    if space > start:
-        return space
-    return end
-
-
-def _paginate(
-    display: str, spans: list[Span], limit: int, max_entities: int,
-) -> list[tuple[str, list[Span]]]:
-    """Cut *display* into pages within the UTF-16 *limit* AND the entity
-    budget; spans are clipped/rebased per page (a span crossing a cut becomes
-    one span per page — PRE included). Page-leading newlines are stripped."""
-    if _utf16_units(display) <= limit and len(spans) <= max_entities:
-        return [(display, spans)]
-    spans_sorted = sorted(spans, key=lambda x: (x[0], -x[1], x[2]))
-    pre_intervals = [(s, e) for s, e, k in spans_sorted if k == "pre"]
-    pages: list[tuple[str, list[Span]]] = []
-    start = 0
-    n = len(display)
-    while start < n:
-        end = _advance_by_utf16(display, start, limit)
-        cut = n if end >= n else _preferred_cut(display, start, end)
-        inter = [sp for sp in spans_sorted if sp[0] < cut and sp[1] > start]
-        if len(inter) > max_entities:
-            bound = inter[max_entities][0]
-            if bound > start:
-                cut = min(cut, bound)
-                inter = [
-                    sp for sp in spans_sorted if sp[0] < cut and sp[1] > start
-                ]
-            if len(inter) > max_entities:  # degenerate pileup: drop the excess
-                inter = inter[:max_entities]
-        page_spans = [
-            (max(s, start) - start, min(e, cut) - start, k)
-            for s, e, k in inter
-        ]
-        pages.append((
-            display[start:cut],
-            [p for p in page_spans if p[1] > p[0]],
-        ))
-        # Swallow AT MOST the one paragraph separator at the cut (bounded — an
-        # unbounded skip silently drops content), and NEVER inside a PRE span
-        # (blank code lines are meaningful).
-        skipped = 0
-        while (
-            cut < n and display[cut] == "\n" and skipped < 2
-            and not any(s <= cut < e for s, e in pre_intervals)
-        ):
-            cut += 1
-            skipped += 1
-        if cut <= start:  # progress guard (unreachable in practice)
-            cut = start + 1
-        start = cut
-    return pages
-
-
-def _link_targets_for_page(
-    page_text: str, page_spans: list[Span],
-) -> tuple[list[tuple[int, int, str]], list[str], bool]:
-    """``(insertable spans, unique urls, inline_ok)`` for one page's spans.
-
-    The span-side sibling of ``_link_spans``: ``_paginate`` rebases every span
-    to PYTHON offsets on its own page, so a reconstruction from spans needs no
-    UTF-16 round-trip — and that round-trip is precisely what a lone surrogate
-    breaks. Selection mirrors ``_link_spans`` so the two plain forms agree: a
-    non-link kind carries no datum the display lacks, an empty url is what
-    ``_spans_to_entities`` itself rejects, and a url already visible inside its
-    own label would be printed twice.
-
-    ``inline_ok`` is False when a link span's offsets do not address this page.
-    Its url still reaches the caller, which then uses the whole-page overflow
-    form rather than guessing an insertion point.
-    """
-    spans: list[tuple[int, int, str]] = []
-    urls: list[str] = []
-    inline_ok = True
-    for start, end, kind in page_spans:
-        if not kind.startswith(_LINK_KIND):
-            continue
-        url = kind[len(_LINK_KIND):]
-        if not url:
-            continue
-        if not (0 <= start < end <= len(page_text)):
-            inline_ok = False
-        elif url in page_text[start:end]:
-            continue                     # an autolink already carries it
-        else:
-            spans.append((start, end, url))
-        if url not in urls:
-            urls.append(url)
-    spans.sort(key=lambda sp: sp[0])
-    return spans, urls, inline_ok
-
-
-def _target_pages(urls: list[str]) -> list[str]:
-    """*urls* as pages of one destination per line, each within ``MAX_LEN``.
-
-    A destination longer than one whole message cannot be delivered by this
-    platform in ANY shape, and fragments of an address are worse than none, so
-    it is dropped with a log line — the rule
-    ``TelegramChannel._plain_fallback_chunks`` already applies. Packing the
-    survivors greedily at newlines is safe exactly because each one fits alone.
-    """
-    pages: list[str] = []
-    current = ""
-    for url in urls:
-        if _utf16_units(url) > MAX_LEN:
-            logger.warning(
-                "link destination exceeds one message and cannot be "
-                "delivered plain: %d units", _utf16_units(url))
-            continue
-        candidate = f"{current}\n{url}" if current else url
-        if current and _utf16_units(candidate) > MAX_LEN:
-            pages.append(current)
-            current = url
-        else:
-            current = candidate
-    if current:
-        pages.append(current)
-    return pages
-
-
-def _plain_pages_with_targets(
-    page_text: str, page_spans: list[Span],
-) -> list[tuple[str, None]]:
-    """The pages that replace one page whose entities cannot be EXPRESSED.
-
-    #834: a page whose conversion failed is emitted as ``(page_text, None)``,
-    which every sender reads as "this page has no formatting" — so a
-    ``link:<url>`` span's destination, the one datum a display cannot carry,
-    reaches nobody and no ``BadRequest`` is raised for the sender-side plain
-    fallback to key on. Here the renderer re-attaches the destinations itself,
-    in the same ``label (url)`` form that fallback produces from entities.
-
-    Inline while it fits the page budget; otherwise the page's own text
-    unchanged, followed by destination-only pages. Insertions run right-to-left
-    so an earlier index is never invalidated.
-    """
-    spans, urls, inline_ok = _link_targets_for_page(page_text, page_spans)
-    page_text = replace_lone_surrogates(page_text)
-    if not urls:
-        return [(page_text, None)]
-    if inline_ok:
-        inline = page_text
-        for _, end, url in reversed(spans):
-            inline = f"{inline[:end]} ({url}){inline[end:]}"
-        if _utf16_units(inline) <= MAX_LEN:
-            return [(inline, None)]
-    return [(page_text, None), *((page, None) for page in _target_pages(urls))]
-
-
-def render_paged(
-    text: str,
-) -> list[tuple[str, "list[MessageEntity] | None"]]:
-    """Delivery planner (v2): parse ONCE, then return ``[(display, entities)]``
-    pages that each fit Telegram's 4096 UTF-16-unit and 100-entity budgets.
-
-    Marker-free by construction — a page whose entities degrade (``None``:
-    no spans on that page, or UTF-16 conversion failure) still carries its
-    DISPLAY slice, never raw source. Callers send each page as one physical
-    message; kwargs like ``reply_parameters`` belong on the FIRST page only.
-    Never raises.
-
-    #834: when a page's spans exist but cannot be CONVERTED — a lone surrogate
-    makes PTB's UTF-16 adjustment raise — the plain page is emitted with each
-    link destination re-attached, because ``(page_text, None)`` is what a page
-    with no formatting looks like and no sender can tell the two apart. So a
-    multi-page result no longer concatenates back to the display: a page that
-    lost its entities and held a link is deliberately longer than its slice.
-    A SINGLE-page result is untouched, entities and bytes both — its senders
-    retry with the AUTHORED text, which still carries every address.
-
-    #846: a lone surrogate on ANY page is replaced where the text leaves for
-    the Bot API — the channel's request boundary (INV-TG-009) — not here; the
-    conversion-failure arm's own replacement predates that boundary and is
-    kept because the inline-fit measurement above runs on the replaced text.
-    """
-    display, spans = parse_markdown(text)
-    out: list[tuple[str, "list[MessageEntity] | None"]] = []
-    paged = _paginate(display, spans, MAX_LEN, MAX_ENTITIES)
-    for page_text, page_spans in paged:
-        if not page_spans:
-            out.append((page_text, None))
-            continue
-        entities = _spans_to_entities(page_text, page_spans)
-        if entities is not None or len(paged) == 1:
-            out.append((page_text, entities))
-            continue
-        try:
-            out.extend(_plain_pages_with_targets(page_text, page_spans))
-        except Exception:  # noqa: BLE001 — this contract never raises
-            logger.warning(
-                "could not reconstruct link destinations for a page whose "
-                "entities failed to convert", exc_info=True)
-            out.append((page_text, None))
-    return out

@@ -32,7 +32,7 @@ from guest_groups import THINKING_WORDS
 from output_boundary_testing import admitted
 from test_guest_intake import FRIEND, GROUP, OPERATOR, _guest
 from test_guest_options import LOOKUP, SEARCH
-from test_guest_reply import ASKED_ELSEWHERE, DECLINE, FAIL, WAITING, _Ticks
+from test_guest_reply import ASKED_ELSEWHERE, DECLINE, FAIL, WAITING, _Ticks, shown
 from test_guest_run import _agent as _guest_agent
 from test_guest_run import client  # noqa: F401 — fixture
 from test_guest_summons import (  # noqa: F401 — fixtures
@@ -95,13 +95,13 @@ async def test_a_summons_is_answered_in_the_group(summoned, monkeypatch, caplog)
         assert _summons_lines(caplog) == []            # nothing to say until it ends
 
         await ticks.tick()
-        assert [e["text"] for e in w.bot.edits] == [f"Judge · {THINKING_WORDS[1]}…"]
+        assert [shown(e) for e in w.bot.edits] == [f"Judge · {THINKING_WORDS[1]}…"]
 
         answers = _answers("The rate is 1.08.")
         with patch.object(w.agent, "_process", answers):
             await w.agent.handle_message(turn)
 
-    assert [e["text"] for e in w.bot.edits] == [
+    assert [shown(e) for e in w.bot.edits] == [
         f"Judge · {THINKING_WORDS[1]}…", "The rate is 1.08."]
     assert {e["inline_message_id"] for e in w.bot.edits} == {"inl-1"}
     # the turn runs on the operator's own chat, where a reply would be
@@ -118,7 +118,7 @@ async def test_a_silent_turn_declines_in_the_group(summoned, caplog):
         turn = await _summon(w)
         with patch.object(w.agent, "_process", _answers("")):
             await w.agent.handle_message(turn)
-    assert w.bot.edits[-1]["text"] == DECLINE
+    assert shown(w.bot.edits[-1]) == DECLINE
     assert w.ch._guest_replies == {}
     assert _one(caplog)["outcome"] == "operator_declined"
 
@@ -130,7 +130,7 @@ async def test_a_question_asked_in_the_chat_is_logged_as_asked_elsewhere(summone
         turn = await _summon(w)
         with patch.object(w.agent, "_process", _turn_that(_ask, then="")):
             await w.agent.handle_message(turn)
-    assert [e["text"] for e in w.bot.edits][-2:] == [WAITING, ASKED_ELSEWHERE]
+    assert [shown(e) for e in w.bot.edits][-2:] == [WAITING, ASKED_ELSEWHERE]
     assert _one(caplog)["outcome"] == "operator_asked_elsewhere"
 
 
@@ -143,7 +143,7 @@ async def test_a_turn_that_errors_is_logged_as_failed(summoned, caplog):
         turn = await _summon(w)
         with patch.object(w.agent, "_process", _boom):
             await w.agent.handle_message(turn)
-    assert w.bot.edits[-1]["text"] == FAIL
+    assert shown(w.bot.edits[-1]) == FAIL
     assert _one(caplog)["outcome"] == "operator_failed"
 
 
@@ -175,7 +175,7 @@ async def test_a_refused_queue_is_logged_as_failed_once(world, opening, caplog):
     ch, bus, bot = _endpoint(register=False)
     with caplog.at_level(logging.INFO, logger="channels.telegram"):
         await ch._on_guest_message(_guest(), None)
-    assert [e["text"] for e in bot.edits] == [FAIL]
+    assert [shown(e) for e in bot.edits] == [FAIL]
     assert _one(caplog)["outcome"] == "operator_failed"
 
 
@@ -188,7 +188,7 @@ async def test_someone_elses_summons_is_logged_once_when_its_turn_ends(world, na
         [turn] = _turns(bus, "finance")
         assert turn.channel == "telegram_guest"
         await ch.guest_finish(admitted("VAT is 21%."), None, turn.context)
-    assert [e["text"] for e in bot.edits] == ["VAT is 21%."]
+    assert [shown(e) for e in bot.edits] == ["VAT is 21%."]
     assert _one(caplog, caller=FRIEND)["outcome"] == "guest_answered"
 
 
@@ -257,7 +257,7 @@ async def test_a_friends_summons_is_answered_in_the_group(friends, monkeypatch, 
         assert _summons_lines(caplog) == []           # nothing to say until it ends
 
         await ticks.tick()
-        assert [e["text"] for e in w.bot.edits] == [f"Judge · {THINKING_WORDS[1]}…"]
+        assert [shown(e) for e in w.bot.edits] == [f"Judge · {THINKING_WORDS[1]}…"]
 
         real_process = w.agent._process
         handed: list = []
@@ -278,7 +278,7 @@ async def test_a_friends_summons_is_answered_in_the_group(friends, monkeypatch, 
     [prompt] = w.client.prompts
     assert prompt.endswith("@FinanceBot how much?")
 
-    assert [e["text"] for e in w.bot.edits] == [
+    assert [shown(e) for e in w.bot.edits] == [
         f"Judge · {THINKING_WORDS[1]}…", "VAT is 21%."]
     assert {e["inline_message_id"] for e in w.bot.edits} == {"inl-1"}
     assert w.bot.sent == [] and w.bot.drafts == []    # nothing in any chat
@@ -294,7 +294,7 @@ async def test_a_friends_silent_run_declines_in_the_group(friends, caplog):
         [turn] = await _friend_summons(w)
         await w.agent.handle_message(turn)
     assert w.client.attempts == 1                     # the run happened, and said nothing
-    assert [e["text"] for e in w.bot.edits] == [DECLINE]
+    assert [shown(e) for e in w.bot.edits] == [DECLINE]
     assert w.bot.sent == []
     assert w.ch._guest_replies == {}
     assert _one(caplog, caller=FRIEND)["outcome"] == "guest_declined"
@@ -329,7 +329,7 @@ async def test_a_friends_summons_past_the_cap_is_answered_busy(friends, monkeypa
 
         [again] = await _friend_summons(w, 30)        # a place is free again
         await w.agent.handle_message(again)
-    assert w.bot.edits[-1]["text"] == "pong"
+    assert shown(w.bot.edits[-1]) == "pong"
 
     assert busy["role"] == "finance" and busy["caller"] == FRIEND
     assert busy["chat"] == GROUP and busy["title"] == TITLE

@@ -80,7 +80,8 @@ void.
 render to one page with room left for the longest line Casa appends when the keyboard
 settles (`☑ <label>` or `⏳ <label>`, a label of 32 characters that may each take two units;
 `✖ <reason>`, `⌛ expired` and `↻ replaced` are shorter), so a maximal proposal can always be
-settled. Before the message is sent the proposal is
+settled. Every such line is a paragraph of its own, after a blank line, so a card whose text
+ends in a table, a list or a quote never takes it as one more row, item or quoted line. Before the message is sent the proposal is
 registered with the verdict broker under the `proposal` namespace with a one-hour deadline
 and a live record (chat, operator, role, artifact, plugin segment, the stored calls, the
 text) — so a tap can never find a keyboard the broker does not know. At most 32 live

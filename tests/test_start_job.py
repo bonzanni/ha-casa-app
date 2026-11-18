@@ -75,6 +75,8 @@ async def runtime(tmp_path, monkeypatch):
         send_message=AsyncMock(return_value=SimpleNamespace(message_id=100)),
         edit_message_text=AsyncMock(return_value=SimpleNamespace(message_id=100)),
         send_chat_action=AsyncMock(return_value=True),
+        # rich messages and their edits go out as raw API calls
+        do_api_request=AsyncMock(return_value=SimpleNamespace(message_id=100)),
     )
     # Casa's own bot, 111.
     channel = TelegramChannel(chat_id='1', bot=bot, bus=bus, is_casa=True,

@@ -12,8 +12,10 @@ the boundary asks: who authored the words?
   admitted when posted, a Casa *status* that replaces it, or a *plugin*-authored
   consent body;
 * every raw Bot API text call (``bot.send_message`` / ``edit_message_text`` /
-  ``send_message_draft`` / media) by enclosing function — the function takes an ``Admitted``, is a
-  derived edit, is a Casa notice, or streams what ``_emit`` admitted.
+  ``send_message_draft`` / media / ``do_api_request``, and the rich-message
+  sends, edits and drafts of ``channels/tg_rich.py``) by enclosing function — the function takes an
+  ``Admitted``, is a derived edit, is a Casa notice, or streams what ``_emit``
+  admitted.
 
 These catch an accidental bypass. They are not a sandbox against Casa
 deliberately fabricating admission (design §4.3).
@@ -30,7 +32,13 @@ pytestmark = [pytest.mark.unit]
 
 CODE = pathlib.Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
 RAW_TEXT_CALLS = {"send_message", "edit_message_text", "send_message_draft",
-                  "send_document", "send_photo", "send_audio", "send_voice"}
+                  "send_document", "send_photo", "send_audio", "send_voice",
+                  "do_api_request"}
+# A rich message is sent through these, whatever the receiver: the module's
+# functions (``tg_rich.send_rich(bot, ...)``) and the channel's wrappers of
+# them (``self._send_rich(...)``).
+RICH_TEXT_CALLS = {"send_rich", "edit_rich", "send_rich_draft",
+                   "_send_rich", "_edit_rich", "_send_rich_draft"}
 
 
 def _enclosing(tree: ast.AST, node: ast.AST) -> str | None:
@@ -61,6 +69,8 @@ def _scan():
                 recv = f.value
                 if (getattr(recv, "attr", None) or getattr(recv, "id", None)) == "bot":
                     raw.add((rel, _enclosing(tree, node)))
+            elif name in RICH_TEXT_CALLS and isinstance(f, ast.Attribute):
+                raw.add((rel, _enclosing(tree, node)))
     return casa, edits, raw
 
 
@@ -106,9 +116,15 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "post_dm_keyboard"): "admitted",
     ("channels/telegram.py", "post_job_question"): "admitted",     # a job's question, admitted by ask_operator
     ("channels/telegram.py", "post_task_start"): "admitted",       # a task's start post: Casa's who-asked line over the admitted request
-    # helper of send, send_response and their _send_one: one send_message,
-    # resent without the reply's quote when Telegram refuses the quote
+    ("channels/telegram.py", "send"): "admitted",                  # the send_message tool's text, or a Casa notice as casa_text
+    # helper of the remaining plain sends: one send_message, resent without
+    # the reply's quote when Telegram refuses the quote
     ("channels/telegram.py", "_send_message"): "admitted",
+    # the rich-message helpers: send, edit and draft through this channel's
+    # bot, reached only from the recorded functions above and below
+    ("channels/telegram.py", "_send_rich"): "admitted",
+    ("channels/telegram.py", "_edit_rich"): "derived",
+    ("channels/telegram.py", "_send_rich_draft"): "stream",
     # stream — the draft a reply is written into, fed only from agent._emit,
     # which admits every cumulative; the function refuses a bare string
     ("channels/telegram.py", "_send_draft"): "stream",
@@ -139,6 +155,13 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/guest_reply.py", "_edit_final"): "admitted",
     ("channels/guest_reply.py", "_tick"): "notice",
     ("channels/guest_reply.py", "waiting"): "notice",
+    # the rich-message primitives' raw calls (sendRichMessage, editMessageText
+    # with rich_message, sendRichMessageDraft), reached only through the
+    # rich-message calls recorded above, so they carry what those callers hand
+    # them
+    ("channels/tg_rich.py", "post"): "admitted",
+    ("channels/tg_rich.py", "edit"): "derived",
+    ("channels/tg_rich.py", "send_rich_draft"): "stream",
 }
 
 
@@ -157,7 +180,6 @@ CHANNEL_METHOD_CALLERS = {
     ("casa_core.py", "_notify_plugin_health_locked"): "casa_text",
     ("casa_core.py", "notify_placeholder_rewrites"): "casa_text",
     ("casa_core.py", "_telegram_outbound"): "casa_text",
-    ("channels/telegram.py", "send_response"): "forward",
     # The transport resolves one endpoint and hands it the same value unchanged.
     ("channels/telegram_transport.py", "send"): "forward",
     ("channels/telegram_transport.py", "send_media"): "forward",

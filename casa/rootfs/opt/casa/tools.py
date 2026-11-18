@@ -68,7 +68,7 @@ from claude_agent_sdk import (
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
 from channels.telegram_transport import telegram_transport
-from channels.tg_richtext import TIME_LINK_GUIDE
+from channels.tg_rich import FORMAT_GUIDE
 from channels.tg_address import (
     AddressError, EndpointNotReady, EndpointUnavailable, RouteMissing, TgAddress,
     scope as tg_scope,
@@ -778,7 +778,7 @@ ANSWER_SHOWN_LINE = (
     "itself, with no working notes, and open it with \"Done.\" when the work is done, or "
     "\"Couldn't finish:\" and why when it is not; if you end a turn while the work is "
     "still going, say where it stands and open with neither\n"
-    + TIME_LINK_GUIDE + "\n")
+    + FORMAT_GUIDE + "\n")
 # Delegations whose run's closing message is posted to the person in its
 # executor's own chat, by task id: the run is told so. Cleared at the input's end.
 _ANSWER_IN_CHAT: set[str] = set()

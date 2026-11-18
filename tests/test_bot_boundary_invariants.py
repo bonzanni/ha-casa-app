@@ -82,6 +82,18 @@ from verdict_broker import VerdictBroker
 
 _A_ROLE_OF = {CASA_BOT: "assistant", FINANCE_BOT: "finance"}
 
+# The Bot API calls that post a message: plain sends, media, and the raw
+# ``sendRichMessage`` an answer goes out as.
+_POSTS = ("send_message", "send_document", "do_api_request")
+
+
+def _posted_texts(recorded) -> list:
+    """The text of each message in *recorded* ``(name, kwargs)`` calls: a
+    plain send's text, a rich message's Markdown."""
+    return [kw["text"] if name == "send_message"
+            else kw["api_kwargs"]["rich_message"]["markdown"]
+            for name, kw in recorded if name in ("send_message", "do_api_request")]
+
 
 def _a_fake_bot(bot_id: int) -> MagicMock:
     """A Bot API stand-in whose every call is recorded on the mock, so
@@ -90,6 +102,8 @@ def _a_fake_bot(bot_id: int) -> MagicMock:
     bot.id = bot_id
     ids = itertools.count(1000)
     bot.send_message = AsyncMock(side_effect=lambda **kw: NS(message_id=next(ids)))
+    bot.do_api_request = AsyncMock(
+        side_effect=lambda endpoint, **kw: NS(message_id=next(ids)))
     bot.edit_message_text = AsyncMock(return_value=True)
     bot.edit_message_reply_markup = AsyncMock(return_value=True)
     bot.send_chat_action = AsyncMock(return_value=True)
@@ -550,9 +564,10 @@ async def test_a_stop_after_a_restart_is_taken_and_told_on_the_bot_that_posted_t
     on_111.answer.assert_awaited_once_with("stopping…")
     assert stops == [{"ref": "request:k1"}]
     sent = [n for n, _ in calls(a_pair.casa)]
-    assert sent.count("edit_message_text") == 1 and sent.count("send_message") == 1
-    edit = next(kw for n, kw in calls(a_pair.casa) if n == "edit_message_text")
-    assert (edit["chat_id"], edit["message_id"]) == (OPERATOR, 7)
+    assert sent.count("do_api_request") == 1 and sent.count("send_message") == 1
+    edit = next(kw for n, kw in calls(a_pair.casa) if n == "do_api_request")
+    edit = edit["api_kwargs"]                               # the card's rich settle edit
+    assert "rich_message" in edit and (edit["chat_id"], edit["message_id"]) == (OPERATOR, 7)
     assert calls(a_pair.finance) == []
     # the request's queued continuation went with it
     assert pc.CONTINUATIONS.pending_count() == 0
@@ -739,6 +754,8 @@ def _b_fake_bot(bot_id: int) -> MagicMock:
     bot.id = bot_id
     ids = itertools.count(1000)
     bot.send_message = AsyncMock(side_effect=lambda **kw: NS(message_id=next(ids)))
+    bot.do_api_request = AsyncMock(
+        side_effect=lambda endpoint, **kw: NS(message_id=next(ids)))
     bot.edit_message_text = AsyncMock(return_value=True)
     bot.edit_message_caption = AsyncMock(return_value=True)
     bot.edit_message_reply_markup = AsyncMock(return_value=True)
@@ -1174,8 +1191,7 @@ async def test_a_token_that_turns_out_to_be_another_endpoints_bot_stays_stopped(
     out = await transport.send_response(admitted("still here"), {
         "_tg_bot": CASA_BOT, "chat_id": OPERATOR, "cid": "c1"})
     assert out is DeliveryOutcome.DELIVERED
-    assert [kw["text"] for name, kw in calls(casa) if name == "send_message"] == [
-        "still here"]
+    assert _posted_texts(calls(casa)) == ["still here"]
     assert apps[0].bot.mock_calls == []
     await finance._rebuild()            # a reconnect never revives it
     assert len(apps) == 1 and not finance.is_ready
@@ -1257,6 +1273,8 @@ def _c_fake_bot(bot_id: int) -> MagicMock:
     ids = itertools.count(1000)
     bot.send_message = AsyncMock(
         side_effect=lambda **kw: NS(message_id=next(ids)))
+    bot.do_api_request = AsyncMock(
+        side_effect=lambda endpoint, **kw: NS(message_id=next(ids)))
     bot.edit_message_text = AsyncMock(return_value=True)
     bot.edit_message_reply_markup = AsyncMock(return_value=True)
     bot.send_chat_action = AsyncMock(return_value=True)
@@ -1669,8 +1687,8 @@ async def test_casas_own_cards_and_notices_post_only_on_casas_bot(
     else:
         await run(c_pair, tmp_path)
     await asyncio.sleep(0)
-    on_111 = [(name, kw) for name, kw in calls(c_pair.casa)
-              if name in ("send_message", "send_document")]
+    on_111 = [(name, kw.get("api_kwargs", kw)) for name, kw in calls(c_pair.casa)
+              if name in _POSTS]
     assert on_111, f"{site}: nothing was posted on Casa's bot"
     assert {kw.get("chat_id") for _n, kw in on_111} == {OPERATOR}
     assert calls(c_pair.finance) == []
@@ -1761,6 +1779,8 @@ def _d_fake_application(bot_id: int) -> MagicMock:
     bot = MagicMock(name=f"bot{bot_id}")
     bot.id = bot_id
     bot.send_message = AsyncMock(side_effect=lambda **kw: NS(message_id=next(ids)))
+    bot.do_api_request = AsyncMock(
+        side_effect=lambda endpoint, **kw: NS(message_id=next(ids)))
     bot.edit_message_text = AsyncMock(return_value=True)
     bot.edit_message_reply_markup = AsyncMock(return_value=True)
     bot.send_chat_action = AsyncMock(return_value=True)
@@ -1844,8 +1864,7 @@ def d_boot(monkeypatch, tmp_path):
         def sent() -> list:
             if not apps:
                 return []
-            return [c.kwargs.get("text")
-                    for c in apps[-1].bot.send_message.await_args_list]
+            return _posted_texts((c[0], c[2]) for c in apps[-1].bot.mock_calls)
 
         return NS(case=case, path=path, transport=transport, ep=ep,
                   manager=manager, connect=connect, sent=sent, tmp=tmp_path,

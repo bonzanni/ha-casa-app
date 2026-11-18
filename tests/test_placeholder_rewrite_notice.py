@@ -156,12 +156,14 @@ async def test_the_notice_is_admitted_text_on_the_real_channel():
     """Plan round 1 (Terra): the fake above accepts any string, so it could
     not see that the real channel refuses text that did not pass admission
     (INV-OUT-001). The real channel, a recording bot: one Bot API call, the
-    notice on the wire, the path cleared."""
-    from telegram_channel_double import _mk_channel_with_fake_bot
+    notice on the wire as a rich message, the path cleared."""
+    from telegram_channel_double import _mk_channel_with_fake_bot, rich_markdown
 
     ch, bot = _mk_channel_with_fake_bot()
     reminders._placeholder_pending.add(PATH)
     await casa_core.notify_placeholder_rewrites(_FakeChannelManager(ch))
-    assert bot.send_message.await_count == 1
-    assert bot.send_message.await_args.kwargs["text"].startswith("⚠️ Updated " + PATH)
+    from channels.tg_rich import prepare
+    (sent,) = rich_markdown(bot)
+    assert sent.startswith(prepare("⚠️ Updated " + PATH))
+    bot.send_message.assert_not_awaited()
     assert PATH not in reminders._placeholder_pending

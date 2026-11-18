@@ -454,10 +454,14 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     owner = _owner(runtime_name=MORE, canonical='{"page":2}')
     hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
     _open(env.store, call="c-full", tool=MORE)
-    from text_util import utf16_len
-    cap = 4096 - rb.PROPOSAL_SETTLE_RESERVE
-    head_units, tell_units = utf16_len(LABEL + "\n"), utf16_len(settler.TELL_LINE + "\n")
-    full = _proposal(text="🙂" * ((cap - head_units) // 2))   # the largest the deposit admits; not with the tell above it
+    from channels.tg_rich import RICH_BUDGET_BYTES, prepare
+
+    def size(text):                                          # the prepared bytes a card is measured in
+        return len(prepare(text).encode("utf-8"))
+    cap = RICH_BUDGET_BYTES - rb.PROPOSAL_SETTLE_RESERVE_BYTES
+    head_bytes, tell_bytes = size(LABEL + "\n"), size(settler.TELL_LINE + "\n")
+    # "_" prepares to 5 bytes ("&#95;"): the largest body the deposit admits; not with the tell above it
+    full = _proposal(text="_" * ((cap - head_bytes) // 5))
     ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(full))
     assert err is None
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-full", {})
@@ -465,21 +469,20 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     assert settler.TELL_LINE not in text and text.startswith(LABEL + "\n")
     assert rec.notices == [(42, f"{LABEL} {settler.TELL_LINE}")]
     assert owner.captured == pr.Capture("delivered", "operator_proposal", rewritten=True)
-    # a proposal whose body plus the tell would fit Telegram's limit but NOT the
+    # a proposal whose body plus the tell would fit one rich message but NOT the
     # settlement reserve: the tell goes out as the notice, the message stays settleable
     env.rec.proposals.clear()
     rec.notices.clear()
     owner = _owner(runtime_name=MORE, canonical='{"page":2}')
     hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
     _open(env.store, call="c-edge", tool=MORE)
-    edge = (cap - head_units - tell_units) // 2 + 1           # with the tell: over the reserve, under 4,096
-    ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal(text="🙂" * edge)))
+    edge = (cap - head_bytes - tell_bytes) // 5 + 1           # with the tell: over the reserve, within one message
+    ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal(text="_" * edge)))
     assert err is None
-    assert cap < utf16_len(f"{settler.TELL_LINE}\n{LABEL}\n" + "🙂" * edge) <= 4096
+    assert cap < size(f"{settler.TELL_LINE}\n{LABEL}\n" + "_" * edge) <= RICH_BUDGET_BYTES
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-edge", {})
     (_, text, _, _, _), = env.rec.proposals
-    from text_util import utf16_len
-    assert settler.TELL_LINE not in text and utf16_len(text) <= 4096 - rb.PROPOSAL_SETTLE_RESERVE
+    assert settler.TELL_LINE not in text and size(text) <= cap
     assert rec.notices == [(42, f"{LABEL} {settler.TELL_LINE}")]
 
 

@@ -21,7 +21,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | When you are changing… | Read |
 |---|---|
 | Casa's per-turn notes in a turn's prompt or their order, what the origin records as the turn's question (origin_question), or how a specialist's own conversation runs the turn loop | [`architecture/turn-notes.md`](architecture/turn-notes.md) |
-| Telegram message rendering, pagination and its budgets, link-destination fallback, or the UTF-16 measurement | [`architecture/telegram-rendering.md`](architecture/telegram-rendering.md) |
+| Telegram rich messages, the touches on the agent's Markdown, the size budget or split, a refused message's fallback, reading back a replied-to message, or caption and entity rendering | [`architecture/telegram-rendering.md`](architecture/telegram-rendering.md) |
 | Telegram transport, callback namespaces, or the outbound request boundary | [`architecture/telegram.md`](architecture/telegram.md) |
 | a /v1 request or reply member, a bound on one (text lengths, list sizes), an event kind or outcome, an error code, the admission digest, the locale reported by hello, the fake controller | [`reference/casa-browser-contract.md`](reference/casa-browser-contract.md) |
 | a delivered-slot kind, the deposit validation of a link, message or file, the delivery hook or its receipt, the channel's operator-post methods, or the post echo ledger | [`architecture/plugin-delivered-slots.md`](architecture/plugin-delivered-slots.md) |

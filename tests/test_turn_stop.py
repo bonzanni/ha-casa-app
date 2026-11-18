@@ -45,8 +45,7 @@ from log_cid import cid_var
 from sdk_client_pool import interrupt_turns
 from session_registry import SessionRegistry, build_scoped_session_key
 from specialist_registry import SpecialistRegistry
-from telegram_channel_double import _mk_channel_with_fake_bot, make_transport
-from text_util import utf16_len
+from telegram_channel_double import _mk_channel_with_fake_bot, make_transport, rich_markdown
 
 try:
     from tests.test_agent_process import (
@@ -72,6 +71,14 @@ except ImportError:
         _seeded_registry,
         _trusted_msg,
     )
+
+
+def rich_drafts(bot) -> list[str]:
+    """The Markdown of every rich draft the fake bot took, in order."""
+    return [c.kwargs["api_kwargs"]["rich_message"]["markdown"]
+            for c in bot.do_api_request.await_args_list
+            if c.args[0] == "sendRichMessageDraft"]
+
 
 _CID = "stop-cid"
 _KEY = build_scoped_session_key("telegram", "butler", "fault-scope")
@@ -573,7 +580,7 @@ async def test_a_failing_end_only_logs(stream_fixture, caplog):
             if r.levelno >= logging.ERROR] == ["ending the reply stream failed"]
 
 
-async def test_an_overlong_streamed_reply_is_paged_at_the_end(
+async def test_an_overlong_streamed_reply_is_sent_whole_at_the_end(
     tmp_path, monkeypatch,
 ):
     # The real channel on a fake bot, its draft stream on a stepped clock.
@@ -584,11 +591,12 @@ async def test_an_overlong_streamed_reply_is_paged_at_the_end(
     agent, _registry = await _agent_on(
         tmp_path, make_transport(ch).get("telegram"))
 
-    # Two messages the turn joins into one reply of 6,000 UTF-16 units; after
-    # each, the stream gets two rounds to send what was written so far.
-    parts = ["\U0001F389" * 1000, "\U0001F389" * 1999]
+    # Two messages the turn joins into one reply of 36,002 UTF-8 bytes, past
+    # what one rich message holds; after each, the stream gets two rounds to
+    # send what was written so far.
+    parts = ["\U0001F389" * 5000, "\U0001F389" * 4000]
     reply = "\n\n".join(parts)
-    assert utf16_len(reply) == 6000
+    assert len(reply.encode("utf-8")) == 36_002
 
     async def pause() -> None:
         await stepped.rounds(2)
@@ -604,13 +612,11 @@ async def test_an_overlong_streamed_reply_is_paged_at_the_end(
         await agent.aclose()
 
     assert response is not None and response.content == reply
-    drafts = [c.kwargs["text"] for c in bot.send_message_draft.await_args_list]
+    drafts = rich_drafts(bot)
     assert drafts == [parts[0]]                 # the text that still fitted
-    assert all(utf16_len(text) <= 4096 for text in drafts)
-    sent = [c.kwargs["text"] for c in bot.send_message.await_args_list]
-    assert len(sent) >= 2
-    assert all(utf16_len(text) <= 4096 for text in sent)
-    assert "".join("".join(sent).split()) == "".join(reply.split())
+    # the whole reply, as rich messages cut at the paragraph
+    assert rich_markdown(bot) == parts
+    bot.send_message.assert_not_awaited()
     assert bot.edit_message_text.await_count == 0
     assert ch._streams == {}
 
@@ -697,13 +703,15 @@ async def test_stop_end_to_end_from_the_update_to_the_reply(
         await bus.send(msg)
         await asyncio.wait_for(attempts.in_flight.wait(), timeout=5)
         await stepped.rounds(1)
-        drafts = bot.send_message_draft.await_args_list
-        assert [c.kwargs["text"] for c in drafts] == ["Hello wor"]
+        drafts = [c for c in bot.do_api_request.await_args_list
+                  if c.args[0] == "sendRichMessageDraft"]
+        assert [c.kwargs["api_kwargs"]["rich_message"] for c in drafts] == [
+            {"markdown": "Hello wor"}]
         assert bot.send_message.await_count == 0
 
         # Stop, as Telegram reports it: the chat and the draft's id.
         [(draft_id, (chat, _stream))] = ch._streams.items()
-        assert drafts[0].kwargs["draft_id"] == int(draft_id)
+        assert drafts[0].kwargs["api_kwargs"]["draft_id"] == int(draft_id)
         await ch._on_stop_update(types.SimpleNamespace(api_kwargs={
             "stopped_message_generation": {
                 "chat": {"id": int(chat), "type": "private"},
@@ -717,9 +725,9 @@ async def test_stop_end_to_end_from_the_update_to_the_reply(
         # ... and what it had written is the reply: one ordinary message,
         # with the draft left as it was and no stream behind it.
         assert [c.interrupts for c in attempts.clients] == [1]
-        assert [c.kwargs["text"] for c in bot.send_message.await_args_list] \
-            == ["Hello wor"]
-        assert bot.send_message_draft.await_count == 1
+        assert rich_markdown(bot) == ["Hello wor"]
+        bot.send_message.assert_not_awaited()
+        assert len(rich_drafts(bot)) == 1
         assert bot.edit_message_text.await_count == 0
         assert ch._streams == {}
         assert [t for t in asyncio.all_tasks()

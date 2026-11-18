@@ -815,9 +815,9 @@ async def test_a_refused_greeting_lets_the_next_start_open_the_chat(world):
     await ch.speak_first()
     _turns(bus, "finance")
 
-    async def refuse(**_kw):
+    async def refuse(*_a, **_kw):
         raise Forbidden("Forbidden: bot can't initiate conversation with a user")
-    ch._app.bot.send_message = refuse
+    ch._app.bot.do_api_request = refuse
     await ch.send_response(casa_text("Hi, I'm Alex."),
                            {"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
     await _handle(ch, _text("/start"))
@@ -872,9 +872,9 @@ async def test_a_start_held_for_a_greeting_that_never_lands_is_replayed(world, e
     if end == "silent":
         await ch.turn_finished({"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
     else:
-        async def refuse(**_kw):
+        async def refuse(*_a, **_kw):
             raise Forbidden("Forbidden: bot can't initiate conversation with a user")
-        ch._app.bot.send_message = refuse
+        ch._app.bot.do_api_request = refuse
         await ch.send_response(casa_text("Hi, I'm Alex."),
                                {"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
     await ch._start_replay
@@ -943,14 +943,16 @@ async def test_a_greeting_telegram_refuses_is_one_info_line(world, caplog, error
     exc = (Forbidden("Forbidden: bot can't initiate conversation with a user")
            if error == "forbidden" else BadRequest("Chat not found"))
 
-    async def refuse(**_kw):
+    async def refuse(*_a, **_kw):
         raise exc
-    ch._app.bot.send_message = refuse
+    ch._app.bot.do_api_request = refuse
     caplog.set_level(logging.INFO)
     out = await ch.send_response(casa_text("Hi, I'm Alex."),
                                  {"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
     assert out is DeliveryOutcome.NOT_DELIVERED
-    [line] = [r for r in caplog.records if r.levelno >= logging.INFO]
+    # the channel's own line (the rich sender logs its unformatted retry itself)
+    [line] = [r for r in caplog.records
+              if r.levelno >= logging.INFO and r.name == "channels.telegram"]
     assert line.levelno == logging.INFO and "greeting" in line.getMessage()
     with pytest.raises(type(exc)):              # any other reply is not excused
         await ch.send_response(casa_text("Hi."), {"chat_id": str(OPERATOR)})
@@ -982,20 +984,26 @@ async def test_an_agents_own_chat_names_it_plainly(world, monkeypatch):
 async def test_a_casa_card_may_carry_link_buttons(world):
     from output_boundary import casa_text
     ch, _ = _endpoint("casa")
+    rich = []
+
+    async def do_api_request(endpoint, *, api_kwargs, return_type=None):
+        rich.append(api_kwargs)
+        return types.SimpleNamespace(message_id=950)
+    ch._app.bot.do_api_request = do_api_request
     mid = await ch.post_dm_keyboard(chat_id=OPERATOR, request_id="q" * 32,
                                     text=casa_text("Finance can get a separate chat with you."),
                                     options=["Create Finance's chat", "Not now"],
                                     urls=["https://t.me/newbot/EllenBot/FinanceBot?name=Finance"])
-    assert mid is not None
-    rows = ch._app.bot.sent[0]["reply_markup"].inline_keyboard
-    assert rows[0][0].url == "https://t.me/newbot/EllenBot/FinanceBot?name=Finance"
-    assert rows[0][0].callback_data is None
-    assert rows[1][0].callback_data == f"v1|resident_ask|{'q' * 32}|1" and rows[1][0].url is None
+    assert mid == 950
+    rows = rich[0]["reply_markup"]["inline_keyboard"]
+    assert rows[0][0]["url"] == "https://t.me/newbot/EllenBot/FinanceBot?name=Finance"
+    assert "callback_data" not in rows[0][0]
+    assert rows[1][0]["callback_data"] == f"v1|resident_ask|{'q' * 32}|1" and "url" not in rows[1][0]
     assert await ch.edit_dm_message(OPERATOR, mid, "Finance's chat is ready.",
                                     buttons=[("Open Finance's chat", "")],
                                     urls=["https://t.me/FinanceBot"])
-    [[button]] = ch._app.bot.edited[0]["reply_markup"].inline_keyboard
-    assert button.url == "https://t.me/FinanceBot" and button.callback_data is None
+    [[button]] = rich[1]["reply_markup"]["inline_keyboard"]
+    assert button == {"text": "Open Finance's chat", "url": "https://t.me/FinanceBot"}
 
 
 @pytest.mark.parametrize("kind", ENDPOINTS)

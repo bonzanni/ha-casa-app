@@ -9,9 +9,12 @@ parameter still carrying a lone surrogate raises ``NetworkError`` (cause
 interpreter sees the real library; a real ``Bot`` over an ``httpx.MockTransport``
 records every request that reached the transport, and each arm asserts the
 COUNT of ``sendMessage`` / ``editMessageText`` / ``sendMessageDraft`` /
-``sendDocument`` requests —
+``sendRichMessage`` / ``sendDocument`` requests —
 never a status — plus the decoded form values: no surrogate remains, and each
-raw surrogate the input carried contributes exactly one U+FFFD.
+raw surrogate the input carried contributes exactly one U+FFFD. The rich
+endpoints (``sendRichMessage``, ``editMessageText`` with ``rich_message``,
+``sendRichMessageDraft``) carry the text nested in a JSON value; there the
+decoded Markdown is checked the same way.
 
 The request class is resolved as ``channels.telegram._SurrogateSafeRequest``
 where it exists and the library's own ``HTTPXRequest`` otherwise — what the
@@ -31,7 +34,7 @@ CASA = REPO / "casa" / "rootfs" / "opt" / "casa"
 
 _SCRIPT = textwrap.dedent(
     r"""
-    import asyncio, email, sys, types
+    import asyncio, email, json, sys, types
     from urllib.parse import parse_qs
 
     import httpx
@@ -60,7 +63,7 @@ _SCRIPT = textwrap.dedent(
         if request.url.path.endswith("getMe"):
             return httpx.Response(200, json={"ok": True, "result": {
                 "id": 1, "is_bot": True, "first_name": "t", "username": "t"}})
-        if request.url.path.endswith("sendMessageDraft"):
+        if request.url.path.endswith(("sendMessageDraft", "sendRichMessageDraft")):
             return httpx.Response(200, json={"ok": True, "result": True})
         return httpx.Response(200, json={"ok": True, "result": {
             "message_id": 7, "date": 0, "chat": {"id": 42, "type": "private"}}})
@@ -85,7 +88,15 @@ _SCRIPT = textwrap.dedent(
                  part.get_param("filename", header="content-disposition"),
                  part.get_payload(decode=True)) for part in msg.get_payload()]
 
-    TEXT_ENDPOINTS = ("sendMessage", "editMessageText", "sendMessageDraft")
+    TEXT_ENDPOINTS = ("sendMessage", "editMessageText", "sendMessageDraft",
+                      "sendRichMessage", "sendRichMessageDraft")
+
+    def text_of(r):
+        # A rich message carries its text as the Markdown inside rich_message.
+        f = flat(r)
+        if "rich_message" in f:
+            return json.loads(f["rich_message"]).get("markdown")
+        return f.get("text")
     R = "�"
     MEDIA = b"\x00casa-media\xff"
     CTX = lambda: {"chat_id": "42"}
@@ -96,7 +107,7 @@ _SCRIPT = textwrap.dedent(
         # that must have reached the transport — position and every other
         # character included, so deletion, a shifted replacement or a rewritten
         # neighbour all fail here, not only a wrong count.
-        got = [(endpoint(r), flat(r).get("text")) for r in seen
+        got = [(endpoint(r), text_of(r)) for r in seen
                if endpoint(r) in TEXT_ENDPOINTS]
         reason = (f"{type(exc).__name__}(cause={type(exc.__cause__).__name__})"
                   if exc is not None else "no raise")
@@ -133,42 +144,60 @@ _SCRIPT = textwrap.dedent(
             ch._app = types.SimpleNamespace(bot=bot)
             seen.clear()
 
-            # ARM1 — spanless three-page reply, one surrogate per page.
+            # ARM1 — a long reply, one surrogate on each of its three lines:
+            # one rich message, each surrogate replaced in place.
             a1 = ("\ud800" + "x" * 4095 + "\n" + "\ud800" + "y" * 4095
                   + "\n" + "\ud800" + "z" * 4095)
-            await run_arm("spanless-3-pages", ch.send_response(admitted(a1), CTX()),
-                          [("sendMessage", R + "x" * 4095),
-                           ("sendMessage", R + "y" * 4095),
-                           ("sendMessage", R + "z" * 4095)],
+            await run_arm("long-reply", ch.send_response(admitted(a1), CTX()),
+                          [("sendRichMessage", R + "x" * 4095 + "\n" + R + "y" * 4095
+                            + "\n" + R + "z" * 4095)],
                           outcome=DeliveryOutcome.DELIVERED)
 
-            # ARM2 — one page whose link converts and a surrogate after it.
+            # ARM2 — a reply with a link and a surrogate after it.
             a2 = "[link](https://example.test/a) \ud800"
-            flats = await run_arm("single-page-link", ch.send_response(admitted(a2), CTX()),
-                          [("sendMessage", "link " + R)],
-                          outcome=DeliveryOutcome.DELIVERED)
-            if flats and ("text_link" not in flats[0].get("entities", "")
-                          or "https://example.test/a" not in flats[0].get("entities", "")):
-                failures.append("single-page-link: link entity missing from the request")
-
-            # ARM3 — plain send with a LOW surrogate (kills high-only cleaning).
-            await run_arm("plain-send-low-surrogate", ch.send(admitted("\udc00 hello"), CTX()),
-                          [("sendMessage", R + " hello")],
+            await run_arm("reply-with-link", ch.send_response(admitted(a2), CTX()),
+                          [("sendRichMessage", "[link](https://example.test/a) " + R)],
                           outcome=DeliveryOutcome.DELIVERED)
 
-            # ARM5 — two pages whose bold spans convert, surrogate after each.
+            # ARM3 — send with a LOW surrogate (kills high-only cleaning).
+            await run_arm("send-low-surrogate", ch.send(admitted("\udc00 hello"), CTX()),
+                          [("sendRichMessage", R + " hello")],
+                          outcome=DeliveryOutcome.DELIVERED)
+
+            # ARM5 — two bold lines, a surrogate after each.
             a5 = ("**bold** " + "x" * 4080 + "\ud800\n"
                   + "**bold** " + "y" * 4080 + "\ud800")
-            flats = await run_arm("convertible-2-pages", ch.send_response(admitted(a5), CTX()),
-                          [("sendMessage", "bold " + "x" * 4080 + R),
-                           ("sendMessage", "bold " + "y" * 4080 + R)],
+            await run_arm("bold-reply", ch.send_response(admitted(a5), CTX()),
+                          [("sendRichMessage", "**bold** " + "x" * 4080 + R + "\n"
+                            + "**bold** " + "y" * 4080 + R)],
                           outcome=DeliveryOutcome.DELIVERED)
-            if flats and '"bold"' not in flats[0].get("entities", ""):
-                failures.append("convertible-2-pages: page 1 lost its bold entity")
 
-            # Draft — the text a reply is written into while the model writes.
+            # Draft — the text a reply is written into while the model writes,
+            # a rich draft.
             await run_arm("draft", ch._send_draft("42", 7, admitted("x\ud800")),
-                          [("sendMessageDraft", "x" + R)])
+                          [("sendRichMessageDraft", "x" + R)])
+
+            # Rich — the Markdown nested in rich_message, for a send, an edit
+            # and a draft. The ordered list is the count assertion.
+            rich_endpoints = ("sendRichMessage", "editMessageText", "sendRichMessageDraft")
+            seen.clear()
+            try:
+                await ch._send_rich(42, "x\ud800")
+                await ch._edit_rich(42, 7, "\udc00 y")
+                await ch._send_rich_draft(42, 7, "z\ud800", can_stop=True,
+                                          keep_on_stop=True)
+            except telegram.error.TelegramError as e:
+                failures.append(f"rich: {type(e).__name__}(cause={type(e.__cause__).__name__})")
+            got = [(endpoint(r), json.loads(flat(r)["rich_message"]).get("markdown"),
+                    flat(r).get("chat_id"))
+                   for r in seen if endpoint(r) in rich_endpoints]
+            print(f"rich: {[(e, m) for e, m, _c in got]!r}")
+            if got != [("sendRichMessage", "x" + R, "42"),
+                       ("editMessageText", R + " y", "42"),
+                       ("sendRichMessageDraft", "z" + R, "42")]:
+                failures.append(f"rich: requests differ: {got!r}")
+            if any(0xD800 <= ord(c) <= 0xDFFF for _e, m, _c in got for c in m or ""):
+                failures.append("rich: a surrogate reached the transport")
 
             # Media — the caption is a form value too; the bytes are not.
             await run_arm("media-caption",
@@ -205,9 +234,10 @@ _SCRIPT = textwrap.dedent(
 def test_pin_inv_tg_009_no_request_leaves_with_a_surrogate_code_point():
     """INV-TG-009: every string parameter of every request Casa's Telegram bot
     makes has each surrogate code point replaced by one U+FFFD below every
-    sender — block, single-page, plain, convertible-entities, the draft send
-    and media caption — so the reply is DELIVERED with the character replaced
-    instead of raising before any request leaves.
+    sender — a long reply, a reply with a link or bold, ``send``, the draft
+    send, the rich send, edit and draft, and media caption — so the reply is
+    DELIVERED with the character replaced instead of raising before any
+    request leaves.
 
     Counts are the assertion. At the base every block arm raises
     ``NetworkError`` whose cause is ``UnicodeEncodeError`` with ZERO requests;
@@ -222,3 +252,5 @@ def test_pin_inv_tg_009_no_request_leaves_with_a_surrogate_code_point():
     )
     assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
     assert proc.stdout.strip().endswith("OK"), proc.stdout
+    # The raw rich edit does not trip the library's "use the method" warning.
+    assert "Please use" not in proc.stderr, proc.stderr

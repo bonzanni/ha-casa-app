@@ -244,12 +244,25 @@ def _install_telegram_stubs() -> None:
             self.allow_sending_without_reply = allow_sending_without_reply
             self.quote = quote
 
+        def to_dict(self):
+            return {k: v for k, v in vars(self).items() if v is not None}
+
     tg.ReplyParameters = _FakeReplyParameters
+
+    # A rich message is sent as a raw API call that names its return type.
+    class _FakeMessage:
+        def __init__(self, message_id=None, **kw):
+            self.message_id = message_id
+
+    tg.Message = _FakeMessage
 
     # Slice 5g: an operator link is posted without a link preview.
     class _FakeLinkPreviewOptions:
         def __init__(self, is_disabled=None, **kw):
             self.is_disabled = is_disabled
+
+        def to_dict(self):
+            return {k: v for k, v in vars(self).items() if v is not None}
 
     tg.LinkPreviewOptions = _FakeLinkPreviewOptions
 
@@ -320,9 +333,16 @@ def _install_telegram_stubs() -> None:
             self.url = url
             self.style = style
 
+        def to_dict(self):
+            return {k: v for k, v in vars(self).items() if v is not None}
+
     class _FakeInlineKeyboardMarkup:
         def __init__(self, inline_keyboard):
             self.inline_keyboard = inline_keyboard
+
+        def to_dict(self):
+            return {"inline_keyboard": [[b.to_dict() for b in row]
+                                        for row in self.inline_keyboard]}
 
     tg.InlineKeyboardButton = _FakeInlineKeyboardButton
     tg.InlineKeyboardMarkup = _FakeInlineKeyboardMarkup

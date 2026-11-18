@@ -71,6 +71,21 @@ class _Bot:
                           "message_id": self._next})
         return SimpleNamespace(message_id=self._next)
 
+    async def do_api_request(self, endpoint, *, api_kwargs, return_type=None):
+        """A rich message, recorded like a plain one: its Markdown as the
+        text, its keyboard as sent (a dict)."""
+        assert endpoint == "sendRichMessage", endpoint
+        if self.fail_sends:
+            self.fail_sends -= 1
+            raise RuntimeError("send failed")
+        self._next += 1
+        self.sent.append({"chat_id": api_kwargs["chat_id"],
+                          "text": api_kwargs["rich_message"].get("markdown"),
+                          "reply_to": (api_kwargs.get("reply_parameters") or {}).get("message_id"),
+                          "markup": api_kwargs.get("reply_markup"),
+                          "message_id": self._next})
+        return SimpleNamespace(message_id=self._next)
+
     async def edit_message_text(self, chat_id, message_id, text, **kw):
         self.edits.append({"chat_id": chat_id, "message_id": message_id,
                            "text": str(text), "markup": kw.get("reply_markup")})
@@ -268,6 +283,8 @@ def _reply_update(text, quoted_id, *, user=OPERATOR, quoted_text="📊 Finance s
 
 
 def _buttons(markup):
+    if isinstance(markup, dict):            # a rich message's keyboard, as sent
+        return [SimpleNamespace(**b) for row in markup["inline_keyboard"] for b in row]
     return [b for row in markup.inline_keyboard for b in row]
 
 

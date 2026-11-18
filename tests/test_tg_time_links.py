@@ -12,16 +12,8 @@ from pathlib import Path
 import pytest
 from telegram import MessageEntity
 
-import agent
-import background_jobs
-from channels.tg_richtext import (
-    TIME_LINK_GUIDE,
-    plain_with_link_targets,
-    render,
-    render_paged,
-    time_instant,
-)
-from tools import ANSWER_SHOWN_LINE
+from channels.tg_richtext import render
+from channels.tg_rich import FORMAT_GUIDE, time_instant
 
 CASA = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
 MON_0900_ROME = 1794816000          # 2026-11-16T08:00:00Z
@@ -139,22 +131,12 @@ def test_a_time_link_in_a_heading_is_not_inside_its_bold():
     assert got == [("bold", 0, 5), ("date_time", 5, 3)]
 
 
-def test_a_time_link_in_a_table_renders_the_table_as_a_stanza():
+def test_a_time_link_in_a_table_keeps_the_table_literal_in_a_caption():
     src = "| Item | When |\n|---|---|\n| Call | [Mon](time:2026-11-16T09:00+01:00) |"
     display, ents = render(src)
-    assert display == "Item: Call\nWhen: Mon"
+    assert display == "| Item | When |\n|---|---|\n| Call | Mon |"
     assert _times(ents) == [(display.index("Mon"), 3, MON_0900_ROME)]
     assert all(e.type != MessageEntity.PRE for e in ents)
-
-
-def test_a_page_cut_through_a_time_link_keeps_an_entity_on_each_page():
-    src = "x" * 4090 + "[" + "M" * 20 + "](time:2026-11-16T09:00+01:00)"
-    pages = render_paged(src)
-    assert len(pages) == 2
-    (first, e1), (second, e2) = pages
-    assert first.endswith("M" * 6) and second == "M" * 14
-    assert _times(e1) == [(4090, 6, MON_0900_ROME)]
-    assert _times(e2) == [(0, 14, MON_0900_ROME)]
 
 
 def test_other_schemes_still_leave_the_line_literal():
@@ -166,27 +148,15 @@ def test_an_empty_time_label_leaves_the_line_literal():
     assert render(src) == (src, None)
 
 
-def test_the_plain_fallback_shows_the_label_only():
-    assert plain_with_link_targets(*render("[Mon](time:2026-11-16)")) == "Mon"
-
-
-def test_the_guide_is_the_fixed_copy():
-    assert TIME_LINK_GUIDE == (
+def test_the_formatting_guide_carries_the_time_link_line():
+    assert (
         "time_links: in the messages the person reads in this chat (answers, questions, "
         "progress notes, summaries) write every date or time as a Markdown link whose target "
         "is time: and the moment in ISO 8601 with its UTC offset, a T between date and time and "
         "no spaces, keeping your own words as the label, for example "
         "[Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or [16 November](time:2026-11-16). "
         "Telegram makes it tappable. Everywhere else (files, "
-        "emails, tool fields, records) write dates plainly.")
-
-
-def test_every_writer_of_telegram_text_is_taught_time_links():
-    assert TIME_LINK_GUIDE in agent._channel_context_block("telegram")
-    assert TIME_LINK_GUIDE not in agent._channel_context_block("voice")
-    assert TIME_LINK_GUIDE in ANSWER_SHOWN_LINE
-    assert TIME_LINK_GUIDE in background_jobs._job_rules()
-    assert TIME_LINK_GUIDE in background_jobs._job_rules(can_ask=False)
+        "emails, tool fields, records) write dates plainly.") in FORMAT_GUIDE
 
 
 @pytest.mark.parametrize("src", [

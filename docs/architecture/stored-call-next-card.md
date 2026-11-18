@@ -96,12 +96,13 @@ refuses a deposit with a Close button as `bad_proposal`.
 **A card may bring plain pages before it (#1377).** A list longer than one message, with its
 actions on a card after it: any `operator_proposal` deposit — a plugin's deposit, a `More`
 call's, or a tap's `next` card, all judged by `proposal_ok` — may carry `pages`, a list of one
-to six strings, each obeying the card text's own rule (non-blank, at most 4,000 characters, no
-control character but newline and tab, and one Telegram message with Casa's label line);
+to six strings, each obeying the card text's own rule (non-blank, no control character but newline and
+tab, and one rich message with Casa's label line that leaves the settle line's bytes free,
+`result_broker.card_fits`);
 anything else is `bad_proposal`, and absent or `null` is today's card. `_post_proposal` keeps
 its synchronous block first (the live count, the revision supersede, the card's record), then
-sends each page in order as one labelled message — `deliver_operator_page`, rendered like the
-card and, when Telegram refuses its formatting, resent whole as one plain message (never split),
+sends each page in order as one labelled message — `deliver_operator_page`, a rich message like the
+card and, when Telegram refuses its formatting, resent whole as plain blocks in one message,
 filed under the card's own post record as it lands, so a reply on any page goes where a reply
 on the card goes — all pages under one delivery bound, and then the card as before. The delivery is proven
 only when every page and the card landed; its receipt adds `pages` (the count). A page that does not land sends no card: the record

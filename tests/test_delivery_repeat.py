@@ -217,6 +217,18 @@ def _prop_identity(**over):
     return with_delivery(prop._identity(**over))
 
 
+WAIT_S = 10                  # an awaited step that never comes fails instead of hanging
+
+
+def _unfit_warning() -> str:
+    """A warning too large to join the card, so it is told after the post:
+    more prepared bytes than one rich message holds."""
+    from channels.tg_rich import RICH_BUDGET_BYTES
+    warning = "⚠ " + "w" * RICH_BUDGET_BYTES
+    assert not rb.card_fits(warning)
+    return warning
+
+
 async def _deliver_proposal(env, *, call, identity=None, warning=None, revision="r-9"):
     prop._open(env.store, call=call, identity=identity or _prop_identity())
     ref, err = env.store.deposit(client_id="c1", slot=prop.SLOT,
@@ -277,9 +289,8 @@ async def test_a_proposal_is_remembered_at_its_proof_before_any_later_await(env,
         started.set()
         await asyncio.Event().wait()
     env.rec.deliver_casa_notice = stuck_notice
-    long_warning = "⚠ " + "w" * 4000                      # cannot fit the card: told after
-    task = asyncio.create_task(_deliver_proposal(env, call="call-1", warning=long_warning))
-    await started.wait()
+    task = asyncio.create_task(_deliver_proposal(env, call="call-1", warning=_unfit_warning()))
+    await asyncio.wait_for(started.wait(), WAIT_S)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -337,7 +348,7 @@ async def test_a_proposal_superseded_during_the_repeat_tell_is_posted_fresh(env)
     env.rec.deliver_casa_notice = notice
     await _deliver_proposal(env, call="call-1")
     task = asyncio.create_task(_deliver_proposal(env, call="call-2", warning="⚠ rewritten"))
-    await started.wait()
+    await asyncio.wait_for(started.wait(), WAIT_S)
     prop._open(env.store, call="call-3", identity=_prop_identity())
     ref, _ = env.store.deposit(client_id="c1", slot=prop.SLOT,
                                value=json.dumps(prop._proposal()), key="r2000")
@@ -357,8 +368,8 @@ async def test_a_cancelled_proposal_keeps_its_echo_and_its_repeat_adds_none(env,
         started.set()
         await asyncio.Event().wait()
     env.rec.deliver_casa_notice = stuck_notice
-    task = asyncio.create_task(_deliver_proposal(env, call="call-1", warning="⚠ " + "w" * 4000))
-    await started.wait()
+    task = asyncio.create_task(_deliver_proposal(env, call="call-1", warning=_unfit_warning()))
+    await asyncio.wait_for(started.wait(), WAIT_S)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

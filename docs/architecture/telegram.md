@@ -10,8 +10,8 @@ last_reviewed: 2026-11-10
 
 How Telegram messages become turns and how answers come back: transport selection,
 authentication, and interactive keyboards. How an answer is
-rendered and paginated for the platform — the markdown grammar, the message budgets,
-link-destination fallbacks and the UTF-16 measurement — is
+sent as Telegram rich messages — Casa's touches on the agent's Markdown, the size budget and
+the split, the plain fallbacks and the read-back of a rich message — is
 [`architecture/telegram-rendering.md`](telegram-rendering.md); a reply shown as a draft while
 the model writes it, and Stop on it, is [`telegram-reply-drafts.md`](telegram-reply-drafts.md).
 It does not cover the Bot API
@@ -197,9 +197,9 @@ make true mid-turn. A caller that suppresses a one-shot notice on a normal retur
 consumes notices that were never displayed.
 
 Because such a notice is prepended at the *head* of the text, the outcome keys on the first
-unit of output rather than on total success: the first chunk of a split message or page 1 of
-a paginated response — a streamed reply included, since it ends through the same send. A
-later page failing does not un-show what page 1 displayed. One consequence worth stating,
+unit of output rather than on total success: the first message of a reply split into
+several — a streamed reply included, since it ends through the same send. A
+later message failing does not un-show what the first displayed. One consequence worth stating,
 because it inverts the naive reading: a streamed reply whose final send never landed is
 **not delivered**, even though the operator watched its draft arrive. The notice is
 prepended after streaming, so it was never in what they saw.
@@ -274,8 +274,8 @@ separate scope and are untouched here, as they always were.
 
 **Three outbound messages are composed by Casa, not by an agent: a plugin's delivered
 link, message and file.** The channel's part — one link send (a message with its URL button,
-the labelled link only when the platform refuses the button), the whole-plan
-judgement and multi-page loop for a message, the kind's media method for a file — is in
+the labelled link only when the platform refuses the button), the message-count
+judgement and the rich send for a message, the kind's media method for a file — is in
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -045, -046); all
 three are Casa-composed notices under the output boundary.
 
@@ -292,7 +292,8 @@ channel stamps it after sanitization; the agent's turn reads it only on a Telegr
 message from Casa's bot that belongs to no task — the resident's own reply, a Casa card or
 notice, a specialist's post from before an upgrade — is named as one of the chat's earlier
 messages, never by an author Casa cannot know; a reply to an ended task's post names whose task it
-was and that it has ended. What it does not cover: a file sent as a reply without a caption starts no
+was and that it has ended. What the quoted message read is its text, else its caption, else, for a
+rich message, its blocks flattened to text (`quoted_text`, [`telegram-rendering.md`](telegram-rendering.md)). What it does not cover: a file sent as a reply without a caption starts no
 turn and so carries no note.
 
 ## Failure behavior

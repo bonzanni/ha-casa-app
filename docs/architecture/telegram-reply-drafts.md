@@ -14,7 +14,7 @@ is sent, and what a press of the draft's Stop button does to the running turn. W
 get a token callback at all, and what the stream may carry, is
 [`turn-loop.md`](turn-loop.md) (INV-TURN-009) and
 [`output-scope-properties.md`](output-scope-properties.md) (INV-OUT-006); how the reply
-itself is rendered and paged is [`telegram-rendering.md`](telegram-rendering.md); what the
+itself is prepared and split is [`telegram-rendering.md`](telegram-rendering.md); what the
 pool does with an interrupted client is [`sdk-client-pool.md`](sdk-client-pool.md)
 (INV-TURN-002).
 
@@ -25,12 +25,13 @@ the Claude Agent SDK for partial messages, as a voice turn does (`agent.py::_PAR
 so the token callback receives the accumulated reply text as the model writes it. A
 sub-agent's in-flight text deltas are not streamed, and what the reply contains — the fold of
 finished messages — is the same as on a turn that never streamed. The callback
-(`TelegramChannel.create_on_token`) writes that text into a Telegram draft (the Bot API's
-`sendMessageDraft`), rendered as the final reply is, with Telegram's own Stop button
-(`can_stop`, `keep_on_stop`) and a fresh non-zero draft id per turn. The draft is there from
-the start of the turn: `create_on_token` starts the stream, which shows an empty draft until
-the first word, so Stop can be pressed while the model is still thinking or calling a tool.
-An empty draft is sent without `keep_on_stop`, so a press removes it; one with text stays in
+(`TelegramChannel.create_on_token`) writes that text into a Telegram rich draft (the Bot
+API's `sendRichMessageDraft`), its Markdown prepared as the final reply's is, with Telegram's
+own Stop button (`can_stop`, `keep_on_stop`) and a fresh non-zero draft id per turn. The draft
+is there from the start of the turn: `create_on_token` starts the stream, which shows an empty
+draft until the first word, so Stop can be pressed while the model is still thinking or
+calling a tool. Telegram refuses an empty rich draft, so the empty one is a plain
+`sendMessageDraft`, sent without `keep_on_stop`, so a press removes it; one with text stays in
 the chat until the reply arrives. The draft never shows an answer's reply marker: admission
 takes it off every stream update and holds one still being written, so the draft stays empty
 until the first word after it ([`output-boundary.md`](output-boundary.md)). When the model is done,
@@ -44,7 +45,7 @@ stores the latest text in the turn's `DraftStream` (`channels/telegram_draft.py`
 per turn does the sending on its own clock: about every 0.6 s it sends the stored text if it
 changed since the last send; with nothing new it re-sends the same text every 10 s so the
 draft does not vanish, and stops re-sending once the text has not changed for 10 minutes,
-counted from the start of the turn while the draft is still empty. A text that no longer fits one message stops growing:
+counted from the start of the turn while the draft is still empty. A text that no longer fits one rich message (`RICH_BUDGET_BYTES` of prepared UTF-8) stops growing:
 the last text that fitted keeps being re-sent under the same rules. A flood wait is slept.
 The draft decides nothing about the turn.
 
@@ -79,7 +80,7 @@ waits on a draft to deliver the answer.
 
 What it does not cover: what the client shows of a draft once it is ended — after a turn that
 sends nothing, an empty draft stays until Telegram removes it on its own; a reply too long
-for one message is paged by the ordinary send, as any reply is.
+for one message is split into several by the ordinary send, as any reply is.
 
 **INV-TG-024**: A stop update acts only on a draft the receiving endpoint is writing now, in the chat the update names — it ends that stream and asks the turns under its correlation id to stop; every other update, and every other press, is left alone and nothing is sent.
 

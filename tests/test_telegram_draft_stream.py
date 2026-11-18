@@ -19,7 +19,6 @@ from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram import MessageEntity
 from telegram.error import RetryAfter
 
 from channels.telegram_draft import DraftStream, DraftTooLong
@@ -291,24 +290,32 @@ async def finish_turn(on_token) -> None:
     assert stream_tasks() == []
 
 
-async def test_draft_call_shape():
+def _rich_drafts(bot) -> list[dict]:
+    """The ``api_kwargs`` of every ``sendRichMessageDraft`` the fake bot took."""
+    return [c.kwargs["api_kwargs"] for c in bot.do_api_request.await_args_list
+            if c.args[0] == "sendRichMessageDraft"]
+
+
+async def test_draft_is_sendRichMessageDraft_with_can_stop():
     ft = FakeTime()
     ch, bot = channel(ft)
     on_token = ch.create_on_token(dict(_CTX))
     await on_token(admitted("**hi**"))
     await run_until(ft, 1.0)                    # one round of the stream
 
-    assert bot.send_message_draft.await_count == 1
-    call = bot.send_message_draft.await_args
-    assert call.args == ()
-    assert set(call.kwargs) == {
-        "chat_id", "draft_id", "text", "entities", "api_kwargs"}
-    assert call.kwargs["chat_id"] == 42
-    draft_id = call.kwargs["draft_id"]
+    # the text arrived before the first round: no empty draft, one rich one
+    assert bot.send_message_draft.await_count == 0
+    assert bot.do_api_request.await_count == 1
+    call = bot.do_api_request.await_args
+    assert call.args == ("sendRichMessageDraft",)
+    kwargs = call.kwargs["api_kwargs"]
+    assert set(kwargs) == {
+        "chat_id", "draft_id", "can_stop", "keep_on_stop", "rich_message"}
+    assert kwargs["chat_id"] == 42
+    draft_id = kwargs["draft_id"]
     assert type(draft_id) is int and 0 < draft_id < 2**31
-    assert call.kwargs["text"] == "hi"
-    assert call.kwargs["entities"] == [MessageEntity(MessageEntity.BOLD, 0, 2)]
-    assert call.kwargs["api_kwargs"] == {"can_stop": True, "keep_on_stop": True}
+    assert kwargs["rich_message"] == {"markdown": "**hi**"}
+    assert kwargs["can_stop"] is True and kwargs["keep_on_stop"] is True
     # the stream is kept under its draft id, with the chat it writes to
     assert list(ch._streams) == [str(draft_id)]
     chat, stream = ch._streams[str(draft_id)]
@@ -326,41 +333,40 @@ async def test_the_draft_is_there_empty_before_the_first_token():
     on_token = ch.create_on_token(dict(_CTX))
     await run_until(ft, 1.0)
 
-    # no token yet: an empty draft with Stop, which Stop removes
+    # no token yet: an empty draft with Stop, which Stop removes. Telegram
+    # refuses an empty rich draft, so this one is the plain call.
     assert bot.send_message_draft.await_count == 1
     kwargs = bot.send_message_draft.await_args.kwargs
     assert kwargs["chat_id"] == 42
     assert kwargs["text"] == ""
     assert kwargs["entities"] is None
     assert kwargs["api_kwargs"] == {"can_stop": True, "keep_on_stop": False}
+    assert bot.do_api_request.await_count == 0
     assert list(ch._streams) == [str(kwargs["draft_id"])]
     # "typing…" stays until the first word
     assert set(ch._typing_leases["42"]) == {"c1"}
 
     await on_token(admitted("hi"))
     await run_until(ft, 2.0)
-    # the same draft takes the text, and from then on stays after Stop
-    assert bot.send_message_draft.await_count == 2
-    later = bot.send_message_draft.await_args.kwargs
+    # the same draft takes the text, rich, and from then on stays after Stop
+    assert bot.send_message_draft.await_count == 1
+    [later] = _rich_drafts(bot)
     assert later["draft_id"] == kwargs["draft_id"]
-    assert later["text"] == "hi"
-    assert later["api_kwargs"] == {"can_stop": True, "keep_on_stop": True}
+    assert later["rich_message"] == {"markdown": "hi"}
+    assert later["can_stop"] is True and later["keep_on_stop"] is True
     ch._stop_typing("42")
     await finish_turn(on_token)
 
 
-async def test_plain_text_draft_has_no_entities():
+async def test_draft_text_is_prepared():
     ft = FakeTime()
     ch, bot = channel(ft)
     on_token = ch.create_on_token(dict(_CTX))
-    # no markup, one escape: sent as the text reads, without entities
-    await on_token(admitted(r"2 \* 3 = 6"))
+    await on_token(admitted("living_room is <warm>"))
     await run_until(ft, 1.0)
 
-    assert bot.send_message_draft.await_count == 1
-    kwargs = bot.send_message_draft.await_args.kwargs
-    assert kwargs["text"] == "2 * 3 = 6"
-    assert kwargs["entities"] is None
+    [draft] = _rich_drafts(bot)
+    assert draft["rich_message"] == {"markdown": "living&#95;room is &lt;warm>"}
     await finish_turn(on_token)
 
 
@@ -375,6 +381,7 @@ async def test_unadmitted_text_makes_zero_bot_calls(caplog):
         assert await ch._send_draft("42", 7, "hi") is None
 
     assert bot.send_message_draft.await_count == 0
+    assert bot.do_api_request.await_count == 0
     assert any("unadmitted model text refused: send_draft" in r.message
                for r in caplog.records)
     await finish_turn(on_token)
@@ -399,17 +406,23 @@ async def test_first_token_releases_typing():
     await finish_turn(on_token)
 
 
-async def test_long_text_raises_draft_too_long_before_any_call():
+async def test_draft_too_long_at_rich_budget():
     ft = FakeTime()
     ch, bot = channel(ft)
+    # 16 001 two-byte letters: 32 002 bytes, one message no longer holds them
     with pytest.raises(DraftTooLong):
-        # 2049 characters, 4098 UTF-16 units
-        await ch._send_draft("42", 7, admitted("\U0001F389" * 2049))
+        await ch._send_draft("42", 7, admitted("\u00e8" * 16_001))
+    # measured once prepared: 6 401 underscores are 6 401 bytes as written
+    # and 32 005 as sent
+    with pytest.raises(DraftTooLong):
+        await ch._send_draft("42", 7, admitted("_" * 6_401))
+    assert bot.do_api_request.await_count == 0
     assert bot.send_message_draft.await_count == 0
 
-    # 4096 units is still one message
-    assert await ch._send_draft("42", 7, admitted("\U0001F389" * 2048)) is None
-    assert bot.send_message_draft.await_count == 1
+    # 32 000 bytes is still one message
+    assert await ch._send_draft("42", 7, admitted("\u00e8" * 16_000)) is None
+    assert [d["rich_message"] for d in _rich_drafts(bot)] == [
+        {"markdown": "\u00e8" * 16_000}]
 
 
 @pytest.mark.parametrize("asked", [3, timedelta(seconds=3)],
@@ -417,12 +430,12 @@ async def test_long_text_raises_draft_too_long_before_any_call():
 async def test_retry_after_becomes_a_wait(asked):
     ft = FakeTime()
     ch, bot = channel(ft)
-    bot.send_message_draft.side_effect = RetryAfter(asked)
+    bot.do_api_request.side_effect = RetryAfter(asked)
 
     wait = await ch._send_draft("42", 7, admitted("hi"))
 
     assert type(wait) is float and wait == 3.0
-    assert bot.send_message_draft.await_count == 1
+    assert bot.do_api_request.await_count == 1
 
 
 async def test_summoned_turn_gets_no_stream():
@@ -462,6 +475,7 @@ async def test_end_removes_the_stream():
     for _ in range(20):
         await _real_sleep(0)
     assert bot.send_message_draft.await_count == 0
+    assert bot.do_api_request.await_count == 0
 
 
 async def test_only_the_empty_string_is_taken_bare(caplog):
@@ -470,5 +484,6 @@ async def test_only_the_empty_string_is_taken_bare(caplog):
     with caplog.at_level(logging.ERROR):
         assert await ch._send_draft("42", 7, " ") is None
     assert bot.send_message_draft.await_count == 0
+    assert bot.do_api_request.await_count == 0
     assert await ch._send_draft("42", 7, "") is None
     assert bot.send_message_draft.await_count == 1

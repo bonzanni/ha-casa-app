@@ -23,9 +23,8 @@ import tools as tools_mod
 from authz_grants import GrantIdentity
 from own_voice_fixtures import open_own_chats, with_delivery
 from channels import DeliveryOutcome
-from channels.tg_richtext import render_paged
+from channels import tg_rich
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
-from text_util import utf16_len
 from telegram_channel_double import make_transport
 from two_endpoints import CASA_BOT as BOT
 
@@ -229,10 +228,12 @@ async def test_the_receipt_counts_the_pages_the_plan_has(recorder, names):
     store, _ = _store()
     hook = rb.make_result_hook(_map(), client_id="c1", store=store)
     _open(store)
-    body = "\n".join(f"row {i}: SUMMARY-9c1d" for i in range(400))      # > 1 page
-    ref, _ = store.deposit(client_id="c1", slot=SLOT, value=body)
+    # past one rich message once prepared: each "_" is sent as "&#95;"
+    body = "\n\n".join(f"row {i}: SUMMARY_9c1d " + "_" * 60 for i in range(110))
+    ref, err = store.deposit(client_id="c1", slot=SLOT, value=body)
+    assert err is None
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
-    pages = len(render_paged(LABEL + "\n" + body))
+    pages = len(tg_rich.split(LABEL + "\n" + body))
     assert pages > 1
     assert json.loads(_replacement(out))["casa_delivery"]["pages"] == pages
 
@@ -310,7 +311,7 @@ async def test_cancellation_at_the_delivery_await_propagates_and_drops(recorder,
     assert ref not in store._refs and store._inflight == {}
 
 
-# --- the real channel method: the plan is judged whole, before the first send ----
+# --- the real channel method: the page count is judged before the first send ----
 
 def _channel():
     from unittest.mock import AsyncMock, MagicMock
@@ -318,170 +319,140 @@ def _channel():
     ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     app = MagicMock()
     app.bot.send_message = AsyncMock(return_value=True)
+    app.bot.do_api_request = AsyncMock(return_value=MagicMock(message_id=1))
     ch._app = app
     return ch, app
+
+
+def _rich_calls(app) -> list[dict]:
+    calls = app.bot.do_api_request.await_args_list
+    assert all(c.args[0] == "sendRichMessage" for c in calls)
+    return [c.kwargs["api_kwargs"] for c in calls]
+
+
+def _two_parts() -> str:
+    """Casa's label and a body one rich message cannot hold: two parts."""
+    from channels.tg_rich import split
+    text = LABEL + "\n" + "\n\n".join(f"row {i} **bold** " + "x" * 300 for i in range(150))
+    assert len(split(text)) == 2
+    return text
 
 
 @pytest.mark.asyncio
 async def test_the_real_channel_method_sends_each_page_and_nothing_else():
     from channels.telegram import TelegramChannel
+    from channels.tg_rich import prepare, split
     ch, app = _channel()
-    text = LABEL + "\n" + "\n".join(f"row {i} **bold**" for i in range(500))
-    pages = render_paged(text)
-    assert len(pages) > 1
+    text = _two_parts()
     assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
-    assert app.bot.send_message.await_count == len(pages)
-    for call, (display, entities) in zip(app.bot.send_message.await_args_list, pages):
-        # exactly these: no parse_mode, no message_thread_id (a thread id
-        # would post the page into a topic)
-        assert call.kwargs == {"chat_id": 42, "text": display, "entities": entities}
+    # exactly these: the agent's Markdown, no message_thread_id (a thread id
+    # would post the page into a topic), and nothing through send_message
+    assert _rich_calls(app) == [
+        {"chat_id": 42, "rich_message": {"markdown": prepare(part)}} for part in split(text)]
+    app.bot.send_message.assert_not_awaited()
     ch2 = TelegramChannel(bot=object(), chat_id="42", known_bot_id=BOT)
     ch2._app = None
     assert await ch2.deliver_operator_message(42, text) is DeliveryOutcome.NOT_DELIVERED
 
 
 @pytest.mark.asyncio
-async def test_a_single_page_is_sent_through_the_multi_page_loop_never_the_authored_retry():
-    """The platform refuses the entities: the resend is the page's plain
-    fallback chunk (display + link targets), never the authored markdown."""
-    from telegram.error import BadRequest
-    from unittest.mock import AsyncMock
+async def test_a_short_message_is_one_rich_message():
+    from channels.tg_rich import prepare
     ch, app = _channel()
     text = LABEL + "\nSee **this** [note](https://e.example/n)"
-    app.bot.send_message = AsyncMock(side_effect=[BadRequest("can't parse entities"), True])
     assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
-    assert app.bot.send_message.await_count == 2
-    retry = app.bot.send_message.await_args_list[1].kwargs
-    assert retry == {"chat_id": 42, "text": LABEL + "\nSee this note (https://e.example/n)"}
+    assert _rich_calls(app) == [{"chat_id": 42, "rich_message": {"markdown": prepare(text)}}]
 
 
 @pytest.mark.asyncio
-async def test_a_refused_pages_fallback_chunks_all_go_out_before_delivered():
-    """A page at the budget whose plain form overflows: the display, then the
-    link targets as their own message — every chunk returns before DELIVERED."""
+async def test_a_refused_message_is_resent_unformatted_before_delivered():
     from telegram.error import BadRequest, TimedOut
-    from unittest.mock import AsyncMock
+    from unittest.mock import AsyncMock, MagicMock
+    from channels.tg_rich import plain_blocks
     ch, app = _channel()
-    url = "https://e.example/" + "q" * 60
-    text = LABEL + "\n" + "a" * 4050 + f"[t]({url})"
-    pages = render_paged(text)
-    assert len(pages) == 1
-    display, entities = pages[0]
-    assert utf16_len(display) <= 4096 < utf16_len(display + f" ({url})")
-    app.bot.send_message = AsyncMock(side_effect=[BadRequest("x"), True, True])
+    text = LABEL + "\nSee **this** [note](https://e.example/n)"
+    app.bot.do_api_request = AsyncMock(side_effect=[BadRequest("x"), MagicMock(message_id=2)])
     assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
-    assert [c.kwargs["text"] for c in app.bot.send_message.await_args_list] == [
-        display, display, url]
-    # a tail chunk that fails propagates: the broker reads it as not proven
-    app.bot.send_message = AsyncMock(side_effect=[BadRequest("x"), True, TimedOut()])
+    first, second = _rich_calls(app)
+    assert "markdown" in first["rich_message"]
+    assert second["rich_message"] == {"blocks": plain_blocks(text)}
+    # a resend that fails propagates: the broker reads it as not proven
+    app.bot.do_api_request = AsyncMock(side_effect=[BadRequest("x"), TimedOut()])
     with pytest.raises(TimedOut):
         await ch.deliver_operator_message(42, text)
+
+
+@pytest.mark.asyncio
+async def test_a_long_link_destination_goes_out_whole_in_one_message():
+    ch, app = _channel()
+    url = "https://e.example/" + "q" * 4200
+    text = LABEL + "\nopen [the page](" + url + ") now"
+    assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
+    (kw,) = _rich_calls(app)
+    assert kw["rich_message"]["markdown"].count(url) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_silent_message_sends_every_part_without_a_notification():
+    ch, app = _channel()
+    text = _two_parts()
+    assert await ch.deliver_operator_message(42, text, silent=True) is DeliveryOutcome.DELIVERED
+    calls = _rich_calls(app)
+    assert len(calls) == 2
+    assert all(kw["disable_notification"] is True for kw in calls)
+
+
+@pytest.mark.asyncio
+async def test_every_landed_part_is_filed_under_the_post():
+    from unittest.mock import MagicMock
+    ch, app = _channel()
+    filed = []
+    ch._record_post = lambda chat, sent, post: filed.append((chat, sent, post))
+    post = object()
+    await ch.deliver_operator_message(42, _two_parts(), post=post)
+    assert [(chat, p) for chat, _sent, p in filed] == [(42, post), (42, post)]
 
 
 @pytest.mark.asyncio
 async def test_a_later_page_failure_propagates():
     from telegram.error import TimedOut
-    from unittest.mock import AsyncMock
+    from unittest.mock import AsyncMock, MagicMock
     ch, app = _channel()
-    text = LABEL + "\n" + "\n".join(f"row {i}" for i in range(900))
-    assert len(render_paged(text)) >= 2
-    app.bot.send_message = AsyncMock(side_effect=[True, TimedOut()])
+    app.bot.do_api_request = AsyncMock(side_effect=[MagicMock(message_id=1), TimedOut()])
     with pytest.raises(TimedOut):
-        await ch.deliver_operator_message(42, text)
-    assert app.bot.send_message.await_count == 2
+        await ch.deliver_operator_message(42, _two_parts())
+    assert app.bot.do_api_request.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_a_plan_over_the_page_cap_sends_nothing():
+async def test_a_plan_over_the_page_cap_sends_nothing(monkeypatch):
     ch, app = _channel()
-    text = LABEL + "\n" + "a" * (4096 * (rb.MAX_MESSAGE_PAGES + 1))
-    assert len(render_paged(text)) > rb.MAX_MESSAGE_PAGES
-    assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.NOT_DELIVERED
-    assert app.bot.send_message.await_count == 0
     assert rb.MAX_MESSAGE_PAGES == 6
-
-
-@pytest.mark.asyncio
-async def test_a_link_destination_no_chunk_can_carry_whole_sends_nothing():
-    """Rounds 3–4 of the design: ``_plain_fallback_chunks`` silently drops a
-    destination over one message; the plan inspects the rendered entities
-    and refuses the whole post instead, before the first send."""
-    ch, app = _channel()
-    url = "https://e.example/" + "q" * 4200
-    text = LABEL + "\nopen [the page](" + url + ") now"
-    display, entities = render_paged(text)[0]
-    assert any(str(e.type) == "text_link" and utf16_len(e.url) > 4096 for e in entities)
-    assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.NOT_DELIVERED
+    monkeypatch.setattr(rb, "MAX_MESSAGE_PAGES", 1)
+    assert await ch.deliver_operator_message(42, _two_parts()) is DeliveryOutcome.NOT_DELIVERED
+    assert app.bot.do_api_request.await_count == 0
     assert app.bot.send_message.await_count == 0
-    # the shared helper is untouched: it still filters silently
-    assert ch._plain_fallback_chunks(display, entities) == [display]
 
 
 @pytest.mark.asyncio
 async def test_the_hook_withholds_a_refused_plan_with_zero_sends(names, monkeypatch):
     """End to end through the real channel method: a plan the channel refuses
     reaches the model as withheld, and nothing was posted."""
+    from channels.tg_rich import split
     ch, app = _channel()
     monkeypatch.setattr(tools_mod, "_channel_manager", _Manager(ch), raising=False)
+    monkeypatch.setattr(rb, "MAX_MESSAGE_PAGES", 1)
     store, _ = _store()
     hook = rb.make_result_hook(_map(), client_id="c1", store=store)
     _open(store)
-    body = "\n".join("[x](https://e.example/" + "q" * 4200 + ")" for _ in range(2))
+    body = "💶" * 9_000                       # 36,000 bytes: past one rich message
+    assert len(split(LABEL + "\n" + body)) > 1
     ref, err = store.deposit(client_id="c1", slot=SLOT, value=body)
     assert err is None
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
+    assert app.bot.do_api_request.await_count == 0
     assert app.bot.send_message.await_count == 0
     _assert_withheld_not_delivered(out, store, ref)
-
-
-@pytest.mark.asyncio
-async def test_a_page_over_the_platform_budget_sends_nothing(monkeypatch):
-    """The paginator's contract keeps every page within the budget; the plan
-    still judges it (a page over the budget is one the operator cannot
-    receive complete), so the guard is pinned against a paginator that
-    broke its contract."""
-    import channels.telegram as tg
-    ch, app = _channel()
-    monkeypatch.setattr(tg, "render_paged", lambda text: [("x" * 5000, None)])
-    assert await ch.deliver_operator_message(42, LABEL + "\nbody") is DeliveryOutcome.NOT_DELIVERED
-    assert app.bot.send_message.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_a_destination_the_fallback_would_split_across_messages_sends_nothing():
-    """Two destinations each within one message, but whose joined overflow
-    form the plain splitter cuts INSIDE a destination: the plan checks that
-    every destination occurs whole in some fallback chunk, never only that
-    each chunk fits, and refuses with zero sends."""
-    from telegram.error import BadRequest
-    from unittest.mock import AsyncMock
-    ch, app = _channel()
-    u1 = "https://e.example/" + "a" * (4096 - len("https://e.example/"))
-    u2 = "https://e.example/" + "b" * (4096 - len("https://e.example/"))
-    assert utf16_len(u1) == utf16_len(u2) == 4096
-    text = LABEL + f"\n[one]({u1}) [two]({u2})"
-    display, entities = render_paged(text)[0]
-    chunks = ch._plain_fallback_chunks(display, entities)
-    assert all(utf16_len(c) <= 4096 for c in chunks)          # every chunk fits…
-    assert not any(u2 in c for c in chunks)                     # …and u2 arrives in pieces
-    app.bot.send_message = AsyncMock(side_effect=[BadRequest("x"), True, True, True, True])
-    assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.NOT_DELIVERED
-    assert app.bot.send_message.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_a_fallback_chunk_over_the_platform_budget_sends_nothing(monkeypatch):
-    """The plain splitter keeps every chunk within the budget; the plan still
-    judges each chunk, pinned against a helper that broke that contract."""
-    from channels.telegram import TelegramChannel
-    from channels.tg_richtext import plain_with_link_targets
-    ch, app = _channel()
-    monkeypatch.setattr(TelegramChannel, "_plain_fallback_chunks",
-                        lambda self, display, entities: [
-                            plain_with_link_targets(display, entities), "x" * 4097])
-    text = LABEL + "\nSee [note](https://e.example/n)"
-    assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.NOT_DELIVERED
-    assert app.bot.send_message.await_count == 0
 
 
 @pytest.mark.parametrize("value", [

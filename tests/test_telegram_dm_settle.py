@@ -7,9 +7,10 @@ install consent. Every one of those calls it from a broker FINISH hook, i.e.
 only at a terminal outcome, so the edit must retire the keyboard as well as the
 text.
 
-A bare ``edit_message_text`` does NOT do that: PTB drops an omitted
-``reply_markup``, so ``editMessageText`` never touches the markup and the
-buttons stay tappable under the settled text. A tap on a
+A bare edit does NOT do that: PTB drops an omitted ``reply_markup``, so
+``editMessageText`` never touches the markup and the buttons stay tappable
+under the settled text. The settle is a rich edit (``editMessageText`` with
+``rich_message``, a raw call), and its keyboard travels in JSON form. A tap on a
 settled keyboard is refused by the broker (``stale``/``duplicate``) so nothing
 wrong commits, but the operator keeps a live-looking control for a closed
 question.
@@ -31,9 +32,9 @@ MESSAGE_ID = 7007
 #: The bot the channel is: the scheduled ask's question was posted by it.
 BOT = 111
 
-# No markdown markers -> render() returns entities=None -> the plain branch.
+# No markdown markers.
 PLAIN_TEXT = "Invoice ready?\n\n(this question has expired)"
-# A bold span -> render() returns entities -> the rich branch.
+# An emphasis span.
 RICH_TEXT = "Invoice ready?\n\n*Answered: Confirm*"
 
 
@@ -42,8 +43,16 @@ def _mk_channel():
 
     bot = MagicMock()
     bot.edit_message_text = AsyncMock(return_value=True)
+    bot.do_api_request = AsyncMock(return_value=True)
     ch = TelegramChannel(bot=bot, chat_id=CHAT, known_bot_id=BOT)
     return ch, bot
+
+
+def _edits(bot) -> list[dict]:
+    """The ``api_kwargs`` of every rich edit the bot took."""
+    calls = bot.do_api_request.await_args_list
+    assert all(c.args[0] == "editMessageText" for c in calls)
+    return [c.kwargs["api_kwargs"] for c in calls]
 
 
 def _assert_empty_markup(kwargs: dict) -> None:
@@ -51,9 +60,11 @@ def _assert_empty_markup(kwargs: dict) -> None:
     assert "reply_markup" in kwargs, (
         "reply_markup absent — PTB drops the None and the keyboard survives"
     )
-    markup = kwargs["reply_markup"]
-    assert isinstance(markup, InlineKeyboardMarkup)
-    assert list(markup.inline_keyboard) == []
+    assert kwargs["reply_markup"] == InlineKeyboardMarkup([]).to_dict()
+
+
+def _buttons(kwargs: dict) -> list[dict]:
+    return [b for row in kwargs["reply_markup"]["inline_keyboard"] for b in row]
 
 
 async def test_pin_inv_tg_007_plain_settle_clears_the_keyboard():
@@ -62,12 +73,12 @@ async def test_pin_inv_tg_007_plain_settle_clears_the_keyboard():
     ok = await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT)
 
     assert ok is True
-    assert bot.edit_message_text.await_count == 1
-    _, kwargs = bot.edit_message_text.call_args
+    (kwargs,) = _edits(bot)
     _assert_empty_markup(kwargs)
-    assert kwargs["text"] == PLAIN_TEXT
+    assert kwargs["rich_message"] == {"markdown": PLAIN_TEXT}
     assert kwargs["chat_id"] == CHAT
     assert kwargs["message_id"] == MESSAGE_ID
+    assert bot.edit_message_text.await_count == 0
 
 
 async def test_pin_inv_tg_007_rich_settle_clears_the_keyboard():
@@ -76,27 +87,26 @@ async def test_pin_inv_tg_007_rich_settle_clears_the_keyboard():
     ok = await ch.edit_dm_message(CHAT, MESSAGE_ID, RICH_TEXT)
 
     assert ok is True
-    assert bot.edit_message_text.await_count == 1
-    _, kwargs = bot.edit_message_text.call_args
-    # Precondition: this text really does take the rich branch, else the test
-    # would silently be a second copy of the plain one.
-    assert kwargs.get("entities"), "expected the entity-bearing branch"
+    (kwargs,) = _edits(bot)
+    # the markers travel as Markdown for Telegram to render
+    assert kwargs["rich_message"] == {"markdown": RICH_TEXT}
     _assert_empty_markup(kwargs)
 
 
 async def test_pin_inv_tg_007_entity_fallback_retry_clears_the_keyboard():
-    """The rich edit can fail on entities; the plain retry must still clear."""
+    """Telegram can refuse the rich edit; its unformatted retry must still clear."""
     ch, bot = _mk_channel()
-    bot.edit_message_text = AsyncMock(
-        side_effect=[BadRequest("Can't parse entities"), True],
+    bot.do_api_request = AsyncMock(
+        side_effect=[BadRequest("Rich_message_parse_failed"), True],
     )
 
     ok = await ch.edit_dm_message(CHAT, MESSAGE_ID, RICH_TEXT)
 
     assert ok is True
-    assert bot.edit_message_text.await_count == 2
-    for call in bot.edit_message_text.call_args_list:
-        _assert_empty_markup(call.kwargs)
+    first, retry = _edits(bot)
+    assert "blocks" in retry["rich_message"]
+    for kwargs in (first, retry):
+        _assert_empty_markup(kwargs)
 
 
 # Exit 3 means ONLY "the library is absent" — the one condition that may skip.
@@ -122,6 +132,11 @@ cleared = RequestData(
 assert "reply_markup" not in omitted, omitted
 assert "reply_markup" in cleared, cleared
 assert cleared["reply_markup"] == {}, cleared
+# the rich edit passes the keyboard in JSON form, as a raw call's argument
+raw = RequestData(
+    [RequestParameter.from_input("reply_markup", InlineKeyboardMarkup([]).to_dict())],
+).parameters
+assert raw == cleared, raw
 print("OK")
 """
 
@@ -161,18 +176,20 @@ async def test_identical_re_edit_still_reports_success():
     """"Message is not modified" means the desired end state already holds —
     tolerated as success, unchanged by the markup clear."""
     ch, bot = _mk_channel()
-    bot.edit_message_text = AsyncMock(
+    bot.do_api_request = AsyncMock(
         side_effect=BadRequest("Message is not modified"),
     )
 
     assert await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT) is True
+    assert bot.do_api_request.await_count == 1
 
 
 async def test_edit_failure_still_reports_false():
     ch, bot = _mk_channel()
-    bot.edit_message_text = AsyncMock(side_effect=BadRequest("MESSAGE_ID_INVALID"))
+    bot.do_api_request = AsyncMock(side_effect=BadRequest("MESSAGE_ID_INVALID"))
 
     assert await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT) is False
+    assert bot.do_api_request.await_count == 2      # the edit, then its unformatted retry
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +279,7 @@ async def test_crash_after_settling_cas_replays_exact_edit_once_without_dispatch
         await task
 
     # The process died here: decided and persisted, nothing sent.
-    assert bot.edit_message_text.await_count == 0
+    assert bot.do_api_request.await_count == bot.edit_message_text.await_count == 0
     assert ch._dispatch_scheduled_continuation.await_count == 0
 
     # A fresh process reads the same file.
@@ -280,10 +297,9 @@ async def test_crash_after_settling_cas_replays_exact_edit_once_without_dispatch
     counts = await scheduled_asks.reconcile_at_boot(transport, now=0.0)
 
     assert counts.get("settled_before_crash", 0) == 1
-    assert boot_bot.edit_message_text.await_count == 1
-    _, kwargs = boot_bot.edit_message_text.call_args
+    (kwargs,) = _edits(boot_bot)
     assert sum(kwargs.get(k) == v for k, v in
-               (("text", PLAIN_TEXT), ("chat_id", CHAT),
+               (("rich_message", {"markdown": PLAIN_TEXT}), ("chat_id", CHAT),
                 ("message_id", MESSAGE_ID))) == 3
     _assert_empty_markup(kwargs)
     assert boot_ch._dispatch_scheduled_continuation.await_count == 0
@@ -298,10 +314,9 @@ async def test_pin_inv_tg_007_a_settle_that_names_its_buttons_keeps_exactly_thos
     ok = await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT,
                                   buttons=[("Stop", "v1|run_stop|conf-x|0")])
 
-    assert ok is True and bot.edit_message_text.await_count == 1
-    _, kwargs = bot.edit_message_text.call_args
-    rows = list(kwargs["reply_markup"].inline_keyboard)
-    assert [(b.text, b.callback_data) for row in rows for b in row] == [
+    (kwargs,) = _edits(bot)
+    assert ok is True
+    assert [(b["text"], b["callback_data"]) for b in _buttons(kwargs)] == [
         ("Stop", "v1|run_stop|conf-x|0")]
 
 
@@ -312,6 +327,5 @@ async def test_an_edit_shows_only_the_named_button_red():
                              buttons=[("Stop", "v1|run_stop|conf-x|0"), ("More", "x")],
                              danger=(0,))
 
-    _, kwargs = bot.edit_message_text.call_args
-    assert [row[0].style for row in kwargs["reply_markup"].inline_keyboard] == [
-        "danger", None]
+    (kwargs,) = _edits(bot)
+    assert [b.get("style") for b in _buttons(kwargs)] == ["danger", None]

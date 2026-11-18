@@ -127,15 +127,15 @@ its posts carry no `📊` label (`result_broker.label_at`): the chat is the agen
 opens its post index (`task_posts.open`) and its input destination
 (`task_input.open_pending`) first, then posts its start post there, silently
 (`TelegramChannel.post_task_start`): "Ellen asked:", the name in bold, over the brief as
-written, whole, in an expandable quote — less one pair of quotation marks wrapping all of it
-(`tools._without_outer_quotes`) — its formatting rendered as an answer's is (plain when Telegram refuses it),
-clipped with `…` only when it cannot fit one message; a task born on a
+written, whole, as a Markdown block quote — less one pair of quotation marks wrapping all of it
+(`tools._without_outer_quotes`) — its formatting kept inside the quote as an answer's is (plain when Telegram refuses it),
+clipped with `…` only when it cannot fit one rich message; a task born on a
 Casa-started plugin setup or erase turn posts none. It then runs in its own session, whose
 delegation context says that its closing message is posted to the operator as a reply to
 the request and opens "Done." or "Couldn't finish:", or neither while the work is still
 going (`answer_shown`). The start post and the answer are filed under slots of their own
 (`task-start`, `task-answer`), so each is its own post. The message it closed its turn
-with (`tools._closing_text`), whole, is posted there in pages, the first replying to the
+with (`tools._closing_text`), whole, is posted there as rich messages, the first replying to the
 start post (`tools._TASK_REPLY_TO`; plain when the start post did not land) and notifying —
 never its working notes before it, never the requester's bounded copy, and nothing when it
 closes with `<silent/>` — and the requester gets today's bounded result. That result's Casa notes name the agent's chat:
