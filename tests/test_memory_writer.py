@@ -15,6 +15,8 @@ import sys
 import types
 from datetime import datetime, timezone
 
+import pytest
+
 from memory import corrections, model_port, writer
 from sent_prompt import sent_prompt
 from memory_writer_support import (
@@ -290,6 +292,28 @@ async def test_the_worker_runs_what_a_wake_queues(tmp_path):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     assert [j["state"] for j in job_rows(store)] == ["committed"] * 2
+
+
+@pytest.mark.parametrize("steps", range(4))
+async def test_a_cancel_that_meets_a_wake_ends_the_worker(tmp_path, steps):
+    """A cancel delivered just after a wake, while the worker sits in its
+    idle wait, ends the worker. On Python 3.11 ``asyncio.wait_for`` returned
+    the finished wait instead of raising, so the cancel was lost and the
+    worker looped on until the next one; at shutdown none comes."""
+    store = new_store(tmp_path)
+    w = new_writer(store, ScriptedPort(no_change_all), boot_id="boot-now")
+    task = asyncio.get_running_loop().create_task(w.run_forever())
+    for _ in range(500):                  # idle: no pass to run
+        if w._wakeup is not None and not w._wakeup.is_set():
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    w.wake()
+    for _ in range(steps):
+        await asyncio.sleep(0)
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=2)
+    assert task in done and task.cancelled(), steps
 
 
 async def test_the_module_writer_is_a_no_op_until_configured(monkeypatch):

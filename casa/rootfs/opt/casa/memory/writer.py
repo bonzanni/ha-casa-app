@@ -1109,9 +1109,12 @@ class Writer:
                 logger.warning("memory writer pass failed", exc_info=True)
             if ran:
                 continue
+            # asyncio.timeout, not wait_for: on Python 3.11 wait_for returns a
+            # wait that finished in the same step as a cancel, losing the cancel.
             try:
-                await asyncio.wait_for(self._wakeup.wait(), TICK_S)
-            except asyncio.TimeoutError:
+                async with asyncio.timeout(TICK_S):
+                    await self._wakeup.wait()
+            except TimeoutError:
                 pass
             self._wakeup.clear()
 

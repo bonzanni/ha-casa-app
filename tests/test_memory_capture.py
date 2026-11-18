@@ -873,8 +873,11 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
 #: the store is locked, the spool is old and its notice never resolves, or a
 #: large spool waits to be drained. The awaited part of a capture is only the
 #: item's own durable write: one store attempt bounded by
-#: ``CAPTURE_BUSY_TIMEOUT_S``, else one fsynced spool line.
-CAPTURE_OVERHEAD_BOUND_S = 0.5
+#: ``CAPTURE_BUSY_TIMEOUT_S``, else one fsynced spool line: about 0.1 s on an
+#: unloaded machine, 0.65 s once on a loaded CI runner. A capture that did hold
+#: the turn waits the store's own lock timeout (``BUSY_TIMEOUT_S``, 30 s) or a
+#: drain of several seconds, far past this bound and past ``_timed_turn``'s limit.
+CAPTURE_OVERHEAD_BOUND_S = 1.5
 
 #: The warm baseline turn's duration on an unloaded machine (about 0.07 s
 #: measured). The overhead bound holds at this speed; when the same run's
@@ -1128,3 +1131,19 @@ async def test_an_opening_he_did_not_send_keeps_the_floor(
     rows = {e["text"]: e for e in await captured_events(mem)}
     assert rows["the code is 1234"]["speaker_kind"] == "operator"
     assert rows["the code is 1234"]["origin_tier"] == "private"
+
+
+async def test_settle_returns_when_a_drain_finished_before_it_was_called():
+    """A detached task that finished while its done-callback (the discard from
+    ``_background``) is still queued is waited for once, not again and again:
+    a gather over tasks that are all done does not yield to the loop, so
+    without a turn in between the callback never runs and settle spins."""
+    async def _quick():
+        return None
+
+    task = capture._detach(_quick())
+    while not task.done():
+        await asyncio.sleep(0)
+    assert task in capture._background     # finished, its discard still queued
+    await capture.settle()                 # spinning, it never yields: the
+    assert task not in capture._background  # suite's per-test timeout ends it

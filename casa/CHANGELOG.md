@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.375.1] - 2026-11-18
+
+### Fixed
+
+- Casa no longer risks hanging when it stops: if the memory writer was woken at the moment of a stop, it could miss the stop and keep running until the app was killed.
+
 ## [0.375.0] - 2026-11-17
 
 ### Added
