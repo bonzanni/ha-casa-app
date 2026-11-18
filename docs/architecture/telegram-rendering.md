@@ -63,7 +63,9 @@ classifies content and never validates the agent's Markdown before sending it.
   would arrive as one paragraph. Each such soft line break outside code gets a backslash
   before it, CommonMark's hard line break. A line that already ends in two spaces, a
   backslash or a `<br>` is left alone, and so is a line holding only a list marker, which
-  the backslash would turn into a list item. Code, table rows and HTML blocks are not
+  the backslash would turn into a list item, and so are the lines of a summary's title
+  written between a `<summary>` line and a `</summary>` line, where Telegram shows the
+  backslash as written and joins the title. Code, table rows and HTML blocks are not
   touched, and line breaks go out as `\n`.
 - **A time link becomes a `<tg-time>` tag** (below).
 - **A table whose rows have more cells than its header gets a wider header** and delimiter

@@ -795,6 +795,17 @@ def test_the_plain_fallback_and_reading_back_keep_lines_as_written():
     assert flatten({"blocks": [{"type": "paragraph", "text": "a\nb"}]}) == "a\nb"
 
 
+def test_a_summary_title_on_lines_of_its_own_gets_no_hard_break():
+    # Telegram shows a backslash in such a title as written (measured), so
+    # the title lines stay joined as before; the body still keeps its lines.
+    src = "<details>\n<summary>\nTitle one\nTitle two\n</summary>\n\nbody a\nbody b\n\n</details>"
+    assert prepare(src) == ("<details>\n<summary>\nTitle one\nTitle two\n</summary>\n\n"
+                            "body a\\\nbody b\n\n</details>")
+    src = "> <details><summary>\n> One\n> Two\n> </summary>\n> body a\n> body b\n> </details>"
+    assert prepare(src) == ("> <details><summary>\n> One\n> Two\n> </summary>\n"
+                            "> body a\\\n> body b\n> </details>")
+
+
 def test_a_time_link_ending_a_line_keeps_the_break_after_it():
     unix = int(datetime.fromisoformat("2026-11-16T09:00+01:00").timestamp())
     out = prepare("[Monday](time:2026-11-16T09:00+01:00)\nnext")
