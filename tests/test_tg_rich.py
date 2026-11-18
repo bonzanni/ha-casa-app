@@ -815,6 +815,26 @@ def test_a_summary_title_over_several_lines_gets_no_hard_break(src):
     assert prepare(src) == src
 
 
+_FOLD_WITH_A_LONG_TITLE = ("<details>\n<summary>\nStato della casa\nLuci e sensori\n</summary>"
+                           "\n\nCorpo uno\nCorpo due\n</details>")
+_FOLD_PREPARED = _FOLD_WITH_A_LONG_TITLE.replace("Corpo uno\n", "Corpo uno\\\n")
+
+
+@pytest.mark.parametrize("before, prepared_before", [
+    ("Il titolo usa `<summary>`.", "Il titolo usa `<summary>`."),
+    ("Il titolo usa \\<summary>.", "Il titolo usa &lt;summary>."),
+    ("```html\n<summary>\n```", "```html\n<summary>\n```"),
+])
+def test_a_summary_mentioned_before_a_fold_leaves_its_title_alone(before, prepared_before):
+    assert prepare(f"{before}\n\n{_FOLD_WITH_A_LONG_TITLE}") == \
+        f"{prepared_before}\n\n{_FOLD_PREPARED}"
+
+
+def test_two_folds_each_with_a_title_over_several_lines():
+    src = f"{_FOLD_WITH_A_LONG_TITLE}\n\n{_FOLD_WITH_A_LONG_TITLE}"
+    assert prepare(src) == f"{_FOLD_PREPARED}\n\n{_FOLD_PREPARED}"
+
+
 def test_an_escaped_br_is_text_and_the_line_still_breaks():
     assert prepare("Nota: \\<br>\nriga successiva") == "Nota: &lt;br>\\\nriga successiva"
     assert prepare("Nota: \\\\<br>\nriga") == "Nota: \\\\<br>\nriga"   # escaped backslash, real <br>

@@ -141,6 +141,8 @@ _SPACE_RUN = re.compile(r"[ \t]+")
 _BR_END = re.compile(r"<br\s*/?>[ \t]*\Z", re.I)
 _BARE_MARKER = re.compile(r"[ \t>]*(?:[-+*]|\d{1,9}[.)])[ \t]*")
 _SUMMARY = re.compile(r"<summary(?:\s[^>]*)?>(.*?)</summary\s*>", re.I | re.S)
+_SUMMARY_OPEN = re.compile(r"<summary(?:\s[^>]*)?>", re.I)
+_SUMMARY_CLOSE = re.compile(r"</summary\s*>", re.I)
 # A fold's tag line: behind any quote markers, list markers and indentation,
 # nothing but fold tags: <details> with or without attributes, a whole
 # <summary>...</summary>, a <summary> or </summary> on its own, </details>.
@@ -231,6 +233,25 @@ class _Reading(NamedTuple):
                                             # the header lacks)
     breaks: list[int]                 # the "\n" of each soft line break,
                                       # which a backslash makes a hard one
+
+
+def _summary_titles(text: str, code: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Each summary written over several lines, from its ``<summary>`` to its
+    ``</summary>``: Telegram shows a backslash there as written, so its line
+    breaks get none. A tag inside code or after an escaping backslash is
+    text, and is never taken for one end."""
+    def tags(pattern: re.Pattern[str]) -> list[re.Match[str]]:
+        return [m for m in pattern.finditer(text) if not _escaped(text, m.start())
+                and not any(start <= m.start() < end for start, end in code)]
+    closers = tags(_SUMMARY_CLOSE)
+    titles: list[tuple[int, int]] = []
+    for opener in tags(_SUMMARY_OPEN):
+        if titles and opener.start() < titles[-1][1]:
+            continue
+        closer = next((c for c in closers if c.start() >= opener.end()), None)
+        if closer is not None and "\n" in text[opener.end():closer.start()]:
+            titles.append((opener.start(), closer.end()))
+    return titles
 
 
 def _escaped(s: str, i: int) -> bool:
@@ -396,11 +417,7 @@ def _read(text: str, *, units: bool = False) -> _Reading:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
-    # A summary's title written over several lines: Telegram shows a
-    # backslash there as written, so its line breaks get none.
-    titles = [m.span() for m in _SUMMARY.finditer(text)
-              if "\n" in m.group(0) and not _escaped(text, m.start())
-              and not any(start <= m.start() < end for start, end in merged)]
+    titles = _summary_titles(text, merged)
     breaks = [b for b in breaks if not any(start <= b < end for start, end in titles)]
     return _Reading(merged, found_units, fences, wide, sorted(breaks))
 
