@@ -29,7 +29,7 @@ from test_authz_hook import (
 )
 from test_pending_approval_output import (  # noqa: F401 — the resident harness
     ARGS, CASA_BOT, PROTECTED, TAIL, TOOL, _Factory, _Gate, _ask, _call, _drive,
-    _key, _msg, _result, _text, turn,
+    _key, _msg, _result, _text, card_at_the_call, turn,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -38,7 +38,11 @@ pytestmark = pytest.mark.asyncio
 # --- a deny that leaves no keyboard pending keeps the words ----------------------
 
 @pytest.mark.parametrize("deny", ["delivery_failed", "inactive", "not_operator"])
-async def test_other_denies_deliver_the_words_after_the_call(turn, monkeypatch, deny):
+async def test_other_denies_deliver_the_words_after_the_call(
+        turn, card_at_the_call, monkeypatch, deny):
+    # A card posted at the call (``card_at_the_call``): the hook waits for the
+    # post and answers by its outcome. A card held for the turn's reply is
+    # answered before it is posted; tests/test_card_after_reply.py has it.
     agent, channel, hook, _grants = turn
     import verdict_broker
     post_entered, post_gate = asyncio.Event(), asyncio.Event()

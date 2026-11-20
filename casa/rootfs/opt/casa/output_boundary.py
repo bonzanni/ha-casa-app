@@ -65,6 +65,7 @@ enters through :func:`casa_text`.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -518,6 +519,16 @@ class TurnScope:
     # instead of declining. A card or a protected call's challenge, which
     # the turn waits for, never sets it.
     detached_ask: bool = False
+    # Set once this turn's reply has been sent, or the turn has ended any
+    # other way; ``reply_chat`` is the Telegram ``(bot id, chat id)`` that
+    # reply goes to. Only ``Agent.handle_message`` gives a scope the pair, and
+    # only on an ordinary Telegram turn that answers in its own chat: a
+    # protected call's approval card for that chat is posted once the event
+    # is set (``authz_grants.ChallengeCoordinator.register_challenge``), so
+    # the words written before the call are above the card. Never shared with
+    # a child scope: a child's card does not wait for its launcher's reply.
+    reply_out: "asyncio.Event | None" = None
+    reply_chat: "tuple[int, int] | None" = None
 
     # -- minting ------------------------------------------------------------
 

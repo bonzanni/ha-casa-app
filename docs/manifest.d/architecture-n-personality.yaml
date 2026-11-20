@@ -53,6 +53,7 @@
     - tests/test_pending_approval_output.py
     - tests/test_pending_approval_pins.py
     - tests/test_pending_approval_delegate.py
+    - tests/test_card_after_reply.py
   related: [architecture/output-boundary.md, architecture/turn-loop.md, architecture/webhook-delivery.md, architecture/scheduled-prompt-endings.md, architecture/delegation-announcements.md]
   defines_invariants: [INV-OUT-006]
   invariant_tests:

@@ -15,6 +15,11 @@ operator.
 Driven through the REAL ``Agent.handle_message`` with the REAL
 ``make_resident_authz_hook``, ``ChallengeCoordinator``, ``GrantStore`` and a
 fresh ``VerdictBroker``; the keyboard post is held on an event, never a sleep.
+
+The turn here posts its card at the call (``card_at_the_call``): the path of a
+card raised where the turn's reply does not go to the card's chat. A card held
+for the turn's reply is answered before its post and never waits on it; that
+is ``tests/test_card_after_reply.py``.
 """
 from __future__ import annotations
 
@@ -29,8 +34,9 @@ from authz_grants import (
 
 from test_authz_hook import _deny_reason
 from test_chosen_silence_announcements import ROLE, _Factory, _make_agent
-from test_pending_approval_output import (
+from test_pending_approval_output import (  # noqa: F401 — card_at_the_call
     PROTECTED, _Channel, _Gate, _ask, _call, _drive, _msg, _result, _text,
+    card_at_the_call,
 )
 
 pytestmark = [pytest.mark.asyncio]
@@ -86,7 +92,7 @@ async def held_turn(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("post", ["fails", "retired", "lands"])
 async def test_reused_challenge_cuts_only_a_delivered_keyboard(
-        held_turn, monkeypatch, post):
+        held_turn, card_at_the_call, monkeypatch, post):
     agent, channel, hook = held_turn
     gate = _Gate()
 

@@ -898,9 +898,12 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-delivered-slots row was re-pinned when operator messages became
 # rich messages: INV-PLUG-045 swapped its entity-fallback and page-budget
 # bindings for the rich-message tests that replaced them, and nothing else.
+# The plugin-authorization row moved on again when the approval card came to
+# be posted after the turn's reply: it gained INV-PLUG-061 with its bindings
+# (test_card_after_reply.py) and the two coordinator anchors that rule names.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
-        "6d8736f920dac090b005b27d8317ac12d116656e57e02078eba5bdb36f11e921",
+        "fd0a1c2aec323ac41bfb9d6adfe5242aff8979ac3750fcc79b5b8e676e34ed7e",
     "architecture/plugin-delivered-files.md":
         "06be628ad8c9cd6134135f26b8eb4c8e5934a528e1946133b419997878f9328e",
     "architecture/plugin-delivered-slots.md":

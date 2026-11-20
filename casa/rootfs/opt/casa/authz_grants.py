@@ -316,6 +316,18 @@ _CHALLENGE_MAX_CHARS = 3900
 # approval keeps its own 300 s single-use TTL (DEFAULT_GRANT_TTL_S).
 _CHALLENGE_TTL_S = 600.0
 
+# #1621: how long a protected call's approval card waits for the reply of the
+# turn that raised it, counted from the challenge's registration — the time
+# the card takes to write is inside it. At the deadline the card is posted
+# anyway, above a reply that is still to come.
+CARD_HOLD_S = 20.0
+
+# #1621: Casa's line when a card that waited for the turn's reply could not be
+# shown after all. The hook had already answered as for a posted card, so the
+# words after the call were withheld: without this the operator would be left
+# with neither a card nor an explanation.
+_CARD_NOT_SHOWN = "The approval request could not be shown — ask again."
+
 
 def short_tool_name(tool_name: str) -> str:
     """The operator-facing short form of *tool_name*: the segment after the
@@ -565,6 +577,13 @@ class _Challenge:
     driver: "asyncio.Task | None" = None
     setup_settled: bool = False
     request_settled: bool = False
+    # #1621: the card's post waits for the reply of the turn that raised the
+    # call, so the hook answers without waiting for the post.
+    deferred: bool = False
+    # #1621: every delegation a hook marked as awaiting this approval while
+    # its card was held — the call that raised it and any repeat of it — for a
+    # deferred card that ends without being shown.
+    delegation_ids: set = field(default_factory=set)
 
 
 @dataclass
@@ -616,6 +635,36 @@ class ChallengeHandle:
         outcome = ch.req._future.result()
         return isinstance(outcome, dict) and outcome.get("outcome") == "answered"
 
+    @property
+    def deferred(self) -> bool:
+        """#1621: this challenge's card waits for the reply of the turn that
+        raised it. Awaiting :meth:`settled_post` from inside that turn would
+        wait for the turn itself, up to the hold's deadline."""
+        ch = self._challenge
+        return ch is not None and ch.deferred
+
+    @property
+    def live(self) -> bool:
+        """The request has not settled: no answer, timeout or cancellation."""
+        ch = self._challenge
+        return ch is not None and not ch.req._future.done()
+
+    def remember_delegation(self, delegation_id: str) -> None:
+        """#1621: a delegation the caller marked as awaiting this approval
+        while its card is held. The post driver forgets every such mark when
+        the card is never shown, as the hook does when it waits for the post."""
+        if self._challenge is not None and delegation_id:
+            self._challenge.delegation_ids.add(delegation_id)
+
+
+def _stopping(req: Any) -> bool:
+    """Whether *req* was cancelled because Casa is shutting down."""
+    if not req._future.done() or req._future.cancelled():
+        return False
+    outcome = req._future.result()
+    return (isinstance(outcome, dict) and outcome.get("outcome") == "cancelled"
+            and outcome.get("reason") == "casa_shutdown")
+
 
 class ChallengeCoordinator:
     """Atomic challenge registration + async-settled setup driver + two-latch
@@ -657,6 +706,7 @@ class ChallengeCoordinator:
         timeout_s: "float | None" = None,
         card_request: "approval_card.CardRequest | None" = None,
         danger: "Collection[int]" = (),
+        defer_until_reply: bool = False,
     ) -> ChallengeHandle:
         """Register ONE operator challenge keyboard for *key* (dedup by key).
 
@@ -682,6 +732,19 @@ class ChallengeCoordinator:
 
         *danger* names the positions in *options* whose button is shown red:
         a choice that deletes something for good.
+
+        *defer_until_reply* (#1621) is the protected tool call's own: its card
+        is posted once the reply of the turn that raised the call has been
+        sent, so the words the model wrote before the call are above the
+        card. It takes effect only when the challenge has a card, the scope
+        it resolves is that of a turn whose reply is not out yet
+        (``TurnScope.reply_out``), and that reply goes to the chat the card is
+        posted in (``TurnScope.reply_chat``); the handle then says
+        ``deferred``, and a caller inside that turn answers without awaiting
+        ``settled_post``, which would wait for the turn's own reply. The wait
+        ends ``CARD_HOLD_S`` after registration at the latest. Every other
+        caller leaves it False: its tool awaits the post inside the turn, and
+        that post is the call it always was.
         """
         existing = self._entries.get(key)
         if existing is not None:
@@ -749,6 +812,24 @@ class ChallengeCoordinator:
         from output_boundary import IntentKind, casa_text, resolve_scope
         _scope = resolve_scope()
 
+        # #1621: the event this card's post waits on, or None for a card that
+        # is posted as soon as it is written. A child run's scope and a job's
+        # carry no event, and a turn answering in another chat does not match,
+        # so their cards are never held. One deadline, set here: whatever the
+        # card takes to write counts against it.
+        reply_out = (
+            _scope.reply_out
+            if (defer_until_reply and card_request is not None
+                and _scope is not None
+                and _scope.reply_out is not None
+                and not _scope.reply_out.is_set()
+                and _scope.reply_chat == (bot_id, chat_id))
+            else None)
+        hold_until = 0.0
+        if reply_out is not None:
+            hold_until = asyncio.get_running_loop().time() + CARD_HOLD_S
+            ch.deferred = True
+
         # Only a card with a red button names one: every other card's post is
         # the call it always was.
         red = {"danger": tuple(danger)} if danger else {}
@@ -777,10 +858,31 @@ class ChallengeCoordinator:
             # action; recorded on the broker-owned meta, which the finish hook
             # reads, before anything is posted.
             req.meta["card_action"] = card.action
+            # #1621: a held card now waits for the turn's reply, for whatever
+            # is left of the hold (nothing, when the card took that long to
+            # write). At the deadline it is posted anyway. A request that
+            # settles meanwhile (a /new, a timeout, Casa stopping) ends the
+            # wait at once: there is no card left to hold. The request's
+            # future is only watched here, never cancelled.
+            if reply_out is not None:
+                left = hold_until - asyncio.get_running_loop().time()
+                if left > 0 and not req._future.done():
+                    waiter = asyncio.ensure_future(reply_out.wait())
+                    try:
+                        done, _ = await asyncio.wait(
+                            {waiter, req._future}, timeout=left,
+                            return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        waiter.cancel()
+                    if not done:
+                        logger.info(
+                            "approval card: the turn's reply was not out "
+                            "%.0f s after the call; posting the card "
+                            "(chat_id=%s)", CARD_HOLD_S, chat_id)
             # A tap, a timeout or a cancellation may have settled the request
-            # while the card was being written. Nothing is admitted or posted
-            # for it then: admission opens a send record that only a delivered
-            # post may close. The non-int return is the broker's
+            # while the card was being written or held. Nothing is admitted or
+            # posted for it then: admission opens a send record that only a
+            # delivered post may close. The non-int return is the broker's
             # nothing-was-posted signal, and unregistering a settled request
             # changes nothing. From this check to the start of the send there
             # is no await; a settlement that lands during the send itself is
@@ -814,7 +916,8 @@ class ChallengeCoordinator:
         # posting / setup settlement (single registration owner — register
         # already happened synchronously above).
         driver = asyncio.get_running_loop().create_task(
-            self._drive(ch, _post, _finish_factory, chat_id=chat_id)
+            self._drive(ch, _post, _finish_factory, chat_id=chat_id,
+                        channel=channel)
         )
         ch.driver = driver
         self._drivers.add(driver)
@@ -906,6 +1009,9 @@ class ChallengeCoordinator:
                 "enforcement_role": enforcement_role,
             },
             card_request=card_request,
+            # #1621: this card alone is posted after the turn's reply; the
+            # hook below does not wait for its post.
+            defer_until_reply=True,
         )
 
     @staticmethod
@@ -957,7 +1063,7 @@ class ChallengeCoordinator:
         self, ch: _Challenge,
         post_factory: Callable[[], Any],
         finish_factory: Callable[[int], Callable[[dict], Any]],
-        *, chat_id: int,
+        *, chat_id: int, channel: Any = None,
     ) -> None:
         req = ch.req
         await ch.broker.ensure_posted(req, post_factory, finish_factory)
@@ -1011,6 +1117,42 @@ class ChallengeCoordinator:
             req._setup_task.add_done_callback(
                 lambda _t, _c=ch: self._settle_setup(_c)
             )
+        # #1621: a held card that was never shown. Its send failed, or the
+        # request had settled before the send (a /new, a timeout) and nothing
+        # was posted. The hook has already answered, as for a posted card, so
+        # this is the one place left to say so. A card that was posted and
+        # then retired says it itself, and an answered request is no failure.
+        # When Casa is stopping there is nobody to tell and no time to wait
+        # for a send: the mark is forgotten and nothing is posted.
+        if (ch.deferred and req.meta.get("message_id") is None
+                and not ChallengeHandle(created=False, _challenge=ch).answered()):
+            await self._card_not_shown(
+                ch, channel, chat_id, tell=not _stopping(req))
+
+    async def _card_not_shown(
+        self, ch: _Challenge, channel: Any, chat_id: int, *, tell: bool = True,
+    ) -> None:
+        """#1621: forget the delegation the hook marked as awaiting this
+        approval, as the hook does when it sees a post fail, and tell the
+        operator once, in the card's chat, with Casa's own line. Best effort:
+        a notice that cannot be sent is logged, and nothing more is tried."""
+        for delegation_id in ch.delegation_ids:
+            forget_delegation_awaiting_approval(delegation_id)
+        ch.delegation_ids.clear()
+        if not tell:
+            return
+        told = False
+        try:
+            notice = getattr(channel, "deliver_casa_notice", None)
+            if notice is not None:
+                told = await notice(chat_id, _CARD_NOT_SHOWN) is True
+        except Exception:  # noqa: BLE001 — a driver task: log, never raise
+            logger.warning("approval card: the not-shown notice raised",
+                           exc_info=True)
+        if not told:
+            logger.warning(
+                "approval card not shown, and the operator could not be told "
+                "(chat_id=%s)", chat_id)
 
     # -- the single-owner authz finish hook ---------------------------------
 
@@ -1838,6 +1980,17 @@ def make_resident_authz_hook(
                     (agent_mod.origin_var.get(None) or {}).get(
                         "_delegation_id") or "")
                 note_delegation_awaiting_approval(delegation_id)
+                # #1621: a card that waits for this turn's reply is not
+                # waited for here — the reply is sent only after this hook
+                # has answered. The call is recorded as pending now, before
+                # its card is posted; a card that then cannot be shown is told
+                # to the operator by the post driver, which also forgets the
+                # delegation noted above.
+                if handle.deferred and handle.live:
+                    handle.remember_delegation(delegation_id)
+                    _note_approval(tool_use_id, "pending", key)
+                    return _deny(_DENY_PENDING if handle.created is False
+                                 else _DENY_POSTED)
                 if handle.created is False:
                     # Identical challenge already registered. Registration is
                     # not delivery: its post may still be in flight and may
@@ -1848,6 +2001,10 @@ def make_resident_authz_hook(
                     # to the model is unchanged.
                     if await handle.settled_post() == "posted":
                         _note_approval(tool_use_id, "pending", key)
+                    elif not handle.answered():
+                        # No card stands and nobody answered: the delegation
+                        # noted above waits on nothing, as on the paths below.
+                        forget_delegation_awaiting_approval(delegation_id)
                     return _deny(_DENY_PENDING)
 
                 # settled_post awaits the coordinator-owned setup driver
