@@ -137,7 +137,7 @@ class TestDeliveriesThatDoNotNotify:
             42, "Browsing: Runpod", silent=True) == 12345
         assert bot.send_message.await_count == 1
         sent = bot.send_message.await_args.kwargs
-        assert sent == {"chat_id": 42, "text": "Browsing: Runpod",
+        assert sent == {"chat_id": 42, "text": "Browsing: Runpod", "entities": None,
                         "disable_notification": True}
 
     async def test_a_run_card_that_is_not_silent_names_no_notification_setting(self):
@@ -145,4 +145,4 @@ class TestDeliveriesThatDoNotNotify:
         assert await ch.deliver_run_card(42, "Browsing: Runpod") == 12345
         assert await ch.deliver_run_card(42, "Browsing: Runpod", silent=False) == 12345
         assert [set(call.kwargs) for call in bot.send_message.await_args_list] == [
-            {"chat_id", "text"}] * 2
+            {"chat_id", "text", "entities"}] * 2

@@ -196,7 +196,7 @@ post's body reaches no row, pages and a re-landing are one event, a task's answe
 answer line beside its start line's neutral one, and a failing capture still delivers the send.
 
 What it does not cover: whether the post answered what was asked; the writer judges that from
-the line and what it already holds. Casa's own cards under a specialist's label — the start
+the line and what it already holds. Casa's own cards under a specialist's name — the start
 card of a browsing run, its status card, the line answering a Stop — are
 Casa's status text, not the specialist's post, and leave no line. The write is detached: a
 crash between the landing and the write loses the line, never the post.

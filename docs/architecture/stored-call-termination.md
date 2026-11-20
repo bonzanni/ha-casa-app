@@ -67,7 +67,7 @@ already accepts today.
 deadline, or its identity could not be established while pinned, or a callback was still
 inside, the agent that ran it is *faulted* (`agent_lane.FAULTS`, one fault per agent): every
 later use of its lane — reply, tap, continuation, delegation from any chat — is refused at
-once with a labelled notice (`📊 Finance is out of service until Casa restarts.`), no plugin
+once with a notice naming it (`Finance is out of service until Casa restarts.`), no plugin
 operation of that agent is admitted, the permit is released, an ERROR is logged, and the
 standing plugin-health report carries an `agent_faulted` row against the plugin and the
 specialist until a restart. A worker that a

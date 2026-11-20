@@ -483,7 +483,8 @@ Casa's own cards keep using the specialist's name.
   only — and everything it shows you: cards and their buttons, links you must
   open, reports, files, its job lines and run cards. To stop a job of yours or
   its browsing, ask it there, as you would ask the assistant. Its messages
-  there carry no `📊` label: the chat is the specialist.
+  there carry no name: the chat is the specialist. In the same way the
+  assistant's own plugins post in her chat with no name on them.
 - **Work the assistant hands over** also appears there: a silent "Ellen
   asked:" when it starts, with her request as she wrote it, in full, in a quote
   (work Casa itself starts, such as a plugin's setup after an update,
@@ -591,7 +592,8 @@ straight away. The job runs as one long session: it keeps working until it is
 finished. Everything that needs you happens in your DM.
 A job you asked for puts a 👍 on
 your message that asked for it (v0.373.0); if Telegram does not take the 👍, you get one
-silent line instead — "📊 Finance started «…»." When a specialist's job
+silent line instead — "Finance started «…»." ("Started «…»." in that agent's
+own chat). When a specialist's job
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
 of its messages there (a question, something its plugin posted, its start line if it
@@ -681,7 +683,7 @@ first. The job runs with your own access, as usual. A job entry
 must use `channel: telegram` and may not carry `clearance`. The Configurator refuses a job
 the assistant cannot start. If the job cannot start when its time comes — its plugin was
 unassigned, the same job is still running, Casa was at its work limit — you get one
-labelled line saying it did not start and why, and it tries again at the next occurrence.
+line naming the agent, saying it did not start and why, and it tries again at the next occurrence.
 
 ### Delegation limits
 
@@ -1297,12 +1299,13 @@ declaration for its sign-in link, provided it delivers every slot it
 provides. A plugin declaring `delivers` needs Casa 0.318.0 or later; an
 older Casa refuses its manifest at install.
 
-Since v0.346.0 the link message starts with a label line — `📊` and the name
-of the agent whose plugin sent it, as on a specialist's other posts — and
+When the link lands in another agent's chat, the message starts with the
+name of the agent whose plugin sent it, in bold on its own line, as on a
+specialist's other posts; in that agent's own chat it carries no name.
 Telegram shows no link preview under it: the link text already names the
 host.
 
-Since v0.347.3 the link is a button: the message is the label line and the
+Since v0.347.3 the link is a button: the message is the name line and the
 caption (the label when there is no caption), with one button to tap whose
 text is the label and the real destination host, the way cards carry their
 buttons. Only if Telegram refuses the button does Casa send the link text as
@@ -1316,7 +1319,7 @@ Casa passes that result to the assistant unchanged and sends nothing, and a
 setup run that ends this way counts as run. Any other result without its
 reference is still withheld. This needs Casa 0.319.0 or later.
 
-#### A specialist's report or file arrives in your chat, labelled (v0.339.0)
+#### A specialist's report or file arrives in your chat, under its name (v0.339.0)
 
 A plugin can also hand you its output directly — a quarterly summary, an
 export — instead of having the assistant retell it. It declares the slot as
@@ -1327,14 +1330,16 @@ the media `kind` it is — `document`, `photo`, `audio`, `voice`, `zip` or
 `filename` for the name you see when the plugin declares `"filename": true` on that
 tool), and deposits it like any
 capability. Casa posts it in that specialist's own chat (the assistant's chat
-for her own plugins), headed in the assistant's chat by `📊` and the agent's
-name — the plugin cannot change or hide that line — and the
+for her own plugins), with no name on it there, since the chat is the agent's.
+Where a post lands in another agent's chat, a message is shown as one quote
+credited to the agent that posted it, and a file's caption starts with that
+agent's name in bold; the plugin cannot change or hide the name. The
 assistant gets a receipt instead of the text, so nothing is paraphrased on the
 way. A message is split into pages like any long reply; one that would need
 more than six pages, or that could not be sent whole, is refused and nothing
 is posted. A file goes through the same checks as the `send_media` tool and
-is consumed whether or not it arrived; the label line plus the caption must
-fit the media caption limit of 1,024 characters. If Casa could not confirm
+is consumed whether or not it arrived; the agent's name, a line break and the
+caption must fit the media caption limit of 1,024 characters. If Casa could not confirm
 delivery the result is withheld, as for a link. The assistant's own
 conversation learns only that the specialist posted something and how large
 it was, never what it said — ask the specialist if you want the detail
@@ -1377,11 +1382,12 @@ A specialist's plugin can offer you a decision as buttons under its message —
 "Pair invoice 17 with the Adobe payment? [Yes] [No] [More]" — by declaring a
 slot of the kind `operator_proposal` and depositing the text with one to six
 buttons, each naming one of the plugin's own tools with fixed arguments. Casa
-posts it labelled, like any specialist post. When you tap, Casa runs that one
+posts it like any specialist post, under the agent's name outside its own chat.
+When you tap, Casa runs that one
 call and nothing else: a short specialist turn in which only that exact tool
 with those exact arguments is allowed — any other call is denied — and, when
 the call runs and returns a result, the plugin's own answer comes back to you,
-labelled, as the receipt (a plugin that answers with a JSON object can give
+the same way, as the receipt (a plugin that answers with a JSON object can give
 the sentence you see as its `receipt`; otherwise you see its answer as it is). That turn is told to
 make the call even if the proposal looks out of date, because the plugin
 decides whether the tap still applies, and it is not given earlier exchanges
@@ -1428,7 +1434,7 @@ disappear at once while its text stays; nothing runs and nothing is sent, and a 
 the same card does nothing. Casa never adds one by itself.
 A card can also come with a list longer than one message before it (v0.344.67): with a
 `"pages"` list of one to six texts, each fitting one message, Casa posts every page in order
-as its own labelled message and then the card with its buttons, as one delivery. A reply to
+as its own message and then the card with its buttons, as one delivery. A reply to
 any page carries that page's text, so the agent knows which page you meant. If a page cannot be
 posted, the card is not posted either, and the specialist is told how many pages arrived.
 A plugin that sends pages needs Casa 0.344.67 or later: an older Casa posts the card alone.

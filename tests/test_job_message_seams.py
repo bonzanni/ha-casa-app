@@ -130,13 +130,13 @@ async def test_an_operator_reply_is_journaled_with_its_notice_target(rig):
     rig.cli.gate = asyncio.Event()
     ok = await asyncio.wait_for(rig.ch.deliver_operator_reply(
         rig.rec, "go on", chat_id=OPERATOR, message_id=31,
-        quoted_text="📊 Finance started «Accounting check»."), 2)
+        quoted_text="Finance started «Accounting check»."), 2)
     assert ok is True
     [entry] = job_inbox.load(rig.rec.id)
     assert entry["notice"] == {"address": [BOT, OPERATOR, 31],
                                "answer": False}
     assert entry["text"] == (
-        "[replying to «📊 Finance started «Accounting check».»]\ngo on")
+        "[replying to «Finance started «Accounting check».»]\ngo on")
     rig.cli.gate.set()
     await until(lambda: rig.cli.written)
 

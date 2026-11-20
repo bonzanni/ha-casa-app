@@ -120,8 +120,11 @@ has closed. A scheduled job whose host's chat is not open is not started
 `own_chat_not_open` (tap Open … in the resident's chat), `own_chat_unreachable` (the bot is
 recovering), and, for a task born with no delivery, "… was not open when this task
 started …; put what matters in your answer". A refused plugin call is told the line after
-`not executed: `, naming the agent plainly, without the `📊` glyph. In an agent's own chat
-its posts carry no `📊` label (`result_broker.label_at`): the chat is the agent.
+`not executed: `, naming the agent plainly. In an agent's own chat — Casa's chat is the
+resident's — its posts carry no name (`result_broker.label_at`): the chat is the agent. In
+another agent's chat a rich post is one quote credited to the poster, a caption or a
+plain-text post carries the name in bold on its first line, and a one-line notice names
+it in the sentence ([`plugin-delivered-slots.md`](plugin-delivered-slots.md)).
 
 **A task in an agent's chat.** A delegation to an agent whose chat is open at its birth
 opens its post index (`task_posts.open`) and its input destination

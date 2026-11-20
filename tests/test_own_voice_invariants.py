@@ -50,6 +50,7 @@ import tools
 from bus import MessageBus
 from channels.telegram import TelegramChannel
 from channels.tg_address import TgAddress
+from channels.tg_rich import credited_quote
 from config import CharacterConfig
 from engagement_registry import EngagementRegistry
 from mcp_registry import McpServerRegistry
@@ -849,7 +850,7 @@ async def test_ellens_own_chat_is_as_it_was(world, outbox):
     await _handle(world.casa, _text("hello Ellen"))
     [turn] = _queued(world.bus, "assistant")
     assert turn.content == "hello Ellen" and turn.context["_tg_bot"] == CASA_BOT
-    # her own plugin delivery posts in her chat, under her label
+    # her own plugin delivery posts in her chat, with no name on it: the chat is hers
     outcome, _ = await call_tool("assistant", LINK, _ellen_turn())
     assert outcome == "delivered"
     # her own file goes to her chat, through her bot
@@ -864,7 +865,7 @@ async def test_ellens_own_chat_is_as_it_was(world, outbox):
     await _settled()
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     sends = world.casa.recorder.sends()
-    assert sends[0][1]["text"].startswith("\U0001F4CA Ellen\n")
+    assert "Ellen" not in sends[0][1]["text"].split("\n")[0]
     assert [n for n, _k in sends] == ["send_message", "send_document"]
     assert world.alex.recorder.sends() == []
     assert chat_notes.drain(CASA_BOT, OPERATOR) == []
@@ -946,8 +947,8 @@ async def test_a_card_alex_left_in_ellens_chat_refuses_its_tap_with_one_line(
              else f"dm:{CASA_BOT}:{OPERATOR}")
     meta = {"options": ["Yes", "No"], "chat_id": OPERATOR, "bot_id": CASA_BOT,
             "operator_id": OPERATOR, "role": "finance", "message_id": 501, "_scope": scope,
-            "deadline": 10_000.0, "plugin_seg": "probe", "label": "📊 Alex",
-            "text": "📊 Alex\nPair 17?", "artifact_id": ARTIFACT, "revision": "",
+            "deadline": 10_000.0, "plugin_seg": "probe", "label": "Alex",
+            "text": credited_quote("Pair 17?", "Alex"), "artifact_id": ARTIFACT, "revision": "",
             "owner": "d-1", "calls": [{"server": "api", "wire_name": "apply",
                                         "runtime_name": "mcp__plugin_probe_api__apply",
                                         "proposal": False, "arguments": {}, "canonical": "{}"}]
@@ -1737,7 +1738,7 @@ async def _job_surfaces(world, rt, outbox) -> tuple:
     landed: dict = {}
     rec = await _landed(world, landed, "job start line", _start_job(_ellen_turn(), rt))
     await _landed(world, landed, "job question", world.transport.post_job_question(
-        rec, "q1", admitted("📊 Alex\nWhich account?"), ["A", "B"], ["A", "B"]))
+        rec, "q1", admitted("Which account?"), ["A", "B"], ["A", "B"]))
     await _landed(world, landed, "job parked line", world.transport.post_job_parked(
         rec, "Waiting for you."))
     token = tools.engagement_var.set(rec)
@@ -1811,8 +1812,8 @@ async def test_a_reply_to_a_tasks_file_question_card_or_stop_line_reaches_the_ta
 
 
 # ---------------------------------------------------------------------------
-# A tap on a stored-call card in Alex's own chat: the lines after it carry no
-# "📊 Alex" head — the chat is Alex's, so they name him plainly
+# A tap on a stored-call card in Alex's own chat: the receipt after it is not
+# credited to Alex — the chat is Alex's — and the notes name him plainly
 # ---------------------------------------------------------------------------
 
 async def _own_chat_tap(world, monkeypatch, *, plugins=None) -> None:
@@ -1843,7 +1844,7 @@ async def test_a_tap_receipt_in_the_agents_own_chat_has_no_head(world, monkeypat
     receipts = [t for t in world.alex.recorder.texts() if "Added to cart." in t]
     assert receipts, world.alex.recorder.texts()
     for receipt_text in receipts:
-        assert not any(line.startswith("📊") for line in receipt_text.splitlines())
+        assert "<cite>" not in receipt_text and not receipt_text.startswith(">")
     assert chat_notes.drain(ALEX_BOT, OPERATOR) == ["Alex applied your tap (Yes)."]
     assert _ellen_texts(world) == []
 

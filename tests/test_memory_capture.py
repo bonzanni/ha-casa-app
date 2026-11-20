@@ -257,9 +257,9 @@ async def test_casas_notes_never_reach_the_captured_text(mem, tmp_path,
     operator's own words, never a note."""
     import chat_notes
     chat_notes.reset()
-    chat_notes.record(BOT, int(CHAT), "📊 Finance answered your reply (1 page).")
-    note = ("The person sent this as a reply to a message Casa posted for 📊 Finance, "
-            "posted 2026-10-06 21:40, which read:\n«📊 Finance\nWhich quarter?»\n"
+    chat_notes.record(BOT, int(CHAT), "Finance answered your reply (1 page).")
+    note = ("The person sent this as a reply to a message Casa posted for Finance, "
+            "posted 2026-10-06 21:40, which read:\n«Which quarter?\nFinance»\n"
             "Their words answer that message, which may not be your latest one.")
     FakeClient.reset()
     agent = _make_agent(tmp_path)
@@ -276,7 +276,7 @@ async def test_casas_notes_never_reach_the_captured_text(mem, tmp_path,
                                            _reply_note=note))
     # The precondition: the notes really were in what the model was sent.
     assert len(sent) == 1
-    assert "<casa_notes>" in sent[0] and "(Casa) 📊 Finance answered" in sent[0]
+    assert "<casa_notes>" in sent[0] and "(Casa) Finance answered" in sent[0]
     assert "Which quarter" in sent[0]
     operator = [e["text"] for e in events(mem)
                 if e["speaker_kind"] == "operator"]

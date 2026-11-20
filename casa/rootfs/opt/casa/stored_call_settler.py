@@ -184,8 +184,8 @@ async def handle_tap(
 
     from channels.tg_address import TgAddress
     bot = channel.bot_id if bot_id is None else bot_id
-    # the receipt's head line, left out in the agent's own chat; the notices and
-    # the chat's notes name the agent with it, or plainly where it is left out
+    # the name the receipt is credited to, left out in the agent's own chat; the
+    # notices and the chat's notes name the agent plainly
     head = rb.label_at(executing_role, TgAddress(bot, chat_id))
     label = rb.name_at(executing_role, TgAddress(bot, chat_id))
     context = {"chat_id": str(chat_id), "cid": cid, "_tg_bot": bot}

@@ -275,8 +275,9 @@ async def settle_ended(seg: str, bot_id: int, operator_id: int, ref: str) -> boo
 
 async def post_line(bot_id: int, chat_id: int, role: str, line: str, *,
                     reply_to: "int | None") -> bool:
-    """One line of Casa's fixed text under the specialist's label (none in the agent's own
-    chat), as a reply to the request's card, through the bot *bot_id* that holds it
+    """One line of Casa's fixed text under the specialist's name, in bold on its own line
+    (none in the agent's own chat), as a reply to the request's card, through the bot
+    *bot_id* that holds it
     (``TelegramChannel.send_reply_line``). The line is filed under the
     card's task, live or ended, so a reply to it reaches whatever a reply to the card
     reaches. Never raises: a failure is logged. True when it landed."""
@@ -284,7 +285,7 @@ async def post_line(bot_id: int, chat_id: int, role: str, line: str, *,
 
     import task_posts
     from channels.tg_address import TgAddress
-    from result_broker import PostRecord, compose_operator_message, label_at
+    from result_broker import PostRecord, label_at, named_head
     transport = _transport()
     if transport is None:
         return False
@@ -297,9 +298,9 @@ async def post_line(bot_id: int, chat_id: int, role: str, line: str, *,
         post = (PostRecord(role="", operator_id=int(chat_id), plugin="", slot="stop_line",
                            tool_use_id="", owner=ref.task_id, posted_at=time.time())
                 if ref is not None else None)
-        return bool(await endpoint.send_reply_line(
-            int(chat_id), compose_operator_message(line, label_at(role, endpoint)), reply_to,
-            post=post))
+        text, entities = named_head(label_at(role, endpoint), line)
+        return bool(await endpoint.send_reply_line(int(chat_id), text, reply_to, post=post,
+                                                   entities=entities))
     except Exception as exc:  # noqa: BLE001 — a line is never the stop's fault
         logger.warning("stop line not posted (%s)", type(exc).__name__)
         return False

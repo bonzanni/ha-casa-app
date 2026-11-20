@@ -57,6 +57,7 @@
     - casa/rootfs/opt/casa/channels/tg_rich.py::send_rich
     - casa/rootfs/opt/casa/channels/tg_rich.py::edit_rich
     - casa/rootfs/opt/casa/channels/tg_rich.py::flatten
+    - casa/rootfs/opt/casa/channels/tg_rich.py::credited_quote
     - casa/rootfs/opt/casa/channels/tg_rich.py::time_instant
     - casa/rootfs/opt/casa/channels/telegram.py::quoted_text
     - casa/rootfs/opt/casa/channels/tg_richtext.py::render

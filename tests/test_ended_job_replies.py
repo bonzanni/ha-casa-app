@@ -84,7 +84,7 @@ async def _ended_job(tmp_path, *, role="finance", chat=OPERATOR, user=OPERATOR,
 
 
 def _text_reply(text="did it tag row 7?", *, quoted_id, user=OPERATOR,
-                quoted_text="📊 Finance started «Q3 accounting»."):
+                quoted_text="Finance started «Q3 accounting»."):
     who = types.SimpleNamespace(first_name="Nicola", id=user)
     quoted = types.SimpleNamespace(message_id=quoted_id, text=quoted_text, caption=None,
                                    date=None, from_user=None, sender_chat=None)
@@ -120,7 +120,7 @@ async def test_a_reply_to_an_ended_jobs_start_line_is_the_residents_turn_with_it
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=501))
     assert turn.target == "assistant" and turn.content == "did it tag row 7?"
     assert turn.context["_reply_note"] == reply_note(
-        _note_for(), None, "📊 Finance started «Q3 accounting».")
+        _note_for(), None, "Finance started «Q3 accounting».")
 
 
 async def test_a_reply_to_an_ended_jobs_plugin_post_is_the_residents_turn(tmp_path):
@@ -128,8 +128,8 @@ async def test_a_reply_to_an_ended_jobs_plugin_post_is_the_residents_turn(tmp_pa
     reg, rec = await _ended_job(tmp_path, posts=[(640, None)])
     ch, bus = _channel()
     ch._engagement_registry = reg
-    [turn] = await _turns(ch, bus, _text_reply(quoted_id=640, quoted_text="📊 Finance\nrow 7"))
-    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "📊 Finance\nrow 7")
+    [turn] = await _turns(ch, bus, _text_reply(quoted_id=640, quoted_text="row 7\nFinance"))
+    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "row 7\nFinance")
 
 
 async def test_a_plugin_post_landing_after_the_end_is_the_ended_jobs(tmp_path):
@@ -141,8 +141,8 @@ async def test_a_plugin_post_landing_after_the_end_is_the_ended_jobs(tmp_path):
     ch._engagement_registry = reg
     ch._record_post(OPERATOR, NS(message_id=650), _record(owner=rec.id))
     assert reg.ended_job_post_owner(TgAddress(BOT, OPERATOR, 650)) is rec
-    [turn] = await _turns(ch, bus, _text_reply(quoted_id=650, quoted_text="📊 Finance\nrow 9"))
-    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "📊 Finance\nrow 9")
+    [turn] = await _turns(ch, bus, _text_reply(quoted_id=650, quoted_text="row 9\nFinance"))
+    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "row 9\nFinance")
 
 
 async def test_a_reply_to_an_ended_jobs_question_names_how_it_ended(tmp_path):
@@ -236,7 +236,7 @@ def _file_reply(caption, quoted_id):
     m = _msg(chat_id=OPERATOR, user_id=OPERATOR, document=_doc("invoice-0912.pdf"))
     m.caption = caption
     m.media_group_id = None
-    m.reply_to_message = NS(message_id=quoted_id, text="📊 Finance\nrow 7", caption=None,
+    m.reply_to_message = NS(message_id=quoted_id, text="row 7\nFinance", caption=None,
                             date=None, from_user=None, sender_chat=None)
     return m
 
@@ -261,7 +261,7 @@ async def test_a_captioned_file_replying_to_an_ended_jobs_post_is_the_residents(
     assert turn.target == "assistant" and turn.content == "file this one too"
     assert turn.context["_received_file"]["files"] == [
         {"path": os.path.join(inbox.ready_dir, stored.name), "name": "invoice-0912.pdf"}]
-    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "📊 Finance\nrow 7")
+    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "row 7\nFinance")
 
 
 async def test_a_file_without_a_caption_replying_to_an_ended_jobs_post_is_stored_and_acknowledged(

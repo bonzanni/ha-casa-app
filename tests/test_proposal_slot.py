@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import stored_calls as sc
 import tools as tools_mod
 import verdict_broker as vb
@@ -37,7 +38,7 @@ APPLY = f"mcp__plugin_{SEG}_{SRV}__apply"          # safe, no consumes — the o
 MORE = f"mcp__plugin_{SEG}_{SRV}__more"            # the More exception
 GUARDED = f"mcp__plugin_{SEG}_{SRV}__guarded"      # safe but PROTECTED
 SLOT = "proposal"
-LABEL = "📊 Finance"
+LABEL = "Finance"
 
 
 def _identity(**over) -> GrantIdentity:
@@ -202,7 +203,8 @@ async def test_a_proven_proposal_registers_before_posting_posts_once_and_returns
     ref, _ = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal()))
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
     (chat_id, text, labels, rid, post), = env.rec.proposals
-    assert chat_id == 4242 and text == LABEL + "\nPair invoice 17 with the Adobe payment?"
+    assert chat_id == 4242 and text == credited_quote("Pair invoice 17 with the Adobe payment?",
+                                                         LABEL)
     assert labels == ["Yes", "No"] and len(rid) == 32
     assert post.kind == "operator_proposal" and post.role == "finance" and post.owner == "d-1"
     meta = env.broker.get_meta(namespace="proposal", scope=f"proposal:{BOT}:4242", request_id=rid)

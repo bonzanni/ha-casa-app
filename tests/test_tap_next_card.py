@@ -135,7 +135,7 @@ async def test_the_next_card_is_posted_after_the_receipt_and_registered_before_i
     assert registered_at_send == [True]
     (card,) = env.proposals
     assert card.labels == ["Confirm", "Wrong"]
-    assert card.text.startswith(LABEL) and "INV-88" in card.text
+    assert card.text.startswith(f"> <cite>{LABEL}</cite>\n>\n") and "INV-88" in card.text
     (rid,) = _live()
     meta = _meta_of(rid)
     assert rid == card.rid
@@ -267,7 +267,7 @@ async def test_a_receipt_that_did_not_go_out_posts_no_card(card_env):
 
 async def test_in_the_agents_own_chat_the_next_card_carries_no_label(card_env, monkeypatch):
     """The next card follows the tapped one into the chat it was posted in;
-    in the agent's own chat it is not headed with the agent's label — the
+    in the agent's own chat it is not credited to the agent — the
     chat is the agent — exactly as its first card was not."""
     env = card_env
     env.channel.default_agent = "finance"
@@ -277,4 +277,4 @@ async def test_in_the_agents_own_chat_the_next_card_carries_no_label(card_env, m
     env.respond = _respond_with(nxt=_card())
     await _tap(env)
     (card,) = env.proposals
-    assert not card.text.startswith(LABEL) and card.text.startswith("Adobe")
+    assert "<cite>" not in card.text and card.text.startswith("Adobe")

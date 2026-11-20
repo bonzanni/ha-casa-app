@@ -128,7 +128,7 @@ a retry after a hand-back included). Once the bot is bound, the agent also greet
 by itself (`TelegramChannel.speak_first`, a turn Casa starts with no operator identity), which
 opens the chat only once Telegram took its reply, and a bare `/start` sent while that greeting is
 on its way is held for it (replayed if the greeting does not reach him); `/new` resets that agent's own
-conversation, and Casa's lines name the agent plainly, without the `📊` label. The bot's
+conversation, and Casa's lines name the agent plainly. The bot's
 lifecycle is [`own-voice-lifecycle.md`](own-voice-lifecycle.md), the rest
 [`own-voice.md`](own-voice.md).
 
@@ -274,7 +274,7 @@ separate scope and are untouched here, as they always were.
 
 **Three outbound messages are composed by Casa, not by an agent: a plugin's delivered
 link, message and file.** The channel's part — one link send (a message with its URL button,
-the labelled link only when the platform refuses the button), the message-count
+the link message only when the platform refuses the button), the message-count
 judgement and the rich send for a message, the kind's media method for a file — is in
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -045, -046); all
 three are Casa-composed notices under the output boundary.

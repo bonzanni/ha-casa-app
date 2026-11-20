@@ -21,6 +21,7 @@ from telegram.error import BadRequest
 
 import pinned_run as pr
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import stored_call_settler as settler
 import tools as tools_mod
 import verdict_broker as vb
@@ -114,8 +115,8 @@ def test_the_caption_budget_is_the_display_not_the_escapes(penv):
     head = rb.post_label("finance")
     budget = rb.PROPOSAL_CAPTION_CHARS - rb.PROPOSAL_SETTLE_RESERVE - utf16_len(head) - 1
     text = "\\." * budget                                   # twice as long in the source
-    assert rb.caption_fits(rb.compose_operator_message(text, head))
-    assert not rb.caption_fits(rb.compose_operator_message(text + "x", head))
+    assert rb.caption_fits(rb.compose_card_caption(text, head))
+    assert not rb.caption_fits(rb.compose_card_caption(text + "x", head))
 
 
 # --- the post ------------------------------------------------------------------------
@@ -127,7 +128,8 @@ async def test_the_photo_card_is_one_message_its_photo_claimed_once(penv):
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
     (card,) = penv.rec.cards
     assert card["photo"] == (PNG, "fido-0001.png")
-    assert card["text"] == f"{LABEL}\nPair invoice 17 with the Adobe payment?"
+    # a caption is no rich message: the name is its first line, in bold
+    assert card["text"] == f"**{LABEL}**\nPair invoice 17 with the Adobe payment?"
     assert penv.outbox.calls == [("claim", PHOTO), ("capture", "photo"), ("remove", f"claim:{PHOTO}")]
     (rid,) = _live()
     assert vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{BOT}:42", request_id=rid)["photo"]
@@ -210,22 +212,22 @@ def tg(monkeypatch):
 
 
 async def test_the_channel_sends_the_photo_with_its_caption_and_keyboard(tg):
-    mid = await tg.ch.deliver_operator_proposal(OPERATOR, "📊 Finance\n**Pay** €84\\.20?",
+    mid = await tg.ch.deliver_operator_proposal(OPERATOR, "**Finance**\n**Pay** €84\\.20?",
                                                 ["Yes, pay", "Not now"], RID,
                                                 photo=(PNG, "q.png"))
     assert mid == 601
     (sent,) = tg.bot.photos
-    assert sent["caption"] == "📊 Finance\nPay €84.20?" and sent["caption_entities"]
+    assert sent["caption"] == "Finance\nPay €84.20?" and sent["caption_entities"]
     assert [b.text for row in sent["reply_markup"].inline_keyboard for b in row] == [
         "Yes, pay", "Not now"]
 
 
 async def test_a_refused_caption_entity_resends_the_display_without_entities(tg):
     tg.bot.refuse_entities = True
-    assert await tg.ch.deliver_operator_proposal(OPERATOR, "📊 Finance\n**Pay**?", ["Yes"], RID,
+    assert await tg.ch.deliver_operator_proposal(OPERATOR, "**Finance**\n**Pay**?", ["Yes"], RID,
                                                  photo=(PNG, "q.png")) == 601
     (sent,) = tg.bot.photos
-    assert sent["caption"] == "📊 Finance\nPay?" and sent.get("caption_entities") is None
+    assert sent["caption"] == "Finance\nPay?" and sent.get("caption_entities") is None
 
 
 @pytest.fixture
@@ -285,7 +287,7 @@ async def test_an_on_card_receipt_whose_line_did_not_land_is_posted(lane_env):
     await _lane_tap(lane_env)
     assert marks[0] == "☑ Done: pay €84.20."
     (message, _), = lane_env.channel.replies
-    assert str(message).endswith("Done: pay €84.20.")
+    assert str(message) == credited_quote("Done: pay €84.20.", LABEL)
 
 
 async def test_a_tap_that_did_not_do_its_button_is_never_marked_a_success(lane_env):
@@ -297,7 +299,7 @@ async def test_a_tap_that_did_not_do_its_button_is_never_marked_a_success(lane_e
     assert len(lane_env.channel.marks) == 1
     assert lane_env.channel.marks[0].startswith("✖ ")
     (message, _), = lane_env.channel.replies                 # the receipt still says why
-    assert str(message).endswith("Nothing was pressed.")
+    assert str(message) == credited_quote("Nothing was pressed.", LABEL)
 
 
 def test_not_done_is_read_only_as_json_true_and_only_on_a_safe_receipt():

@@ -31,7 +31,7 @@ it, so a replay can quote it — and the replay says that it is a replay.
 running under the delegation, engagement or job delivered a message or a file straight to
 the operator ([`plugin-result-contract.md`](plugin-result-contract.md)), the text the
 terminal notice carries ends with one body-free Casa line per proven post — the
-specialist's label, the kind, the page count or media kind — the same lines a synchronous
+specialist's name, the kind, the page count or media kind — the same lines a synchronous
 delegation's returned text ends with — on the error arm, after the message. The lines are
 appended to the bounded answer before it is retained, so a replay carries them too; they
 never quote the body, the caption or the file name.

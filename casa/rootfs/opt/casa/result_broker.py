@@ -119,7 +119,7 @@ MAX_LABEL_CHARS = 40
 DEFAULT_LINK_LABEL = "Open"
 DELIVERED_TO = "operator_chat"
 OPERATOR_LINK = "operator_link"
-# S3: a specialist's plugin output posted by Casa, labelled, verbatim. The
+# S3: a specialist's plugin output posted by Casa, credited, verbatim. The
 # body is judged in CHARACTERS at deposit (a body over the cap is refused,
 # never truncated — truncation would be Casa retelling); the message count is
 # capped separately at delivery, before the first send, because a character
@@ -127,7 +127,7 @@ OPERATOR_LINK = "operator_link"
 OPERATOR_MESSAGE = "operator_message"
 OPERATOR_FILE = "operator_file"
 # S5: a proposal — text, buttons, and per button the exact plugin tool call a
-# tap commits; posted labelled with an inline keyboard, the calls held by
+# tap commits; posted credited with an inline keyboard, the calls held by
 # Casa under the broker's ``proposal`` namespace (design §2–§3).
 OPERATOR_PROPOSAL = "operator_proposal"
 PROPOSAL_TTL_S = 3600.0          # an hour: a proposal older than a dialogue is stale
@@ -158,16 +158,16 @@ PROPOSAL_CAPTION_CHARS = 1024
 PROPOSAL_PHOTO_PATH_CHARS = 1024
 MAX_MESSAGE_CHARS = 12_000
 MAX_MESSAGE_PAGES = 6
-# The COMPOSED file caption — Casa's label line, a newline, the plugin's
+# The COMPOSED file caption — the specialist's name, a newline, the plugin's
 # caption — must fit ``send_media``'s cap (tools._CAPTION_MAX; a test pins
 # the two equal). An upload is slower than a text send, so its bound is
 # longer — still under the CLI's matcher deadline (HOOK_TIMEOUT_S), so the
 # receipt path, not the deadline, decides.
 MAX_FILE_CAPTION_CHARS = 1024
 FILE_DELIVERY_TIMEOUT_S = 45.0
-# One fixed Casa marker for "a specialist posted this"; the label is
-# ``<glyph> <display name>`` and the plugin cannot set, prefix or suppress it.
-POST_LABEL_GLYPH = "📊"
+# A specialist's post in another agent's chat is credited to its display
+# name, which Casa derives and the plugin cannot set, displace or suppress.
+_PUNCTUATION = re.compile(r"[!-/:-@\[-`{-~]")
 # §6: the body-free echo the resident's conversation sees — one line per
 # proven post, at most this many per vehicle, each within this bound.
 ECHO_LINE_MAX = 120
@@ -297,13 +297,13 @@ def _message_ok(value: Any) -> bool:
     return all(ch in "\n\t" or unicodedata.category(ch) != "Cc" for ch in value)
 
 
-def _file_caption_ok(value: Any, label: str) -> bool:
+def _file_caption_ok(value: Any, name: str) -> bool:
     """An ``operator_file`` caption: one printable line, and the COMPOSED
-    caption (``label``, newline, caption) fits MAX_FILE_CAPTION_CHARS —
+    caption (``name``, newline, caption) fits MAX_FILE_CAPTION_CHARS —
     overflow is refused, never truncated."""
     if not isinstance(value, str) or not value.isprintable():
         return False
-    return len(label) + 1 + len(value) <= MAX_FILE_CAPTION_CHARS
+    return len(name) + 1 + len(value) <= MAX_FILE_CAPTION_CHARS
 
 
 def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
@@ -329,7 +329,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         return None, "bad_proposal"
     if not _message_ok(text):
         return None, "bad_proposal"
-    # #1377: optional plain pages posted before the card, each one labelled message
+    # #1377: optional plain pages posted before the card, each one credited message
     pages = obj.get("pages")
     if pages is not None:
         if (not isinstance(pages, list) or not 1 <= len(pages) <= PROPOSAL_MAX_PAGES
@@ -424,11 +424,13 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
                 return None, "bad_proposal"
             kept["keep_card"] = True
         resolved.append(kept)
-    head = post_label(call.identity.enforcement_role)
+    # judged in the form that is largest, the post credited to the specialist
+    # (in its own chat it goes out bare)
+    name = post_label(call.identity.enforcement_role)
     for body in [text, *(pages or ())]:
-        if not card_fits(compose_operator_message(body, head)):
+        if not card_fits(compose_operator_message(body, name)):
             return None, "bad_proposal"
-    if photo is not None and not caption_fits(compose_operator_message(text, head)):
+    if photo is not None and not caption_fits(compose_card_caption(text, name)):
         return None, "bad_proposal"
     out = {"text": text, "buttons": resolved, "revision": revision}
     if pages is not None:
@@ -465,32 +467,37 @@ def caption_fits(composed: str) -> bool:
 
 
 def post_label(role: str) -> str:
-    """The label Casa heads a specialist's post with: the glyph and the
-    persona display name the ``<delegates>`` block advertises for *role*
-    (the role itself when it has none) — from the one map Casa resolves
-    delegation targets against, never from the plugin."""
+    """The name Casa credits a specialist's post with: the persona display
+    name the ``<delegates>`` block advertises for *role* (the role itself when
+    it has none) — from the one map Casa resolves delegation targets against,
+    never from the plugin."""
     import tools as tools_mod
-    return f"{POST_LABEL_GLYPH} {tools_mod._display_name_for_role(role)}"
+    return tools_mod._display_name_for_role(role)
 
 
 def own_chat_of(role: str, endpoint: Any) -> bool:
-    """Whether *endpoint* is *role*'s own chat: an endpoint other than
-    Casa's, whose chat belongs to *role*."""
+    """Whether *endpoint* is *role*'s own chat: one whose chat belongs to
+    *role* — the resident's in Casa's own chat, any other agent's in the chat
+    of its own bot. No endpoint is no one's own chat, and neither is any
+    endpoint while the transport is not up: an unknown chat names the agent."""
     if endpoint is None or getattr(endpoint, "default_agent", None) != role:
         return False
     transport = _transport()
     if transport is None:
         return False
     try:
-        return endpoint is not transport.casa_endpoint()
+        transport.casa_endpoint()
     except RuntimeError:
         return False
+    return True
 
 
 def label_at(role: str, where: Any) -> str:
-    """The label for a post of *role* at *where* (an endpoint, or an address
-    whose bot names one): :func:`post_label`, except in *role*'s own chat,
-    where it is left out — the chat is the agent."""
+    """The name a post of *role* at *where* (an endpoint, or an address whose
+    bot names one) is credited to: :func:`post_label`, except in *role*'s own
+    chat, where it is left out — the chat is the agent. An address whose bot
+    has no endpoint gets the name: attribution is never dropped for want of
+    one."""
     endpoint = where
     if isinstance(where, TgAddress):
         transport = _transport()
@@ -502,30 +509,50 @@ def label_at(role: str, where: Any) -> str:
 
 
 def name_at(role: str, where: Any) -> str:
-    """How Casa's one-line notices at *where* name *role*: its label, except in
-    *role*'s own chat, where it is the plain display name — every message there is
-    the agent's own, so no head marks it."""
-    import tools as tools_mod
-    return label_at(role, where) or tools_mod._display_name_for_role(role)
+    """How Casa's one-line notices at *where* name *role*: its plain display
+    name, in every chat."""
+    return post_label(role)
 
 
-def compose_operator_message(body: str, label: str) -> str:
-    """The ONE text the channel splits into rich messages: the label line,
-    then the body as deposited. Splitting the composed text budgets the
-    header like any other line, so message 1 carries it and the rest are
-    bare — no planner, no reserved budget (a header added after the split
-    overflows a full message). With no label (an agent's own chat) it is the
-    body alone."""
-    return f"{label}\n{body}" if label else body
+def compose_operator_message(body: str, name: str) -> str:
+    """The ONE text the channel splits into rich messages: *body* as one
+    quote credited to *name* (``tg_rich.credited_quote``). Splitting the
+    composed text budgets the quote like any other text, so the first message
+    carries the credit and every one keeps its quote lines. With no name (an
+    agent's own chat) it is the body alone."""
+    from channels import tg_rich
+    return tg_rich.credited_quote(body, name) if name else body
 
 
-def compose_file_caption(label: str, caption: str) -> str:
-    """The file's caption: the label line first, the plugin's caption (if
-    any) beneath; a file with no plugin caption is still labelled, except in
-    an agent's own chat, where there is no label."""
-    if not label:
-        return caption
-    return f"{label}\n{caption}" if caption else label
+def compose_card_caption(body: str, name: str) -> str:
+    """A photo card's caption, which ``tg_richtext.render`` turns into
+    entities: *name* in bold on its own first line, every punctuation mark in
+    it escaped so it stays text, then *body*; with no name, *body* alone."""
+    if not name:
+        return body
+    escaped = _PUNCTUATION.sub(lambda m: "\\" + m.group(), name)
+    return f"**{escaped}**\n{body}"
+
+
+def named_head(name: str, text: str) -> "tuple[str, list | None]":
+    """A plain-text post's attributed form, ``(text, entities)``: *name* on its
+    own first line, one bold entity over it, *text* beneath (the name alone
+    when there is none). With no name (an agent's own chat), *text* and no
+    entities."""
+    if not name:
+        return text, None
+    from telegram import MessageEntity
+    from text_util import utf16_len
+    bold = MessageEntity(type=MessageEntity.BOLD, offset=0, length=utf16_len(name))
+    return (f"{name}\n{text}" if text else name), [bold]
+
+
+def compose_file_caption(name: str, caption: str) -> "tuple[str, list | None]":
+    """The file's caption and its entities: *name* in bold on the first line,
+    the plugin's caption (if any) beneath (:func:`named_head`); a file with no
+    plugin caption still carries the name, except in an agent's own chat,
+    where there is none."""
+    return named_head(name, caption)
 
 
 # -- S3 §6: the body-free echo ledger ------------------------------------------
@@ -651,7 +678,7 @@ def echo_parts(events: list[PostEvent], *,
 
 def echo_lines(events: list[PostEvent], *, where: str = "to your chat") -> list[str]:
     """§6: one Casa-authored line per proven post, at most ECHO_MAX_LINES
-    then ``…and N more.``, each within ECHO_LINE_MAX characters; the label,
+    then ``…and N more.``, each within ECHO_LINE_MAX characters; the name,
     the kind and the page count or media kind — nothing plugin-authored.
     *where* says where the posts went."""
     lines: list[str] = []
@@ -752,7 +779,7 @@ class ReferenceStore:
         (``bad_link`` / ``bad_caption`` / ``bad_label``); ``operator_message``
         (S3) — a non-blank body within the character cap with no control
         character but newline and tab (``bad_message``; caption, label and
-        kind ignored — the plugin cannot influence the label);
+        kind ignored — the plugin cannot influence the credit);
         ``operator_file`` (S3) — ``kind`` a media-policy key (``bad_kind``)
         and an optional caption whose COMPOSED form fits the cap
         (``bad_caption``), and (S7a, INV-PLUG-047) an optional delivered
@@ -1022,7 +1049,7 @@ _REASON_MESSAGE_NOT_DELIVERED = (
     "it reached their chat complete, so the operator may have received "
     "nothing and the result is withheld. Say so now, before anything else: "
     "tell the operator in one short line that the message may not have "
-    "arrived, that one headed by the specialist's name that arrived just now "
+    "arrived, that one carrying the specialist's name that arrived just now "
     "is theirs, and offer to send it again otherwise. Do not carry on with a "
     "step that needs them to have read it, and do not retry on this turn.")
 _REASON_FILE_NOT_DELIVERED = (
@@ -1030,7 +1057,7 @@ _REASON_FILE_NOT_DELIVERED = (
     "reached their chat, so the operator may have received nothing; the "
     "result is withheld and the file consumed. Say so now, before anything "
     "else: tell the operator in one short line that the file may not have "
-    "arrived, that one headed by the specialist's name that arrived just now "
+    "arrived, that one carrying the specialist's name that arrived just now "
     "is theirs, and offer to send a fresh one otherwise. Do not carry on with "
     "a step that needs them to have seen it, and do not retry on this turn.")
 _NOT_DELIVERED_REASONS = {
@@ -1444,34 +1471,37 @@ def compose_operator_link(value: str, *, caption: str = "", label: str = "",
     plugin; one ``text_link`` entity spans it, its offset and length in
     UTF-16 code units (Telegram's unit); the caption follows on its own line
     as the bytes it is (this never goes through the markdown renderer).
-    ``head`` (slice 5r) is the specialist's label line (``post_label``),
-    above the link as on its messages, files and proposals. ``plain`` is the
-    fallback the channel sends when the entity is refused: the same text
+    ``head`` is the specialist's name, in bold on its own line above the link
+    (:func:`named_head`); empty in the agent's own chat. ``plain`` is the
+    fallback the channel sends when the entities are refused: the same text
     with the URL spelled out."""
     from telegram import MessageEntity
     from text_util import utf16_len
     host = (urlsplit(value).hostname or "").lower()
     label = label or DEFAULT_LINK_LABEL
     link_text = f"{label} ({host})"
-    lead = f"{head}\n" if head else ""
     tail = f"\n{caption}" if caption else ""
-    entities = [MessageEntity(type=MessageEntity.TEXT_LINK, offset=utf16_len(lead),
+    text, bold = named_head(head, link_text + tail)
+    lead = text[:len(text) - len(link_text + tail)]
+    entities = [*(bold or ()),
+                MessageEntity(type=MessageEntity.TEXT_LINK, offset=utf16_len(lead),
                               length=utf16_len(link_text), url=value)]
-    return lead + link_text + tail, entities, f"{lead}{link_text}: {value}{tail}"
+    return text, entities, f"{lead}{link_text}: {value}{tail}"
 
 
 def compose_operator_link_button(value: str, *, caption: str = "", label: str = "",
-                                 head: str = "") -> tuple[str, str]:
+                                 head: str = "") -> "tuple[str, str, list | None]":
     """v0.347.3: the same link as one message with an inline URL button, the way a card
-    carries its buttons — ``(text, button)``. ``button`` is the link text
+    carries its buttons — ``(text, button, entities)``. ``button`` is the link text
     :func:`compose_operator_link` makes, ``"<label> (<host>)"`` with the host Casa prints;
-    ``text`` is the specialist's label line and the caption, or the label alone when there
-    is no caption (a message is never empty). The channel posts this first and the
-    text-link message only when the platform refuses the button."""
+    ``text`` is the specialist's name in bold on its own line (none in its own chat) and
+    the caption, or the label when there is no caption (a message is never empty), and
+    ``entities`` the bold over the name. The channel posts this first and the text-link
+    message only when the platform refuses the button."""
     host = (urlsplit(value).hostname or "").lower()
     label = label or DEFAULT_LINK_LABEL
-    body = caption or label
-    return (f"{head}\n{body}" if head else body), f"{label} ({host})"
+    text, entities = named_head(head, caption or label)
+    return text, f"{label} ({host})", entities
 
 
 async def _post_operator_link(to: TgAddress, text: str, entities, plain: str,
@@ -1479,8 +1509,8 @@ async def _post_operator_link(to: TgAddress, text: str, entities, plain: str,
                               button: "tuple[str, str, str] | None" = None):
     """Post to the chat *to* names through *to*'s bot (the bot its address names); no Telegram ⇒
     ``NOT_DELIVERED``. ``post`` (S4) is the record the channel files each
-    landed message under; ``button`` (v0.347.3) is ``(text, button text, url)``,
-    the message with the URL button."""
+    landed message under; ``button`` (v0.347.3) is ``(text, button text, url,
+    entities)``, the message with the URL button."""
     from channels import DeliveryOutcome
     channel = _endpoint_for(to)
     if channel is None:
@@ -1535,7 +1565,7 @@ async def _post_operator_proposal(to: TgAddress, text: str, labels: list, rid: s
                                   post: "PostRecord | None" = None,
                                   photo: "tuple[bytes, str] | None" = None,
                                   urls: "list | None" = None):
-    """S5: the channel of *to*'s bot posts the labelled text with one button
+    """S5: the channel of *to*'s bot posts the composed text with one button
     per label (``v1|proposal|<rid>|<i>``) and files the sent message under
     *post*; returns the message id, or ``None`` when nothing landed. Slice 5b:
     with *photo* (its bytes and file name) the card is that photo with the
@@ -1553,7 +1583,7 @@ async def _edit_operator_proposal(at: TgAddress, text: str, labels: list,
                                   rid: str, post: "PostRecord | None" = None,
                                   urls: "list | None" = None):
     """#1339: the bot that posted the message at *at* edits it to the
-    labelled text with one button per label (``v1|proposal|<rid>|<i>``);
+    composed text with one button per label (``v1|proposal|<rid>|<i>``);
     returns the message id, or ``None`` when the edit did not land."""
     channel = _endpoint_for(at)
     if channel is None:
@@ -1597,10 +1627,11 @@ def _claim_and_capture(outbox, path: str, kind: str, delivered_name: str = ""):
 
 
 async def _post_operator_file(to: TgAddress, path: str, kind: str, caption: str,
-                              post: "PostRecord | None" = None, delivered_name: str = ""):
+                              post: "PostRecord | None" = None, delivered_name: str = "",
+                              entities: "list | None" = None):
     """S3: claim *path* from the plugin outbox exactly as ``send_media``
     claims it (the shared outbox), run the kind's policy through ``capture``, and send
-    the bytes with the composed caption. The claim is removed on EVERY
+    the bytes with the composed caption and its *entities*. The claim is removed on EVERY
     outcome — the file is consumed whether or not it was delivered, even
     when the claim lands after the hook's bound. A claim, name or policy
     refusal is ``NOT_DELIVERED``; a send error propagates and the hook
@@ -1620,7 +1651,7 @@ async def _post_operator_file(to: TgAddress, path: str, kind: str, caption: str,
         return DeliveryOutcome.NOT_DELIVERED
     content, filename = captured
     return await channel.deliver_operator_file(to.chat_id, content, kind, filename, caption,
-                                               post=post)
+                                               post=post, caption_entities=entities)
 
 
 async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposal: dict,
@@ -1637,9 +1668,9 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     Returns ``(delivered, detail, event, withheld_reason)``.
 
     ``warning`` (§14.7, the ``More`` exception with a rewritten input): the
-    tell line is composed INTO the message above the label when the result
+    tell line is composed INTO the message above the post when the result
     still fits one page; otherwise the proposal lands without it and the
-    tell goes out as ONE labelled Casa notice right after the post — the
+    tell goes out as ONE Casa notice naming the specialist right after the post — the
     landed proposal stays the sole visible receipt and the tell is never
     silently dropped.
 
@@ -1651,7 +1682,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     and a swipe-reply on the message routes (design round 1).
 
     ``pages`` (#1377): after the synchronous block and before the card, each
-    page goes as one labelled message (``deliver_operator_page``, filed
+    page goes as one credited message (``deliver_operator_page``, filed
     under *post* as it lands), all under one ``DELIVERY_TIMEOUT_S`` bound; a
     page that does not land sends no card and the record is unregistered. The
     proof — and the receipt's ``pages`` count — needs every page and the card.
@@ -1681,7 +1712,10 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     revision = str(proposal.get("revision") or "")
     labels = [b["label"] for b in proposal["buttons"]]
     urls = [b.get("url") for b in proposal["buttons"]]
-    text = compose_operator_message(proposal["text"], head)
+    # credited to the specialist (*head*; empty in its own chat): a text card as a
+    # credited quote, a photo card's caption with the name in bold on its first line
+    compose = compose_card_caption if proposal.get("photo") else compose_operator_message
+    text = compose(proposal["text"], head)
     tell_after = False
     if warning:
         with_tell = f"{warning}\n{text}"
@@ -1738,7 +1772,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         BROKER.set_finish_hook(req, factory(rid=rid, req=req))
     from channels import DeliveryOutcome, UnconfirmedDelivery
     delivered = unconfirmed = False
-    # #1377: the plain pages, each one labelled message, go before the card
+    # #1377: the plain pages, each one credited message, go before the card
     pages = [compose_operator_message(p, head) for p in proposal.get("pages") or ()]
     landed = 0
     try:
@@ -1909,7 +1943,7 @@ async def _settle_repeat(seg: str, identity: Any, dkind: str, value: str,
     """#1312: what a repeat still owes, nothing of it sent as the post again.
     A file deposit's staged file is consumed (best-effort: the original
     delivery stands either way); a ``More`` call's rewritten-input tell goes
-    out as one labelled Casa notice, since no card carries it this time."""
+    out as one Casa notice naming the specialist, since no card carries it this time."""
     staged = value if dkind == OPERATOR_FILE else _proposal_photo(value) \
         if dkind == OPERATOR_PROPOSAL else None
     if staged:
@@ -2063,10 +2097,11 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                         event = PostEvent(call.tool_use_id, seg, slot,
                                           post_label(identity.enforcement_role), pages, None)
                 elif dkind == OPERATOR_FILE:
+                    shown, shown_entities = compose_file_caption(head, caption)
                     outcome = await asyncio.wait_for(
-                        _post_operator_file(to, value, media_kind,
-                                            compose_file_caption(head, caption),
-                                            post=post, delivered_name=filename),
+                        _post_operator_file(to, value, media_kind, shown,
+                                            post=post, delivered_name=filename,
+                                            entities=shown_entities),
                         FILE_DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:
@@ -2082,12 +2117,13 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 else:
                     text, entities, plain = compose_operator_link(
                         value, caption=caption, label=label, head=head)
-                    button_text, button_label = compose_operator_link_button(
+                    button_text, button_label, button_entities = compose_operator_link_button(
                         value, caption=caption, label=label, head=head)
                     outcome = await asyncio.wait_for(
                         _post_operator_link(to, text, entities, plain,
                                             post=post,
-                                            button=(button_text, button_label, value)),
+                                            button=(button_text, button_label, value,
+                                                    button_entities)),
                         DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:

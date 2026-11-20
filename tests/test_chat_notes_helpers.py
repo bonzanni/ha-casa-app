@@ -10,7 +10,7 @@ import agent_lane
 import chat_notes
 import result_broker as rb
 
-LABEL_MAX = "📊 " + "L" * 62                 # a 64-character display name after the glyph
+LABEL_MAX = "L" * 64                          # a 64-character display name
 NAME_200 = "n" * 196 + ".pdf"
 TITLE_60 = "t" * 60
 
@@ -54,8 +54,8 @@ def test_label_and_fields_each_keep_at_least_eight_characters_with_an_ellipsis()
 def test_short_inputs_are_not_clipped_at_all():
     line = chat_notes.bounded_line(
         "{label} stored {name} in its inbox but was not delegable at the post-download check.",
-        label="📊 Finance", fields={"name": "invoice.pdf"})
-    assert line == ("📊 Finance stored invoice.pdf in its inbox but was not delegable at the "
+        label="Finance", fields={"name": "invoice.pdf"})
+    assert line == ("Finance stored invoice.pdf in its inbox but was not delegable at the "
                     "post-download check.")
 
 

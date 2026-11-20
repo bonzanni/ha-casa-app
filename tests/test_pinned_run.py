@@ -25,6 +25,7 @@ import pytest
 
 import pinned_run as pr
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import tools as tools_mod
 from channels import DeliveryOutcome
 from test_proposal_slot import (  # noqa: F401 — the env fixture rides along
@@ -439,7 +440,7 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     rec = _NoticeRecorder(env.rec)
     monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(rec))
     import stored_call_settler as settler
-    # fits one page: the tell line rides above the label, no separate notice
+    # fits one page: the tell line rides above the credited card, no separate notice
     owner = _owner(runtime_name=MORE, canonical='{"page":2}')
     hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
     _open(env.store, call="c-fit", tool=MORE)
@@ -447,9 +448,10 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-fit", {})
     assert owner.captured == pr.Capture("delivered", "operator_proposal", rewritten=True)
     (_, text, _, _, _), = env.rec.proposals
-    assert text.startswith(settler.TELL_LINE + "\n" + LABEL + "\n")
+    assert text.startswith(settler.TELL_LINE + "\n> ")
+    assert text.startswith(settler.TELL_LINE + f"\n> <cite>{LABEL}</cite>\n>\n")
     assert rec.notices == []
-    # no longer fits: the proposal lands WITHOUT it and one labelled notice follows
+    # no longer fits: the proposal lands WITHOUT it and one notice naming the agent follows
     env.rec.proposals.clear()
     owner = _owner(runtime_name=MORE, canonical='{"page":2}')
     hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
@@ -459,14 +461,17 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     def size(text):                                          # the prepared bytes a card is measured in
         return len(prepare(text).encode("utf-8"))
     cap = RICH_BUDGET_BYTES - rb.PROPOSAL_SETTLE_RESERVE_BYTES
-    head_bytes, tell_bytes = size(LABEL + "\n"), size(settler.TELL_LINE + "\n")
+    # what the credit adds around a one-line body: its quote marker and its credit line
+    head_bytes = size(credited_quote("x", LABEL)) - 1
+    tell_bytes = size(settler.TELL_LINE + "\n")
     # "_" prepares to 5 bytes ("&#95;"): the largest body the deposit admits; not with the tell above it
-    full = _proposal(text="_" * ((cap - head_bytes) // 5))
+    full_text = "_" * ((cap - head_bytes) // 5)
+    full = _proposal(text=full_text)
     ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(full))
     assert err is None
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-full", {})
     (_, text, _, _, _), = env.rec.proposals
-    assert settler.TELL_LINE not in text and text.startswith(LABEL + "\n")
+    assert settler.TELL_LINE not in text and text == credited_quote(full_text, LABEL)
     assert rec.notices == [(42, f"{LABEL} {settler.TELL_LINE}")]
     assert owner.captured == pr.Capture("delivered", "operator_proposal", rewritten=True)
     # a proposal whose body plus the tell would fit one rich message but NOT the
@@ -479,7 +484,7 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     edge = (cap - head_bytes - tell_bytes) // 5 + 1           # with the tell: over the reserve, within one message
     ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal(text="_" * edge)))
     assert err is None
-    assert cap < size(f"{settler.TELL_LINE}\n{LABEL}\n" + "_" * edge) <= RICH_BUDGET_BYTES
+    assert cap < size(f"{settler.TELL_LINE}\n" + credited_quote("_" * edge, LABEL)) <= RICH_BUDGET_BYTES
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-edge", {})
     (_, text, _, _, _), = env.rec.proposals
     assert settler.TELL_LINE not in text and size(text) <= cap

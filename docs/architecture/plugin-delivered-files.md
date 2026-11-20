@@ -17,29 +17,32 @@ echo — is [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 
 **A file is a delivered slot whose value is a path in the plugin outbox.** The plugin stages
 the file, deposits its path, and returns the reference; Casa claims the file, runs the kind's
-media policy on its bytes and sends it, labelled, to the operator's chat. The file is consumed
+media policy on its bytes and sends it to the operator's chat, its caption carrying the
+specialist's name in bold on the first line outside that specialist's own chat. The file is consumed
 whatever the outcome.
 
 ## Contracts & invariants
 
-**INV-PLUG-046**: A capability slot a plugin declares as `operator_file` reaches the operator only as one media send Casa makes through the kind's media policy at the call's delivery (its grant identity's), captioned with the label Casa derives from the specialist's display name and the plugin cannot influence — none in the agent's own chat — with the plugin's caption beneath as the deposit validated it; proven delivery replaces the result with a receipt, and anything short withholds the result and drops the deposit, except that a keyed deposit whose key was already delivered is not sent again — its staged file is still consumed — and gets the original delivery's receipt (INV-PLUG-050).
+**INV-PLUG-046**: A capability slot a plugin declares as `operator_file` reaches the operator only as one media send Casa makes through the kind's media policy at the call's delivery (its grant identity's), captioned with the name Casa derives from the specialist's display name and the plugin cannot influence, in bold on the first line — none in the agent's own chat — with the plugin's caption beneath as the deposit validated it; proven delivery replaces the result with a receipt, and anything short withholds the result and drops the deposit, except that a keyed deposit whose key was already delivered is not sent again — its staged file is still consumed — and gets the original delivery's receipt (INV-PLUG-050).
 
 The deposit requires the media `kind` — one of the kinds `send_media` has a policy for
 (`bad_kind` otherwise) — and judges the optional caption as one printable line whose
-COMPOSED form, the label line, a newline and the caption, fits the media caption cap
-(`bad_caption`; overflow is refused, never truncated — the label's length is known at
-deposit from the call's identity). The path is not read at deposit. At delivery the hook
+COMPOSED form, the name, a newline and the caption, fits the media caption cap
+(`bad_caption`; overflow is refused, never truncated — the name's length is known at
+deposit from the call's identity, and the deposit counts it even where the post will
+carry none). The path is not read at deposit. At delivery the hook
 claims it from the shared outbox exactly as `send_media` does, so a path
 outside the outbox, a missing file or a symlink is not proven; the kind's policy (magic
 gate, extension allowlist, size cap) runs on the claimed bytes; the channel sends them
-through the kind's method with the composed caption as plain text, and the claim is removed
+through the kind's method with the composed caption as plain text and one bold entity over
+the name (`caption_entities`, which every media method of the policies takes), and the claim is removed
 on every outcome — the file is consumed whether or not it was delivered, the outbox's
 standing destructive-claim rule, so a plugin that wants to post and keep a file posts a
 copy. Claim, name check, capture and removal are one synchronous unit off the loop, because
 cancelling a thread does not stop it: a claim that lands after the hook's bound has ended
 (the outbox lock was held) is consumed by that unit all the same. The bound is forty-five seconds, longer than a text send's and still under the CLI's
 sixty-second matcher deadline, so the receipt path, not the deadline, decides. A file with
-no plugin caption is still labelled.
+no plugin caption still carries the name.
 
 What it does not cover: the slot as a `consumes` target — a delivered reference is spent by
 the delivery, as a link's is — and the bytes' fate once Telegram has them.

@@ -23,6 +23,7 @@ import agent as agent_mod
 import pinned_run as pr
 import plugin_erasure
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import agent_lane
 import chat_notes
 import stored_call_settler as settler
@@ -33,7 +34,7 @@ from plugin_grants import PluginContract, ProfiledPlugin, ProfilePlan, ResultCon
 
 OPERATOR = 42
 BOT = 111          # the endpoint the operator wrote to
-LABEL = "📊 Finance"
+LABEL = "Finance"
 ART = "7" * 64
 RID = "f" * 32
 SEG = "probe"
@@ -135,7 +136,7 @@ def _build(*, tools=None, artifact=ART, plan=None, protected=None, plugins=None)
 def _meta(**over):
     base = {"deadline": 10_000.0, "chat_id": OPERATOR, "bot_id": BOT, "operator_id": OPERATOR,
             "role": "finance", "artifact_id": ART, "plugin_seg": SEG, "label": LABEL,
-            "text": f"{LABEL}\nPair 17?", "options": ["Yes", "More"], "revision": "",
+            "text": credited_quote("Pair 17?", LABEL), "options": ["Yes", "More"], "revision": "",
             "message_id": 501, "owner": "d-1", "_scope": f"proposal:{BOT}:{OPERATOR}",
             "calls": [{"server": "probe", "wire_name": "apply", "runtime_name": APPLY,
                        "proposal": False, "arguments": {"choice": "yes"}, "canonical": CANON},
@@ -263,7 +264,7 @@ async def test_a_tap_runs_one_pinned_turn_on_the_captured_build_input_and_posts_
     assert "stored_call" in call.origin["turn_scope"].markers      # reserved: a chat message cannot carry it
     # the receipt, labelled, admitted, filed as a receipt post
     (message, context), = env.channel.replies
-    assert str(message) == f"{LABEL}\napplied match 17"
+    assert str(message) == credited_quote("applied match 17", LABEL)
     post = context["_post"]
     assert (post.role, post.operator_id, post.kind, post.owner) == ("finance", OPERATOR, "receipt", call.turn_id)
     # #1341: the card's working line becomes ☑ once the call answered, before the receipt
@@ -309,7 +310,9 @@ async def test_the_receipt_is_bounded(env):
     env.respond = respond
     await _tap(env)
     (message, _), = env.channel.replies
-    body = str(message).split("\n", 1)[1]
+    lines = str(message).split("\n")
+    assert lines[:2] == [f"> <cite>{LABEL}</cite>", ">"]        # credited to the agent
+    body = "\n".join(line[2:] for line in lines[2:])
     assert body.startswith("line one")
     assert len(body) <= settler.STORED_CALL_RECEIPT_CHARS + len(chat_notes.CLIP)
 
@@ -468,7 +471,7 @@ async def test_a_validated_capture_is_authoritative_over_an_aborted_turn(env):
     env.respond = respond
     await _tap(env)
     (message, _), = env.channel.replies
-    assert str(message) == f"{LABEL}\napplied"
+    assert str(message) == credited_quote("applied", LABEL)
     assert env.channel.notices == [] and env.channel.marks == ["☑ Yes"]
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
 
@@ -479,7 +482,7 @@ async def test_a_validated_capture_is_authoritative_over_a_runner_exception(env)
         raise RuntimeError("the CLI died after the call")
     env.respond = respond
     await _tap(env)
-    assert [str(m) for m, _ in env.channel.replies] == [f"{LABEL}\napplied"]
+    assert [str(m) for m, _ in env.channel.replies] == [credited_quote("applied", LABEL)]
     assert env.channel.notices == []
 
 
@@ -533,7 +536,7 @@ async def test_the_tell_line_rides_above_the_receipt_and_in_the_echo(env):
     env.respond = respond
     await _tap(env)
     (message, _), = env.channel.replies
-    assert str(message) == f"{LABEL}\n{settler.TELL_LINE}\napplied"
+    assert str(message) == credited_quote(f"{settler.TELL_LINE}\napplied", LABEL)
     assert _echo() == [f"{LABEL} applied your tap (Yes) — the CLI reported arguments "
                        "changed by an installed hook."]
 
@@ -586,7 +589,7 @@ async def test_a_more_tool_that_posted_nothing_has_its_own_text_as_the_receipt(e
     await _tap(env, idx=1)
     assert len(env.calls) == 1
     (message, context), = env.channel.replies
-    assert str(message) == f"{LABEL}\nno more entries"
+    assert str(message) == credited_quote("no more entries", LABEL)
     assert context["_post"].kind == "receipt"
     assert env.channel.notices == [] and env.channel.marks == ["☑ More"]
     assert _echo() == [f"{LABEL} applied your tap (More)."]
@@ -630,7 +633,7 @@ async def test_a_capture_landing_during_the_hold_is_still_the_receipt(env, monke
     assert len(env.terminated) == 1
     # the ceiling notice went out at once; the receipt is posted when the hold ends
     assert env.channel.notices == [(OPERATOR, f"{LABEL} could not apply your tap (timed out).")]
-    assert [str(m) for m, _ in env.channel.replies] == [f"{LABEL}\napplied late"]
+    assert [str(m) for m, _ in env.channel.replies] == [credited_quote("applied late", LABEL)]
     assert _echo() == [f"{LABEL} refused your tap (Yes): timed out.", f"{LABEL} applied your tap (Yes)."]
 
 
@@ -832,7 +835,7 @@ async def test_a_slow_but_normal_cli_exit_within_the_deadline_produces_no_notice
     try:
         await asyncio.wait_for(_tap(env), 5)
         assert env.terminated == [] and env.channel.notices == [] and env.channel.marks == ["☑ Yes"]
-        assert [str(m) for m, _ in env.channel.replies] == [f"{LABEL}\napplied"]
+        assert [str(m) for m, _ in env.channel.replies] == [credited_quote("applied", LABEL)]
         owner = env.calls[0].owner
         assert owner.alive() is False and owner.sealed is True and env.lane.faulted is None
         assert _echo() == [f"{LABEL} applied your tap (Yes)."]

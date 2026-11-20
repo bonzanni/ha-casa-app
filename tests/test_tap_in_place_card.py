@@ -20,6 +20,7 @@ from telegram.error import BadRequest, NetworkError
 
 import pinned_run as pr
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import tools as tools_mod
 import verdict_broker as vb
 from channels import UnconfirmedDelivery
@@ -113,7 +114,7 @@ async def test_the_tapped_card_is_edited_in_place_and_nothing_is_sent(edit_env):
     assert registered_at_edit == [(True, TAPPED, True)]
     (edit,) = env.edits
     assert (edit.chat_id, edit.message_id) == (OPERATOR, TAPPED)
-    assert edit.text.startswith(LABEL) and "INV-88" in edit.text
+    assert edit.text.startswith(f"> <cite>{LABEL}</cite>\n>\n") and "INV-88" in edit.text
     assert edit.labels == ["Confirm", "Wrong"]
     (rid,) = _live()
     assert rid == edit.rid
@@ -251,12 +252,12 @@ def _channel_with_bot():
 
 async def test_the_channel_edits_the_message_with_the_new_keyboard():
     ch, bot = _channel_with_bot()
-    mid = await ch.replace_operator_proposal(OPERATOR, TAPPED, "📊 Finance\nPair **17**?",
-                                             ["Yes", "No"], "rid9")
+    mid = await ch.replace_operator_proposal(
+        OPERATOR, TAPPED, credited_quote("Pair **17**?", "Finance"), ["Yes", "No"], "rid9")
     assert mid == TAPPED
     (kw,) = rich_edits(bot)
     assert (kw["chat_id"], kw["message_id"]) == (OPERATOR, TAPPED)
-    assert kw["rich_message"] == {"markdown": "📊 Finance\\\nPair **17**?"}
+    assert kw["rich_message"] == {"markdown": "> <cite>Finance</cite>\n>\n> Pair **17**?"}
     assert [r[0]["callback_data"] for r in kw["reply_markup"]["inline_keyboard"]] == [
         "v1|proposal|rid9|0", "v1|proposal|rid9|1"]
     assert bot.send_message.await_count == bot.edit_message_text.await_count == 0

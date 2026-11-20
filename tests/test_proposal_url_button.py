@@ -86,7 +86,7 @@ async def test_the_card_is_posted_with_the_link_button(labels, monkeypatch):
     post = rb.PostRecord(role="finance", operator_id=42, plugin=SEG, slot="proposal",
                          tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="proposal")
     delivered, *_ = await rb._post_proposal(_identity(), SEG, "proposal", _call(), parsed,
-                                            "📊 Finance", post)
+                                            "Finance", post)
     assert delivered
     assert seen["urls"] == [None, URL]
     assert seen["meta"]["kinds"] == ["call", "url"] and seen["meta"]["calls"][1] is None

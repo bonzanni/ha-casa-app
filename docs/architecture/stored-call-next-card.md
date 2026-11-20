@@ -97,11 +97,11 @@ refuses a deposit with a Close button as `bad_proposal`.
 actions on a card after it: any `operator_proposal` deposit — a plugin's deposit, a `More`
 call's, or a tap's `next` card, all judged by `proposal_ok` — may carry `pages`, a list of one
 to six strings, each obeying the card text's own rule (non-blank, no control character but newline and
-tab, and one rich message with Casa's label line that leaves the settle line's bytes free,
+tab, and one rich message, credited to the specialist, that leaves the settle line's bytes free,
 `result_broker.card_fits`);
 anything else is `bad_proposal`, and absent or `null` is today's card. `_post_proposal` keeps
 its synchronous block first (the live count, the revision supersede, the card's record), then
-sends each page in order as one labelled message — `deliver_operator_page`, a rich message like the
+sends each page in order as one credited message — `deliver_operator_page`, a rich message like the
 card and, when Telegram refuses its formatting, resent whole as plain blocks in one message,
 filed under the card's own post record as it lands, so a reply on any page goes where a reply
 on the card goes — all pages under one delivery bound, and then the card as before. The delivery is proven
@@ -129,7 +129,7 @@ both the same way, and the fallback posts the receipt and the card.
 
 **INV-PROP-011**: A `close` button stores no call and is accepted only as JSON `true` beside no `call`, `arm_file` or `keep_card`, at most one per card; its tap, admitted by the same chain and the same one claim and commit as any settling tap, removes the card's keyboard by a markup-only edit that leaves the text as posted, and runs no lane use, no plugin call and no model turn; every later tap on that card runs nothing; a card without a `close` button behaves as before.
 
-**INV-PROP-012**: An `operator_proposal` deposit's optional `pages` — one to six texts, each obeying the card text's rule, else `bad_proposal` — are posted in order after the card's record is registered and before the card, each as one labelled message filed under the card's post record as it lands; the card is sent only after every page landed, and the delivery is proven only when the card landed too; a page that does not land sends no card and unregisters the record; a card with pages is never shown in place; a deposit without `pages` behaves as before.
+**INV-PROP-012**: An `operator_proposal` deposit's optional `pages` — one to six texts, each obeying the card text's rule, else `bad_proposal` — are posted in order after the card's record is registered and before the card, each as one message credited as the card is, filed under the card's post record as it lands; the card is sent only after every page landed, and the delivery is proven only when the card landed too; a page that does not land sends no card and unregisters the record; a card with pages is never shown in place; a deposit without `pages` behaves as before.
 
 What it does not cover: an edit whose landing is unconfirmed. Its record stays live until the
 deadline, since the edited card may be on screen, and the fallback still posts the receipt and
@@ -153,8 +153,8 @@ A Close tap's keyboard removal is the exception: it is tried once, and a failure
 everything else is a cancelled tap's usual handling (`stored-call-buttons.md`).
 
 **A next card does not land** — the deposit predicate refuses it, the chat already holds 32
-live proposals, or its send is not proven. The receipt stands; one labelled notice
-`📊 Finance could not show the next card (invalid | too many open | not delivered).`; no retry.
+live proposals, or its send is not proven. The receipt stands; one notice
+`Finance could not show the next card (invalid | too many open | not delivered).`; no retry.
 
 **A card cannot replace the tapped one** — the deposit predicate refuses it, the chat already
 holds 32 live proposals, the tapped message's id is unknown, the agent was faulted by the run,

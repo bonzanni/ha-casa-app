@@ -817,7 +817,7 @@ async def test_a_result_with_both_notes_carries_only_the_answer_note(world, monk
     _script(monkeypatch, [("Posting the card.", "post_card"), ("Done. Card posted.", None)])
     _, result = await _ellens_result(world, mode)
     # the echo lines still say what was posted; one close-the-loop note follows
-    assert "📊 Alex posted to the person in Finance's chat (1 page)." in result
+    assert "Alex posted to the person in Finance's chat (1 page)." in result
     assert tools.OWN_CHAT_ECHO_NOTE.format(name=NAME) not in result
     assert result.count(_answer_note()) == 1
 
@@ -876,7 +876,7 @@ def _post_card(world):
 
     async def post(client):
         rb.POSTS.record(world.opened[0][0], rb.PostEvent(
-            tool_use_id="tu-card", plugin="ledger", slot="card", label="📊 Alex",
+            tool_use_id="tu-card", plugin="ledger", slot="card", label="Alex",
             pages=1, media_kind=None))
 
     Client.on_query = post
@@ -889,7 +889,7 @@ async def test_ellens_result_for_an_own_chat_task_with_posts_asks_her_to_close_t
     _FakeSpecialistClient.reset(response="unused")
     _script(monkeypatch, [("Posting the card.", "post_card"), ("<silent/>", None)])
     _, result = await _ellens_result(world, mode)
-    assert "📊 Alex posted to the person in Finance's chat (1 page)." in result
+    assert "Alex posted to the person in Finance's chat (1 page)." in result
     assert tools.OWN_CHAT_ECHO_NOTE.format(name=NAME) in result
     assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) in result
     assert tools.POST_ECHO_SILENCE_NOTE not in result
@@ -1055,7 +1055,7 @@ async def _continuation(world, monkeypatch, output, *, quiet_if=None, did="cont-
 async def test_a_continuations_notes_follow_its_record_birth(world, monkeypatch):
     import result_broker as rb
     rb.POSTS.record("cont-1", rb.PostEvent(
-        tool_use_id="tu-card", plugin="ledger", slot="card", label="📊 Alex",
+        tool_use_id="tu-card", plugin="ledger", slot="card", label="Alex",
         pages=1, media_kind=None))
     out = tools.DelegatedOutput(text="note\n\n<silent/>", run_subtype="success",
                                 final_message="<silent/>")

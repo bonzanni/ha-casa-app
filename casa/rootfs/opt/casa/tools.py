@@ -8066,8 +8066,8 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
     as the DM ingress builds them for the authenticated operator, the origin
     carries what the job's delivered slots and the recall gate read, and the
     ONE launcher starts the job. A fire that cannot start it tells the operator
-    once — the admission decision as a past event at this occurrence — through
-    the hosting specialist's label (the resident's when there is no host); with
+    once — the admission decision as a past event at this occurrence — naming
+    the hosting specialist (the resident when there is no host); with
     no operator to tell, it only logs. Nothing is retried before the next
     occurrence."""
     import authz_grants
@@ -8088,7 +8088,7 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
         return
     chat_id, user_id = identity
     title = str(getattr(getattr(host, "decl", None), "title", "") or trig.job)
-    label = rb.post_label(host.role) if host is not None else rb.post_label(role)
+    label = rb.post_label(host.role if host is not None else role)
 
     async def tell(reason: str) -> None:
         line = chat_notes.bounded_line('{label}: "{title}" did not start — ' + reason,
@@ -11963,10 +11963,10 @@ async def ask_operator(args: dict) -> dict:
     import result_broker
     from channels.telegram import render_ask_body, resolve_button_labels
     captions = resolve_button_labels(list(options), multi=False)
-    # labelled except in the agent's own chat, where the chat is the agent
-    label = result_broker.label_at(rec.role_or_type, rec.delivery)
-    body = ((f"{label}\n" if label else "")
-            + render_ask_body(None, question, list(options), captions))
+    # credited to the agent except in its own chat, where the chat is the agent
+    body = result_broker.compose_operator_message(
+        render_ask_body(None, question, list(options), captions),
+        result_broker.label_at(rec.role_or_type, rec.delivery))
     qid = _engagement_registry.new_job_question(rec.id, question, options)
     if qid is None:
         return _result({"status": "error", "kind": "not_a_job"})

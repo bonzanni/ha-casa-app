@@ -99,16 +99,16 @@ def test_echo_lines_are_body_free_and_bounded():
         _event(pages=None, media_kind="audio"),
     ])
     assert lines == [
-        "📊 Finance posted to your chat (2 pages).",
-        "📊 Finance posted to your chat (1 page).",
-        "📊 Finance posted a document to your chat.",
-        "📊 Finance posted a photo to your chat.",
-        "📊 Finance posted an audio file to your chat.",
+        "Finance posted to your chat (2 pages).",
+        "Finance posted to your chat (1 page).",
+        "Finance posted a document to your chat.",
+        "Finance posted a photo to your chat.",
+        "Finance posted an audio file to your chat.",
     ]
     assert rb.echo_lines([_event(pages=None, media_kind=k) for k in ("voice", "zip", "text")]) == [
-        "📊 Finance posted a voice message to your chat.",
-        "📊 Finance posted a zip archive to your chat.",
-        "📊 Finance posted a text file to your chat.",
+        "Finance posted a voice message to your chat.",
+        "Finance posted a zip archive to your chat.",
+        "Finance posted a text file to your chat.",
     ]
     assert rb.echo_lines([]) == []
 
@@ -116,10 +116,10 @@ def test_echo_lines_are_body_free_and_bounded():
 def test_echo_lines_are_at_most_five_then_a_count_and_each_within_the_bound():
     lines = rb.echo_lines([_event(tool_use_id=str(i), pages=i + 1) for i in range(7)])
     assert len(lines) == 6
-    assert lines[:5] == [f"📊 Finance posted to your chat ({i + 1} page{'s' if i else ''})."
+    assert lines[:5] == [f"Finance posted to your chat ({i + 1} page{'s' if i else ''})."
                          for i in range(5)]
     assert lines[5] == "…and 2 more."
-    long_label = "📊 " + "N" * 300
+    long_label = "" + "N" * 300
     (line,) = rb.echo_lines([_event(label=long_label, pages=1)])
     assert len(line) <= rb.ECHO_LINE_MAX == 120
     assert line.endswith(" posted to your chat (1 page).")
@@ -132,14 +132,14 @@ def test_echo_lines_name_where():
     events = [_event(pages=2), _event(pages=None, media_kind="photo"),
               _event(pages=None, buttons=3)]
     assert rb.echo_lines(events, where="to the person in Fido's chat") == [
-        "📊 Finance posted to the person in Fido's chat (2 pages).",
-        "📊 Finance posted a photo to the person in Fido's chat.",
-        "📊 Finance posted a proposal to the person in Fido's chat (3 buttons).",
+        "Finance posted to the person in Fido's chat (2 pages).",
+        "Finance posted a photo to the person in Fido's chat.",
+        "Finance posted a proposal to the person in Fido's chat (3 buttons).",
     ]
     assert rb.echo_lines(events) == [
-        "📊 Finance posted to your chat (2 pages).",
-        "📊 Finance posted a photo to your chat.",
-        "📊 Finance posted a proposal to your chat (3 buttons).",
+        "Finance posted to your chat (2 pages).",
+        "Finance posted a photo to your chat.",
+        "Finance posted a proposal to your chat (3 buttons).",
     ]
     assert rb.echo_parts(events, where="there")[0] == (LABEL, "posted there (2 pages).")
 
@@ -203,8 +203,8 @@ def test_the_helper_appends_the_drained_lines_after_the_text_or_leaves_it(fresh_
     fresh_ledger.record("d-1", _event(pages=2))
     fresh_ledger.record("d-1", _event(tool_use_id="call-2", pages=None, media_kind="text"))
     assert tools_mod._with_post_echo("answer", "d-1") == (
-        "answer\n\n📊 Finance posted to your chat (2 pages).\n"
-        "📊 Finance posted a text file to your chat.\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
+        "answer\n\nFinance posted to your chat (2 pages).\n"
+        "Finance posted a text file to your chat.\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
     assert tools_mod._with_post_echo("answer", "d-1") == "answer"     # drained
     assert tools_mod._with_post_echo("", "none") == ""
 
@@ -240,7 +240,7 @@ async def test_a_sync_delegations_returned_text_carries_the_echo_after_the_answe
         _origin())
     payload = json.loads(result["content"][0]["text"])
     assert payload["status"] == "ok"
-    assert payload["text"] == "invoice drafted\n\n📊 Finance posted to your chat (2 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
+    assert payload["text"] == "invoice drafted\n\nFinance posted to your chat (2 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
     assert fresh_ledger.drain(payload["delegation_id"]) == []
 
 
@@ -262,7 +262,7 @@ async def test_a_finished_engagements_notice_carries_the_echo_after_its_text(tmp
                                next_steps=[], driver=None)
     assert bus.notify.await_count == 1
     complete = bus.notify.await_args.args[0].content
-    assert complete.text == "all good\n\n📊 Finance posted a document to your chat." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
+    assert complete.text == "all good\n\nFinance posted a document to your chat." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
     assert fresh_ledger.drain(rec.id) == []
 
 
@@ -291,7 +291,7 @@ async def test_a_completed_async_delegations_notice_carries_the_echo(tmp_path, f
     await task
     _priority, _sequence, message = await asyncio.wait_for(bus.queues["assistant"].get(), 5)
     assert isinstance(message.content, DelegationComplete)
-    assert message.content.text == "done\n\n📊 Finance posted to your chat (3 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
+    assert message.content.text == "done\n\nFinance posted to your chat (3 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
     assert fresh_ledger.drain("delegation-echo") == []
 
 
@@ -335,7 +335,7 @@ async def test_a_sync_delegation_that_fails_after_a_proven_post_still_echoes_it(
         _origin())
     payload = json.loads(result["content"][0]["text"])
     assert payload["status"] == "error"
-    assert payload["message"].endswith("\n\n📊 Finance posted to your chat (2 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
+    assert payload["message"].endswith("\n\nFinance posted to your chat (2 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
     assert fresh_ledger.drain(payload["delegation_id"]) == []
 
 
@@ -370,5 +370,5 @@ async def test_a_completion_notice_for_failed_work_still_echoes_a_proven_post(tm
     _priority, _sequence, message = await asyncio.wait_for(bus.queues["assistant"].get(), 5)
     assert isinstance(message.content, DelegationComplete)
     assert message.content.status == "error"
-    assert message.content.message.endswith("\n\n📊 Finance posted a text file to your chat." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
+    assert message.content.message.endswith("\n\nFinance posted a text file to your chat." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
     assert fresh_ledger.drain("delegation-fail") == []

@@ -84,16 +84,16 @@ class Endpoint(FakeEndpoint):
         self._record("deliver_operator_proposal", chat_id, text)
         return self._mid()
 
-    async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None):
+    async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None, entities=None):
         self._record("deliver_operator_question", chat_id, text)
         return self._mid()
 
-    async def deliver_run_card(self, chat_id, text, *, post=None, **options):
+    async def deliver_run_card(self, chat_id, text, *, post=None, entities=None, **options):
         self._record("deliver_run_card", chat_id, text)
         self.options.append(("deliver_run_card", options))
         return self._mid()
 
-    async def send_reply_line(self, chat_id, text, reply_to, *, post=None):
+    async def send_reply_line(self, chat_id, text, reply_to, *, post=None, entities=None):
         self._record("send_reply_line", chat_id, text)
 
     async def edit_dm_message(self, chat_id, message_id, text, buttons=None):
@@ -299,13 +299,14 @@ async def test_a_safe_tool_is_not_a_surface(world):
 
 
 @pytest.mark.asyncio
-async def test_ellens_own_plugin_posts_in_her_chat_under_her_label(world):
+async def test_ellens_own_plugin_posts_in_her_chat_with_no_name_on_it(world):
+    """Casa's chat is the resident's own: her plugin's post there carries no name."""
     outcome, _ = await call_tool("assistant", own_turn("assistant", CASA_BOT), LINK)
     assert outcome == "delivered"
     assert sends(world.alex) == []
     [(name, (chat, text))] = sends(world.casa)
     assert (name, chat) == ("deliver_operator_link", OPERATOR)
-    assert text.startswith("\U0001F4CA Ellen\n")
+    assert "Ellen" not in text and text.startswith("Open (")
 
 
 @pytest.mark.asyncio

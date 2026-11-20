@@ -70,7 +70,7 @@ edited: its mark is refused, which `edit_dm_message` takes as an expected outcom
 INFO, not retried). After `stopped`, `ended` and `already_stopped` (`ENDS`) the request no
 longer runs: the admission forgets its card (`Confirmations.clear_card`), even when the edit
 fails. Any other outcome leaves the card as it was. A Stop tapped on a card or a proposal gets
-one line: Casa's fixed text under the specialist's label, posted as a reply to the card or
+one line: Casa's fixed text under the specialist's name in bold (none in its own chat), posted as a reply to the card or
 proposal the Stop came from (`tell_line` through `post_line`,
 `TelegramChannel.send_reply_line`), with no keyboard; it is filed under the task the card belongs to, read from
 the durable task index — live or ended, and after a restart too — so a reply to it reaches

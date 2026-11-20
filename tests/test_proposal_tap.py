@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import agent_lane
 import chat_notes
 import stored_call_settler
@@ -103,8 +104,8 @@ def _cq(*, data=f"v1|proposal|{RID}|0", chat_id=OPERATOR, message_id=501, user_i
 def _meta(**over):
     base = {"deadline": 10_000.0, "chat_id": OPERATOR, "bot_id": BOT, "operator_id": OPERATOR,
             "role": "finance",
-            "artifact_id": "7" * 64, "plugin_seg": "probe", "label": "📊 Finance",
-            "text": "📊 Finance\nPair 17?", "options": ["Yes", "No"], "revision": "",
+            "artifact_id": "7" * 64, "plugin_seg": "probe", "label": "Finance",
+            "text": credited_quote("Pair 17?", "Finance"), "options": ["Yes", "No"], "revision": "",
             "message_id": 501, "owner": "d-1", "_scope": f"proposal:{BOT}:{OPERATOR}",
             "calls": [{"server": "api", "wire_name": "apply", "runtime_name": "mcp__plugin_probe_api__apply",
                        "proposal": False, "arguments": {"choice": "yes"}, "canonical": '{"choice":"yes"}'},
@@ -166,11 +167,11 @@ async def test_the_keyboard_is_posted_with_one_button_per_label_and_the_message_
     filed = task_posts_double.install(monkeypatch)
     rec = rb.PostRecord(role="finance", operator_id=OPERATOR, plugin="probe", slot="proposal",
                         tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="operator_proposal")
-    mid = await env.ch.deliver_operator_proposal(OPERATOR, "📊 Finance\nPair **17**?", ["Yes", "No"], RID,
-                                                 post=rec)
+    mid = await env.ch.deliver_operator_proposal(
+        OPERATOR, credited_quote("Pair **17**?", "Finance"), ["Yes", "No"], RID, post=rec)
     assert mid == 501
     (sent,), = [env.bot.sent]
-    assert sent["rich_message"] == {"markdown": "📊 Finance\\\nPair **17**?"}
+    assert sent["rich_message"] == {"markdown": "> <cite>Finance</cite>\n>\n> Pair **17**?"}
     rows = sent["reply_markup"]["inline_keyboard"]
     assert [b["text"] for row in rows for b in row] == ["Yes", "No"]
     assert [b["callback_data"] for row in rows for b in row] == [
@@ -427,8 +428,9 @@ async def test_a_maximal_proposals_settlement_edit_fits_telegrams_limit(env, mon
                         {"finance": types.SimpleNamespace(character=types.SimpleNamespace(name="Finance"))})
     hook = rb.make_result_hook(_map(), client_id="c1", store=store)
     label32 = "_" * 32                                     # 32 characters, 160 prepared bytes
-    room = RICH_BUDGET_BYTES - rb.PROPOSAL_SETTLE_RESERVE_BYTES - len(
-        prepare(f"{LABEL}\n").encode("utf-8"))
+    # what the credit adds around a one-line body: its quote marker and its credit line
+    room = RICH_BUDGET_BYTES - rb.PROPOSAL_SETTLE_RESERVE_BYTES - (
+        len(prepare(credited_quote("x", LABEL)).encode("utf-8")) - 1)
     widest = room // 5                                     # each body "_" prepares to 5 bytes
 
     def deposit(n):
@@ -439,7 +441,7 @@ async def test_a_maximal_proposals_settlement_edit_fits_telegrams_limit(env, mon
     store.close_call("c1", f"c-{widest + 1}")
     ref, err = deposit(widest)
     assert err is None
-    composed = f"{LABEL}\n" + "_" * widest
+    composed = credited_quote("_" * widest, LABEL)
     out = await hook(_post(json.dumps({SLOT: ref})), f"c-{widest}", {})
     assert "casa_delivery" in out["hookSpecificOutput"]["updatedToolOutput"]
     (rid,) = env.broker.pending(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}")
@@ -539,7 +541,7 @@ def _post_args(revision=""):
                             {"label": "No", "call": _meta()["calls"][1]}]}
     post = rb.PostRecord(role="finance", operator_id=OPERATOR, plugin="probe", slot="proposal",
                          tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="operator_proposal")
-    return identity, "probe", "proposal", call, proposal, "📊 Finance", post
+    return identity, "probe", "proposal", call, proposal, "Finance", post
 
 
 async def _post(env, monkeypatch, send, *, revision=""):
@@ -746,7 +748,7 @@ async def test_a_flood_limited_card_edit_is_retried_once(failures, landed, calls
 
 # --- a settle line after a trailing table, list or quote is its own paragraph -------------
 
-_TABLE_CARD = "📊 Finance\nPay these?\n\n| Item | € |\n| --- | --- |\n| Nimbus | 49.99 |"
+_TABLE_CARD = "Pay these?\n\n| Item | € |\n| --- | --- |\n| Nimbus | 49.99 |"
 
 
 def _gfm_html(markdown: str) -> str:
@@ -774,11 +776,11 @@ async def test_a_superseded_card_ending_in_a_table_says_so_below_the_table(env):
     assert "<p>↻ replaced</p>" in _gfm_html(env.bot.edited[-1]["text"])
 
 
-@pytest.mark.parametrize("body", [_TABLE_CARD, "📊 Finance\n- a\n- b", "📊 Finance\n> quoted"],
-                         ids=["table", "list", "quote"])
+@pytest.mark.parametrize("body", [_TABLE_CARD, "- a\n- b", "> quoted",
+                                  credited_quote(_TABLE_CARD, "Finance")],
+                         ids=["table", "list", "quote", "credited"])
 async def test_a_mark_after_a_trailing_block_is_its_own_paragraph(env, body):
     assert await env.ch.mark_proposal(_meta(text=body), "☑ Paid") is True
     (edit,) = env.bot.edited
-    # A single line break is sent as a hard one (a backslash before it).
-    assert edit["text"] == f"{body}\n\n☑ Paid".replace("Finance\nPay", "Finance\\\nPay")
+    assert edit["text"] == f"{body}\n\n☑ Paid"
     assert "<p>☑ Paid</p>" in _gfm_html(edit["text"])
