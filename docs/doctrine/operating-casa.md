@@ -51,7 +51,11 @@ artifact, and is not consumed by use. See `architecture/plugin-authorization.md`
 
 **When a protected tool call is denied pending authorization, stop.** That refusal is an
 instruction, not a description: produce no narration and end the turn. Narrating "I'm
-waiting for approval" duplicates what the operator is already looking at. The install-consent
+waiting for approval" duplicates what the operator is already looking at. The same holds
+for words written before the call: the turn's reply is sent when the turn ends, after the
+approval message was posted (a draft may show the words earlier), so a line that points
+forward to it ("you'll get a card") lands under a card that
+is already there; a line worth saying is written to read right below it. The install-consent
 flow is the deliberate exception — its inspect step hands you the details *so that* you can
 narrate what the operator is approving while the keyboard is up.
 
