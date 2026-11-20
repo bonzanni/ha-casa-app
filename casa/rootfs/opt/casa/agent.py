@@ -69,6 +69,7 @@ from personality_types import SpeakerProvenance
 from speaker_provenance import UserProvenance, provenance_from_mapping
 from provenance import (
     ANSWERED_BY_OPERATOR, ROUTING_KEYS, carry_route, route_context,
+    strict_positive_id,
 )
 from session_gate import session_write_gate
 from session_registry import (
@@ -1300,6 +1301,40 @@ def _offers_configurator_restart(handle):
     return _handle
 
 
+def _signals_reply_out(handle):
+    """A turn says when its reply is out. The event handed to the turn is set
+    on every way out of it — the reply delivered or failed, nothing to send, a
+    raise, a cancellation — so a protected call's approval card that waits for
+    the reply (``TurnScope.reply_out``) is never left waiting for a turn that
+    is gone."""
+    @functools.wraps(handle)
+    async def _handle(self, msg: BusMessage) -> BusMessage | None:
+        reply_out = asyncio.Event()
+        try:
+            return await handle(self, msg, reply_out)
+        finally:
+            reply_out.set()
+    return _handle
+
+
+def _reply_chat(channel: Any, context: dict) -> "tuple[int, int] | None":
+    """The Telegram ``(bot id, chat id)`` a turn's reply is sent to: the bot
+    of the endpoint the turn's route resolves to, and the chat its context
+    names. ``None`` when either is not known (no route, no endpoint, a bot
+    with no id yet, a context whose chat is a label rather than a chat)."""
+    resolve = getattr(channel, "endpoint_for_route", None)
+    chat_id = strict_positive_id(context.get("chat_id"))
+    if resolve is None or chat_id is None:
+        return None
+    try:
+        bot_id = resolve(context, site="reply_chat").bot_id
+    except Exception:  # noqa: BLE001 — unknown: the turn's cards are not held
+        return None
+    if not isinstance(bot_id, int) or isinstance(bot_id, bool):
+        return None
+    return bot_id, chat_id
+
+
 class Agent:
     """A Casa agent backed by the Claude Agent SDK."""
 
@@ -1422,12 +1457,18 @@ class Agent:
     # ------------------------------------------------------------------
 
     @_offers_configurator_restart
-    async def handle_message(self, msg: BusMessage) -> BusMessage | None:
+    @_signals_reply_out
+    async def handle_message(
+        self, msg: BusMessage, reply_out: asyncio.Event | None = None,
+    ) -> BusMessage | None:
         """Process an inbound message and return a response BusMessage.
 
         If the channel supports streaming, tokens are delivered
         incrementally via ``on_token``.  The full response is sent after
         the SDK completes.
+
+        *reply_out* is supplied by ``_signals_reply_out``, which sets it
+        when this call is over, whichever way it ends.
         """
         # Phase 3.1: late-completion delegation NOTIFICATION — synthesize
         # a fresh turn so the delegating resident narrates the result
@@ -1497,6 +1538,21 @@ class Agent:
             channel = (self._channel_manager.get(msg.channel)
                        if msg.channel else None)
             delivery_context = msg.context
+
+        # #1621: an ordinary Telegram turn sends its final text to its own
+        # chat, so its scope carries that chat and the event that says the
+        # reply is out; a protected call's approval card for the same chat is
+        # then posted after the reply (``authz_grants``), the model's words
+        # above it. A turn whose final text goes elsewhere carries neither,
+        # and its cards are posted at the call: a webhook fire delivered to
+        # the operator and a friend's summons are not on this channel, and an
+        # operator's summons in a group answers in that group's message.
+        if (reply_out is not None and msg.channel == "telegram"
+                and channel is not None
+                and not delivery_context.get("_guest_query")):
+            scope.reply_chat = _reply_chat(channel, delivery_context)
+            if scope.reply_chat is not None:
+                scope.reply_out = reply_out
 
         # #1038 R2: whether this turn streams is a property of its scope — a
         # NoStream obligation registered at mint from the two facts above.

@@ -9,6 +9,8 @@
     - casa/rootfs/opt/casa/authz_grants.py::GrantKey
     - casa/rootfs/opt/casa/authz_grants.py::GrantStore
     - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching
+    - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.get_or_create
+    - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator._card_not_shown
     - casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval
     - casa/rootfs/opt/casa/authz_grants.py::_note_approval
     - casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free
@@ -19,13 +21,15 @@
     - tests/test_approval_outlives_raiser.py
     - tests/test_pending_approval_pins.py
     - tests/test_behind_ellen_approval.py
+    - tests/test_card_after_reply.py
   related: [architecture/plugins.md, architecture/engagement-finalization.md, architecture/scheduled-asks.md, architecture/delegation-announcements.md]
-  defines_invariants: [INV-PLUG-004, INV-PLUG-005, INV-PLUG-007, INV-PLUG-033]
+  defines_invariants: [INV-PLUG-004, INV-PLUG-005, INV-PLUG-007, INV-PLUG-033, INV-PLUG-061]
   invariant_tests:
     INV-PLUG-004: [tests/test_authz_hook.py::test_third_call_rechallenges_single_use, tests/test_authz_hook.py::test_args_drift_rechallenges, tests/test_authz_grants.py::test_exactly_one_thread_consumes, tests/test_authz_hook.py::TestEngagementBackedAuthz::test_grant_from_other_engagement_not_consumable]
     INV-PLUG-005: [tests/test_authz_hook.py::test_restart_loses_grants_fresh_store_rechallenges]
     INV-PLUG-007: [tests/test_authz_hook.py::test_non_operator_sender_is_denied_with_no_challenge, tests/test_authz_hook.py::test_non_operator_with_live_grant_consumes_nothing, tests/test_authz_hook.py::test_accept_all_mode_denies_protected_tools_for_everyone]
     INV-PLUG-033: [tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_cancel_matching_by_engagement_touches_only_that_one, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_terminal_transition_withdraws_the_keyboard, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_a_tap_right_after_the_transition_is_refused]
+    INV-PLUG-061: [tests/test_card_after_reply.py::test_the_card_is_posted_after_the_turns_reply, tests/test_card_after_reply.py::test_two_protected_calls_post_two_cards_after_the_reply, tests/test_card_after_reply.py::test_a_turn_that_does_not_end_well_still_gets_its_card, tests/test_card_after_reply.py::test_the_deadline_posts_the_card_when_the_turn_does_not_end, tests/test_card_after_reply.py::test_a_card_lost_after_the_reply_leaves_the_reply_then_one_line, tests/test_card_after_reply.py::test_a_deferred_card_that_cannot_be_sent_is_told_once, tests/test_card_after_reply.py::test_a_request_cancelled_before_its_card_is_told_once, tests/test_card_after_reply.py::test_a_repeat_of_a_dead_request_notes_nothing_pending, tests/test_card_after_reply.py::test_elsewhere_the_card_is_posted_at_the_call_as_before, tests/test_card_after_reply.py::test_no_other_keyboard_waits_for_the_reply]
 
 - doc: architecture/plugin-delivered-files.md
   summary: A file a plugin's capability tool delivers — the operator_file slot, its deposit, the claim from the plugin outbox under the kind's media policy, and the delivered name a deposit may carry.

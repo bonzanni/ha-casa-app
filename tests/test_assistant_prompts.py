@@ -109,9 +109,6 @@ def test_system_prompt_teaches_protected_tool_challenge_and_relay(system_md_text
         "never phrasing like \"waiting for you\" or \"you'll receive a "
         "prompt\"",
         "END YOUR TURN",
-        # #1621: a line written before the call also lands after the card
-        "This covers what you write BEFORE the call too",
-        "never point forward to it",
         "retry the SAME call with EXACTLY the same arguments",
         "apply the same no-narration rule",
         "re-delegate the exact same action",
@@ -142,9 +139,6 @@ def test_butler_prompt_teaches_protected_tool_challenge_only():
         "Do not announce, describe, or explain the approval prompt",
         "Prefer zero narration",
         "END YOUR TURN",
-        # #1621: a line written before the call also lands after the card
-        "This covers what you write BEFORE the call too",
-        "never point forward to it",
         "retry the SAME call with EXACTLY the same arguments",
     ]
     for anchor in doctrine_anchors:

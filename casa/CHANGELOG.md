@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.377.1] - 2026-11-20
+
+### Fixed
+
+- When an agent writes a line and then asks for your approval in the same reply, the agent's line now comes first and the approval message right after it. Before, the approval message arrived first and the line that introduces it landed below it.
+- If that approval message cannot be shown, you get a short line saying so and asking you to ask again.
+
 ## [0.377.0] - 2026-11-20
 
 ### Changed

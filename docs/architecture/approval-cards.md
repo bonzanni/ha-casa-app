@@ -28,7 +28,11 @@ renders for the request (`authz_grants.render_challenge_message` for a tool call
 consent's own `render_*` text; an install's or update's is cut to fit first, so it is never
 refused for its size). The card is only what is posted: `register_challenge` takes a
 `card_request` (`approval_card.CardRequest`: a kind, who asks, the facts, and a fallback
-card), and the card is written inside the post driver, after registration. The raw request —
+card), and the card is written inside the post driver, after registration. It is posted as
+soon as it is written, with one exception: a protected tool call's card raised on a turn that
+answers in the card's own chat is posted after that turn's reply, within a deadline counted
+from the registration ([`plugin-authorization.md`](plugin-authorization.md), INV-PLUG-061).
+The raw request —
 the canonical JSON, the full tool id, the digests — is not on the posted card; the approval
 binds exactly those all the same.
 
@@ -152,12 +156,13 @@ right by exactly that prefix (`shift_entities`).
 What it does not cover: the plain retry. When the platform refuses the entities, the card is
 sent once more as the same text with none — less emphasis, the same words.
 
-**INV-PLUG-060**: An approval card is neither admitted nor posted for a request that settled — by a tap, a timeout, a cancellation, or a newer request that replaced it — while its card was being written.
+**INV-PLUG-060**: An approval card is neither admitted nor posted for a request that settled — by a tap, a timeout, a cancellation, or a newer request that replaced it — while its card was being written or held for a turn's reply.
 
-Enforced in the post driver: after `write_card` returns, the driver checks the request and,
-when it has settled, returns the broker's nothing-was-posted signal before admission, so no
-send record is opened for a card never sent. From that check to the start of the send there
-is no await. An install or persona approval that a newer request replaces settles its open
+Enforced in the post driver: after `write_card` returns, and after the wait of a card held
+for a turn's reply, the driver checks the request and, when it has settled, returns the
+broker's nothing-was-posted signal before admission, so no send record is opened for a card
+never sent. From that check to the start of the send there is no await. A held card that
+ends this way is told to the operator in one Casa line (INV-PLUG-061). An install or persona approval that a newer request replaces settles its open
 question at once (`specialist_install_consent.supersede_card`), including one whose card is
 still being written, and the older request tool returns `approval_superseded` rather than a
 post failure.
@@ -171,7 +176,8 @@ retired by the finish hook installed on its message id, as for any keyboard.
 budget runs out or the reply is unusable, with a warning logged; after a timeout the model's
 process is shut down first (usually about five seconds, up to about ten when it has to be
 killed), so the fallback comes about 15-20 seconds after the request, at most about 25. The
-approval works the same.
+approval works the same. A card held for a turn's reply is not held longer for it: the hold's
+deadline is counted from the registration, so a card written after it is posted at once.
 
 **A burst of approvals.** Three are written at a time; the rest wait for a slot inside their
 own budget and fall back when it runs out, so no request waits for its card past its

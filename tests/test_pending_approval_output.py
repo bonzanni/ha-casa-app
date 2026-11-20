@@ -177,6 +177,30 @@ class _Gate:
         return _Hook(_run)
 
 
+async def _cards_settled() -> None:
+    """Every approval card a finished turn still owed has been posted or given
+    up. An ordinary Telegram turn's card is posted after the turn's reply, by
+    the coordinator's own post driver, so a test that reads the posts waits
+    for the drivers first."""
+    drivers = [t for t in asyncio.all_tasks()
+               if getattr(t.get_coro(), "__qualname__", "")
+               == "ChallengeCoordinator._drive"]
+    if drivers:
+        await asyncio.wait_for(
+            asyncio.gather(*drivers, return_exceptions=True), 10)
+
+
+@pytest.fixture
+def card_at_the_call(monkeypatch):
+    """The turn does not know the chat its reply goes to, so its approval
+    cards are not held for the reply: each is posted at the call and the hook
+    waits for the post. That is the path of every card raised where the
+    turn's reply does not go to the card's chat, and the one the pins that
+    ask for this fixture are about."""
+    import agent
+    monkeypatch.setattr(agent, "_reply_chat", lambda _channel, _context: None)
+
+
 async def _drive(agent, monkeypatch, factory, msg, gate, on_hold=None):
     monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
     with _patch_retry_sleep():
@@ -185,7 +209,10 @@ async def _drive(agent, monkeypatch, factory, msg, gate, on_hold=None):
         if on_hold is not None:
             on_hold()
         gate.release_result.set()
-        return await asyncio.wait_for(task, 10)
+        try:
+            return await asyncio.wait_for(task, 10)
+        finally:
+            await _cards_settled()
 
 
 # --- 1. the kept prefix, on every transport and both pending answers ------------
@@ -216,7 +243,9 @@ async def test_pending_approval_keeps_only_pre_result_text(
 
     want = _DENY_POSTED if answer == "posted" else _DENY_PENDING
     assert [_deny_reason(a) for a in gate.answers] == [want]
-    assert held["posts"] == 1
+    # A new challenge's card waits for this turn's reply (#1621): nothing is
+    # posted while the turn runs. The reused one was posted before the turn.
+    assert held["posts"] == (0 if answer == "posted" else 1)
     expected_tokens = ["BEFORE"] if prefix == "BEFORE" else []
     assert held["tokens"] == expected_tokens
     assert channel.tokens == expected_tokens

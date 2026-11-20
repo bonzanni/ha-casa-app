@@ -57,7 +57,7 @@
   defines_invariants: [INV-PLUG-059, INV-PLUG-060]
   invariant_tests:
     INV-PLUG-059: [tests/test_approval_card.py::test_field_content_never_shapes_an_entity, tests/test_telegram_approval_card_io.py::test_explicit_entities_are_sent_as_given_and_render_is_not_called, tests/test_approval_card_posting.py::test_entity_offsets_survive_an_admission_prefix]
-    INV-PLUG-060: [tests/test_approval_card_posting.py::test_settled_while_writing_posts_nothing, tests/test_approval_card_posting.py::test_settled_right_after_writing_posts_nothing, tests/test_consent_cards.py::test_superseded_install_while_writing_posts_nothing]
+    INV-PLUG-060: [tests/test_approval_card_posting.py::test_settled_while_writing_posts_nothing, tests/test_approval_card_posting.py::test_settled_right_after_writing_posts_nothing, tests/test_consent_cards.py::test_superseded_install_while_writing_posts_nothing, tests/test_card_after_reply.py::test_a_request_cancelled_before_its_card_is_told_once]
 
 - doc: architecture/callback-delivery.md
   summary: The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.

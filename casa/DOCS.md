@@ -1202,13 +1202,15 @@ Deny leaves the call refused with no grant issued. An approval keyboard you
 never answer expires after 10 minutes (the message says so when it does);
 asking the agent to retry the action posts a fresh one.
 
-**For plugin authors.** The approval message is posted the moment the agent
-calls the protected tool, while the agent's reply for that turn is sent when
-the turn ends, so it lands below that message. Do not tell the agent, in a skill or a tool description,
-to announce the request first ("say which document you are about to sign");
-that line would land under a message that is already waiting for a tap. Put
-what the person must check in the call's arguments and in the tool's
-`summary`, where the approval message shows it.
+**For plugin authors.** In a chat with an agent, the approval message normally
+follows the agent's reply for that turn, so a line the agent wrote before the
+call is above it. That is not so everywhere: when the call is made
+by an agent working for another agent, or inside a background job, the
+approval message is posted the moment of the call, and the reply that carries
+the line comes later, below it. So do not tell the agent, in a skill or a tool
+description, to announce the request first ("say which document you are about
+to sign"). Put what the person must check in the call's arguments and in the
+tool's `summary`, where the approval message shows it.
 
 A plugin author can also upgrade the approval prompt's headline to a
 plain-language action sentence (the exact arguments and tool id always

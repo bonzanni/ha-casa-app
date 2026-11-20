@@ -90,8 +90,17 @@ decided for each call, keyed by the call's `tool_use_id`, before it returns:
 once the reused challenge's keyboard post has settled as posted — the two that leave a
 keyboard up — and `consumed` when the call spent the operator's grant; every other
 deny records nothing, because without a keyboard the model's words are the operator's only
-explanation. The record is a scope field `for_child` does not pass on, and under an
-engagement the hook resolves a freshly minted scope that nothing reads. The record is read
+explanation. One case records `pending` before any keyboard is up: on an ordinary Telegram
+turn the card is held for the turn's reply
+([`plugin-authorization.md`](plugin-authorization.md), INV-PLUG-061), so the hook answers
+POSTED — or PENDING for the same call made again while that challenge is still open — and
+writes the record without waiting for the post; the kept words are then sent first and the
+card after them. When such a card is never shown, the record stands, the words after the
+call stay withheld, and Casa's own notice tells the operator. The scope carries what that
+hold reads — the chat the turn's reply goes to and an event set once the reply is out or the
+turn has ended (`TurnScope.reply_chat`, `TurnScope.reply_out`), given only by
+`Agent.handle_message`. Like the record, they are scope fields `for_child` does not pass on,
+and under an engagement the hook resolves a freshly minted scope that nothing reads. The record is read
 only when the call's result reaches the turn's consumer, in stream order (`ApprovalCut`):
 the SDK runs a hook in a task of its own, possibly before the consumer has folded the text
 written before the call, and the CLI writes a call's result only after its hooks returned,
@@ -182,6 +191,7 @@ predicate rather than re-derived inline where it is acted on; the grep test in
 - `tests/test_pending_approval_output.py`
 - `tests/test_pending_approval_pins.py`
 - `tests/test_pending_approval_delegate.py`
+- `tests/test_card_after_reply.py`
 
 **Related**
 - [`architecture/output-boundary.md`](../architecture/output-boundary.md)

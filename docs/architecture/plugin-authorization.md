@@ -81,7 +81,8 @@ short and delivers at once. Raising or
 reusing the challenge also records the delegation id
 (`authz_grants.note_delegation_awaiting_approval`) before the post settles, and forgets it
 if the post fails or the challenge was retired unanswered while it posted — an answer that
-raced the post keeps it. The resident turn later synthesized from that delegation's completion
+raced the post keeps it; for a card held for the turn's reply the post driver does the
+forgetting (INV-PLUG-061). The resident turn later synthesized from that delegation's completion
 notification runs at an origin no grant serves, so it takes the record once and is told not
 to retry or re-delegate the action and to say nothing about approvals — the approval's own
 continuation carries the action out. The record is in-process, capped and advisory: losing
@@ -122,6 +123,52 @@ as Casa's own text when neither is bound, so a challenge raised by a turn that l
 inbound file and neither opened nor shared one carries the same Casa line as the turn's other
 output ([`output-boundary.md`](output-boundary.md)). A challenge whose request settles while
 its card is being written posts nothing (INV-PLUG-060).
+
+**INV-PLUG-061**: A protected call's approval card raised on a Telegram turn whose reply goes to the chat the card is posted in is held until that reply has been sent, the turn has otherwise ended or the request has settled, for at most 20 seconds from the call, and is then posted if the request is still open; a card held this way that is never shown ends in one Casa line in that chat, except when the request was cancelled because Casa is stopping.
+
+The model often writes a line and then makes the protected call in the same turn, and the
+turn's reply is one send when the turn ends, so a card posted at the call landed above the
+words that introduce it. `Agent.handle_message` therefore gives the scope of an ordinary
+Telegram turn — one that arrived on a Telegram endpoint and sends its own final text to that
+chat, not a summons answered in a group — the chat its reply goes to and an event
+(`TurnScope.reply_chat`, `TurnScope.reply_out`), and sets the event on every way out of the
+turn: the reply delivered or failed, nothing to send, a raise, a cancellation
+(`agent._signals_reply_out`). The protected-tool path alone registers its challenge with
+`defer_until_reply` (`ChallengeCoordinator.get_or_create`). When the scope the challenge
+resolves carries an event that is not set and the same bot and chat as the card, the post
+driver writes the card and then waits for the event, bounded by one deadline of
+`CARD_HOLD_S` counted from the registration, so the card's own writing time is inside it. A
+request that settles while its card is held — a chat reset, a timeout, Casa stopping — ends
+the wait at once. The check that the request is still open comes after the wait, immediately
+before the send.
+
+The hook does not wait for a held card. For a new challenge it records the call as pending
+and answers POSTED at once; for the same call made again while the held challenge is still
+open it records pending and answers PENDING at once. Waiting for the post there would wait
+for the turn's own reply. A repeat that finds the request already settled waits for what
+became of the card, which ended its wait when the request settled, records nothing, and
+forgets the delegation record it made when no card stands and nobody answered. The
+same call made from a delegated child run while the launcher's card is held is answered the
+same way: the launcher's turn cannot end before the child returns.
+
+Because the hook has already answered as for a posted card, a held card that is never shown
+— its send failed, or the request had settled before the send (a chat reset, a timeout) — is
+the post driver's to report (`ChallengeCoordinator._card_not_shown`): it forgets every
+delegation record a hook made for that card — the call that raised it and any repeat of it —
+and sends one Casa notice to the card's chat, "The approval
+request could not be shown — ask again." A notice that cannot be sent is logged. A card that
+was posted and then retired says so itself, and a request that was answered is not a failure.
+A request cancelled because Casa is stopping gets no notice: the record is forgotten and
+nothing is sent.
+
+What it does not cover: a card raised inside a delegated child run, an engagement or a job
+(the child's scope carries no event and a job resolves its own scope), a turn that answers in
+another chat, and every other keyboard the coordinator posts — the install, persona, trigger,
+callback, event and erase consents, whose tools await the post inside the turn. Those are
+posted as soon as they are written, and the hook or tool waits for the post. A turn still
+working at the deadline gets its card above its reply. Between the hook's answer and the
+post there is no card to tap; if Casa stops in that window, nothing was posted and no grant
+exists.
 
 Who may approve is a separate guarantee, INV-PLUG-007: read this invariant as "one
 approval authorises one action" and that one as "the approver is the configured operator".
@@ -167,18 +214,20 @@ in an earlier process, whose challenges a restart already dropped with every gra
 
 **What the operator sees of a turn whose protected call waits on an approval** (#1252). On a
 resident's DM, button or setup turn, when the hook leaves a
-call waiting — a POSTED deny, or a PENDING deny whose reused challenge's keyboard post
-settled as posted — and no later call in the same attempt consumes that
-grant, the operator sees the keyboard and none of the words the model wrote after the call;
-the words before it are delivered (INV-OUT-006 and INV-TURN-009).
+call waiting — a POSTED deny, or a PENDING deny whose reused challenge is held for the turn's
+reply and still open or whose keyboard post settled as posted — and no later call in the same
+attempt consumes that grant, the operator sees the keyboard and none of the words the model
+wrote after the call; the words before it are delivered, above the card when it was held for
+the reply (INV-OUT-006, INV-TURN-009, INV-PLUG-061).
 The hook records its decision on the turn's scope before it returns, keyed by the call's
-`tool_use_id` — `pending` at the two returns that leave a keyboard up, `consumed` at a spent grant — and the turn reads the record when that call's
+`tool_use_id` — `pending` at the returns that leave a keyboard up or held for the reply, `consumed` at a spent grant — and the turn reads the record when that call's
 result arrives, so a hook that ran before the turn's consumer had folded the text written
 before the call cannot cut that text, and an approval the model acted on in the same turn
 releases what it wrote ([`output-scope-properties.md`](output-scope-properties.md)). The
 write never changes the hook's answer: a failure to record is logged and skipped.
 DELIVERY_FAILED, INACTIVE, NOT_OPERATOR and the other denies leave no keyboard, so the model's words are the operator's only explanation and are
-delivered as before.
+delivered as before. A held card is recorded as pending before it is posted: when it is then
+never shown, the words after the call stay withheld and Casa's notice is the explanation.
 
 The same holds on the paths #1207 named. When a resident's synchronous `delegate_to_agent`
 returns and its specialist's call was left waiting, the operator sees none of the words the
@@ -204,6 +253,12 @@ arguments — a changed argument is a different grant.
 
 **The engagement that raised a challenge ends before the tap.** The challenge is withdrawn
 and its keyboard says so (INV-PLUG-033); nothing is resumed.
+
+**A card held for the turn's reply cannot be shown.** The operator gets the turn's reply, cut
+at the call, and one Casa line asking them to ask again; no grant exists and nothing waits on
+a tap (INV-PLUG-061). The line usually follows the reply; it comes before it when the request
+settled while the card was held (a chat reset, a timeout) or when the send failed at the
+deadline of a turn still running. Casa stopping sends no line. When the turn never ends, the card is posted at the deadline.
 
 **A delegated call is approved while its specialist is still running.** The continuation
 waits, bounded, for the specialist's delegation slot, then goes to the resident; if the slot
@@ -233,6 +288,8 @@ retires a waiting scheduled question only once its own keyboard is on screen
 - `casa/rootfs/opt/casa/authz_grants.py::GrantKey`
 - `casa/rootfs/opt/casa/authz_grants.py::GrantStore`
 - `casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching`
+- `casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.get_or_create`
+- `casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator._card_not_shown`
 - `casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval`
 - `casa/rootfs/opt/casa/authz_grants.py::_note_approval`
 - `casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free`
@@ -244,6 +301,7 @@ retires a waiting scheduled question only once its own keyboard is on screen
 - `tests/test_approval_outlives_raiser.py`
 - `tests/test_pending_approval_pins.py`
 - `tests/test_behind_ellen_approval.py`
+- `tests/test_card_after_reply.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

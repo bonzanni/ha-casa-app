@@ -338,6 +338,7 @@ IDENTITY_SITE_HITS = {
     "ask_retirement.py": {"retirement_headline": 1},
     "authz_grants.py": {
         "ChallengeCoordinator.__init__": 1, "ChallengeCoordinator._after_slot": 1,
+        "ChallengeCoordinator._card_not_shown": 1,
         "ChallengeCoordinator._make_finish_hook._deliver": 1,
         "ChallengeCoordinator._make_finish_hook._dispatch_continuation": 1,
         "ChallengeCoordinator._make_finish_hook._finish_inner": 1,
@@ -742,6 +743,7 @@ IDENTITY_FUNCTIONS = {
     ("run_admission.py", "_spawn_status_card._post"): (NOISE, "a call's arguments"),
     ("run_admission.py", "confirmation_status"): (NOISE, "an answer's field"),
     ("authz_grants.py", "ChallengeCoordinator._after_slot"): (NOISE, "a call's arguments"),
+    ("authz_grants.py", "ChallengeCoordinator._card_not_shown"): (NOISE, "a call's arguments"),
     ("authz_grants.py", "ChallengeCoordinator._make_finish_hook._deliver"): (
         NOISE, "a call's arguments"),
     ("authz_grants.py", "ChallengeCoordinator._make_finish_hook._dispatch_continuation"): (
@@ -902,6 +904,7 @@ ROUTE_READERS = {
 #: A PRE_POST entry names the test of the window before Casa's bot has an id.
 
 BOT_ID_READS = {
+    ("agent.py", "_reply_chat"): (1, RESOLUTION, "the endpoint the turn's route resolves to: the bot its reply goes out through, compared with a card's own bot; no pair is formed before that bot has an id"),
     ("authz_grants.py", "ChallengeCoordinator._drive"): (1, FIELD, "the challenge key's own bot"),
     ("authz_grants.py", "ChallengeCoordinator.get_or_create"): (1, FIELD, "the challenge key's own bot"),
     ("authz_grants.py", "GrantIdentity.__post_init__"): (1, FIELD, "validation"),
