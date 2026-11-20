@@ -36,12 +36,19 @@ list items, table cells, headings, link labels). The text of an HTML block is
 not Markdown, with two exceptions Telegram makes: it reads a code span inside
 a ``<summary>``, and it reads a ``<details>`` as a container whose body is
 Markdown, blank lines or not. Code there is code too; backticks anywhere else in
-an HTML block (an ``<aside>``, an expandable quote) are text.
+an HTML block (an ``<aside>``, an expandable quote) are text. A fold written
+inside an indented code block is code. An HTML comment, like anything else
+opened by ``<!`` or ``<?``, is no tag Telegram supports: its ``<`` goes out as
+``&lt;``, so it is read as the Markdown text it then is, and its code is code.
 
 Telegram silently truncates multi-byte text past about 35,000 UTF-8 bytes
 instead of refusing it, so the size budget is measured on the prepared UTF-8
 bytes before sending: :func:`split` cuts raw Markdown into parts that each fit
 once prepared, never inside a link, tag or code span that fits on its own.
+Before such a text is cut, each reference link (``[text][label]``) is written
+inline, to the destination and title its definition gives, so a link does not
+depend on a definition left in another part; the definitions stay where they
+were, and a text that fits keeps its links as written.
 :func:`plain_blocks` builds a fallback payload that parses nothing, and
 :func:`flatten` turns a received rich message back into text.
 
@@ -61,6 +68,7 @@ from datetime import datetime
 from typing import Any, Callable, NamedTuple
 
 from markdown_it import MarkdownIt
+from markdown_it.common.utils import normalizeReference
 from telegram import Message, ReplyParameters
 from telegram.error import BadRequest, RetryAfter
 
@@ -131,6 +139,7 @@ _TAG = re.compile(rf"</{_TAG_NAME}\s*>|<{_TAG_NAME}(?:{_ATTR})*\s*/?>")
 _AUTOLINK = re.compile(r"<https?://[^\s<>]*>", re.I)
 _TIME_LINK = re.compile(r"\[([^\[\]\n]*)\]\(\s*(time:[^()\s]*)\s*\)", re.I)
 _URL = re.compile(r"https?://", re.I)
+_PAREN_OR_ESCAPE = re.compile(r"\\.|[()\n]", re.S)
 _BUTTON = re.compile(r"<tg-button(?![\w-])([^>]*)>(.*?)</tg-button\s*>", re.I | re.S)
 _TYPE_ATTR = re.compile(r"""(?<![\w-])type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.I)
 # The button types model text may carry; every other type acts on Casa.
@@ -147,6 +156,8 @@ _SUMMARY_CLOSE = re.compile(r"</summary\s*>", re.I)
 # nothing but fold tags: <details> with or without attributes, a whole
 # <summary>...</summary>, a <summary> or </summary> on its own, </details>.
 _TAG_LINE = re.compile(r"^(?:[ \t]|>|[-+*](?=[ \t])|\d{1,9}[.)](?=[ \t]))*(<[^\n]*)$", re.M)
+# The "<" of "<!" and "<?", which open no supported tag.
+_NOT_A_TAG = re.compile(r"<(?=[!?])")
 _FOLD_TAGS = re.compile(
     r"(?:(?:<details(?:\s[^>]*)?>|</details\s*>|<summary(?:\s[^>]*)?>[^\n]*?</summary\s*>"
     r"|<summary(?:\s[^>]*)?>|</summary\s*>)[ \t]*)+", re.I)
@@ -158,10 +169,13 @@ _FOLD_TAGS = re.compile(
 
 # The parser fills these in the env of each parse: the spans its inline rules
 # consumed, keyed by the inline text they were found in (two inline tokens
-# with the same text hold the same spans), and the offset where each table
-# row's text starts.
+# with the same text hold the same spans), the offset where each table row's
+# text starts, and each reference definition.
 _SPANS = "tg_rich_spans"
 _ROWS = "tg_rich_rows"
+_DEFS = "tg_rich_definitions"
+# A reference definition up to its destination: "[label]:".
+_DEFINITION = re.compile(r"\[(?:\\.|[^\\\]])*\]:")
 
 
 def _noting_span(kind: str, rule: Callable) -> Callable:
@@ -170,7 +184,9 @@ def _noting_span(kind: str, rule: Callable) -> Callable:
     ``"break"`` for a soft line break.
 
     A backtick run with no closer is ordinary text, so it is noted only when
-    it became a code span; a line break only when it is a soft one."""
+    it became a code span; a line break only when it is a soft one. A
+    reference link or image (one that ends in ``]``) also gets its tail, from
+    the ``]`` closing its label, noted as ``("ref", label)``."""
     token_type = {"code": "code_inline", "break": "softbreak"}.get(kind)
 
     def noted(state: Any, silent: bool) -> bool:
@@ -178,7 +194,36 @@ def _noting_span(kind: str, rule: Callable) -> Callable:
         found = rule(state, silent)
         if found and not silent and (token_type is None or (
                 len(state.tokens) > count and state.tokens[-1].type == token_type)):
-            state.env[_SPANS].setdefault(state.src, set()).add((kind, start, state.pos))
+            spans = state.env[_SPANS].setdefault(state.src, set())
+            spans.add((kind, start, state.pos))
+            if kind == "unit" and state.src[start] in "[!" and state.src[state.pos - 1] == "]":
+                image = state.src[start] == "!"
+                label_end = state.md.helpers.parseLinkLabel(state, start + image, not image)
+                if label_end <= start:
+                    return found
+                tail = state.src[label_end + 1:state.pos]
+                label = tail[1:-1] if len(tail) > 2 else state.src[start + 1 + image:label_end]
+                spans.add((("ref", normalizeReference(label)), label_end, state.pos))
+        return found
+    return noted
+
+
+def _noting_definitions(rule: Callable) -> Callable:
+    """The reference definition rule, also noting where each definition's
+    text starts and ends, the label it defines (``None`` for a repeat, which
+    defines nothing) and, for one on a single line, where its destination
+    starts."""
+    def noted(state: Any, start_line: int, end_line: int, silent: bool) -> bool:
+        count = len(state.env.get("references", ()))
+        found = rule(state, start_line, end_line, silent)
+        if found and not silent:
+            references = state.env["references"]
+            begin = state.bMarks[start_line] + state.tShift[start_line]
+            end = state.eMarks[state.line - 1]
+            definition = _DEFINITION.match(state.src, begin, end)
+            state.env.setdefault(_DEFS, []).append((
+                begin, end, next(reversed(references)) if len(references) > count else None,
+                definition.end() if definition and state.line == start_line + 1 else None))
         return found
     return noted
 
@@ -207,8 +252,10 @@ def _parser() -> MarkdownIt:
                        ("autolink", "unit"), ("html_inline", "unit"), ("newline", "break")):
         rule = md.inline.ruler.__rules__[md.inline.ruler.__find__(name)]
         md.inline.ruler.at(name, _noting_span(kind, rule.fn), {"alt": list(rule.alt)})
-    rule = md.block.ruler.__rules__[md.block.ruler.__find__("table")]
-    md.block.ruler.at("table", _noting_rows(rule.fn), {"alt": list(rule.alt)})
+    block_rules = (("table", _noting_rows), ("reference", _noting_definitions))
+    for name, wrap in block_rules:
+        rule = md.block.ruler.__rules__[md.block.ruler.__find__(name)]
+        md.block.ruler.at(name, wrap(rule.fn), {"alt": list(rule.alt)})
     return md
 
 
@@ -233,6 +280,13 @@ class _Reading(NamedTuple):
                                             # the header lacks)
     breaks: list[int]                 # the "\n" of each soft line break,
                                       # which a backslash makes a hard one
+    references: list[tuple[int, int, str]] = []   # each reference link or
+                                      # image: [start, end) of its tail from
+                                      # the "]" closing its label, the label
+    definitions: list[tuple[int, int, str | None, int | None]] = []
+                                      # each reference definition: [start,
+                                      # end), the label it defines, where
+                                      # its destination starts on one line
 
 
 def _summary_titles(text: str, code: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -307,9 +361,12 @@ def _read(text: str, *, units: bool = False) -> _Reading:
     # spelling keeps every offset the parser reports an offset in *text*. A
     # final line break changes nothing in what the text parses to, and keeps
     # markdown-it-py 4.0.0 from reading past the end of a text whose last
-    # line is an empty quote line after a table.
+    # line is an empty quote line after a table. A "<" before "!" or "?" (an
+    # HTML comment, declaration or processing instruction) never opens a tag
+    # Telegram supports, so it is sent as "&lt;" and what follows is Markdown
+    # text; the parser reads it with a letter there, which opens nothing.
     plain = text.replace("\0", "\ufffd") + "\n"
-    src, tag_lines = _mask_folds(plain)
+    src, tag_lines = _mask_folds(_NOT_A_TAG.sub("x", plain))
     env: dict = {_SPANS: {}, _ROWS: []}
     try:
         tokens = _MD.parse(src, env)
@@ -340,6 +397,7 @@ def _read(text: str, *, units: bool = False) -> _Reading:
     found_units: list[tuple[int, int]] = []
     fences: list[_Fence] = []
     breaks: list[int] = []
+    references: list[tuple[int, int, str]] = []
     row_line: int | None = None    # the source line of the table row being read
     column = -1
     for token in tokens:
@@ -383,6 +441,9 @@ def _read(text: str, *, units: bool = False) -> _Reading:
         else:
             at = _inline_offsets(src, token.content, token.map[0], line_start, line_end)
         for kind, start, end in spans:
+            if isinstance(kind, tuple):
+                references.append((at(start), at(end - 1) + 1, kind[1]))
+                continue
             if kind == "break":
                 newline = at(start)
                 line = text[text.rfind("\n", 0, newline) + 1:newline]
@@ -419,7 +480,8 @@ def _read(text: str, *, units: bool = False) -> _Reading:
             merged.append((start, end))
     titles = _summary_titles(text, merged)
     breaks = [b for b in breaks if not any(start <= b < end for start, end in titles)]
-    return _Reading(merged, found_units, fences, wide, sorted(breaks))
+    return _Reading(merged, found_units, fences, wide, sorted(breaks), references,
+                    env.get(_DEFS, []))
 
 
 def _mask_folds(src: str) -> tuple[str, list[tuple[int, int]]]:
@@ -430,33 +492,50 @@ def _mask_folds(src: str) -> tuple[str, list[tuple[int, int]]]:
     around them for one HTML block. With the tag lines turned into spaces,
     behind their quote markers, list markers and indentation, the body
     parses as the Markdown it is. A tag line in an indented code block, a
-    fold shown as code, is left alone. One in a fence is blanked all the
-    same: the fence keeps it as code either way, and before the blanking a
-    fold body holding a blank line can put a fence in the wrong place. The
-    offsets stay those of *src*."""
+    fold shown as code, is left alone: one the text as written puts in an
+    indented code block, or the text with every tag line's tags turned into
+    letters of the same length. The second reading is needed after a fold
+    whose body holds a blank line: as written, the fold's tags open an HTML
+    block that ends at that blank line and can put a fence in the wrong
+    place, which then swallows the example. One in a fence is blanked all
+    the same: the fence keeps it as code either way. Neither reading is
+    needed when no tag line is indented by four spaces or a tab, which an
+    indented code block takes. The offsets stay those of *src*."""
     if "details" not in src.lower():
         return src, []
-    try:
-        tokens = _MD.parse(src, {_SPANS: {}, _ROWS: []})
-    except Exception:  # noqa: BLE001 — the parse proper reports a parser fault
-        return src, []
-    code_lines = [t.map for t in tokens if t.type == "code_block" and t.map]
-    out: list[str] = []
-    found: list[tuple[int, int]] = []
-    pos = 0
-    line_number, counted = 0, 0
+    tags: list[tuple[int, int, int]] = []     # line number, [start, end) of the tags
+    line_number, counted, deep = 0, 0, False
     for line in _TAG_LINE.finditer(src):
         line_number += src.count("\n", counted, line.start())
         counted = line.start()
-        if any(first <= line_number < last for first, last in code_lines):
-            continue
         if _FOLD_TAGS.fullmatch(line.group(1)):
-            start, end = line.span(1)
-            out += [src[pos:start], " " * (end - start)]
-            found.append((start, end))
-            pos = end
-    out.append(src[pos:])
-    return "".join(out), found
+            tags.append((line_number, *line.span(1)))
+            indent = src[line.start():line.start(1)]
+            deep = deep or indent.endswith("    ") or "\t" in indent
+    if not tags:
+        return src, []
+    code_lines = []
+    if deep:
+        try:
+            tokens = [token for text in (src, _spliced(src, [(s, e, "x" * (e - s))
+                                                             for _, s, e in tags]))
+                      for token in _MD.parse(text, {_SPANS: {}, _ROWS: []})]
+        except Exception:  # noqa: BLE001 — the parse proper reports a parser fault
+            return src, []
+        code_lines = [t.map for t in tokens if t.type == "code_block" and t.map]
+    found = [(start, end) for number, start, end in tags
+             if not any(first <= number < last for first, last in code_lines)]
+    return _spliced(src, [(s, e, " " * (e - s)) for s, e in found]), found
+
+
+def _spliced(text: str, edits: list[tuple[int, int, str]]) -> str:
+    """*text* with each ``(start, end, new)`` of *edits*, which do not
+    overlap, putting *new* in place of ``text[start:end]``."""
+    out, pos = [], 0
+    for start, end, new in sorted(edits):
+        out += [text[pos:start], new]
+        pos = end
+    return "".join(out) + text[pos:]
 
 
 def _summary_code(html: str, env: dict) -> list[tuple[int, int]]:
@@ -534,26 +613,22 @@ def _widen_tables(text: str, wide: list[tuple[int, int, int, int]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _link_destination_end(s: str, p: int) -> int | None:
-    """End (exclusive) of a link destination starting at *p*, just after
-    ``](``; ``None`` when no closing parenthesis follows on the line."""
-    depth = 0
-    k = p
-    while k < len(s):
-        c = s[k]
+def _destination_ends(s: str) -> dict[int, int]:
+    """For each ``(`` of *s* closed on its line, the end (exclusive) of the
+    ``)`` that closes it; a link destination opened by ``](`` runs to there.
+    A character after a backslash is skipped. One pass for the whole text,
+    so a line of many unclosed ``](`` costs no more than any other."""
+    ends: dict[int, int] = {}
+    opened: list[int] = []
+    for m in _PAREN_OR_ESCAPE.finditer(s):
+        c = m.group()
         if c == "\n":
-            return None
-        if c == "\\":
-            k += 2
-            continue
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            if depth == 0:
-                return k + 1
-            depth -= 1
-        k += 1
-    return None
+            opened.clear()
+        elif c == "(":
+            opened.append(m.start())
+        elif c == ")" and opened:
+            ends[opened.pop()] = m.end()
+    return ends
 
 
 def _url_end(s: str, i: int) -> int:
@@ -647,6 +722,7 @@ def _encode(segment: str) -> str:
     Link destinations, bare URLs and the text of supported tags (their
     attributes included) are copied as written."""
     out: list[str] = []
+    ends = _destination_ends(segment) if "](" in segment else {}
     i = 0
     n = len(segment)
     while i < n:
@@ -674,7 +750,7 @@ def _encode(segment: str) -> str:
                 i = m.end()
                 continue
         elif ch == "]" and segment.startswith("](", i):
-            end = _link_destination_end(segment, i + 2)
+            end = ends.get(i + 1)
             if end is not None:
                 out.append(segment[i:end])
                 i = end
@@ -749,6 +825,24 @@ def prepare(markdown: str) -> str:
 
 def _fits(markdown: str, budget: int) -> bool:
     return len(prepare(markdown).encode("utf-8")) <= budget
+
+
+def _inline_references(text: str) -> str:
+    """*text* with each reference link and image written as an inline one,
+    to the destination and title its definition gives, as written there: cut
+    into parts, a link would otherwise lose a definition left in another
+    part. The definitions themselves stay, since a reference this reading
+    does not see (one inside an image's label) may still need one. The links
+    to a definition over several lines, or with a ``|`` (a table cell
+    border), stay as written."""
+    if "]:" not in text:
+        return text
+    reading = _read(text)
+    targets = {label: text[target:end].strip() for _, end, label, target in reading.definitions
+               if label is not None and target is not None and "|" not in text[target:end]}
+    edits = [(start, end, f"]({targets[label]})")
+             for start, end, label in reading.references if label in targets]
+    return _spliced(text, edits)
 
 
 def _cut_at(rest: str, k: int, sep: int, fences: list[_Fence]) -> tuple[str, str]:
@@ -840,6 +934,8 @@ def split(markdown: str, budget: int = RICH_BUDGET_BYTES) -> list[str]:
     fenced block closes and reopens the fence and keeps every code line."""
     rest = _normalized(markdown)
     parts: list[str] = []
+    if not _fits(rest, budget):
+        rest = _inline_references(rest)
     while not _fits(rest, budget):
         part, rest = _cut(rest, budget)
         if part.strip():
@@ -1012,7 +1108,11 @@ async def _post_message(bot: Any, chat_id: Any, rich_message: dict, *,
 
 def _halves(part: str) -> tuple[str, str] | None:
     """*part* cut into two halves by paragraph count, or ``None`` for a
-    single paragraph. A cut inside a fenced block closes and reopens it."""
+    single paragraph. A cut inside a fenced block closes and reopens it, and
+    reference links are written inline first, as :func:`split` does."""
+    if not _PARAGRAPH_BREAK.search(part.strip()):
+        return None
+    part = _inline_references(part)
     breaks = [m.start() for m in _PARAGRAPH_BREAK.finditer(part.strip())]
     if not breaks:
         return None

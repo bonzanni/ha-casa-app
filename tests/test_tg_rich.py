@@ -1,5 +1,6 @@
 """Preparing agent Markdown for Telegram rich messages (channels/tg_rich.py)."""
 
+import time
 from datetime import datetime
 
 import pytest
@@ -851,3 +852,131 @@ def test_split_counts_the_added_backslashes():
     parts = split(src, 2_000)
     assert all(len(prepare(p).encode("utf-8")) <= 2_000 for p in parts)
     assert "\n".join(parts) == src
+
+
+# ---------------------------------------------------------------------------
+# Degenerate input is prepared in linear time
+# ---------------------------------------------------------------------------
+# Each "](" with no closing parenthesis on its line once rescanned the rest of
+# the line: 32 kB of "[a](" took seconds and blocked the event loop.
+
+
+@pytest.mark.parametrize("unit", ["[a](", "](", "](a", "![a](", "[", "<a ", "_", "(", "<"])
+def test_a_degenerate_repeat_is_prepared_quickly(unit):
+    src = (unit * (32_000 // len(unit) + 1))[:32_000]
+    started = time.perf_counter()
+    prepare(src)
+    assert time.perf_counter() - started < 2.0
+
+
+def test_an_unclosed_link_destination_is_encoded_and_a_closed_one_copied():
+    assert prepare("[a](b_c [d](e_f) g_h") == "[a](b&#95;c [d](e_f) g&#95;h"
+    assert prepare("[a](b_(c)_d) e_f") == "[a](b_(c)_d) e&#95;f"
+    assert prepare("[a](b\\)_c) d_e") == "[a](b\\)_c) d&#95;e"
+    assert prepare("[a](b_c\n\nd_e)") == "[a](b&#95;c\n\nd&#95;e)"
+
+
+# ---------------------------------------------------------------------------
+# A reference link keeps its destination when the text is split
+# ---------------------------------------------------------------------------
+
+_FILLER = "\n\n".join(f"Paragrafo {i}: " + "parola " * 25 for i in range(30))
+
+
+def test_a_reference_link_split_from_its_definition_keeps_its_destination():
+    src = ("See [the invoice][inv], [Casa][] and [Casa], ![logo][img].\n\n" + _FILLER
+           + '\n\n[inv]: https://example.test/f_1 "Fattura (nov)"\n'
+           "[casa]: <https://example.test/c a>\n[img]: https://example.test/l.png\n"
+           "[unused]: https://example.test/u")
+    parts = split(src, 2_000)
+    assert len(parts) >= 2
+    assert parts[0].startswith(
+        'See [the invoice](https://example.test/f_1 "Fattura (nov)"), '
+        "[Casa](<https://example.test/c a>) and [Casa](<https://example.test/c a>), "
+        "![logo](https://example.test/l.png).")
+    html = _gfm().render(prepare(parts[0]))
+    assert '<a href="https://example.test/f_1" title="Fattura (nov)">the invoice</a>' in html
+    assert html.count('<a href="https://example.test/c%20a">Casa</a>') == 2
+    joined = "\n\n".join(parts)
+    for label in ("[inv]:", "[casa]:", "[img]:", "[unused]:"):    # no definition is removed
+        assert label in joined
+    assert all(len(prepare(p).encode("utf-8")) <= 2_000 for p in parts)
+
+
+def test_a_text_that_fits_keeps_its_reference_links_as_written():
+    src = "See [the invoice][inv].\n\n[inv]: https://example.test/f_1"
+    assert split(src) == [src]
+
+
+def test_a_reference_in_code_or_to_a_definition_over_two_lines_stays_as_written():
+    src = ("`[a][inv]` and [b][long]\n\n" + _FILLER
+           + '\n\n[inv]: https://example.test/f_1\n[long]: https://example.test/l\n  "Title"')
+    joined = "\n\n".join(split(src, 2_000))
+    assert joined.startswith("`[a][inv]` and [b][long]")
+    assert "[long]: https://example.test/l\n" in joined
+    assert "[inv]: https://example.test/f_1" in joined     # no link of its own to write
+
+
+def test_a_reference_in_a_quote_and_a_table_is_written_inline():
+    src = ("> Vedi [la fattura][f]\n\n| Voce | Link |\n| --- | --- |\n| Luce | [qui][f] |\n\n"
+           + _FILLER + "\n\n> [f]: https://example.test/f_1")
+    parts = split(src, 2_000)
+    assert parts[0].startswith("> Vedi [la fattura](https://example.test/f_1)\n\n"
+                               "| Voce | Link |\n| --- | --- |\n"
+                               "| Luce | [qui](https://example.test/f_1) |")
+    assert "> [f]: https://example.test/f_1" in "\n\n".join(parts)
+
+
+def test_halving_a_refused_part_writes_its_reference_links_inline():
+    from channels.tg_rich import _halves
+    src = "See [the invoice][inv].\n\n" + _FILLER + "\n\n[inv]: https://example.test/f_1"
+    first, second = _halves(src)
+    assert first.startswith("See [the invoice](https://example.test/f_1).")
+    assert "[inv]: https://example.test/f_1" in second
+
+
+def test_a_reference_inside_an_image_label_keeps_its_definition():
+    # The reference inside the label is not rewritten, so it still needs
+    # the definition; removing a used definition once left it unresolved.
+    src = '![alt [word][r]][r]\n\n[r]: /target "R"\n\n' + _FILLER
+    parts = split(src, 2_000)
+    assert parts[0].startswith('![alt [word][r]](/target "R")\n\n[r]: /target "R"')
+
+
+# ---------------------------------------------------------------------------
+# Folds: nested, and shown as code after a fold
+# ---------------------------------------------------------------------------
+
+
+def test_a_fold_nested_in_a_fold_body_keeps_the_outer_body_markdown():
+    src = ("<details><summary>Outer</summary>\n<details><summary>Inner</summary>\n~~~\na_b\n\n"
+           "x<y\n~~~\n</details>\n~~~\nc_d\n\nz<w\n~~~\n`e_f` g_h\n</details>\nafter_x")
+    assert prepare(src) == src.replace("g_h", "g&#95;h").replace("after_x", "after&#95;x")
+    quoted = "\n".join("> " + line if line else ">" for line in src.split("\n"))
+    assert prepare(quoted) == quoted.replace("g_h", "g&#95;h").replace("after_x", "after&#95;x")
+
+
+def test_a_fold_shown_as_indented_code_after_a_fold_with_a_blank_line_stays_code():
+    example = ("    <details>\n    <summary>Show a_b < c</summary>\n    body_x\n"
+               "    </details>")
+    src = ("<details><summary>Config</summary>\n```yaml\na_b: 1\n\nc_d: 2\n```\n</details>"
+           f"\n\nExample:\n\n{example}\n\nend_y")
+    assert prepare(src) == src.replace("end_y", "end&#95;y")
+
+
+# ---------------------------------------------------------------------------
+# An HTML comment is sent as text, so its code spans are code
+# ---------------------------------------------------------------------------
+# "<!" and "<?" never open a tag Telegram supports, so they go out as "&lt;!"
+# and "&lt;?" and Telegram reads what follows as Markdown text.
+
+
+@pytest.mark.parametrize("src, out", [
+    ("<!-- nota `a_b` c_d -->", "&lt;!-- nota `a_b` c&#95;d -->"),
+    ("Testo <!-- `a_b` --> e_f", "Testo &lt;!-- `a_b` --> e&#95;f"),
+    ("<!--\n`a_b`\n\n    x_y <z\n-->", "&lt;!--\\\n`a_b`\n\n    x_y <z\n-->"),
+    ("<?php `a_b` ?>", "&lt;?php `a_b` ?>"),
+    ("```\n<!-- a_b -->\n```", "```\n<!-- a_b -->\n```"),
+])
+def test_a_code_span_in_an_html_comment_is_untouched(src, out):
+    assert prepare(src) == out

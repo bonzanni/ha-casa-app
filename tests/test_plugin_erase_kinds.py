@@ -112,12 +112,46 @@ def test_an_option_is_offered_only_when_every_erasing_plugin_declares_it(specs, 
 
 def test_the_question_says_what_each_offered_option_keeps():
     text = pec.render_erase_choice(
-        "the plugin probe", [("probe", "erase_ledger", None), ("probe", "erase_all", None)],
+        "the plugin probe",
+        {pec.ERASE_DATA_ONLY: [("probe", "erase_ledger", None)],
+         pec.ERASE: [("probe", "erase_all", None)]},
         (pec.KEEP, pec.ERASE_DATA_ONLY, pec.ERASE, pec.CANCEL))
     assert "Erase data, keep sign-ins" in text and "Erase everything" in text
     assert "Home Assistant backups" in text
-    only = pec.render_erase_choice("the plugin probe", [], (pec.KEEP, pec.CANCEL))
+    only = pec.render_erase_choice("the plugin probe", {}, (pec.KEEP, pec.CANCEL))
     assert "No erase option is offered" in only and "Erase everything" not in only
+
+
+_BOTH = (pec.KEEP, pec.ERASE_DATA_ONLY, pec.ERASE, pec.CANCEL)
+_TWO_ERASERS = {
+    pec.ERASE_DATA_ONLY: [("pdf", "erase_documents",
+                           "Deletes all working documents; keeps the stored signature.")],
+    pec.ERASE: [("pdf", "erase_all", "Deletes documents and the stored signature.")]}
+
+
+def test_each_eraser_is_listed_under_the_choice_that_runs_it():
+    """#1617: with both erasers in one undivided list, the card said the
+    data-only option deletes what only the other eraser deletes."""
+    lines = pec.render_erase_choice("the plugin pdf", _TWO_ERASERS, _BOTH).split("\n")
+    data_only = next(i for i, l in enumerate(lines)
+                     if l.startswith("Erase data, keep sign-ins:"))
+    everything = next(i for i, l in enumerate(lines) if l.startswith("Erase everything:"))
+    assert data_only < everything
+    assert [l for l in lines[data_only + 1:everything] if l.startswith("•")] == [
+        "• pdf: erase_documents — Deletes all working documents; keeps the stored signature."]
+    assert [l for l in lines[everything + 1:] if l.startswith("•")] == [
+        "• pdf: erase_all — Deletes documents and the stored signature."]
+
+
+def test_the_card_facts_name_the_erasers_each_choice_runs():
+    facts = pec.erase_card_request("the plugin pdf", _TWO_ERASERS, _BOTH).facts
+    assert "erasers" not in facts
+    runs = {label: [r["tool"] for r in c["runs"]] for label, c in facts["choices"].items()}
+    assert runs == {"Keep data": [], "Erase data, keep sign-ins": ["erase_documents"],
+                    "Erase everything": ["erase_all"], "Cancel": []}
+    assert facts["choices"]["Erase data, keep sign-ins"]["runs"][0][
+        "what_the_plugin_says_it_does"] == (
+        "Deletes all working documents; keeps the stored signature.")
 
 
 # --- the tap records the kind --------------------------------------------------------

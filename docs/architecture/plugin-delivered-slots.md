@@ -251,8 +251,10 @@ sends, the result is withheld and the deposit dropped.
 
 **Delivery is not proven.** The channel is not started, the send returns without proof,
 raises, or exceeds the bound: the result is replaced by a notice telling the model the
-operator may or may not hold a link — if one arrived just now it is valid, otherwise ask
-for a fresh one — and the deposit is dropped. Telegram accepting the message and the
+operator may have received nothing, to say so in one short line before anything else — a
+link that arrived just now is valid, otherwise a fresh one is offered — and not to carry on
+with a step that needs the operator to have opened it, nor to retry on that turn; a message
+and a file get the same notice in their own words. The deposit is dropped. Telegram accepting the message and the
 client raising afterwards reads the same way; that is the one double-telling the design
 accepts, and why the notice promises nothing about what did not arrive. A provider-side
 pending authorisation is orphaned and the next request mints a fresh one.

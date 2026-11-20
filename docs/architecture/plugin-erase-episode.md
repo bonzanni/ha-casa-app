@@ -31,7 +31,8 @@ plugin is projected onto the tapped kind (`EraseSpec.for_kind`), and in turn
   addressed to the configured operator, through the same seam the setup dispatch uses,
   to the role the plugin's targets select — a resident directly, or the assistant as a
   courier that delegates to the specialist by name. The turn is told to call the eraser
-  once, with no arguments, and to call nothing else.
+  once, with no arguments, to call nothing else, and to reply with one short plain
+  sentence saying what the tool reported, never its raw result.
 - *Marker.* The turn carries Casa's `plugin_erase` marker beside
   `plugin_erase_target` (the role that runs the eraser), `plugin_erase_artifact` (the
   artifact the tap named), `plugin_erase_episode` (the run id), and `plugin_erase_subject` /

@@ -1005,23 +1005,34 @@ _REASON_BAD_CAPABILITY = (
     "The tool is declared to return a capability, but its result did not carry "
     "the references its contract declares, so the result is withheld. Tell the "
     "operator the plugin needs updating; do not retry.")
+# What the model reads in place of an undelivered post. Each says first that
+# the operator may have nothing, then what to say, then what not to do: a
+# turn once carried on to the next step on a draft the operator never saw.
 _REASON_LINK_NOT_DELIVERED = (
     "The tool produced a link for the operator, but Casa could not confirm it "
-    "reached their chat, so the result is withheld. Tell the operator: if a "
-    "link message arrived just now it is valid; otherwise ask again for a "
-    "fresh one. Do not retry on this turn.")
+    "reached their chat, so the operator may have received nothing and the "
+    "result is withheld. Say so now, before anything else: tell the operator "
+    "in one short line that the link may not have arrived, that a link "
+    "message that arrived just now is valid, and offer a fresh one otherwise. "
+    "Do not carry on with a step that needs them to have opened it, and do "
+    "not retry on this turn.")
 # S3: the same shape for a message and a file — withheld, dropped, no retry.
 _REASON_MESSAGE_NOT_DELIVERED = (
     "The tool produced a message for the operator, but Casa could not confirm "
-    "it reached their chat complete, so the result is withheld. Tell the "
-    "operator: if a message headed by the specialist's name arrived just now "
-    "it is theirs; otherwise ask again. Do not retry on this turn.")
+    "it reached their chat complete, so the operator may have received "
+    "nothing and the result is withheld. Say so now, before anything else: "
+    "tell the operator in one short line that the message may not have "
+    "arrived, that one headed by the specialist's name that arrived just now "
+    "is theirs, and offer to send it again otherwise. Do not carry on with a "
+    "step that needs them to have read it, and do not retry on this turn.")
 _REASON_FILE_NOT_DELIVERED = (
     "The tool produced a file for the operator, but Casa could not confirm it "
-    "reached their chat, so the result is withheld and the file consumed. Tell "
-    "the operator: if a file headed by the specialist's name arrived just now "
-    "it is theirs; otherwise ask again for a fresh one. Do not retry on this "
-    "turn.")
+    "reached their chat, so the operator may have received nothing; the "
+    "result is withheld and the file consumed. Say so now, before anything "
+    "else: tell the operator in one short line that the file may not have "
+    "arrived, that one headed by the specialist's name that arrived just now "
+    "is theirs, and offer to send a fresh one otherwise. Do not carry on with "
+    "a step that needs them to have seen it, and do not retry on this turn.")
 _NOT_DELIVERED_REASONS = {
     OPERATOR_LINK: _REASON_LINK_NOT_DELIVERED,
     OPERATOR_MESSAGE: _REASON_MESSAGE_NOT_DELIVERED,

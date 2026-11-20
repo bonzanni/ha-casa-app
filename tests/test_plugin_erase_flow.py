@@ -106,8 +106,8 @@ def test_an_erase_choice_expires_and_is_bound_to_its_subject_and_artifacts(monke
 
 
 def test_the_question_names_the_eraser_and_the_backups():
-    text = pec.render_erase_choice("the plugin probe",
-                                   [("probe", "erase_all", "Erases everything.")])
+    text = pec.render_erase_choice(
+        "the plugin probe", {pec.ERASE: [("probe", "erase_all", "Erases everything.")]})
     assert "erase_all" in text and "Erases everything." in text
     assert "Home Assistant backups" in text
 
@@ -690,3 +690,12 @@ async def test_a_fast_eraser_waits_behind_the_choice_run_as_its_one_follower(
     for _ in range(5):
         await asyncio.sleep(0)
     assert cc._SLOTS == {}
+
+
+def test_the_erase_turn_is_not_told_to_paste_the_tools_result():
+    """#1619: told to reply with the text the eraser returns, the turn
+    posted the result's raw JSON in the operator's chat."""
+    text = pe._instruction("erase_all")
+    assert "`erase_all`" in text and "do not call any other tool" in text
+    assert "reply with the text it returns" not in text
+    assert "never paste its raw result" in text
