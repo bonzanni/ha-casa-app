@@ -32,7 +32,8 @@ started (directly, or through an agent acting on their message — the record's 
 `TelegramTransport.react_job_request`): the origin's `_tg_request`, stamped at ingress, reacted
 to by the bot that message came to — the only bot that can — wherever the job's posts go. Only
 when that reaction cannot be set (no request stamped, no endpoint for its bot, Telegram
-refusing it) does the job get one silent line instead, `📊 <Agent> started «<title>».`, with no
+refusing it) does the job get one silent line instead, `<Agent> started «<title>».` (`Started
+«<title>».` in the agent's own chat), with no
 keyboard of any kind, in reply to his request when that is the posting bot's message in the
 job's chat; each step is bounded, and a failure is logged with its class. A scheduled job, or
 one an agent started on its own, gets neither. When the job ends it posts nothing of its own:

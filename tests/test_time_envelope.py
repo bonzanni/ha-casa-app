@@ -189,8 +189,8 @@ def test_a_window_compares_instants_not_wall_clocks():
 # reply's note is never retained as the speaker's words.
 # ---------------------------------------------------------------------------
 
-_NOTE = "(Casa) 📊 Finance answered your reply (1 page)."
-_REPLY = ("The person sent this as a reply to a message Casa posted for 📊 Finance, "
+_NOTE = "(Casa) Finance answered your reply (1 page)."
+_REPLY = ("The person sent this as a reply to a message Casa posted for Finance, "
           "posted 2026-10-06 21:40, which read:\n«Which quarter?\n\nReply: start from Q2 2026»\n"
           "Their words answer that message, which may not be your latest one.")
 

@@ -22,7 +22,7 @@ turn with ``<silent/>``.
 
 A run passes when the resident delegated, and
 - nothing she wrote has a line opening with the delegate's name and a colon,
-  and no ``📊`` (Casa's header for a delegate's own post);
+  and no ``<cite>`` (the credit Casa puts on a delegate's own post);
 - for (d), her reply strips to silence;
 - otherwise a JUDGE model (``JUDGE_MODEL``) reads the delegate's answer and her
   reply (with the question and buttons of an ``ask_user`` call, if she made
@@ -305,10 +305,10 @@ def _norm(text: str) -> str:
 
 
 def mechanical(name: str, said: str) -> tuple[bool, str]:
-    """Nothing the resident wrote is put under the delegate's name or Casa's
-    post header."""
-    if "📊" in said:
-        return False, "📊 in the reply"
+    """Nothing the resident wrote is put under the delegate's name or the
+    credit Casa puts on a delegate's post."""
+    if "<cite" in said.lower():
+        return False, "a <cite> credit in the reply"
     head = re.compile(rf"^[\s>*_\"“]*{re.escape(name)}[\s*_]*:", re.IGNORECASE)
     if any(head.match(line) for line in said.splitlines()):
         return False, f"a line opens with '{name}:'"

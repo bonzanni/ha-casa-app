@@ -46,7 +46,7 @@ async def routed(wired, tmp_path, monkeypatch, fake_telegram_bot):
 
 def _reply_msg(name="statement-q3.pdf", quoted_id=11, caption=None, **attach):
     m = _msg(document=_doc(name), **attach)
-    m.reply_to_message = NS(message_id=quoted_id, text="📊 Finance\nQ3 report", caption=None)
+    m.reply_to_message = NS(message_id=quoted_id, text="Q3 report\nFinance", caption=None)
     m.caption = caption
     return m
 

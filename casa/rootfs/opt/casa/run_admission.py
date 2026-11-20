@@ -681,13 +681,12 @@ def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
     logged and nothing else — ``stop_work`` still stops the request."""
     async def _post() -> None:
         from handoff import helper_under_operator_task
-        from result_broker import compose_operator_message, label_at
-        text = compose_operator_message(
-            compose_status(runs, _requester_name(binding, call.role)),
-            label_at(call.role, endpoint))
+        from result_broker import label_at, named_head
+        text, entities = named_head(label_at(call.role, endpoint),
+                                    compose_status(runs, _requester_name(binding, call.role)))
         silent = helper_under_operator_task(call.origin, call.chain)
         mid = await endpoint.deliver_run_card(chat_id, text, post=_card_post(call, cid),
-                                              silent=silent)
+                                              silent=silent, entities=entities)
         if isinstance(mid, int) and not isinstance(mid, bool):
             CONFIRMATIONS.set_card(cid, TgAddress(endpoint.bot_id, chat_id, mid), text)
         else:

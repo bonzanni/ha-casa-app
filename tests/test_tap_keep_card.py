@@ -96,7 +96,7 @@ async def test_the_registered_kinds_name_the_keep_card_button(labels, monkeypatc
     post = rb.PostRecord(role="finance", operator_id=42, plugin=SEG, slot="proposal",
                          tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="proposal")
     delivered, *_ = await rb._post_proposal(_identity(), SEG, "proposal", _call(), parsed,
-                                            "📊 Finance", post)
+                                            "Finance", post)
     assert delivered and seen["meta"]["kinds"] == ["call", "keep_card"]
 
 

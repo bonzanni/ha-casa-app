@@ -165,7 +165,7 @@ theme, light or dark, and on a phone its three tabs sit at the bottom:
 ## The live view
 
 When Fido needs you in the browser — to sign in, to type a code sent by text message, to solve
-a puzzle, or for a step it cannot do — you get one message in Telegram headed "📊 Fido": the
+a puzzle, or for a step it cannot do — you get one message from Fido in Telegram: the
 reason, and **Open live view**, which opens the app's page with the waiting live view first.
 Press **Open**. You see Chrome's window fitted to your phone, and your phone is
 its keyboard. Tap a field in the picture: the keyboard comes up and what you type fills the field

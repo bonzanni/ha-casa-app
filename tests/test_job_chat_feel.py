@@ -110,7 +110,7 @@ async def test_a_job_whose_reaction_fails_posts_the_silent_start_line_without_a_
         await tools_mod._acknowledge_job_start(rec.id)
     assert rig.bot.reactions == []
     (s,) = rig.bot.sent
-    assert s["text"] == "📊 Finance started «Q3 accounting»." and s["disable_notification"]
+    assert s["text"] == "Finance started «Q3 accounting»." and s["disable_notification"]
     assert "reply_markup" not in s and s["reply_parameters"].message_id == REQUEST_MID
     assert s["reply_parameters"].allow_sending_without_reply is True
     assert rig.reg.get(rec.id).ui_posts == [] and len(rig.reg.get(rec.id).dm_posts) == 1
@@ -126,7 +126,7 @@ async def test_a_job_without_a_stamped_request_posts_the_start_line(rig):
     await tools_mod._acknowledge_job_start(rec.id)
     assert rig.bot.reactions == []
     (s,) = rig.bot.sent
-    assert s["text"] == "📊 Finance started «Q3 accounting»." and "reply_parameters" not in s
+    assert s["text"] == "Finance started «Q3 accounting»." and "reply_parameters" not in s
     assert len(rig.reg.get(rec.id).dm_posts) == 1
 
 

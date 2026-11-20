@@ -88,12 +88,12 @@ def _user(uid=OPERATOR):
     return types.SimpleNamespace(id=uid, first_name="Op", is_bot=False)
 
 
-def _quoted(mid, text="📊 Finance\nPair 17?"):
+def _quoted(mid, text="Pair 17?\nFinance"):
     return types.SimpleNamespace(message_id=mid, text=text, caption=None, date=None,
                                  from_user=None, sender_chat=None)
 
 
-def _text(text, *, reply_to=None, quoted_text="📊 Finance\nPair 17?", uid=OPERATOR, mid=70):
+def _text(text, *, reply_to=None, quoted_text="Pair 17?\nFinance", uid=OPERATOR, mid=70):
     user = _user(uid)
     message = types.SimpleNamespace(
         text=text, message_id=mid, from_user=user, sender_chat=None,
@@ -201,7 +201,7 @@ async def test_a_reply_to_a_delegations_intermediate_plugin_post_goes_into_it(wo
     world.index.delegation("d-1", ch.default_agent)
     _land(ch, 640, "d-1", ch.default_agent)
     await _handle(ch, _text("the second one", reply_to=640))
-    assert world.inputs.calls == [("d-1", "[replying to «📊 Finance»]\nthe second one")]
+    assert world.inputs.calls == [("d-1", "[replying to «Pair 17?»]\nthe second one")]
     assert world.inputs.said == ["the second one"]          # the operator's words alone
     assert _turns(bus, ch.default_agent) == []
 
@@ -959,16 +959,15 @@ async def test_a_greeting_telegram_refuses_is_one_info_line(world, caplog, error
 
 
 # ---------------------------------------------------------------------------
-# lines in an agent's own chat carry no 📊 head
+# Casa's one-line notices name an agent plainly, in every chat
 # ---------------------------------------------------------------------------
 
-async def test_an_agents_own_chat_names_it_plainly(world, monkeypatch):
+async def test_an_agents_own_chat_names_it_plainly(world):
     import agent_lane
-    monkeypatch.setattr(rb, "post_label", lambda role: "📊 Finance")
     own, _ = _endpoint("own")
     casa, _ = _endpoint("casa")
     assert own._agent_label("finance") == "Finance"
-    assert casa._agent_label("finance") == "📊 Finance"
+    assert casa._agent_label("finance") == "Finance"
     agent_lane.FAULTS.mark("finance", "r-1", "probe")
     own._stop_tap = AsyncMock(return_value=False)
     meta = {"chat_id": OPERATOR, "role": "finance", "operator_id": OPERATOR, "options": ["Yes"],

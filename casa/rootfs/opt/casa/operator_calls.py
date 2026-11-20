@@ -182,11 +182,11 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
                         options: list[str], timeout_s: float,
                         on_settle: Callable[[dict], Awaitable[None]],
                         chat_id: "int | None" = None, post: Any = None) -> bool:
-    """Post *text* under *role*'s label with one button per option, through
+    """Post *text* under *role*'s name with one button per option, through
     the Telegram *endpoint* the caller resolved (the call's delivery for a run
     admission, Casa's own for its restart card), to the operator *identity*
     names, in *chat_id* (the identity's chat when not given). In *role*'s own
-    chat the label is left out: the chat is the agent. The question's record
+    chat the name is left out: the chat is the agent. The question's record
     keeps *role*, the agent it is asked for, and the address it was delivered
     at, as every card's does. ``on_settle`` runs
     once with the outcome — ``{"outcome":
@@ -207,7 +207,7 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
     question is filed under that task, so a reply to it reaches the task).
     """
     from channels.tg_address import EndpointNotReady, TgAddress, scope as lane_scope
-    from result_broker import compose_operator_message, label_at
+    from result_broker import label_at, named_head
     from verdict_broker import BROKER
 
     channel = endpoint
@@ -220,7 +220,7 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
         return False
     chat_id = identity.chat_id if chat_id is None else chat_id
     operator_id = identity.operator_id
-    body = compose_operator_message(text, label_at(role, channel))
+    body, entities = named_head(label_at(role, channel), text)
     rid = uuid.uuid4().hex
     scope = lane_scope("ask", bot_id, chat_id)
     req, _ = BROKER.register(
@@ -234,7 +234,7 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
 
     async def _post():
         return await channel.deliver_operator_question(chat_id, body, list(options), rid,
-                                                       post=post)
+                                                       post=post, entities=entities)
 
     def _finish_factory(message_id: int):
         async def _finish(outcome: dict) -> None:

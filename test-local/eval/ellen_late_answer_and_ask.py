@@ -213,7 +213,7 @@ def _notice_body(case: dict) -> str:
     import tools as casa_tools
     text = case["late"]
     if case.get("late_echo"):
-        text += ("\n\n📊 Alex posted a proposal to your chat (3 buttons).\n"
+        text += ("\n\nAlex posted a proposal to your chat (3 buttons).\n"
                  + casa_tools.POST_ECHO_SILENCE_NOTE)
     complete = DelegationComplete(
         delegation_id="0f3c9a2e-eval", agent="finance", status="ok",

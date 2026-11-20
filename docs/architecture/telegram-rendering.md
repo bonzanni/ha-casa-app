@@ -152,6 +152,22 @@ fields is read without a code change; a new text field is read only once it join
 text, else its caption, else that flattening; the reply note, a guest summons' reply note and
 a reply or file routed into a task all use it ([`telegram.md`](telegram.md), INV-DESK-004).
 
+**A post in another agent's chat is one quote credited to its poster.**
+`tg_rich.credited_quote` opens a quote with `> <cite>name</cite>` and an empty quote line, then
+quotes every line of the text (`> `, an empty line `>`): Telegram shows that as one quote with
+the name as its credit and still reads the body inside as Markdown — paragraphs, tables, lists,
+headings, code, folds and nested quotes are kept. (A pull quote, `<aside>…<cite>`, would flatten
+the body to plain text, so it is not used.) Telegram gives the credit to the first `<cite>` in a
+quote, and Casa's is the first line, so a `<cite>` the body writes — anywhere, in whatever
+Telegram takes for code or text — is a paragraph of the post and never the credit; the body is
+quoted character for character. A code block indented with a tab can read as text behind the
+quote marker, where its tab stop falls elsewhere; it then shows the same characters, not as
+code. Fenced code is unaffected. The name is escaped for the tag's
+content (`&`, `<`). The quoted text is split like any other: each part keeps its quote lines and
+the first carries the credit. Read back, such a message is the body's lines and then the name on
+its own last line, so the first line of a post a reply quotes is the body's. A caption, which
+cannot be rich, carries the name in bold on its first line instead.
+
 **Captions and a few Casa-composed lines keep classic entities.** A photo or file caption
 cannot be rich, nor can a guest summons' placeholder, ticker and busy line. These go through
 `channels/tg_richtext.py::render`, a fail-literal inline renderer returning one message's
@@ -255,6 +271,7 @@ its entity outside code, an escaping backslash dropped with it.
 - `casa/rootfs/opt/casa/channels/tg_rich.py::send_rich`
 - `casa/rootfs/opt/casa/channels/tg_rich.py::edit_rich`
 - `casa/rootfs/opt/casa/channels/tg_rich.py::flatten`
+- `casa/rootfs/opt/casa/channels/tg_rich.py::credited_quote`
 - `casa/rootfs/opt/casa/channels/tg_rich.py::time_instant`
 - `casa/rootfs/opt/casa/channels/telegram.py::quoted_text`
 - `casa/rootfs/opt/casa/channels/tg_richtext.py::render`

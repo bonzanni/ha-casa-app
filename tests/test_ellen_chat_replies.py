@@ -83,11 +83,11 @@ def _a_casa_card(ch, world):
 
 def _a_pre_upgrade_specialist_post(ch, world):
     _post_of_no_task(ch, 33, "finance", "operator_proposal")
-    return _from_bot(_text("and March?", reply_to=33, quoted_text="📊 Finance\nQ3 report"))
+    return _from_bot(_text("and March?", reply_to=33, quoted_text="Q3 report\nFinance"))
 
 
 def _a_message_no_index_knows(ch, world):
-    return _from_bot(_text("and March?", reply_to=34, quoted_text="📊 Finance\nQ2 report"))
+    return _from_bot(_text("and March?", reply_to=34, quoted_text="Q2 report\nFinance"))
 
 
 def _the_operators_own_message(ch, world):
@@ -142,7 +142,7 @@ async def test_a_reply_to_a_live_delegations_post_goes_into_the_delegation(world
     world.index.delegation("d-1", "finance")
     _land(ch, 640, "d-1", "finance")
     await _handle(ch, _text("the second one", reply_to=640))
-    assert world.inputs.calls == [("d-1", "[replying to «📊 Finance»]\nthe second one")]
+    assert world.inputs.calls == [("d-1", "[replying to «Pair 17?»]\nthe second one")]
     assert _turns(bus, RESIDENT) == []
 
 

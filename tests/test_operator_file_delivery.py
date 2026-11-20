@@ -31,7 +31,7 @@ ARTIFACT = "6" * 64
 PLUGIN = "probe"
 EXPORT = "mcp__plugin_probe_api__export"      # capability, delivers operator_file
 SLOT = "export"
-LABEL = "📊 Finance"
+LABEL = "Finance"
 DATA = b"quarter,revenue\nQ3,EXPORT-4e2a\n"
 
 
@@ -65,11 +65,14 @@ class _Recorder:
                  sleep_s=0.0):
         self.outcome, self.raise_exc, self.sleep_s = outcome, raise_exc, sleep_s
         self.deliveries: list[tuple] = []
+        self.entities: list = []
         self.other_sends: list[tuple] = []
         self.chat_id = "42"
 
-    async def deliver_operator_file(self, chat_id, content, kind, filename, caption, *, post=None):
+    async def deliver_operator_file(self, chat_id, content, kind, filename, caption, *, post=None,
+                                    caption_entities=None):
         self.deliveries.append((chat_id, content, kind, filename, caption))
+        self.entities.append(caption_entities)
         if self.sleep_s:
             await asyncio.sleep(self.sleep_s)
         if self.raise_exc is not None:
@@ -181,10 +184,10 @@ def test_deposit_for_a_file_slot_requires_a_media_kind(kind, names):
     assert store._refs == {}
 
 
-@pytest.mark.parametrize("caption", [7, "a\nb", "a\x00b", "c" * 1015],
+@pytest.mark.parametrize("caption", [7, "a\nb", "a\x00b", "c" * 1017],
                          ids=["int", "newline", "nul", "composed-overflow"])
 def test_deposit_for_a_file_slot_refuses_a_bad_caption(caption, names):
-    """The COMPOSED caption — label line, newline, plugin caption — must fit
+    """The COMPOSED caption — the specialist's name, newline, plugin caption — must fit
     ``send_media``'s cap; overflow is refused, never truncated."""
     store, _ = _store()
     _open(store)
@@ -197,13 +200,13 @@ def test_deposit_for_a_file_slot_keeps_kind_and_a_fitting_caption(names):
     store, _ = _store()
     _open(store)
     ref, err = store.deposit(client_id="c1", slot=SLOT, value="/x/report.csv",
-                             kind="text", caption="c" * 1014, label="Evil label")
+                             kind="text", caption="c" * 1016, label="Evil label")
     assert err is None
     r = store._refs[ref]
-    assert (r.media_kind, r.caption, r.label) == ("text", "c" * 1014, "")
-    assert len(LABEL) + 1 + 1014 == rb.MAX_FILE_CAPTION_CHARS == tools_mod._CAPTION_MAX
+    assert (r.media_kind, r.caption, r.label) == ("text", "c" * 1016, "")
+    assert len(LABEL) + 1 + 1016 == rb.MAX_FILE_CAPTION_CHARS == tools_mod._CAPTION_MAX
     assert store.take_for_delivery(ref) == (
-        "/x/report.csv", "c" * 1014, "", _identity(), "text", None, "", "")   # S5: + proposal; S7a: + filename; #1312: + key
+        "/x/report.csv", "c" * 1016, "", _identity(), "text", None, "", "")   # S5: + proposal; S7a: + filename; #1312: + key
 
 
 def test_deposit_for_a_file_slot_does_not_read_the_file(names, tmp_path):
@@ -228,6 +231,9 @@ async def test_a_delivered_file_is_claimed_sent_labelled_and_receipted(recorder,
     assert err is None
     out = await hook(_post(json.dumps({SLOT: ref, "rows": 1})), "call-1", {})
     assert recorder.deliveries == [(4242, DATA, "text", "report.csv", LABEL + "\nQ3 export")]
+    # the name is the caption's first line, in bold: the one entity of the caption
+    [(bold,)] = [tuple(e) for e in recorder.entities]
+    assert (bold.type, bold.offset, bold.length) == ("bold", 0, len(LABEL))
     assert recorder.other_sends == []
     body = _replacement(out)
     receipt = json.loads(body)
@@ -248,6 +254,7 @@ async def test_a_file_with_no_plugin_caption_is_still_labelled(recorder, names, 
     ref, _ = store.deposit(client_id="c1", slot=SLOT, value=path, kind="text")
     await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
     assert recorder.deliveries[0][4] == LABEL
+    assert [(e.type, e.offset, e.length) for e in recorder.entities[0]] == [("bold", 0, len(LABEL))]
 
 
 # --- not proven ⇒ withheld, dropped, file consumed ----------------------------
@@ -378,12 +385,15 @@ async def test_the_real_channel_method_sends_once_through_the_kinds_policy_metho
     app.bot.send_document = AsyncMock(return_value=True)
     app.bot.send_photo = AsyncMock(return_value=True)
     ch._app = app
-    assert await ch.deliver_operator_file(42, DATA, "text", "r.csv", LABEL + "\nc") is DeliveryOutcome.DELIVERED
+    bold = rb.named_head(LABEL, "c")[1]
+    assert await ch.deliver_operator_file(42, DATA, "text", "r.csv", LABEL + "\nc",
+                                          caption_entities=bold) is DeliveryOutcome.DELIVERED
     assert app.bot.send_document.await_count == 1 and app.bot.send_photo.await_count == 0
     args, kwargs = app.bot.send_document.await_args
     assert args[0] == 42 and isinstance(args[1], InputFile) and args[1].filename == "r.csv"
-    # the caption as the bytes it is: no parse_mode, no thread id
-    assert kwargs == {"caption": LABEL + "\nc"}
+    # the caption as the bytes it is, the name's bold its one entity: no parse_mode,
+    # no thread id
+    assert kwargs == {"caption": LABEL + "\nc", "caption_entities": bold}
     assert await ch.deliver_operator_file(42, b"\x89PNG", "photo", "r.png", LABEL) is DeliveryOutcome.DELIVERED
     assert app.bot.send_photo.await_count == 1
     app.bot.send_document = AsyncMock(side_effect=TimedOut())

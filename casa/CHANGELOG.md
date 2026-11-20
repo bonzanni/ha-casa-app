@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.377.0] - 2026-11-20
+
+### Changed
+
+- The "📊 name" line is gone from everything Casa posts. In an agent's own chat its posts carry no name at all, and that now includes your assistant's posts in Casa's chat.
+- When one agent posts in another agent's chat (a specialist's message, card or question in your assistant's chat), the post is shown as a quote credited to that agent, with its tables, lists and folds kept. A plugin cannot change, fake or remove that credit.
+- A file, a card with a picture, a link and a short question from another agent carry the agent's name in bold on the first line instead.
+- Casa's own one-line notices name the agent plainly, for example "Finance started «Q3 accounting».".
+- Messages already in your chats keep the old label.
+
 ## [0.376.3] - 2026-11-20
 
 ### Fixed

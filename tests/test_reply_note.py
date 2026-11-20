@@ -112,9 +112,9 @@ async def test_a_reply_to_a_specialists_post_is_the_residents_turn_with_the_note
     """A specialist's post that belongs to no live task (one posted before an
     upgrade, say) is just a message from this bot: the reply is the
     resident's, with the note, and names no author it cannot know."""
-    msg = await _resident_turn(_update(quoted_id=11, quoted_text="📊 Finance\nQ3 report"))
+    msg = await _resident_turn(_update(quoted_id=11, quoted_text="Q3 report\nFinance"))
     assert msg.content == "start from Q2 2026"
-    assert msg.context["_reply_note"] == reply_note(CASA_UNKNOWN, _posted(), "📊 Finance\nQ3 report")
+    assert msg.context["_reply_note"] == reply_note(CASA_UNKNOWN, _posted(), "Q3 report\nFinance")
 
 
 async def test_no_external_context_can_set_the_note():

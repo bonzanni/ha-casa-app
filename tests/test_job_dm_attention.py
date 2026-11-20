@@ -270,7 +270,7 @@ async def _drain(r):
                              return_exceptions=True)
 
 
-def _reply_update(text, quoted_id, *, user=OPERATOR, quoted_text="📊 Finance started «Process rows».",
+def _reply_update(text, quoted_id, *, user=OPERATOR, quoted_text="Finance started «Process rows».",
                   message_id=7):
     quoted = SimpleNamespace(message_id=quoted_id, text=quoted_text, caption=None,
                              from_user=None, sender_chat=None, date=None)
@@ -332,7 +332,7 @@ class TestReplyRoute:
                                       str(CHAT))
         await _drain(r)
         assert r.delivered == [
-            "[replying to «📊 Finance started «Process rows».»]\nuse the second account"]
+            "[replying to «Finance started «Process rows».»]\nuse the second account"]
         assert r.client.query_prompts == r.delivered
         assert resident.await_count == 0
         assert r.bot.replies() == []
@@ -367,10 +367,10 @@ class TestReplyRoute:
         r.ch._record_post(CHAT, SimpleNamespace(message_id=640), post)
         assert r.reg.job_post_owner(A(640)) is r.rec
         assert await _route_reply(r.ch, 
-            _reply_update("skip that one", 640, quoted_text="📊 Finance\nrow 7"),
+            _reply_update("skip that one", 640, quoted_text="row 7\nFinance"),
             str(CHAT)) is True
         await _drain(r)
-        assert r.delivered == ["[replying to «📊 Finance»]\nskip that one"]
+        assert r.delivered == ["[replying to «row 7»]\nskip that one"]
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +573,7 @@ class TestStartLineCancelAndRetirement:
         r = await _rig(tmp_path, monkeypatch)
         await tools._acknowledge_job_start(r.rec.id)
         (post,) = r.bot.sent
-        assert post["text"] == "📊 finance started «Process rows»."
+        assert post["text"] == "finance started «Process rows»."
         assert post["markup"] is None and post["reply_to"] is None
         assert r.rec.ui_posts == []
         assert r.rec.dm_posts == [A(post["message_id"])]

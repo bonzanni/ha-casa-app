@@ -55,7 +55,7 @@ class _Channel:
         self.edit_danger: list[tuple] = []
         self.lines: list[tuple] = []
 
-    async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None):
+    async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None, entities=None):
         self.posted.append((chat_id, text, labels, rid))
         return 555 if self.deliver else None
 
@@ -65,12 +65,12 @@ class _Channel:
         self.edit_danger.append(tuple(danger))
         return True
 
-    async def deliver_run_card(self, chat_id, text, *, post=None, **options):
+    async def deliver_run_card(self, chat_id, text, *, post=None, entities=None, **options):
         self.cards.append((chat_id, text))
         self.card_options.append(options)
         return 556 if self.card_lands else None
 
-    async def send_reply_line(self, chat_id, text, reply_to, *, post=None):
+    async def send_reply_line(self, chat_id, text, reply_to, *, post=None, entities=None):
         self.lines.append((chat_id, text, reply_to))
         return True
 

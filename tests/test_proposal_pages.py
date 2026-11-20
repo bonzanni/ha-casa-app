@@ -21,6 +21,7 @@ import result_broker as rb
 import tools as tools_mod
 import verdict_broker as vb
 from channels import DeliveryOutcome
+from channels.tg_rich import credited_quote
 from test_proposal_slot import (LABEL, SLOT, _identity, _map, _open, _post,  # noqa: F401
                                 _proposal, _Manager, open_chats)
 from test_stored_call_tap import LABEL as TAP_LABEL, OPERATOR, _tap, env  # noqa: F401
@@ -125,8 +126,8 @@ async def test_the_pages_land_in_order_then_the_card_under_one_receipt(penv):
         return await inner(chat_id, text, post=post)
     penv.rec.deliver_operator_page = checking
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
-    assert penv.rec.log == [("page", f"{LABEL}\n{p}") for p in PAGES] + [
-        ("card", f"{LABEL}\nPair invoice 17 with the Adobe payment?")]
+    assert penv.rec.log == [("page", credited_quote(p, LABEL)) for p in PAGES] + [
+        ("card", credited_quote("Pair invoice 17 with the Adobe payment?", LABEL))]
     assert registered_before_pages == [1, 1, 1]
     (rid,) = _live_rids()
     receipt = json.loads(out["hookSpecificOutput"]["updatedToolOutput"])
@@ -238,8 +239,8 @@ async def test_a_next_card_with_pages_is_never_an_edit_and_falls_back_to_receipt
     await _tap(env)
     assert env.edits == []
     assert [k for k, _ in env.log] == ["receipt", "page", "page", "card"]
-    assert [t for k, t in env.log if k == "page"] == [f"{TAP_LABEL}\n(1/2) Adobe",
-                                                      f"{TAP_LABEL}\n(2/2) Figma"]
+    assert [t for k, t in env.log if k == "page"] == [credited_quote("(1/2) Adobe", TAP_LABEL),
+                                                      credited_quote("(2/2) Figma", TAP_LABEL)]
     (card,) = env.proposals
     assert _live() == [card.rid]
 
@@ -275,8 +276,8 @@ async def test_a_page_is_one_rich_message_filed_under_its_post(monkeypatch):
     from channels.tg_rich import prepare
     bot.do_api_request.return_value = SimpleNamespace(message_id=77)
     post = _task_post()
-    page = f"{LABEL}\n**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
-        f"| row {i} | €{i} |" for i in range(20))
+    page = credited_quote("**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
+        f"| row {i} | €{i} |" for i in range(20)), LABEL)
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
     (call,) = bot.do_api_request.await_args_list
     assert call.args[0] == "sendRichMessage"
@@ -299,8 +300,8 @@ async def test_a_refused_page_is_resent_whole_as_one_unformatted_message(monkeyp
         return landed
     bot.do_api_request.side_effect = send
     post = _task_post()
-    page = f"{LABEL}\n**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
-        f"| row {i} | €{i} |" for i in range(20))
+    page = credited_quote("**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
+        f"| row {i} | €{i} |" for i in range(20)), LABEL)
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
     # the rich try, then ONE unformatted message carrying the page whole
     assert bot.do_api_request.await_count == 2
@@ -320,7 +321,9 @@ async def test_proposal_card_keeps_keyboard_as_rich_message(monkeypatch):
     filed = task_posts_double.install(monkeypatch)
     ch, bot = _channel_with_bot()
     bot.do_api_request.return_value = SimpleNamespace(message_id=79)
-    card = f"{LABEL}\n**Pair** invoice_17 with the Adobe payment?\n\n| Payee | € |\n|---|---|\n| Adobe | 100 |"
+    card = credited_quote(
+        "**Pair** invoice_17 with the Adobe payment?\n\n| Payee | € |\n|---|---|\n| Adobe | 100 |",
+        LABEL)
     mid = await ch.deliver_operator_proposal(42, card, ["Yes", "No"], "r1", post=_task_post())
     assert mid == 79
     (call,) = bot.do_api_request.await_args_list
@@ -336,7 +339,7 @@ async def test_a_replaced_card_is_one_rich_edit_that_keeps_its_keyboard():
     from channels.telegram import _proposal_keyboard
     from channels.tg_rich import prepare
     ch, bot = _channel_with_bot()
-    card = f"{LABEL}\n**Card 2 of 2** · to confirm"
+    card = credited_quote("**Card 2 of 2** · to confirm", LABEL)
     assert await ch.replace_operator_proposal(42, 501, card, ["Confirm"], "r2") == 501
     (call,) = bot.do_api_request.await_args_list
     assert call.args[0] == "editMessageText"
@@ -356,15 +359,18 @@ async def test_caption_card_still_uses_entities():
     ch, bot = _channel_with_bot()
     bot.send_photo = AsyncMock(return_value=MagicMock(message_id=80))
     bot.edit_message_caption = AsyncMock()
-    caption = f"{LABEL}\n**Pair** invoice 17?"
+    caption = rb.compose_card_caption("**Pair** invoice 17?", LABEL)
     assert await ch.deliver_operator_proposal(42, caption, ["Yes"], "r1",
                                               photo=(b"\x89PNG", "p.png")) == 80
     kw = bot.send_photo.await_args.kwargs
     assert kw["caption"] == f"{LABEL}\nPair invoice 17?"
-    assert [e.type for e in kw["caption_entities"]] == [MessageEntity.BOLD]
+    # the specialist's name in bold on the first line, then the card's own bold
+    assert [e.type for e in kw["caption_entities"]] == [MessageEntity.BOLD] * 2
+    assert kw["caption_entities"][0].offset == 0
+    assert kw["caption_entities"][0].length == len(LABEL)
     assert await ch.edit_dm_message(42, 80, caption + "\n☑ Yes", caption=True) is True
     edit = bot.edit_message_caption.await_args.kwargs
-    assert [e.type for e in edit["caption_entities"]] == [MessageEntity.BOLD]
+    assert [e.type for e in edit["caption_entities"]] == [MessageEntity.BOLD] * 2
     bot.do_api_request.assert_not_awaited()
 
 

@@ -84,8 +84,8 @@ REPLY_NOTE = (
     "<casa_notes>\n"
     "The person sent this as a reply to an earlier message from Alex, "
     "posted 2026-10-06 21:40, which read:\n"
-    "«📊 Alex\nWhich quarter should the books start from? Reply with the "
-    "quarter, for example: start from Q2 2026»\n"
+    "«Which quarter should the books start from? Reply with the "
+    "quarter, for example: start from Q2 2026\nAlex»\n"
     "Their words answer that message, which may not be your latest one.\n"
     "</casa_notes>\n\n"
 )

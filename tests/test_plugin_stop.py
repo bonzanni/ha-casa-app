@@ -22,6 +22,7 @@ import plugin_continuations as pc
 import plugin_stop
 import plugin_store
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import run_admission
 import stored_call_settler
 import tools as tools_mod
@@ -45,7 +46,7 @@ BOT = CASA_BOT
 ARTIFACT = "1" * 64
 CID = "conf-" + "c" * 32
 CARD_MID = 777
-CARD_TEXT = "📊 Fido\nEllen asked me for this browsing run. OK to start?\n• RunPod — invoice\n\n☑ Start"
+CARD_TEXT = "Fido\nEllen asked me for this browsing run. OK to start?\n• RunPod — invoice\n\n☑ Start"
 ORIGIN = {"role": "assistant", "channel": "telegram", "chat_id": OPERATOR,
           "user_id": OPERATOR, "user_name": "N", "_origin_route": "telegram",
           "_origin_clearance": "private", "user_text": "get my invoice", "_operator_turn": True,
@@ -449,7 +450,7 @@ async def test_a_tapped_start_card_carries_no_stop_and_posts_no_line(env, monkey
     sent_lines: list = []
     ch = types.SimpleNamespace(default_agent="assistant", bot_id=BOT, has_bot_id=True)
 
-    async def deliver_operator_question(chat_id, text, labels, rid, *, post=None):
+    async def deliver_operator_question(chat_id, text, labels, rid, *, post=None, entities=None):
         return CARD_MID
 
     async def edit_dm_message(chat_id, message_id, text, buttons=None, **kw):
@@ -457,7 +458,7 @@ async def test_a_tapped_start_card_carries_no_stop_and_posts_no_line(env, monkey
         order.append(("edit", c.status, list(buttons or []), kw))
         return True
 
-    async def send_reply_line(chat_id, text, reply_to, *, post=None):
+    async def send_reply_line(chat_id, text, reply_to, *, post=None, entities=None):
         sent_lines.append(text)
         return True
     ch.deliver_operator_question, ch.edit_dm_message = deliver_operator_question, edit_dm_message
@@ -496,7 +497,7 @@ async def test_each_outcome_has_its_mark_and_line(env, outcome, mark, line):
     if line is None:
         assert lines == []
     else:
-        assert [m["text"] for m in lines] == [f"📊 Fido\n{line}"]
+        assert [m["text"] for m in lines] == [f"Fido\n{line}"]
 
 
 async def test_a_stop_tap_after_a_restart_still_stops(env, monkeypatch):
@@ -674,8 +675,8 @@ async def _drain_queue():
 def _proposal_meta(wire_name="stop_runs", arguments=None):
     return {"deadline": 10_000.0, "chat_id": OPERATOR, "bot_id": BOT, "operator_id": OPERATOR,
             "role": "browser",
-            "artifact_id": ARTIFACT, "plugin_seg": "browser", "label": "📊 Fido",
-            "text": "📊 Fido\nStill going.", "options": ["Close", "Stop"], "revision": "",
+            "artifact_id": ARTIFACT, "plugin_seg": "browser", "label": "Fido",
+            "text": credited_quote("Still going.", "Fido"), "options": ["Close", "Stop"], "revision": "",
             "message_id": 601, "owner": "d-1", "_scope": f"proposal:{BOT}:{OPERATOR}",
             "kinds": ["close", "call"],
             "calls": [None, {"server": "browser", "wire_name": wire_name,
@@ -693,7 +694,7 @@ async def test_the_twenty_minute_cards_stop_is_called_directly(env):
     assert [c["args"] for c in _calls(rp)] == [{"ref": "request:k1"}]
     assert env.lane_uses == [] and env.taps == [] and env.turns == []
     marks = [e for e in env.bot.edited if e.get("message_id") == 601]
-    assert [e["text"] for e in marks] == ["📊 Fido\nStill going.\n\n☑ Stopped"]
+    assert [e["text"] for e in marks] == [credited_quote("Still going.", "Fido") + "\n\n☑ Stopped"]
     assert len(_card_edits(env)) == 1               # the start card is marked too
     (line,) = _lines(env)
     assert _replied_to(line) == 601
@@ -724,7 +725,7 @@ async def test_the_twenty_minute_cards_stop_starts_before_any_card_edit(env):
     await hook
     await _quiet(env)
     marks = [e["text"] for e in env.bot.edited if e.get("message_id") == 601]
-    assert marks == ["📊 Fido\nStill going.\n\n☑ Stopped"]                   # no ⏳ line
+    assert marks == [credited_quote("Still going.", "Fido") + "\n\n☑ Stopped"]                   # no ⏳ line
     assert env.lane_uses == [] and env.taps == []
 
 
@@ -1131,7 +1132,7 @@ async def test_a_request_that_ends_on_its_own_marks_its_card_and_posts_no_line(e
 
 
 async def test_a_status_card_admitted_by_his_words_is_marked_too(env, monkeypatch):
-    status_text = "📊 Fido\nOn it for Ellen:\n• RunPod — invoice"
+    status_text = "Fido\nOn it for Ellen:\n• RunPod — invoice"
     c, b = env.admit()
     run_admission.CONFIRMATIONS.set_card(CID, TgAddress(BOT, OPERATOR, CARD_MID), status_text)
     _sweeping(env, monkeypatch, [_ended_entry(b)])
@@ -1232,7 +1233,7 @@ async def test_a_stop_tap_after_the_natural_end_still_says_it_had_ended(env, mon
     await _tap(env)
     await _quiet(env)
     assert len(_card_edits(env)) == 1
-    assert [m["text"] for m in _lines(env)] == ["📊 Fido\nIt had already ended."]
+    assert [m["text"] for m in _lines(env)] == ["Fido\nIt had already ended."]
 
 
 

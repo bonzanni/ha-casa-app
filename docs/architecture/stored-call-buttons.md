@@ -24,16 +24,17 @@ are [`plugin-result-contract.md`](plugin-result-contract.md); the callback trans
 
 **The plugin proposes, the operator decides, Casa executes; the model is only the hands.**
 A capability tool of a specialist's plugin declares a slot delivering `operator_proposal`
-and deposits a JSON object: a text (one page, with Casa's label line) and one to six
+and deposits a JSON object: a text (one page, once credited to the specialist) and one to six
 buttons, each a label and a *stored call* — a bare tool name of the same plugin, resolved
 through the depositing call's own server, with fixed JSON arguments (optionally with plain
 `pages` before it — [`stored-call-next-card.md`](stored-call-next-card.md)). Casa posts the text
-labelled with the buttons as an inline keyboard, filed like any post. When
+credited to the specialist — one quote credited to it, none in its own chat — with the
+buttons as an inline keyboard, filed like any post. When
 the operator taps, no ordinary model turn runs and no model is asked to decide anything: Casa
 runs one short *pinned* specialist turn whose prompt names the one call, to be made whatever
 the tap looks like, and whose hooks allow exactly that call — the stored tool with the stored arguments, byte for byte in canonical JSON —
 and deny every other call and any second call. The plugin's own response is the receipt,
-posted labelled — its `receipt` sentence when the response's text is a JSON object carrying
+posted credited the same way — its `receipt` sentence when the response's text is a JSON object carrying
 a non-blank string `receipt`, otherwise the text verbatim; a plugin refusal (its revision
 guard) is a receipt too. A `safe` call's response that also carries `"on_card": true` (and no
 `next`) asks for its receipt as the tapped card's last line (`☑ <receipt>`) instead of a
@@ -76,7 +77,7 @@ only from a plugin that declares an `operator_link` slot — so it posts nothing
 could not already post as a link — and at most one per card; a callback naming its index is
 void.
 
-**Register, then post; bound; supersede.** The composed post — label line and text — must
+**Register, then post; bound; supersede.** The composed post — the text as the credited quote — must
 render to one page with room left for the longest line Casa appends when the keyboard
 settles (`☑ <label>` or `⏳ <label>`, a label of 32 characters that may each take two units;
 `✖ <reason>`, `⌛ expired` and `↻ replaced` are shorter), so a maximal proposal can always be

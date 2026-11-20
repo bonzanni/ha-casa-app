@@ -3199,12 +3199,8 @@ class TelegramChannel(Channel):
         task.add_done_callback(self._turn_tasks.discard)
 
     def _agent_label(self, role: str) -> str:
-        """How Casa's lines in this chat name *role*: in the resident's chat the
-        ``📊 <name>`` head every specialist's post carries; in an agent's own
-        chat its plain name, since every message there is its own."""
-        if self.is_casa:
-            import result_broker as rb
-            return rb.post_label(role)
+        """How Casa's one-line notices in this chat name *role*: its plain
+        display name."""
         import tools as tools_mod
         return tools_mod._display_name_for_role(role)
 
@@ -3368,7 +3364,7 @@ class TelegramChannel(Channel):
         await updater.start_polling(allowed_updates=list(self.allowed_updates))
 
     async def deliver_casa_notice(self, chat_id: int, text: str) -> bool:
-        """ONE Casa-composed, labelled, body-free notice to the operator's chat
+        """ONE Casa-composed, body-free notice to the operator's chat
         — a refused tap, a busy agent, a dormant chat — never model text
         (INV-OUT-001's notice class). A failure is logged and nothing more is
         attempted."""
@@ -3766,15 +3762,15 @@ class TelegramChannel(Channel):
         return tools_mod._display_name_for_role(rec.role_or_type)
 
     def _job_start_text(self, rec) -> str:
-        """``📊 <Agent> started «<title>».`` — without the label in the
-        agent's own chat, where the chat is the agent."""
+        """``<Agent> started «<title>».`` — without the name in the agent's
+        own chat, where the chat is the agent."""
         import result_broker
-        label = result_broker.label_at(rec.role_or_type, self)
+        name = result_broker.label_at(rec.role_or_type, self)
         title = self._job_title(rec)
-        return f"{label} started «{title}»." if label else f"Started «{title}»."
+        return f"{name} started «{title}»." if name else f"Started «{title}»."
 
     async def post_job_start_line(self, rec) -> "int | None":
-        """The silent ``📊 <Agent> started «<title>».`` line of a job the
+        """The silent ``<Agent> started «<title>».`` line of a job the
         operator started, posted when his request could not take the 👍 —
         Casa's text, with no keyboard, in reply to his request when that is
         this bot's message in the job's chat. Filed as the job's post once it
@@ -3885,9 +3881,9 @@ class TelegramChannel(Channel):
 
     async def post_job_question(self, rec, qid: str, body: Any,
                                 options: list, captions: list) -> "int | None":
-        """A job's question in the direct chat: the admitted *body* (Casa's
-        label line and the job's question) with one button per option and a
-        Cancel job button, each naming the engagement — the options by
+        """A job's question in the direct chat: the admitted *body* (the job's
+        question, credited to its agent outside that agent's own chat) with one
+        button per option and a Cancel job button, each naming the engagement — the options by
         question id and index. Filed as the job's keyboard post once it
         lands. Returns the message id, or ``None`` when nothing landed (a
         send that timed out may still have landed: its buttons still work)."""
@@ -4564,7 +4560,7 @@ class TelegramChannel(Channel):
         ) != "ended":
             return
         import result_broker
-        if result_broker.label_at(ref.executor, self):
+        if not result_broker.own_chat_of(ref.executor, self):
             await tell(f"{name} is in {label}'s inbox; the task had already ended.")
         else:
             await tell(f"I've kept {name}, but that task had already finished. "
@@ -5475,7 +5471,7 @@ class TelegramChannel(Channel):
         TimedOut after Telegram may already have accepted the message —
         propagates, and the broker reads it as not proven.
 
-        v0.347.3: with ``button`` — ``(text, button text, url)`` from
+        v0.347.3: with ``button`` — ``(text, button text, url, entities)`` from
         ``compose_operator_link_button`` — the link is first sent as ONE
         message carrying an inline URL button, as a card carries its buttons;
         only a ``BadRequest`` for it (the platform refusing the button, which
@@ -5486,10 +5482,10 @@ class TelegramChannel(Channel):
             return DeliveryOutcome.NOT_DELIVERED
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
         if button is not None:
-            body, label, url = button
+            body, label, url, head_entities = button
             try:
                 sent = await self._app.bot.send_message(
-                    chat_id=chat_id, text=body,
+                    chat_id=chat_id, text=body, entities=head_entities,
                     reply_markup=InlineKeyboardMarkup(
                         [[InlineKeyboardButton(text=label, url=url)]]))
             except BadRequest as exc:
@@ -5507,16 +5503,16 @@ class TelegramChannel(Channel):
         return DeliveryOutcome.DELIVERED
 
     # ------------------------------------------------------------------
-    # S3: a specialist's plugin output posted by Casa, labelled, verbatim.
+    # S3: a specialist's plugin output posted by Casa, credited, verbatim.
     # Casa-composed notices like the delivered link: the text is the
-    # plugin's, headed by Casa's label, never model-authored (INV-OUT-001's
-    # notice class).
+    # plugin's, credited to the specialist by Casa, never model-authored
+    # (INV-OUT-001's notice class).
     # ------------------------------------------------------------------
 
     async def deliver_operator_message(self, chat_id: int, text: str, *,
                                        post=None, silent: bool = False) -> DeliveryOutcome:
-        """S3: post *text* — Casa's label line and the plugin's body, as the
-        result broker composed it — to *chat_id*, the chat of a capability
+        """S3: post *text* — the plugin's body credited to the specialist, as
+        the result broker composed it — to *chat_id*, the chat of a capability
         call's grant identity, for a slot declared ``operator_message``, as
         rich messages (:meth:`_send_rich`). The message count is judged
         before the first send: more than ``MAX_MESSAGE_PAGES`` is refused
@@ -5544,8 +5540,8 @@ class TelegramChannel(Channel):
 
     async def deliver_operator_page(self, chat_id: int, text: str, *,
                                     post=None) -> DeliveryOutcome:
-        """#1377: one page before a card — *text* is Casa's label line and the
-        page as the result broker composed it, one message by the deposit's
+        """#1377: one page before a card — *text* is the page credited to the
+        specialist, as the result broker composed it, one message by the deposit's
         rule. Sent as one rich message like the card (:meth:`_send_rich`);
         when the platform refuses it the text is resent unformatted as one
         message, so a reply on the page quotes the page whole. Filed under
@@ -5560,10 +5556,12 @@ class TelegramChannel(Channel):
         return DeliveryOutcome.DELIVERED
 
     async def deliver_operator_question(self, chat_id: int, text: str, labels: list,
-                                        rid: str, *, post=None) -> "int | None":
+                                        rid: str, *, post=None,
+                                        entities=None) -> "int | None":
         """Browser executor §5.3/§5.5: post a plugin's operator question
-        (``operator_calls.ask_operator`` composed *text*: Casa's label line and
-        the validated body — the delivered-slot class, not model text) with one
+        (``operator_calls.post_question`` composed *text*: the agent's name, bold
+        through *entities*, and the validated body — the delivered-slot class, not
+        model text) with one
         button per label, ``callback_data = v1|resident_ask|<rid>|<i>``, so the
         tap settles the waiting request through the resident-ask handler.
         Filed under *post* as it lands. Returns the message id, or ``None``
@@ -5579,7 +5577,7 @@ class TelegramChannel(Channel):
             for i, label in enumerate(labels)])
         try:
             msg = await self._app.bot.send_message(
-                chat_id=chat_id, text=text, reply_markup=kbd)
+                chat_id=chat_id, text=text, entities=entities, reply_markup=kbd)
         except Exception as exc:  # noqa: BLE001 — not proven
             logger.warning("deliver_operator_question send failed (chat=%s): %s",
                            chat_id, type(exc).__name__)
@@ -5589,9 +5587,10 @@ class TelegramChannel(Channel):
         return mid if isinstance(mid, int) else None
 
     async def deliver_run_card(self, chat_id: int, text: str, *, post=None,
-                               silent: bool = False) -> "int | None":
+                               silent: bool = False, entities=None) -> "int | None":
         """The status card of browsing that started without a start question
-        (``run_admission``): Casa's label line and its fixed text, with no keyboard of any
+        (``run_admission``): the agent's name, bold through *entities* (none in its own
+        chat), and its fixed text, with no keyboard of any
         kind — the operator stops the runs by asking the agent (``stop_work``). Filed under
         *post* as it lands. ``silent`` sends it without a notification. Returns the message
         id, or ``None`` when nothing landed."""
@@ -5600,7 +5599,8 @@ class TelegramChannel(Channel):
             return None
         quiet = {"disable_notification": True} if silent else {}
         try:
-            msg = await self._app.bot.send_message(chat_id=chat_id, text=text, **quiet)
+            msg = await self._app.bot.send_message(chat_id=chat_id, text=text,
+                                                   entities=entities, **quiet)
         except Exception as exc:  # noqa: BLE001 — not proven
             logger.warning("deliver_run_card send failed (chat=%s): %s",
                            chat_id, type(exc).__name__)
@@ -5610,8 +5610,9 @@ class TelegramChannel(Channel):
         return mid if isinstance(mid, int) else None
 
     async def send_reply_line(self, chat_id: int, text: str, reply_to: "int | None", *,
-                              post=None) -> bool:
-        """One Casa line (the outcome of a card's own Stop, under the specialist's label) as
+                              post=None, entities=None) -> bool:
+        """One Casa line (the outcome of a card's own Stop, under the specialist's name, bold
+        through *entities*) as
         a reply to the card it answers — sent even when that card is gone — filed under
         *post* (the card's own record) as it lands. A failure is logged and nothing more is
         attempted."""
@@ -5623,7 +5624,8 @@ class TelegramChannel(Channel):
             kwargs["reply_parameters"] = ReplyParameters(
                 message_id=reply_to, allow_sending_without_reply=True)
         try:
-            sent = await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            sent = await self._app.bot.send_message(chat_id=chat_id, text=text,
+                                                    entities=entities, **kwargs)
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged
             logger.warning("reply line failed: %s", type(exc).__name__)
             return False
@@ -5632,8 +5634,8 @@ class TelegramChannel(Channel):
 
     async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
                                         rid: str, *, post=None, photo=None, urls=None):
-        """S5 §3.3: post *text* (Casa's label line and the proposal body, as the
-        result broker composed it — ONE message by the deposit's rule) with one
+        """S5 §3.3: post *text* (the proposal body credited to the specialist, as
+        the result broker composed it — ONE message by the deposit's rule) with one
         button per label, ``callback_data = v1|proposal|<rid>|<i>``, as a rich
         message (:meth:`_send_rich`) with the keyboard as its reply markup, and
         file the sent message under *post* (so a reply to the proposal of a
@@ -5730,14 +5732,15 @@ class TelegramChannel(Channel):
 
     async def deliver_operator_file(
         self, chat_id: int, content: bytes, kind: str, filename: str, caption: str,
-        *, post=None,
+        *, post=None, caption_entities=None,
     ) -> DeliveryOutcome:
         """S3: send *content* — already claimed from the plugin outbox and
         passed through the kind's policy by the result broker — as the media
         *kind* to *chat_id*, through the kind's PTB method exactly as
-        ``send_media`` dispatches, with *caption* (Casa's label line, the
-        plugin's caption beneath) as the bytes it is: no markdown
-        rendering, no entities, no thread id. ``NOT_DELIVERED`` when the
+        ``send_media`` dispatches, with *caption* (the specialist's name, the
+        plugin's caption beneath) as the bytes it is and *caption_entities*
+        (the bold over the name) as the only entities: no markdown rendering,
+        no thread id. ``NOT_DELIVERED`` when the
         channel is not started; ``DELIVERED`` on a normal return; an
         exception propagates and the broker reads it as not proven."""
         if self._app is None:
@@ -5749,6 +5752,7 @@ class TelegramChannel(Channel):
             chat_id,
             InputFile(BytesIO(content), filename=filename),
             caption=caption,
+            caption_entities=caption_entities,
         )
         self._record_post(chat_id, sent, post)
         return DeliveryOutcome.DELIVERED

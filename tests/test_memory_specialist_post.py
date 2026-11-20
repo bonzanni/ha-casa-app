@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import tools
 from channels import DeliveryOutcome
 from channels.tg_address import TgAddress
@@ -71,7 +72,7 @@ def _post(role: str = "browser", **over) -> rb.PostRecord:
 
 
 def _message(body: str) -> str:
-    return f"📊 Fido\n{body}"
+    return credited_quote(body, "Fido")
 
 
 async def test_a_no_memory_specialist_s_post_leaves_one_casa_line(mem, roles):
@@ -164,7 +165,7 @@ async def test_nothing_for_a_specialist_that_keeps_memory_or_another_chat(
         mem, roles):
     ch = _channel()
     await ch.deliver_operator_message(
-        OPERATOR_CHAT, "📊 Finance\nsaved", post=_post(role="finance"))
+        OPERATOR_CHAT, credited_quote("saved", "Finance"), post=_post(role="finance"))
     await ch.deliver_operator_message(7, _message("elsewhere"),
                                       post=_post(tool_use_id="call-3"))
     await ch.deliver_operator_message(OPERATOR_CHAT, "a plain reply")
@@ -178,7 +179,7 @@ async def test_a_role_no_longer_loaded_counts_as_keeping_no_memory(
         mem, roles):
     ch = _channel()
     await ch.deliver_operator_message(
-        OPERATOR_CHAT, "📊 gone\nhi", post=_post(role="gone"))
+        OPERATOR_CHAT, credited_quote("hi", "gone"), post=_post(role="gone"))
     rows = await captured_events(mem)
     assert [e["text"] for e in rows] == ["gone posted to your chat."]
 
@@ -203,8 +204,8 @@ async def test_a_link_posted_as_a_button_leaves_a_line(mem, roles):
     url = f"https://live.example/{CANARY}"
     post = _post(slot="live_view", kind=rb.OPERATOR_LINK)
     out = await ch.deliver_operator_link(
-        OPERATOR_CHAT, "📊 Fido\nlive view", [], f"📊 Fido\n{url}", post=post,
-        button=("📊 Fido\nlive view", "Open (live.example)", url))
+        OPERATOR_CHAT, "Fido\nlive view", [], f"Fido\n{url}", post=post,
+        button=("Fido\nlive view", "Open (live.example)", url, None))
     assert out is DeliveryOutcome.DELIVERED
     rows = await captured_events(mem)
     assert [e["text"] for e in rows] == ["Fido posted to your chat."]
@@ -302,7 +303,7 @@ async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_thei
     rec.origin["chat_id"] = str(OPERATOR_CHAT)
     ch = topic.channel()
     ch._engagement_registry.record_job_post(rec.id, TgAddress(BOT, OPERATOR_CHAT, 600))
-    quoted = SimpleNamespace(message_id=600, text="📊 Fido: which day?",
+    quoted = SimpleNamespace(message_id=600, text="which day?\nFido",
                              caption=None)
     update = SimpleNamespace(
         message=SimpleNamespace(text="Saturday please", message_id=910,
@@ -311,7 +312,7 @@ async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_thei
     await ch._handle_serialized(update, str(OPERATOR_CHAT))
     await _settled(topic.drv, topic.recs.values())
     assert topic.clients["browser"].query_prompts == [
-        "[replying to «📊 Fido: which day?»]\nSaturday please"]
+        "[replying to «which day?»]\nSaturday please"]
     rows = await captured_events(mem)
     assert [(e["speaker_kind"], e["origin_kind"], e["role"], e["text"])
             for e in rows] == [

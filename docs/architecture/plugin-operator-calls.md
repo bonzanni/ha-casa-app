@@ -58,7 +58,8 @@ binding (its request, its continuations, its delivery keys, a stop) take their b
 delivery's endpoint, or from the route's for work that posts nothing
 (`plugin_bindings.binding_target`; [`telegram-bots.md`](telegram-bots.md), INV-TG-020). A call
 with no delivery is refused run admission as not delivered and posts nothing anywhere
-([`own-voice.md`](own-voice.md)); in an agent's own chat the card and its lines carry no label. A binding is honoured only for the plugin and
+([`own-voice.md`](own-voice.md)); in an agent's own chat the card and its lines carry no name, and in another agent's chat
+they start with the agent's name in bold. A binding is honoured only for the plugin and
 operator it was minted for. It also keeps its request's conversation, the session its
 continuation turns resume ([`plugin-continuations.md`](plugin-continuations.md)).
 

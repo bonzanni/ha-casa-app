@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 import result_broker as rb
+from channels.tg_rich import credited_quote
 import tools as tools_mod
 from authz_grants import GrantIdentity
 from own_voice_fixtures import open_own_chats, with_delivery
@@ -33,7 +34,7 @@ PLUGIN = "probe"
 REPORT = "mcp__plugin_probe_api__report"      # capability, delivers operator_message
 SLOT = "report"
 BODY = "Q3 summary\nRevenue up 4% on the quarter, token SUMMARY-9c1d."
-LABEL = "📊 Finance"
+LABEL = "Finance"
 
 
 def _identity(**over) -> GrantIdentity:
@@ -199,7 +200,7 @@ async def test_a_delivered_message_posts_once_labelled_to_the_identity_chat_and_
     ref, err = store.deposit(client_id="c1", slot=SLOT, value=BODY, label="Plugin says")
     assert err is None
     out = await hook(_post(json.dumps({SLOT: ref, "text": "minted"})), "call-1", {})
-    assert recorder.deliveries == [(4242, LABEL + "\n" + BODY)]
+    assert recorder.deliveries == [(4242, credited_quote(BODY, LABEL))]
     assert recorder.other_sends == []
     body = _replacement(out)
     receipt = json.loads(body)
@@ -220,7 +221,7 @@ async def test_the_label_is_the_roles_persona_name_or_the_role_itself(recorder, 
     _open(store)
     ref, _ = store.deposit(client_id="c1", slot=SLOT, value=BODY)
     await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
-    assert recorder.deliveries == [(42, "📊 finance\n" + BODY)]
+    assert recorder.deliveries == [(42, credited_quote(BODY, "finance"))]
 
 
 @pytest.mark.asyncio
@@ -233,7 +234,7 @@ async def test_the_receipt_counts_the_pages_the_plan_has(recorder, names):
     ref, err = store.deposit(client_id="c1", slot=SLOT, value=body)
     assert err is None
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
-    pages = len(tg_rich.split(LABEL + "\n" + body))
+    pages = len(tg_rich.split(credited_quote(body, LABEL)))
     assert pages > 1
     assert json.loads(_replacement(out))["casa_delivery"]["pages"] == pages
 
@@ -331,9 +332,10 @@ def _rich_calls(app) -> list[dict]:
 
 
 def _two_parts() -> str:
-    """Casa's label and a body one rich message cannot hold: two parts."""
+    """A body credited to the specialist that one rich message cannot hold: two parts."""
     from channels.tg_rich import split
-    text = LABEL + "\n" + "\n\n".join(f"row {i} **bold** " + "x" * 300 for i in range(150))
+    text = credited_quote("\n\n".join(f"row {i} **bold** " + "x" * 300 for i in range(150)),
+                          LABEL)
     assert len(split(text)) == 2
     return text
 
@@ -359,7 +361,7 @@ async def test_the_real_channel_method_sends_each_page_and_nothing_else():
 async def test_a_short_message_is_one_rich_message():
     from channels.tg_rich import prepare
     ch, app = _channel()
-    text = LABEL + "\nSee **this** [note](https://e.example/n)"
+    text = credited_quote("See **this** [note](https://e.example/n)", LABEL)
     assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
     assert _rich_calls(app) == [{"chat_id": 42, "rich_message": {"markdown": prepare(text)}}]
 
@@ -370,7 +372,7 @@ async def test_a_refused_message_is_resent_unformatted_before_delivered():
     from unittest.mock import AsyncMock, MagicMock
     from channels.tg_rich import plain_blocks
     ch, app = _channel()
-    text = LABEL + "\nSee **this** [note](https://e.example/n)"
+    text = credited_quote("See **this** [note](https://e.example/n)", LABEL)
     app.bot.do_api_request = AsyncMock(side_effect=[BadRequest("x"), MagicMock(message_id=2)])
     assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
     first, second = _rich_calls(app)
@@ -386,7 +388,7 @@ async def test_a_refused_message_is_resent_unformatted_before_delivered():
 async def test_a_long_link_destination_goes_out_whole_in_one_message():
     ch, app = _channel()
     url = "https://e.example/" + "q" * 4200
-    text = LABEL + "\nopen [the page](" + url + ") now"
+    text = credited_quote("open [the page](" + url + ") now", LABEL)
     assert await ch.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
     (kw,) = _rich_calls(app)
     assert kw["rich_message"]["markdown"].count(url) == 1
@@ -446,7 +448,7 @@ async def test_the_hook_withholds_a_refused_plan_with_zero_sends(names, monkeypa
     hook = rb.make_result_hook(_map(), client_id="c1", store=store)
     _open(store)
     body = "💶" * 9_000                       # 36,000 bytes: past one rich message
-    assert len(split(LABEL + "\n" + body)) > 1
+    assert len(split(credited_quote(body, LABEL))) > 1
     ref, err = store.deposit(client_id="c1", slot=SLOT, value=body)
     assert err is None
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})

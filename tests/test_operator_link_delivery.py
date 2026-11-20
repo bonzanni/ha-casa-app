@@ -185,20 +185,21 @@ async def test_delivered_link_posts_once_to_the_identity_chat_and_returns_the_re
     assert len(recorder.deliveries) == 1 and recorder.other_sends == []
     chat_id, text, entities, plain = recorder.deliveries[0]
     assert chat_id == 4242
-    # slice 5r: under the specialist's label line, as its messages are
-    assert text == ("\U0001F4CA finance\nApprove at Rabobank (bank.example.com)\n"
+    # in another agent's chat: under the specialist's name, in bold on its own line
+    assert text == ("finance\nApprove at Rabobank (bank.example.com)\n"
                     "Rabobank, NL — one-time link, 30 minutes")
-    assert len(entities) == 1
-    ent = entities[0]
-    # the head's glyph is a surrogate pair: offset 11 UTF-16 units, 10 code points
+    bold, ent = entities
+    assert (str(bold.type), bold.offset, bold.length) == ("bold", 0, len("finance"))
     assert (str(ent.type), ent.offset, ent.length, ent.url) == (
-        "text_link", 11, utf16_len("Approve at Rabobank (bank.example.com)"), URL)
-    assert plain == ("\U0001F4CA finance\nApprove at Rabobank (bank.example.com): " + URL +
+        "text_link", 8, utf16_len("Approve at Rabobank (bank.example.com)"), URL)
+    assert plain == ("finance\nApprove at Rabobank (bank.example.com): " + URL +
                      "\nRabobank, NL — one-time link, 30 minutes")
-    # v0.347.3: the message the channel sends first — the caption under the label line, and
+    # v0.347.3: the message the channel sends first — the caption under the name, and
     # ONE URL button whose text is the label and the host Casa printed
-    assert recorder.buttons == [("\U0001F4CA finance\nRabobank, NL — one-time link, 30 minutes",
-                                 "Approve at Rabobank (bank.example.com)", URL)]
+    [(body, button_text, url, head_entities)] = recorder.buttons
+    assert (body, button_text, url) == ("finance\nRabobank, NL — one-time link, 30 minutes",
+                                        "Approve at Rabobank (bank.example.com)", URL)
+    assert [(str(e.type), e.offset, e.length) for e in head_entities] == [("bold", 0, 7)]
     # the receipt: every producer field, the reference, the claim, no URL byte
     body = _replacement(out)
     receipt = json.loads(body)
@@ -227,8 +228,8 @@ async def test_entity_offsets_are_utf16_units_on_a_non_bmp_label(recorder):
     link_text = f"{label} ({HOST})"
     head = rb.post_label("finance")
     assert text == f"{head}\n{link_text}"
-    assert entities[0].length == utf16_len(link_text) == len(link_text) + 1
-    assert entities[0].offset == utf16_len(head) + 1 == len(head) + 2
+    assert entities[1].length == utf16_len(link_text) == len(link_text) + 1
+    assert entities[1].offset == utf16_len(head) + 1
 
 
 @pytest.mark.asyncio
@@ -424,9 +425,11 @@ async def test_the_real_channel_method_sends_the_url_button_first():
     from channels.telegram import TelegramChannel
     text, entities, plain = rb.compose_operator_link(URL, caption="c", label="Approve",
                                                      head="H")
-    body, label = rb.compose_operator_link_button(URL, caption="c", label="Approve", head="H")
+    body, label, bold = rb.compose_operator_link_button(URL, caption="c", label="Approve",
+                                                        head="H")
     assert (body, label) == ("H\nc", "Approve (bank.example.com)")
-    assert rb.compose_operator_link_button(URL) == ("Open", "Open (bank.example.com)")
+    assert [(str(e.type), e.offset, e.length) for e in bold] == [("bold", 0, 1)]
+    assert rb.compose_operator_link_button(URL) == ("Open", "Open (bank.example.com)", None)
     ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     app = MagicMock()
     app.bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=7))
@@ -434,7 +437,7 @@ async def test_the_real_channel_method_sends_the_url_button_first():
     recorded = []
     ch._record_post = lambda chat, sent, post: recorded.append(
         (chat, getattr(sent, "message_id", None), post))
-    button = (body, label, URL)
+    button = (body, label, URL, bold)
     assert await ch.deliver_operator_link(42, text, entities, plain, post="P",
                                           button=button) is DeliveryOutcome.DELIVERED
     assert app.bot.send_message.await_count == 1
@@ -442,7 +445,7 @@ async def test_the_real_channel_method_sends_the_url_button_first():
     (row,) = kw.pop("reply_markup").inline_keyboard
     (btn,) = row
     assert (btn.text, btn.url, btn.callback_data) == (label, URL, None)
-    assert kw == {"chat_id": 42, "text": body}
+    assert kw == {"chat_id": 42, "text": body, "entities": bold}
     assert recorded == [(42, 7, "P")]
     # the button refused: the labelled-link message, as before
     app.bot.send_message = AsyncMock(side_effect=[BadRequest("button url invalid"), True])

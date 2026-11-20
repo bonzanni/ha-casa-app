@@ -108,8 +108,8 @@ def test_a_fault_is_per_agent_until_restart():
 
 
 def test_the_faulted_line_names_the_agent():
-    line = agent_lane.faulted_line("📊 Finance")
-    assert line == "📊 Finance is out of service until Casa restarts."
+    line = agent_lane.faulted_line("Finance")
+    assert line == "Finance is out of service until Casa restarts."
 
 
 def test_the_configurators_busy_is_a_lane_busy():

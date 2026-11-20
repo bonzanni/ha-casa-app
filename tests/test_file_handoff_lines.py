@@ -6,7 +6,7 @@ from __future__ import annotations
 import chat_notes as cn
 import result_broker as rb
 
-LABEL_MAX = "📊 " + "L" * 62                 # a 64-character display name after the glyph
+LABEL_MAX = "L" * 64                          # a 64-character display name
 NAME_200 = "n" * 196 + ".pdf"
 TITLE_60 = "t" * 60
 
@@ -32,8 +32,8 @@ def test_label_and_fields_each_keep_at_least_eight_characters_with_an_ellipsis()
 
 def test_short_inputs_are_not_clipped_at_all():
     line = cn.bounded_line("{label} ☑ {button} — the buttons could not be cleared.",
-                           label="📊 Finance", fields={"button": "📎 Add a document"})
-    assert line == "📊 Finance ☑ 📎 Add a document — the buttons could not be cleared."
+                           label="Finance", fields={"button": "📎 Add a document"})
+    assert line == "Finance ☑ 📎 Add a document — the buttons could not be cleared."
 
 
 def test_a_line_with_a_title_field_keeps_its_reason_at_maximum_inputs():

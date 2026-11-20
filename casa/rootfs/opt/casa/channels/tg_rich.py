@@ -51,6 +51,9 @@ depend on a definition left in another part; the definitions stay where they
 were, and a text that fits keeps its links as written.
 :func:`plain_blocks` builds a fallback payload that parses nothing, and
 :func:`flatten` turns a received rich message back into text.
+:func:`credited_quote` wraps a text in one quote credited to an agent, the
+form a post takes in another agent's chat; it reads back as the body's lines
+and the name on the last.
 
 :func:`send_rich`, :func:`edit_rich` and :func:`send_rich_draft` make the raw
 Bot API calls (``sendRichMessage``, ``editMessageText`` with
@@ -816,6 +819,31 @@ def prepare(markdown: str) -> str:
         pos = end
     out.append(text_until(len(text)))
     return "".join(out)
+
+
+def credited_quote(markdown: str, name: str) -> str:
+    """*markdown* as one quote credited to *name*, the way Casa shows a post
+    one agent makes in another agent's chat.
+
+    The quote opens with ``> <cite>name</cite>`` and an empty quote line, and
+    every line of the text follows quoted (``> ``; an empty line ``>``).
+    Telegram reads that as one quote with *name* as its credit, shown under
+    it, and the body inside still read as Markdown: tables, lists, folds,
+    code and nested quotes are kept. The FIRST ``<cite>`` in a quote takes
+    the credit, which is why Casa's comes before anything the text wrote: a
+    ``<cite>`` in the body, wherever it sits and however Telegram reads the
+    lines around it, is a paragraph of the post and never the credit. The
+    name is escaped for the tag's content. The body is quoted character for
+    character; a code block indented with a TAB can read as text behind the
+    quote marker, where its tab stop falls elsewhere, and is then shown with
+    the same characters but not as code. Fenced code is unaffected. With no
+    *name*, *markdown* is returned as written."""
+    if not name:
+        return markdown
+    credit = name.replace("&", "&amp;").replace("<", "&lt;")
+    quoted = "\n".join(f"> {line}" if line else ">"
+                       for line in _normalized(markdown).split("\n"))
+    return f"> <cite>{credit}</cite>\n>\n{quoted}"
 
 
 # ---------------------------------------------------------------------------

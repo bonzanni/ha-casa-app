@@ -25,10 +25,10 @@ from telegram_channel_double import _mk_channel_with_fake_bot, rich_edits, rich_
 
 pytestmark = pytest.mark.asyncio
 
-ESCAPED = "📊 Q3\nchose CUWVSRB8\\-0007 \\(1 Oct\\)"
-SHOWN = "📊 Q3\nchose CUWVSRB8-0007 (1 Oct)"
+ESCAPED = "Q3\nchose CUWVSRB8\\-0007 \\(1 Oct\\)"
+SHOWN = "Q3\nchose CUWVSRB8-0007 (1 Oct)"
 # As sent: the line break kept by a backslash, since Telegram joins a soft one.
-SENT = "📊 Q3\\\nchose CUWVSRB8\\-0007 \\(1 Oct\\)"
+SENT = "Q3\\\nchose CUWVSRB8\\-0007 \\(1 Oct\\)"
 
 
 # ---------------------------------------------------------------------------

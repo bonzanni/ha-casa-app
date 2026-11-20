@@ -78,7 +78,7 @@ def fire_env(monkeypatch):
     import chat_notes
     import result_broker as rb
     monkeypatch.setattr(chat_notes, "record", lambda bot, chat, line: echoes.append(line))
-    monkeypatch.setattr(rb, "post_label", lambda role: "📊 Finance" if role == "finance" else "🏠 Ellen")
+    monkeypatch.setattr(rb, "post_label", lambda role: "Finance" if role == "finance" else "Ellen")
     monkeypatch.setattr(tools_mod, "_agent_role_map", {"assistant": SimpleNamespace(delegates=[SimpleNamespace(agent="finance")])}, raising=False)
     decl = SimpleNamespace(qualified_name="probe:check", title="Quarterly check", session="fresh")
     host = jobs.JobHost("specialist", "finance", decl, SimpleNamespace(name="probe"))
@@ -119,13 +119,13 @@ async def test_a_refused_fire_tells_once_as_a_past_event_and_launches_nothing(fi
         return tools_mod._result({"status": "error", "kind": "job_busy"})
     monkeypatch.setattr(tools_mod, "_start_job_on_host", busy)
     await tools_mod.start_scheduled_job("assistant", _job_spec())
-    assert fire_env.notices == [(4242, '📊 Finance: "Quarterly check" did not start — another job of this plugin held the claim at this occurrence.')]
+    assert fire_env.notices == [(4242, 'Finance: "Quarterly check" did not start — another job of this plugin held the claim at this occurrence.')]
     assert fire_env.echoes == [fire_env.notices[0][1]]
 
 
 async def test_no_host_tells_with_the_residents_label_and_no_operator_only_logs(fire_env, monkeypatch):
     await tools_mod.start_scheduled_job("assistant", _job_spec(job="gone:job"))
-    assert fire_env.notices == [(4242, '🏠 Ellen: "gone:job" did not start — no host was available at this occurrence.')]
+    assert fire_env.notices == [(4242, 'Ellen: "gone:job" did not start — no host was available at this occurrence.')]
     import authz_grants
     monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: None)
     fire_env.notices.clear(); fire_env.echoes.clear()

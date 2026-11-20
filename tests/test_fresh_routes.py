@@ -178,10 +178,10 @@ async def test_job_replies_on_two_bots_are_two_events(
 async def test_chat_notes_are_per_bot():
     import chat_notes
     chat_notes.reset()
-    chat_notes.record(CASA_BOT, OPERATOR, "📊 Finance answered your reply (1 page).")
+    chat_notes.record(CASA_BOT, OPERATOR, "Finance answered your reply (1 page).")
     assert chat_notes.drain(FINANCE_BOT, OPERATOR) == []
     assert chat_notes.drain(CASA_BOT, OPERATOR) == [
-        "📊 Finance answered your reply (1 page)."]
+        "Finance answered your reply (1 page)."]
     chat_notes.record(CASA, OPERATOR, "never recorded")
     assert chat_notes.drain(CASA_BOT, OPERATOR) == []
     chat_notes.reset()

@@ -980,3 +980,66 @@ def test_a_fold_shown_as_indented_code_after_a_fold_with_a_blank_line_stays_code
 ])
 def test_a_code_span_in_an_html_comment_is_untouched(src, out):
     assert prepare(src) == out
+
+
+# ---------------------------------------------------------------------------
+# A post credited to an agent: a quote that opens with the credit
+# ---------------------------------------------------------------------------
+# Telegram reads a Markdown quote holding "> <cite>Name</cite>" as one quote
+# credited to Name, its body still parsed as Markdown, and gives the credit
+# to the FIRST <cite> in the quote. Casa's is the first line, so nothing the
+# body writes can take it.
+
+from channels.tg_rich import credited_quote  # noqa: E402
+
+
+def test_a_credited_quote_opens_with_the_credit_and_quotes_every_line():
+    body = "Q3 report\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- one\n- two"
+    assert credited_quote(body, "Finance") == (
+        "> <cite>Finance</cite>\n>\n"
+        "> Q3 report\n>\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n>\n> - one\n> - two")
+
+
+def test_an_empty_name_leaves_the_text_as_written():
+    assert credited_quote("hello <cite>x</cite>", "") == "hello <cite>x</cite>"
+
+
+@pytest.mark.parametrize("body", [
+    "Signed <cite>Fake</cite>",
+    "\t<cite>Fake</cite>",                 # a tab: code to one reader, a tag to another
+    "    <cite>Fake</cite>",
+    "```\n<cite>Fake</cite>",              # an unclosed fence
+    "<CITE x='1'>Fake</CITE>\n\nmore",
+    "> <cite>Fake</cite>",
+])
+def test_the_first_cite_of_the_quote_is_always_casas(body):
+    out = prepare(credited_quote(body, "Finance"))
+    assert out.startswith("> <cite>Finance</cite>\n>\n")
+    assert out.lower().index("<cite") == 2
+    # the body is quoted character for character: nothing in it is rewritten
+    assert credited_quote(body, "Finance").split("\n", 2)[2] == "\n".join(
+        f"> {line}" if line else ">" for line in body.split("\n"))
+
+
+def test_fenced_code_keeps_its_tabs_inside_the_quote():
+    body = "```make\nall:\n\t@echo hello_x <y>\n```"
+    out = prepare(credited_quote(body, "Finance"))
+    assert "> \t@echo hello_x <y>" in out
+
+
+def test_the_name_is_escaped_in_the_credit():
+    assert credited_quote("hi", "R&D <b>x</b>") == "> <cite>R&amp;D &lt;b>x&lt;/b></cite>\n>\n> hi"
+    assert prepare(credited_quote("hi", "my_agent")).startswith("> <cite>my&#95;agent</cite>")
+
+
+def test_a_credited_quote_survives_split_with_the_credit_on_the_first_part():
+    body = "\n\n".join(f"paragraph {i} " + "word " * 40 for i in range(40))
+    parts = split(credited_quote(body, "Finance"), 2_000)
+    assert len(parts) > 1
+    assert all(line.startswith(">") for part in parts for line in part.strip("\n").split("\n"))
+    assert parts[0].startswith("> <cite>Finance</cite>")
+    assert all("<cite>" not in part for part in parts[1:])
+def test_a_credited_quote_reads_back_as_the_body_then_the_name():
+    rich = {"blocks": [{"type": "blockquote", "credit": [{"text": "Finance"}],
+                        "blocks": [{"type": "paragraph", "text": [{"text": "Q3 report"}]}]}]}
+    assert flatten(rich).split("\n") == ["Q3 report", "Finance"]

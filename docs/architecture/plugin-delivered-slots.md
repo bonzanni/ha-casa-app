@@ -30,8 +30,8 @@ the label and the destination host, the host printed by Casa from the URL and ne
 supplied by the plugin, with the caption beneath. That delivery is the executing agent's
 own chat — the resident's chat for the resident's own plugin, an agent's own open chat for
 its tasks and its conversation — fixed when the task was born, and a call with none is
-refused before it runs ([`own-voice.md`](own-voice.md)); in an agent's own chat the label
-line is left out (`label_at`), the chat being the agent.
+refused before it runs ([`own-voice.md`](own-voice.md)); in an agent's own chat — Casa's
+chat being the resident's — the post carries no name (`label_at`), the chat being the agent.
 Proven delivery replaces the result with a receipt (`casa_delivery.status` is
 `delivered`, every producer field and the reference intact); anything short of proven
 delivery — the channel down, a refused send, an exception, a bound of twenty seconds —
@@ -43,25 +43,30 @@ cancelled and the original result reaches the model, so the receipt is the only 
 the positive claim and a result without one claims nothing. A delivered reference is spent
 by the delivery — no tool of the plugin may name the slot in `consumes`.
 
-**A specialist's output the operator should see is posted by Casa, labelled, verbatim.**
+**A specialist's output the operator should see is posted by Casa, credited, verbatim.**
 Two more delivered kinds, `operator_message` and `operator_file`, let a plugin running
 inside a specialist — on a sync delegation, in a specialist engagement, or in a
 specialist-hosted job — show the operator its output with no model retelling it. The
 producer deposits the body (a message) or an outbox path with its media kind and an
 optional caption (a file), and returns the reference as for any capability. After the
-structural check the same hook posts it to the chat of the call's grant identity, headed by
-a label Casa derives — a fixed glyph and the persona display name the `<delegates>` block
-advertises for the call's execution role — which the plugin cannot set, prefix or suppress.
-A message is the label line and the body, sent as ONE text of rich messages and split like
-a long reply, so the first message carries the header and later ones are bare; the number of
+structural check the same hook posts it to the chat of the call's grant identity, credited
+to the name Casa derives — the persona display name the `<delegates>` block advertises for
+the call's execution role (`post_label`) — which the plugin cannot set, displace or
+suppress; in the agent's own chat it carries no name. A message is the body as ONE quote
+credited to that name (`tg_rich.credited_quote`: the quote opens with
+`<cite>name</cite>`, which Telegram shows as the quote's credit, and every line of the body
+follows quoted, keeping its tables, lists, folds and code), sent as ONE text of rich
+messages and split like a long reply, so every message keeps its quote lines and the first
+carries the credit; Telegram credits the first `<cite>` of a quote, so one the body writes
+is a paragraph of the post and cannot take the credit. The number of
 messages it splits into is judged before the first send, and too many is refused with zero
 sends. A file is claimed from the plugin outbox exactly as `send_media`
-claims it, passed through the kind's media policy, sent once with the label line and the
-plugin's caption beneath, and consumed on every outcome. Proven delivery replaces the result
+claims it, passed through the kind's media policy, sent once with the name in bold on the
+caption's first line and the plugin's caption beneath, and consumed on every outcome. Proven delivery replaces the result
 with the receipt (`pages` for a message, `kind` for a file); anything short withholds the
 result and drops the deposit, exactly as for a link, and the producer's result stays
 delivery-neutral. The resident's conversation learns of a proven post as one body-free Casa
-line — the label, the kind, the page count or media kind — appended to the vehicle it already
+line — the name, the kind, the page count or media kind — appended to the vehicle it already
 receives: a sync delegation's returned text, or a finished delegation's, engagement's or
 job's terminal notice. The line never quotes the body, the caption or the file name; the
 operator has the post, the resident has the fact of it.
@@ -81,12 +86,12 @@ record as they land, and while the job lives a reply to one goes into the job
 When a plugin tool's result carries a slot declared `operator_link`, the result broker
 composes the link twice, as one message either way, and asks the channel to post it to the
 chat of the call's grant identity. First, the way a card carries its buttons: the
-specialist's label line and the caption (the label alone when there is no caption) as the
-text, and ONE inline URL button whose text is the label and the destination host
-(`compose_operator_link_button`). Only when the platform refuses that send with a
-`BadRequest` — which sent nothing — does the channel send the labelled-link message
-instead: the label line first, as on its messages, then the label and the destination host
-as the link text, one `text_link` entity, the caption beneath, without a link preview (the
+specialist's name in bold on its own line (none in its own chat) and the caption (the label
+alone when there is no caption) as the text, and ONE inline URL button whose text is the
+label and the destination host (`compose_operator_link_button`). Only when the platform
+refuses that send with a `BadRequest` — which sent nothing — does the channel send the
+link message instead: the name in bold first, then the label and the destination host as
+the link text, one `text_link` entity, the caption beneath, without a link preview (the
 link text already names the host), through the channel's one-retry primitive (`_send_one`: an entity the platform refuses is
 resent as the plain text, which spells the URL out). Either landed message is filed under the post. The channel reports the link
 delivered on any normal return and lets any other exception propagate — a `TimedOut` on
@@ -96,7 +101,7 @@ preparation or the split; the message is bounded by the broker's own validation 
 parts.
 
 **The channel's part for a message and a file.** For a slot declared
-`operator_message` the broker composes the specialist's label line and the plugin's body as
+`operator_message` the broker composes the plugin's body, credited to the specialist, as
 ONE text, and the channel counts the messages `tg_rich.split` cuts it into before the first
 send, refusing with zero sends when there are more than six (`MAX_MESSAGE_PAGES`). It then
 sends the text as rich messages (`tg_rich.send_rich`), each falling back as any rich message
@@ -107,7 +112,8 @@ opened quiet sends all of them without a notification
 ([`plugin-operator-calls.md`](plugin-operator-calls.md)). For
 `operator_file` the channel sends bytes the broker has already claimed from the plugin
 outbox and passed through the kind's media policy, through the kind's method with the
-composed caption as plain text — no rendering, no entities, no thread id (INV-PLUG-046).
+composed caption as plain text and one bold entity over the name as its only entity — no
+rendering, no thread id (INV-PLUG-046).
 Both are Casa-composed notices under the output boundary, like the delivered link.
 
 **A fourth kind, `operator_proposal`, is a decision offered as buttons.** The deposit is a
@@ -119,7 +125,8 @@ call through one pinned specialist turn — [`stored-call-buttons.md`](stored-ca
 (INV-PROP-001, -002, -003).
 
 **A proposal may carry a photo.** A `photo` member — a path in the plugin outbox, never with
-`pages` — makes the card ONE message: the photo, the composed text as its caption, the
+`pages` — makes the card ONE message: the photo, the composed text as its caption (a caption
+cannot be a rich message, so the name is its first line in bold, `compose_card_caption`), the
 keyboard. The deposit is judged as any proposal plus the caption: its rendered display within
 Telegram's 1,024 caption characters less the settle reserve (`result_broker.caption_fits`).
 At the post the photo is claimed through the `photo` media policy exactly as a delivered file
@@ -182,16 +189,17 @@ or forgot its reference is still withheld. The passed result is an ordinary non-
 result, so the setup run counts. It adds no exposure a `safe` declaration does not
 already allow: Casa has never scanned a producer's prose.
 
-**INV-PLUG-045**: A capability slot a plugin declares as `operator_message` reaches the operator only as pages Casa posts to the chat of the call's grant identity, headed by a label Casa derives from the specialist's display name and the plugin cannot influence, rendered from the deposited text with no model between; proven delivery of every page replaces the result with a receipt, and anything short withholds the result and drops the deposit, except that a keyed deposit whose key was already delivered is not sent again and gets the original delivery's receipt (INV-PLUG-050).
+**INV-PLUG-045**: A capability slot a plugin declares as `operator_message` reaches the operator only as pages Casa posts to the chat of the call's grant identity, credited to a name Casa derives from the specialist's display name and the plugin cannot influence — none in the agent's own chat — rendered from the deposited text with no model between; proven delivery of every page replaces the result with a receipt, and anything short withholds the result and drops the deposit, except that a keyed deposit whose key was already delivered is not sent again and gets the original delivery's receipt (INV-PLUG-050).
 
 The deposit is judged in characters: a non-blank body of at most 12,000, with no control
 character (Unicode category Cc) but newline and tab — spaces of every width, joiners and
 marks are text — within the broker's byte cap — a body over the cap is refused
 (`bad_message`), never truncated, because truncation would be Casa retelling. Caption,
-label and kind are ignored for a message slot: the label is Casa's. The character cap does
+label and kind are ignored for a message slot: the credit is Casa's. The character cap does
 not bound the bytes the body prepares to (an astral character is four bytes, an underscore
-is sent as five), so the message count is capped separately at delivery, before the first
-send: the channel splits the composed text exactly as the send will and refuses — zero
+is sent as five, and the quote adds its markers to every line), so the message count is capped
+separately at delivery, before the first send: the channel splits the composed text exactly
+as the send will and refuses — zero
 sends, the result withheld — when it has more than six parts. The rich message carries a link
 destination as the plugin wrote it, and a refused part's plain-block resend parses nothing,
 so the address arrives as text there; only a single line past the budget is cut hard. The receipt's `pages` counts
@@ -208,7 +216,7 @@ A delivered file's own contract — `operator_file` (INV-PLUG-046) and its deliv
 (INV-PLUG-047) — is [`plugin-delivered-files.md`](plugin-delivered-files.md).
 
 **What the resident's conversation sees of a post.** On proven delivery of a message or
-file the hook appends one event — the call's tool-use id, plugin, slot, label, and page
+file the hook appends one event — the call's tool-use id, plugin, slot, name, and page
 count or media kind — to an in-memory ledger keyed by the call's owner: the engagement id
 the grant identity carries, or for a sync delegation the delegation id the child origin
 carries, threaded onto the identity as advisory metadata that takes no part in identity

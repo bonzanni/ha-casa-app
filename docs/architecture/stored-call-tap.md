@@ -115,10 +115,10 @@ re-measures them.
 
 **The chat's note.** A committed tap that reaches execution leaves one body-free note for the
 agent of the chat the card is in (`chat_notes`, [`own-voice.md`](own-voice.md)), which it reads
-at its next turn: `📊 Finance applied your tap (Yes).`, `📊 Finance refused your tap (Yes):
-no_call.`. The `📊 <name>` head on these notes, the notices and the receipt is the resident's
-chat's; in the agent's own chat the receipt has no head line and the notes and notices name the
-agent plainly (`Alex applied your tap (Yes).`) — `result_broker.label_at` and `name_at`. A typed verdict is an ordinary message: a reply on the card is the chat's agent's
+at its next turn: `Finance applied your tap (Yes).`, `Finance refused your tap (Yes):
+no_call.`. The notes and notices name the agent plainly in every chat (`name_at`); the receipt
+is a rich message credited to the agent, one quote carrying its name, in another agent's chat,
+and carries no name in the agent's own chat (`result_broker.label_at`). A typed verdict is an ordinary message: a reply on the card is the chat's agent's
 turn, or goes into the task the card belongs to while that task lives
 ([`telegram.md`](telegram.md)).
 
@@ -131,7 +131,7 @@ so that it is no descendant of the CLI at termination time (the plugin's respons
 which the world may move — the re-checks run after the wait, not before it; the process's own
 exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 
-**INV-PROP-002**: No ordinary model turn runs on a tap; a stored call of the plugin's declared stop tool runs no turn at all and is called directly (INV-PLUG-056); for every other stored call, between the tap and the receipt exactly one pinned specialist turn may run, and in it exactly one tool call can execute — the stored tool with the stored arguments, canonical JSON for canonical JSON — on a specialist session the existing builder built from the captured input, under the lane lock; every other call, and any second call, is denied before it runs; nothing the model writes reaches the operator or is retained; the receipt is the executed call's own response — its `receipt` sentence when the response's text is a JSON object carrying a non-blank string `receipt`, otherwise the text verbatim — posted labelled and bounded, the plugin's refusal included; a turn with no executed call is a refusal notice with no retry; the chat's agent learns of it only by a body-free note.
+**INV-PROP-002**: No ordinary model turn runs on a tap; a stored call of the plugin's declared stop tool runs no turn at all and is called directly (INV-PLUG-056); for every other stored call, between the tap and the receipt exactly one pinned specialist turn may run, and in it exactly one tool call can execute — the stored tool with the stored arguments, canonical JSON for canonical JSON — on a specialist session the existing builder built from the captured input, under the lane lock; every other call, and any second call, is denied before it runs; nothing the model writes reaches the operator or is retained; the receipt is the executed call's own response — its `receipt` sentence when the response's text is a JSON object carrying a non-blank string `receipt`, otherwise the text verbatim — posted credited to the agent outside its own chat and bounded, the plugin's refusal included; a turn with no executed call is a refusal notice with no retry; the chat's agent learns of it only by a body-free note.
 
 **INV-PROP-004**: A pinned stored-call turn is built with `ToolSearch` disallowed, and its one prompt is sent only after the CLI's MCP status lists no server of the session as pending; an ordinary specialist turn's build adds no `ToolSearch` denial and its prompt is sent without asking for MCP status.
 
@@ -145,14 +145,14 @@ expiry, after a restart, a second tap, or a tap on a replaced proposal.** A toas
 untouched, nothing runs.
 
 **A re-check fails** (agent unavailable, not this chat's card, plugin unassigned, plugin changed, profile, plugin
-erasing, undeclared, protected, transport). `✖ <reason>` on the keyboard, one labelled
-notice, the refused note; no turn.
+erasing, undeclared, protected, transport). `✖ <reason>` on the keyboard, one notice
+naming the agent, the refused note; no turn.
 
-**The lane's queue is full, or the permit is refused.** `✖ busy`, `📊 Finance is busy; the
+**The lane's queue is full, or the permit is refused.** `✖ busy`, `Finance is busy; the
 specialist will propose again, or type your verdict.`, the refused note.
 
 **The turn ends with no executed call, aborts, raises, or hits the ceiling.** `✖ failed`,
-`📊 Finance could not apply your tap (<kind>).`, the refused
+`Finance could not apply your tap (<kind>).`, the refused
 note. On the ceiling the notice goes out at once and the lane stays held
 through the bounded termination path; a receipt that lands during the hold is posted after
 it, with the applied note.
@@ -163,15 +163,15 @@ reason; one that posted nothing (the contract's no-post shape) is a success whos
 
 **A stored call ran with arguments an installed hook changed** (both post-hooks compare): a
 proposal carries the tell in its own message; a landed file, or a refused call, gets one
-`📊 Finance ⚠ …` notice — after the file, before the refusal.
+`Finance ⚠ …` notice — after the file, before the refusal.
 
-**The receipt's send fails.** `📊 Finance applied your tap; the receipt did not go out.` —
+**The receipt's send fails.** `Finance applied your tap; the receipt did not go out.` —
 the call ran; the applied note.
 
 **The keyboard edit itself fails after a commit.** The operator must still see which button won
-before any effect: one labelled notice names it and says the buttons could not be cleared, then
+before any effect: one notice names it and says the buttons could not be cleared, then
 the tap is applied as usual — the commit already excludes a second execution, so the stale
-buttons only answer a toast. For a `📎` tap the notice is only `📊 Finance ☑ 📎 Add a document — the buttons could not
+buttons only answer a toast. For a `📎` tap the notice is only `Finance ☑ 📎 Add a document — the buttons could not
 be cleared.`: it names no destination and nothing is applied.
 
 **Casa restarts.** The broker, the settled-proposal memory, the lanes and the agents'
