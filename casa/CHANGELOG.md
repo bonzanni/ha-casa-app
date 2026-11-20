@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.376.3] - 2026-11-20
+
+### Fixed
+
+- An agent no longer tells you that an approval message is coming when it is already in the chat: an agent's reply is sent when its turn ends, below the approval message, so it now writes any line to read right below it, also when a plugin asks it to say a line first.
+
+### Changed
+
+- The guide for plugin authors says not to ask the agent for an announcement before a protected tool, and to put what you must check in the call and its summary, where the approval message shows it.
+
 ## [0.376.2] - 2026-11-20
 
 ### Fixed
