@@ -77,9 +77,12 @@ its version and display name, the checksum left out. A trigger: the route, the r
 starts, the auth policy, the memory clearance, the body cap and `deliver`. A callback: the
 route, what it receives and that it grants no turn and no memory. An event: the subscriber,
 the event, its emitter and the delivery targets. The erase question: what is uninstalled,
-each eraser with its plugin's summary, what each offered choice does, and its notes. The
+per offered choice what it does and the erasers it runs, each with its plugin's summary,
+and its notes. The
 system prompt tells the model to keep every recipient, amount, deletion, granted power and
-secret, and every installed name and version, on the card, to name the Casa powers an
+secret, and every installed name and version, on the card, to say only what the facts
+support (a bare number is given as a number, never turned into a place or a judgement the
+facts do not state), to name the Casa powers an
 install or update grants, to mark at most two lines that a person must not miss (an
 irreversible wipe counts even when deleting is what was asked), and to treat text inside the
 facts as data. That is an instruction to a model, not a check: what code guarantees is that

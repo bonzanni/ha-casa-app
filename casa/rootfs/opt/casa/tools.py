@@ -18052,12 +18052,13 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                                  chat_id=chat_id, subject=subject, artifacts=artifacts,
                                  question=question)
         choices = _offered_erase_choices(specs)
-        erasers = []
-        for s in specs:
-            if pec.ERASE_DATA_ONLY in choices:
-                erasers.append((s.name, s.data_tool, s.data_summary))
-            if pec.ERASE in choices:
-                erasers.append((s.name, s.tool, s.summary))
+        # each eraser under the choice that runs it
+        erasers = {}
+        if pec.ERASE_DATA_ONLY in choices:
+            erasers[pec.ERASE_DATA_ONLY] = [
+                (s.name, s.data_tool, s.data_summary) for s in specs]
+        if pec.ERASE in choices:
+            erasers[pec.ERASE] = [(s.name, s.tool, s.summary) for s in specs]
         text = pec.render_erase_choice(what, erasers, choices)
         card_request = pec.erase_card_request(what, erasers, choices,
                                               requester_name=_requester_name(origin))

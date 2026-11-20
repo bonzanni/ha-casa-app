@@ -415,3 +415,14 @@ async def test_a_claim_that_lands_after_the_bound_is_still_removed(recorder, nam
     while not _outbox_is_empty(outbox) and time.monotonic() < deadline:
         await asyncio.sleep(0.02)
     assert _outbox_is_empty(outbox)             # the late claim did not survive
+
+
+# --- #1620: the notice says the operator may have nothing, and to say so -------------
+
+@pytest.mark.parametrize("kind", [rb.OPERATOR_LINK, rb.OPERATOR_MESSAGE, rb.OPERATOR_FILE])
+def test_an_undelivered_post_tells_the_model_to_say_so_and_not_carry_on(kind):
+    reason = rb._NOT_DELIVERED_REASONS[kind]
+    assert "the operator may have received nothing" in reason
+    assert "Say so now, before anything else" in reason
+    assert "Do not carry on with a step that needs them to have" in reason
+    assert reason.endswith("do not retry on this turn.")

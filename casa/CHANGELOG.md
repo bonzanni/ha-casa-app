@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.376.2] - 2026-11-20
+
+### Fixed
+
+- When you uninstall a plugin that can erase its data in two ways, the question now says under each button what that button's eraser does. Before, "Erase data, keep sign-ins" could be described as deleting something only "Erase everything" deletes.
+- When a file, message or link from a plugin may not have reached your chat, the agent now says so at once and offers to send it again, and no longer carries on to the next step as if you had seen it.
+- After a plugin's data is erased, you get a short sentence about what was erased instead of the eraser's raw result.
+- An approval card no longer turns bare numbers into a place on the page ("near the top", "bottom-left") that it cannot know; it shows the numbers.
+- A very long answer that uses reference-style links keeps each link's address when it is split over several messages.
+- Code shown inside an HTML comment, and an example of a fold shown as indented code, are no longer altered.
+- An answer made of thousands of unfinished links no longer stalls Casa for several seconds while it is prepared.
+
 ## [0.376.1] - 2026-11-18
 
 ### Fixed

@@ -458,8 +458,10 @@ def configure(*, dispatch: "Callable[[str, str, dict], Awaitable[bool]]") -> Non
 def _instruction(tool_name: str) -> str:
     return (f"[casa plugin erase] The operator chose to erase this plugin's data "
             f"before it is uninstalled. Call the tool `{tool_name}` now, exactly "
-            "once, with no arguments, and reply with the text it returns. Do "
-            "not call any other tool.")
+            "once, with no arguments, and do not call any other tool. Casa "
+            "reads the tool's result itself and the operator is told the "
+            "outcome afterwards, so reply with one short plain sentence saying "
+            "what the tool reported; never paste its raw result.")
 
 
 def _outcome(spec: EraseSpec, payload: dict | None) -> ErasureOutcome:

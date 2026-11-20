@@ -221,3 +221,10 @@ def test_text_fallback_keeps_the_body_literal_with_a_bold_title():
 def test_shift_entities_moves_every_offset_by_the_prefix():
     _, ents = render_card(Card(title="T"))
     assert shift_entities(ents, "(note 😀)\n\n")[0].offset == utf16_len("(note 😀)\n\n")
+
+
+def test_the_prompt_keeps_bare_numbers_as_numbers():
+    """#1618: one call's x and y were described as "near top-left" on one card
+    and "bottom-left" on another; the facts carried no frame for either."""
+    import approval_card
+    assert "never turn a bare number" in approval_card.SYSTEM_PROMPT

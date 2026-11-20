@@ -93,19 +93,24 @@ _EXPLAIN = {
 
 
 def render_erase_choice(what: str,
-                        erasers: "list[tuple[str, str, str | None]]",
+                        erasers: "dict[int, list[tuple[str, str, str | None]]]",
                         choices: "tuple[int, ...]" = (KEEP, ERASE, CANCEL),
                         ) -> str:
-    """The question. *erasers* is ``(plugin, tool, summary)`` per eraser that
-    one of the offered choices would run; the summary is the plugin's own
-    protected-tool copy, if any. *choices* are the offered buttons."""
+    """The question. *erasers* maps an erase choice to the
+    ``(plugin, tool, summary)`` of each eraser that choice runs; the summary
+    is the plugin's own protected-tool copy, if any. *choices* are the
+    offered buttons. Each eraser is listed under the choice that runs it, so
+    a plugin's summary is never read as describing another option."""
     lines = [f"\U0001F5D1 Uninstalling {what}", "",
              "Also erase its data first? Erasing runs the plugin's own eraser "
-             "before anything is removed:"]
-    for plugin, tool, summary in erasers:
-        lines.append(f"• {plugin}: {tool}" + (f" — {summary}" if summary else ""))
-    lines.append("")
-    lines += [_EXPLAIN[c] for c in choices if c in _EXPLAIN]
+             "before anything is removed.", ""]
+    for c in choices:
+        if c not in _EXPLAIN:
+            continue
+        runs = erasers.get(c) or []
+        lines.append(_EXPLAIN[c] + (" It runs:" if runs else ""))
+        for plugin, tool, summary in runs:
+            lines.append(f"• {plugin}: {tool}" + (f" — {summary}" if summary else ""))
     lines += _notes(choices)
     return "\n".join(lines)
 
@@ -122,22 +127,24 @@ def _notes(choices: "tuple[int, ...]") -> "list[str]":
 
 
 def erase_card_request(what: str,
-                       erasers: "list[tuple[str, str, str | None]]",
+                       erasers: "dict[int, list[tuple[str, str, str | None]]]",
                        choices: "tuple[int, ...]" = (KEEP, ERASE, CANCEL), *,
                        requester_name: str = "Casa") -> Any:
     """The card of the erase question: a fixed title, the facts a model
-    writes the rest from (the question's inputs: what is uninstalled, each
-    eraser with the plugin's own summary, and what each offered choice does)
-    and, as the fallback, :func:`render_erase_choice` kept literally."""
+    writes the rest from (the question's inputs: what is uninstalled and,
+    per offered choice, what it does and the erasers it runs, each with the
+    plugin's own summary) and, as the fallback, :func:`render_erase_choice`
+    kept literally."""
     import approval_card
     return approval_card.CardRequest(
         kind="plugin_erase_choice", who=requester_name,
         title=f"\U0001F510 Uninstall {what}: erase its data too?",
         facts={"requested_by": requester_name, "uninstalling": what,
-               "erasers": [{"plugin": p, "tool": t, "what_the_plugin_says_it_does": s}
-                           for p, t, s in erasers],
-               "choices": {LABELS[c]: _EXPLAIN.get(c, "Nothing is removed.")
-                           for c in choices},
+               "choices": {LABELS[c]: {
+                   "does": _EXPLAIN.get(c, "Nothing is removed."),
+                   "runs": [{"plugin": p, "tool": t, "what_the_plugin_says_it_does": s}
+                            for p, t, s in erasers.get(c) or []]}
+                   for c in choices},
                "notes": _notes(tuple(choices))},
         fallback=approval_card.text_fallback(render_erase_choice(what, erasers, choices)))
 

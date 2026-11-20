@@ -206,7 +206,8 @@ def _post_event(env):
         acks=EventAckStore(path=env.tmp / "event_acks.json"))
 
 
-ERASERS = [("gmail", "erase_all", "Deletes every stored message")]
+# keyed by the choice that runs it (1 is plugin_erase_consent.ERASE)
+ERASERS = {1: [("gmail", "erase_all", "Deletes every stored message")]}
 
 
 def _post_erase(env, *, card=True):
@@ -276,8 +277,9 @@ async def test_erase_card_has_its_own_title(env):
     assert card.text == ("🔐 Uninstall the plugin gmail: erase its data too?" + MODEL_LINES)
     assert card.options == ("Keep data", "Erase everything", "Cancel")
     [facts] = env.asked
-    assert facts["erasers"] == [{"plugin": "gmail", "tool": "erase_all",
-                                 "what_the_plugin_says_it_does": "Deletes every stored message"}]
+    assert facts["choices"]["Erase everything"]["runs"] == [
+        {"plugin": "gmail", "tool": "erase_all",
+         "what_the_plugin_says_it_does": "Deletes every stored message"}]
     assert list(facts["choices"]) == ["Keep data", "Erase everything", "Cancel"]
 
 

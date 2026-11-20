@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-18
+last_reviewed: 2026-11-20
 ---
 
 # Telegram rendering
@@ -40,9 +40,11 @@ classifies content and never validates the agent's Markdown before sending it.
   The text of an HTML block is not Markdown, with two exceptions Telegram makes: it reads a
   code span inside a `<summary>`, and it reads a `<details>` as a container whose body is
   Markdown, blank lines or not (so its tag lines are set aside before the text is parsed);
-  code in either is code. Backticks anywhere else in an
-  HTML block, such as an `<aside>` or an expandable quote, are text, and what they hold is
-  encoded like any text. A table row is split on every unescaped pipe, inside backticks too, as GitHub
+  code in either is code; a fold written inside an indented code block is code. Backticks
+  anywhere else in an HTML block, such as an `<aside>` or an expandable quote, are text, and
+  what they hold is encoded like any text. An HTML comment (`<!-- … -->`), like anything
+  else opened by `<!` or `<?`, is no tag Telegram supports: its `<` goes out as `&lt;`
+  (below), so it is read as the Markdown text it then is, and a code span in it is code. A table row is split on every unescaped pipe, inside backticks too, as GitHub
   reads it.
 - **`_` becomes `&#95;`** outside code, link destinations and bare URLs. A bare underscore
   turns into italics or vanishes, and a backslash escape stays visible inside an HTML block,
@@ -104,7 +106,13 @@ anywhere. No cut falls inside a link, an autolink, a tag, a time link or an inli
 so a link is never sent in two halves; only one of those bigger than the budget on its own is
 cut through. A cut after a space or anywhere keeps every character. A cut inside a fenced
 block closes the fence at the end of one part, inside the quote or list item it sits in,
-and reopens it, with its language, at the start of the next, keeping every code line. Each part is one message; a reply's quote rides on the
+and reopens it, with its language, at the start of the next, keeping every code line.
+Before a text over the budget is cut, each reference link or image (`[text][label]`,
+`[label][]`, `[label]`) is written inline, `[text](destination "title")` exactly as its
+definition writes them, so a link does not depend on a definition that lands in another
+part; the definitions stay where they were. The links to a definition written over several
+lines, or holding a `|` (a table cell border), stay as written. A text that
+fits the budget keeps its reference links as written. Each part is one message; a reply's quote rides on the
 first and a keyboard on the last. One message covers almost every answer, since 32,000 bytes
 is several screens of text.
 
@@ -182,7 +190,9 @@ sent once more without them. Which spans are bold, and that only Casa chooses th
 
 Enforced in `tg_rich.split`, which measures each candidate part through `prepare`, so an
 underscore counts as the five bytes it is sent as. A cut inside a fenced block adds the
-closing and reopening fence lines and keeps every code line.
+closing and reopening fence lines and keeps every code line. The reference links of a text
+over the budget are written inline before the first cut, which copies each destination
+next to its link; no definition is removed.
 
 What it does not cover: an edit, which stays one message and is cut with `…` instead; and
 Telegram's block and nesting limits, which are not measured before sending — a refusal for
