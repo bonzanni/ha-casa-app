@@ -4448,6 +4448,61 @@ def _step_stage(label: str) -> Any:
     return line.row(label)
 
 
+class _Stage:
+    """A row around one awaited stage of a handler, used as ``with``: ✗ when
+    the handler calls ``failed()`` or the stage raises (a cancellation
+    included), ✓ otherwise. Progress is never the handler's fault, so nothing
+    here raises into it."""
+
+    __slots__ = ("_row",)
+
+    def __init__(self, label: str) -> None:
+        try:
+            self._row = _step_stage(label)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("step row not opened: %s", type(exc).__name__)
+            self._row = _NO_STEP_ROW
+
+    def _settle(self, failed: bool) -> None:
+        try:
+            self._row.failed() if failed else self._row.done()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("step row not settled: %s", type(exc).__name__)
+
+    def failed(self) -> None:
+        self._settle(True)
+
+    def __enter__(self) -> "_Stage":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        # the first settle wins: a stage already marked failed stays so
+        self._settle(exc_type is not None)
+        return False
+
+
+def _sentence_list(names: list) -> str:
+    """``["Alex"]`` → ``"Alex"``; ``["Alex", "Ellen", "Fido"]`` →
+    ``"Alex, Ellen and Fido"``."""
+    if len(names) < 2:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _plugin_add_stage_label(args: dict) -> str:
+    """The first row of a plugin install, built from the call's arguments
+    before the handler checks them: each target is named only when the list
+    holds nothing but strings."""
+    from drivers.turn_progress import plugin_label, target_label
+    label = f"Download and install {plugin_label(args.get('name'))}"
+    targets = args.get("targets")
+    if (not isinstance(targets, list) or not targets
+            or not all(isinstance(t, str) for t in targets)):
+        return label
+    names = list(dict.fromkeys(target_label(t, _display_name_for_role) for t in targets))
+    return f"{label} for {_sentence_list(names)}"
+
+
 def _known_role(value: object) -> str:
     """A registered agent role, else ``<other>``.
 
@@ -15105,17 +15160,25 @@ async def plugin_add(args: dict) -> dict:
             targets=args.get("targets") or [])
         return [] if refusal is not None else _specialist_slugs(state["targets"])
 
+    from drivers.turn_progress import plugin_label
+    name = plugin_label(args.get("name"))
     async with _PLUGIN_TOOLS_LOCK:
         # #1145: warn first when the new plugin reaches a specialist with open
         # conversations; the core (looked up here, so a test's double is used)
         # then runs exactly as before.
         core, ack, seen = await _plugin_gate_phase("plugin_add", "added", args, reached)
         if core is None:
-            core = await _to_thread_settled(
-                _plugin_add_sync, name=args["name"], repo=args["repo"],
-                ref=args["ref"], subdir=args.get("subdir", ""),
-                targets=args.get("targets") or [],
-                expected_revision=args.get("expected_revision"))
+            # The step line's rows: this first one names the agents the call
+            # asks for; the later ones name none, since the reload can skip
+            # an agent that is not installed yet.
+            with _Stage(_plugin_add_stage_label(args)) as stage:
+                core = await _to_thread_settled(
+                    _plugin_add_sync, name=args["name"], repo=args["repo"],
+                    ref=args["ref"], subdir=args.get("subdir", ""),
+                    targets=args.get("targets") or [],
+                    expected_revision=args.get("expected_revision"))
+                if core.get("ok") is not True:
+                    stage.failed()
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
             return _result(core)
         if core.get("ok") is not True:
@@ -15126,23 +15189,26 @@ async def plugin_add(args: dict) -> dict:
             core.setdefault("verify", {})
             return _result(_after_plugin_change(
                 core, "added", args["name"], [], ack, seen))
-        seq = await _reload_and_verify_targets(
-            core["name"], core["targets"], expect="present")
+        with _Stage(f"Get {name} ready to use"):
+            seq = await _reload_and_verify_targets(
+                core["name"], core["targets"], expect="present")
         core.update(seq)
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(
             core["name"], manifest=published_manifest))
-        # Design 2026-09-15 §2.D: the tool explores the default vault for the
-        # unresolved secrets; the configurator decides what to wire.
-        core.update(await _to_thread_settled(
-            _secret_candidates, core["name"],
-            list(core.get("required_env_vars") or []),
-            manifest=published_manifest))
-        # S8: the just-published manifest's recommendations, one row per
-        # (requirement, target) with where it stands; the configurator offers.
-        core["requirement_candidates"] = await _to_thread_settled(
-            _requirement_candidates_for, core["name"], list(core["targets"]),
-            manifest=published_manifest)
+        with _Stage(f"Check what {name} still needs"):
+            # Design 2026-09-15 §2.D: the tool explores the default vault for
+            # the unresolved secrets; the configurator decides what to wire.
+            core.update(await _to_thread_settled(
+                _secret_candidates, core["name"],
+                list(core.get("required_env_vars") or []),
+                manifest=published_manifest))
+            # S8: the just-published manifest's recommendations, one row per
+            # (requirement, target) with where it stands; the configurator
+            # offers.
+            core["requirement_candidates"] = await _to_thread_settled(
+                _requirement_candidates_for, core["name"], list(core["targets"]),
+                manifest=published_manifest)
         return _result(_after_plugin_change(
             core, "added", core["name"], _specialist_slugs(core["targets"]),
             ack, seen))
@@ -15177,6 +15243,8 @@ async def plugin_update(args: dict) -> dict:
         return ([] if refusal is not None
                 else _specialist_slugs(state["entry"].get("targets")))
 
+    from drivers.turn_progress import plugin_label
+    name = plugin_label(args.get("name"))
     async with _PLUGIN_TOOLS_LOCK:
         # #1145: warn first when the plugin is assigned to a specialist with
         # open conversations. The revision guard and the rest of the network
@@ -15185,9 +15253,12 @@ async def plugin_update(args: dict) -> dict:
         core, ack, seen = await _plugin_gate_phase(
             "plugin_update", "updated", args, reached)
         if core is None:
-            core = await _to_thread_settled(
-                _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
-                expected_revision=args.get("expected_revision"))
+            with _Stage(f"Update {name}") as stage:
+                core = await _to_thread_settled(
+                    _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
+                    expected_revision=args.get("expected_revision"))
+                if core.get("ok") is not True:
+                    stage.failed()
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
             return _result(core)
         if core.get("ok") is not True:
@@ -15215,8 +15286,9 @@ async def plugin_update(args: dict) -> dict:
         # them: they are bound to the artifact, which is still the one running.
         if core.get("old_artifact_id") != core.get("artifact_id"):
             _invalidate_lifecycle(artifact_id=core.get("old_artifact_id"))
-        seq = await _reload_and_verify_targets(
-            core["name"], core["targets"], expect="present")
+        with _Stage(f"Get {name} ready to use"):
+            seq = await _reload_and_verify_targets(
+                core["name"], core["targets"], expect="present")
         core.update(seq)
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(
