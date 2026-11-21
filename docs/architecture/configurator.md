@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-21
 ---
 
 # The configurator: a delegated run in the operator's DM
@@ -56,10 +56,32 @@ restarts nothing and returns `deferred`; Casa follows the run's answer with a Re
 button, so the restart happens when the operator chooses and never cuts the run that asked
 for it.
 
-**While it works, the DM shows a step line.** `tools.py::_configurator_step_line` posts one
-silent line at the run's first tool call, edits it as steps start, and deletes it when the run
-ends, however it ends (`drivers/turn_progress.py::TurnProgressLine` with a `delete`). Writes
-are coalesced, spaced and bounded, and none is awaited by the run.
+**While it works, the DM shows a step line: a short checklist.** `tools.py::_configurator_step_line`
+gives the run one silent message in the operator's DM (`drivers/turn_progress.py::TurnProgressLine`),
+sent as a rich-message checklist. Each row is one plain-language label for an activity, in
+start order: an empty box while it is the step Casa is on, and a ticked box once that step is
+over and a later one has started — Casa has moved on. No row is ever marked failed: it never
+says how its step turned out, and nothing reads a tool's result or error flag for it; the
+outcome is in the answer. The newest row is never ticked while nothing later has started, so a run that ends
+on a step (one waiting on the operator's card, say) leaves it unticked until the message goes.
+A label's characters that rich Markdown would read as formatting are escaped, so it shows as
+written. The message is posted with the first row, edited in place, shows the last eight rows,
+and is deleted when the run ends, however it ends; if the list empties while the message is
+up, the message is deleted and a later row posts a new one.
+Writes are coalesced, spaced and bounded, and none is awaited by the run.
+
+Rows come from two places. The run loop in `tools.py::_run_delegated_turn` makes one per tool
+call, labelled by `drivers/turn_progress.py::step_label` and over at that call's own tool
+result, whatever it says. `plugin_add` and `plugin_update` get no row from the loop; they open
+one row per stage of their own through `tools.py::_step_stage` — downloading and installing (or
+updating) the plugin, getting it ready to use, and for an install checking what it still needs —
+and a stage is over when the handler leaves it, however it leaves (a refusal, a raise or a
+cancellation included), with the handler's result or exception untouched. Labels are built
+from a fixed table that reads only the arguments it names; a plugin or agent name is shown only when it is shaped like a short
+identifier, otherwise the row says "the plugin" or "the agent". Reading files and other
+housekeeping show no row, and a tool the table does not list shows a generic row that leaves
+the list when it is over. The Restart now button does not go through a configurator run and
+shows no list.
 
 ## Contracts & invariants
 
@@ -227,6 +249,8 @@ inside the run (INV-CFG-016).
 - `casa/rootfs/opt/casa/tools.py::plugins_under_live_install`
 - `casa/rootfs/opt/casa/agent.py::_offers_configurator_restart`
 - `casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine`
+- `casa/rootfs/opt/casa/drivers/turn_progress.py::step_label`
+- `casa/rootfs/opt/casa/tools.py::_step_stage`
 
 **Tests**
 - `tests/test_configurator_run.py`

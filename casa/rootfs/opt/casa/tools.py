@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from drivers.turn_progress import TurnProgressLine
     from trigger_registry import TriggerRegistry
 
 from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use
@@ -4417,6 +4418,82 @@ def _configurator_step_line(cfg: Any, origin: dict) -> Any:
         delete=lambda mid: delete(chat_id, mid))
 
 
+#: The step line of the delegated run this code runs inside; ``None`` outside a
+#: configurator run (each run sets its own, so a nested run never shows on its
+#: caller's line).
+_step_line: ContextVar["TurnProgressLine | None"] = ContextVar("_step_line", default=None)
+
+
+class _NoStepRow:
+    """The row of a step taken outside a configurator run: nothing shows."""
+
+    __slots__ = ()
+
+    def done(self) -> None:
+        pass
+
+
+_NO_STEP_ROW = _NoStepRow()
+
+
+def _step_stage(label: str) -> Any:
+    """An unticked row named *label* on the current run's step line, over
+    through its ``done()``; a row that does nothing when no configurator run
+    is showing a line."""
+    line = _step_line.get()
+    if line is None:
+        return _NO_STEP_ROW
+    return line.row(label)
+
+
+class _Stage:
+    """A row around one awaited stage of a handler, used as ``with``: the row
+    is over when the stage is left, however it is left (a raise or a
+    cancellation included). Progress is never the handler's fault, so nothing
+    here raises into it, and the stage's exception passes through untouched."""
+
+    __slots__ = ("_row",)
+
+    def __init__(self, label: str) -> None:
+        try:
+            self._row = _step_stage(label)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("step row not opened: %s", type(exc).__name__)
+            self._row = _NO_STEP_ROW
+
+    def __enter__(self) -> "_Stage":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            self._row.done()
+        except Exception as err:  # noqa: BLE001
+            logger.info("step row not settled: %s", type(err).__name__)
+        return False
+
+
+def _sentence_list(names: list) -> str:
+    """``["Alex"]`` → ``"Alex"``; ``["Alex", "Ellen", "Fido"]`` →
+    ``"Alex, Ellen and Fido"``."""
+    if len(names) < 2:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _plugin_add_stage_label(args: dict) -> str:
+    """The first row of a plugin install, built from the call's arguments
+    before the handler checks them: each target is named only when the list
+    holds nothing but strings."""
+    from drivers.turn_progress import plugin_label, target_label
+    label = f"Download and install {plugin_label(args.get('name'))}"
+    targets = args.get("targets")
+    if (not isinstance(targets, list) or not targets
+            or not all(isinstance(t, str) for t in targets)):
+        return label
+    names = list(dict.fromkeys(target_label(t, _display_name_for_role) for t in targets))
+    return f"{label} for {_sentence_list(names)}"
+
+
 def _known_role(value: object) -> str:
     """A registered agent role, else ``<other>``.
 
@@ -5081,6 +5158,9 @@ async def _run_delegated_turn(
     # observed below is attributed to the artifact this session really ran.
     binding: dict[str, str] = {}
     tool_calls: dict[str, tuple[str, float]] = {}
+    # the step line's running rows, by the tool call each one shows; a row is
+    # settled by its own call's result
+    step_rows: dict[str, Any] = {}
     # #1252: the text-bearing messages `text` is joined from, and where they
     # stop being the operator's because a protected call is waiting on the
     # operator's approval — read at each call's result, as the resident's
@@ -5097,11 +5177,13 @@ async def _run_delegated_turn(
     # processes itself)
     _tree = _bounded_tree.get() if _owner is None else None
     _bounded_tree.set(None)
-    # The configurator's live step line in the
-    # operator's DM, removed when the run ends.
-    _steps = _configurator_step_line(cfg, parent)
     # The session's extras: the long-run compaction window and the pad.
     _extras = specialist_session.session_env_and_pad(cfg, child_origin, run_id=run.session_id)
+    # The configurator's live step line in the operator's DM, removed when the
+    # run ends; set as this run's own line (or none) for the code run inside
+    # it, right before the `try` whose `finally` resets it.
+    _steps = _configurator_step_line(cfg, parent)
+    _steps_tok = _step_line.set(_steps)
 
     def _options_and_binding():
         res = resolution if resolution is not None \
@@ -5221,10 +5303,24 @@ async def _run_delegated_turn(
                                     _first_tool = True
                                     _ph["first_tool"] = time.monotonic()
                                 if _steps is not None:
-                                    from drivers.turn_progress import activity_for_tool
-                                    _steps.step(activity_for_tool(
-                                        str(getattr(block, "name", ""))))
+                                    from drivers.turn_progress import (
+                                        GENERIC_LABEL, step_label)
+                                    label = step_label(
+                                        str(getattr(block, "name", "")),
+                                        getattr(block, "input", None) or {},
+                                        agent_name=_display_name_for_role)
+                                    if label is not None:
+                                        step_rows[getattr(block, "id", "")] = \
+                                            _steps.row(
+                                                label, keep=label != GENERIC_LABEL)
                     elif isinstance(sdk_msg, UserMessage):
+                        if step_rows:
+                            for block in getattr(sdk_msg, "content", None) or []:
+                                if isinstance(block, ToolResultBlock):
+                                    row = step_rows.pop(
+                                        getattr(block, "tool_use_id", ""), None)
+                                    if row is not None:
+                                        row.done()
                         if approval_scope is not None:
                             for block in getattr(sdk_msg, "content", None) or []:
                                 if isinstance(block, ToolResultBlock):
@@ -5240,8 +5336,9 @@ async def _run_delegated_turn(
                         # client raises before the loop reaches a ResultMessage).
                         result_msg = sdk_msg
     finally:
+        _step_line.reset(_steps_tok)
         if _steps is not None:
-            _steps.finish(ok=True)        # the line goes as the answer comes
+            _steps.finish()        # the line goes as the answer comes
         # #1207: the grants this run left waiting on the operator, for a
         # synchronous launcher's fold — published however the run ended (an
         # abort or a raise leaves the keyboard up all the same). Only calls
@@ -15051,17 +15148,23 @@ async def plugin_add(args: dict) -> dict:
             targets=args.get("targets") or [])
         return [] if refusal is not None else _specialist_slugs(state["targets"])
 
+    from drivers.turn_progress import plugin_label
+    name = plugin_label(args.get("name"))
     async with _PLUGIN_TOOLS_LOCK:
         # #1145: warn first when the new plugin reaches a specialist with open
         # conversations; the core (looked up here, so a test's double is used)
         # then runs exactly as before.
         core, ack, seen = await _plugin_gate_phase("plugin_add", "added", args, reached)
         if core is None:
-            core = await _to_thread_settled(
-                _plugin_add_sync, name=args["name"], repo=args["repo"],
-                ref=args["ref"], subdir=args.get("subdir", ""),
-                targets=args.get("targets") or [],
-                expected_revision=args.get("expected_revision"))
+            # The step line's rows: this first one names the agents the call
+            # asks for; the later ones name none, since the reload can skip
+            # an agent that is not installed yet.
+            with _Stage(_plugin_add_stage_label(args)):
+                core = await _to_thread_settled(
+                    _plugin_add_sync, name=args["name"], repo=args["repo"],
+                    ref=args["ref"], subdir=args.get("subdir", ""),
+                    targets=args.get("targets") or [],
+                    expected_revision=args.get("expected_revision"))
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
             return _result(core)
         if core.get("ok") is not True:
@@ -15072,23 +15175,26 @@ async def plugin_add(args: dict) -> dict:
             core.setdefault("verify", {})
             return _result(_after_plugin_change(
                 core, "added", args["name"], [], ack, seen))
-        seq = await _reload_and_verify_targets(
-            core["name"], core["targets"], expect="present")
+        with _Stage(f"Get {name} ready to use"):
+            seq = await _reload_and_verify_targets(
+                core["name"], core["targets"], expect="present")
         core.update(seq)
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(
             core["name"], manifest=published_manifest))
-        # Design 2026-09-15 §2.D: the tool explores the default vault for the
-        # unresolved secrets; the configurator decides what to wire.
-        core.update(await _to_thread_settled(
-            _secret_candidates, core["name"],
-            list(core.get("required_env_vars") or []),
-            manifest=published_manifest))
-        # S8: the just-published manifest's recommendations, one row per
-        # (requirement, target) with where it stands; the configurator offers.
-        core["requirement_candidates"] = await _to_thread_settled(
-            _requirement_candidates_for, core["name"], list(core["targets"]),
-            manifest=published_manifest)
+        with _Stage(f"Check what {name} still needs"):
+            # Design 2026-09-15 §2.D: the tool explores the default vault for
+            # the unresolved secrets; the configurator decides what to wire.
+            core.update(await _to_thread_settled(
+                _secret_candidates, core["name"],
+                list(core.get("required_env_vars") or []),
+                manifest=published_manifest))
+            # S8: the just-published manifest's recommendations, one row per
+            # (requirement, target) with where it stands; the configurator
+            # offers.
+            core["requirement_candidates"] = await _to_thread_settled(
+                _requirement_candidates_for, core["name"], list(core["targets"]),
+                manifest=published_manifest)
         return _result(_after_plugin_change(
             core, "added", core["name"], _specialist_slugs(core["targets"]),
             ack, seen))
@@ -15123,6 +15229,8 @@ async def plugin_update(args: dict) -> dict:
         return ([] if refusal is not None
                 else _specialist_slugs(state["entry"].get("targets")))
 
+    from drivers.turn_progress import plugin_label
+    name = plugin_label(args.get("name"))
     async with _PLUGIN_TOOLS_LOCK:
         # #1145: warn first when the plugin is assigned to a specialist with
         # open conversations. The revision guard and the rest of the network
@@ -15131,9 +15239,10 @@ async def plugin_update(args: dict) -> dict:
         core, ack, seen = await _plugin_gate_phase(
             "plugin_update", "updated", args, reached)
         if core is None:
-            core = await _to_thread_settled(
-                _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
-                expected_revision=args.get("expected_revision"))
+            with _Stage(f"Update {name}"):
+                core = await _to_thread_settled(
+                    _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
+                    expected_revision=args.get("expected_revision"))
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
             return _result(core)
         if core.get("ok") is not True:
@@ -15161,8 +15270,9 @@ async def plugin_update(args: dict) -> dict:
         # them: they are bound to the artifact, which is still the one running.
         if core.get("old_artifact_id") != core.get("artifact_id"):
             _invalidate_lifecycle(artifact_id=core.get("old_artifact_id"))
-        seq = await _reload_and_verify_targets(
-            core["name"], core["targets"], expect="present")
+        with _Stage(f"Get {name} ready to use"):
+            seq = await _reload_and_verify_targets(
+                core["name"], core["targets"], expect="present")
         core.update(seq)
         published_manifest = core.pop("_published_manifest", None)
         core.update(_resolved_observability(

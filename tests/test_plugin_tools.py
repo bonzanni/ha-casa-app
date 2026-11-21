@@ -1738,3 +1738,224 @@ async def test_plugin_list_shows_stored_and_effective_assignments(
                                             "executor:plugin-developer"]
     assert rows["operators"]["effective_targets"] == ["resident:butler"]
     assert rows["operators"]["ignored_targets"] == ["executor:plugin-developer"]
+
+
+# --- the configurator's step line: a plugin install or update shows its stages --
+
+class _StepWire:
+    def __init__(self):
+        self.texts: list[str] = []
+
+    async def send(self, text):
+        self.texts.append(text)
+        return 7
+
+    async def edit(self, _mid, text):
+        self.texts.append(text)
+        return True
+
+    async def delete(self, _mid):
+        return True
+
+
+@pytest.fixture
+def step_rows():
+    """The run's step line over a recording wire; awaiting the returned function
+    lets the line's writes land and gives the text it shows last ("" when
+    nothing was ever posted)."""
+    import asyncio
+    import tools as tools_mod
+    from drivers.turn_progress import TurnProgressLine
+
+    async def no_sleep(_s):
+        await asyncio.sleep(0)
+
+    wire = _StepWire()
+    token = tools_mod._step_line.set(TurnProgressLine(
+        send=wire.send, edit=wire.edit, delete=wire.delete,
+        sleep=no_sleep, spacing_s=0))
+
+    async def rendered() -> str:
+        for _ in range(50):
+            await asyncio.sleep(0)
+        return wire.texts[-1] if wire.texts else ""
+
+    yield rendered
+    tools_mod._step_line.reset(token)
+
+
+def _staged(monkeypatch, *, add=None, update=None, seq=None):
+    """The handlers' cores replaced: *add* / *update* stand in for the sync
+    cores, *seq* for the reload; everything after them answers empty."""
+    import asyncio
+    from types import SimpleNamespace
+    import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", asyncio.Lock())
+    for role, name in (("finance", "Alex"), ("assistant", "Ellen"),
+                       ("browser", "Fido")):
+        monkeypatch.setitem(tools_mod._agent_role_map, role,
+                            SimpleNamespace(character=SimpleNamespace(name=name)))
+    calls = {"seq": 0}
+
+    async def default_seq(*a, **kw):
+        calls["seq"] += 1
+        return {}
+
+    monkeypatch.setattr(tools_mod, "_plugin_add_sync", add or (lambda **kw: {
+        "ok": True, "name": "gmail", "targets": list(kw["targets"])}))
+    monkeypatch.setattr(tools_mod, "_plugin_update_sync", update or (lambda **kw: {
+        "ok": True, "name": "gmail", "targets": ["resident:finance"],
+        "old_artifact_id": "a", "artifact_id": "a"}))
+    monkeypatch.setattr(tools_mod, "_reload_and_verify_targets", seq or default_seq)
+    monkeypatch.setattr(tools_mod, "_resolved_observability", lambda *a, **kw: {})
+    monkeypatch.setattr(tools_mod, "_secret_candidates", lambda *a, **kw: {})
+    monkeypatch.setattr(tools_mod, "_requirement_candidates_for", lambda *a, **kw: [])
+    monkeypatch.setattr(tools_mod, "_tool_verify_plugin_state",
+                        lambda **kw: {"ready": True})
+    return tools_mod, calls
+
+
+_ADD_GMAIL = {"name": "gmail", "repo": "o/r", "ref": "v1",
+              "targets": ["resident:finance"]}
+
+
+async def test_plugin_add_lists_its_stages(step_rows, monkeypatch):
+    tools_mod, _ = _staged(monkeypatch)
+    r = await tools_mod.plugin_add.handler(dict(_ADD_GMAIL))
+    assert json.loads(r["content"][0]["text"])["ok"] is True
+    assert await step_rows() == ("- [x] Download and install Gmail for Alex\n"
+                                 "- [x] Get Gmail ready to use\n"
+                                 "- [ ] Check what Gmail still needs")
+
+
+def _next_row():
+    """A later step starting on the run's line, which ticks every row over."""
+    import tools as tools_mod
+    tools_mod._step_line.get().row("Next")
+
+
+async def test_a_refused_plugin_add_ends_its_first_stage_unmarked(step_rows, monkeypatch):
+    tools_mod, calls = _staged(
+        monkeypatch, add=lambda **kw: {"ok": False, "kind": "x"})
+    await tools_mod.plugin_add.handler(dict(_ADD_GMAIL))
+    assert await step_rows() == "- [ ] Download and install Gmail for Alex"
+    assert calls["seq"] == 0
+    _next_row()
+    assert await step_rows() == "- [x] Download and install Gmail for Alex\n- [ ] Next"
+
+
+async def test_plugin_update_lists_its_stages(step_rows, monkeypatch):
+    tools_mod, _ = _staged(monkeypatch)
+    await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"})
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Get Gmail ready to use"
+
+
+async def test_a_refused_plugin_update_ends_its_stage_unmarked(step_rows, monkeypatch):
+    tools_mod, calls = _staged(
+        monkeypatch, update=lambda **kw: {"ok": False, "kind": "x"})
+    await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"})
+    assert await step_rows() == "- [ ] Update Gmail"
+    assert calls["seq"] == 0
+    _next_row()
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Next"
+
+
+async def test_an_unchanged_plugin_update_opens_no_second_stage(step_rows, monkeypatch):
+    tools_mod, calls = _staged(monkeypatch, update=lambda **kw: {
+        "ok": True, "unchanged": True, "name": "gmail",
+        "targets": ["resident:finance"]})
+    await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v1"})
+    assert await step_rows() == "- [ ] Update Gmail"
+    assert calls["seq"] == 0
+
+
+async def test_updating_a_plugin_no_agent_has(step_rows, monkeypatch):
+    tools_mod, _ = _staged(monkeypatch, update=lambda **kw: {
+        "ok": True, "name": "gmail", "targets": [],
+        "old_artifact_id": "a", "artifact_id": "a"})
+    await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"})
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Get Gmail ready to use"
+
+
+async def test_the_open_conversations_warning_opens_no_row(step_rows, monkeypatch):
+    tools_mod, _ = _staged(monkeypatch)
+
+    async def pending(*a, **kw):
+        return {"ok": False, "kind": tools_mod.OPEN_CONVERSATIONS_PENDING}, None, set()
+
+    monkeypatch.setattr(tools_mod, "_plugin_gate_phase", pending)
+    await tools_mod.plugin_add.handler(dict(_ADD_GMAIL))
+    await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"})
+    assert await step_rows() == ""
+
+
+async def test_a_call_refused_before_its_core_opens_no_row(step_rows, monkeypatch):
+    tools_mod, _ = _staged(monkeypatch)
+    bad = {"acknowledged_conversations": "not-a-list"}
+    r = await tools_mod.plugin_add.handler({**_ADD_GMAIL, **bad})
+    assert json.loads(r["content"][0]["text"])["kind"] == "invalid_argument"
+    await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2", **bad})
+    assert await step_rows() == ""
+
+
+async def test_a_core_that_raises_ends_its_stage_and_still_raises(step_rows, monkeypatch):
+    def boom(**kw):
+        raise RuntimeError("core broke")
+
+    tools_mod, _ = _staged(monkeypatch, add=boom)
+    with pytest.raises(RuntimeError, match="core broke"):
+        await tools_mod.plugin_add.handler(dict(_ADD_GMAIL))
+    assert await step_rows() == "- [ ] Download and install Gmail for Alex"
+    _next_row()
+    assert await step_rows() == "- [x] Download and install Gmail for Alex\n- [ ] Next"
+
+
+async def test_a_cancelled_stage_is_not_left_running(step_rows, monkeypatch):
+    import asyncio
+    started = asyncio.Event()
+
+    async def hang(*a, **kw):
+        started.set()
+        await asyncio.Event().wait()
+
+    tools_mod, _ = _staged(monkeypatch, seq=hang)
+    task = asyncio.ensure_future(
+        tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"}))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Get Gmail ready to use"
+    _next_row()
+    assert await step_rows() == ("- [x] Update Gmail\n- [x] Get Gmail ready to use\n"
+                                 "- [ ] Next")
+
+
+@pytest.mark.parametrize("targets, label", [
+    (["resident:finance"], "Download and install Gmail for Alex"),
+    (["resident:finance", "resident:assistant"],
+     "Download and install Gmail for Alex and Ellen"),
+    (["resident:finance", "resident:assistant", "specialist:browser"],
+     "Download and install Gmail for Alex, Ellen and Fido"),
+    (["resident:Not A Role"], "Download and install Gmail for the agent"),
+    ([], "Download and install Gmail"),
+    (None, "Download and install Gmail"),
+    ("resident:finance", "Download and install Gmail"),
+    (["resident:finance", 3], "Download and install Gmail"),
+])
+async def test_the_install_row_names_the_agents_it_is_for(
+        step_rows, monkeypatch, targets, label):
+    tools_mod, _ = _staged(
+        monkeypatch, add=lambda **kw: {"ok": False, "kind": "x"})
+    args = {"name": "gmail", "repo": "o/r", "ref": "v1"}
+    if targets is not None:
+        args["targets"] = targets
+    await tools_mod.plugin_add.handler(args)
+    assert await step_rows() == f"- [ ] {label}"
+
+
+def test_a_row_outside_a_configurator_run_is_never_opened():
+    import tools as tools_mod
+    assert tools_mod._step_line.get() is None
+    with tools_mod._Stage("Update Gmail"):
+        pass

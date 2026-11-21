@@ -1,13 +1,18 @@
-"""#1350: one progress line per configurator turn, opened at the turn's first
-tool use, edited as steps change, closed by the same turn."""
+"""The configurator's progress line: a short list of rows, one per activity,
+each settled through its own handle, in one message deleted when the run ends."""
 from __future__ import annotations
 
 import asyncio
 
 import pytest
 
+from pathlib import Path
+
+import yaml
+
 from drivers.turn_progress import (
-    TurnProgressLine, activity_for_tool, format_elapsed,
+    GENERIC_LABEL, MAX_ROWS, STAGE_ROW_TOOLS, TurnProgressLine, plugin_label,
+    step_label, target_label,
 )
 
 pytestmark = [pytest.mark.unit]
@@ -25,6 +30,8 @@ class _Wire:
     def __init__(self, *, send_ok: bool = True, hang: bool = False) -> None:
         self.sent: list[str] = []
         self.edits: list[tuple[int, str]] = []
+        self.deleted: list[int] = []
+        self._texts: list[str] = []
         self.send_ok = send_ok
         self.hang = hang
 
@@ -32,86 +39,260 @@ class _Wire:
         if self.hang:
             await asyncio.Event().wait()
         self.sent.append(text)
+        self._texts.append(text)
         return 42 if self.send_ok else None
 
     async def edit(self, message_id: int, text: str) -> bool:
         if self.hang:
             await asyncio.Event().wait()
         self.edits.append((message_id, text))
+        self._texts.append(text)
         return True
+
+    async def delete(self, message_id: int) -> bool:
+        if self.hang:
+            await asyncio.Event().wait()
+        self.deleted.append(message_id)
+        return True
+
+    @property
+    def last(self) -> str | None:
+        """The newest text sent or edited in."""
+        return self._texts[-1] if self._texts else None
 
 
 async def _no_sleep(_s: float) -> None:
     await asyncio.sleep(0)
 
 
-def _line(wire, clock, **kw):
-    return TurnProgressLine(send=wire.send, edit=wire.edit, now=clock,
-                            sleep=kw.pop("sleep", _no_sleep), **kw)
-
-
-async def test_no_tool_use_posts_nothing():
-    from drivers.turn_progress import _closing
-    wire, clock = _Wire(), _Clock()
-    line = _line(wire, clock)
-    line.finish(ok=True)
-    assert not _closing
-    await line.close(ok=True)
-    assert wire.sent == [] and wire.edits == []
-
-
-async def test_first_step_posts_and_close_edits_the_summary():
-    wire, clock = _Wire(), _Clock()
-    line = _line(wire, clock)
-    line.step("reading files")
-    await asyncio.sleep(0)
-    clock.t = 72
-    await line.close(ok=True)
-    assert wire.sent == ["🔧 This turn so far: 1 step — latest: reading files (at 0s)"]
-    assert wire.edits[-1] == (42, "☑ This turn: 1 step in 1m 12s")
-
-
-async def test_steps_coalesce_to_the_newest_and_count():
-    wire, clock = _Wire(), _Clock()
-    line = _line(wire, clock)
-    line.step("reading files")
-    line.step("updating plugins")
-    clock.t = 5
-    line.step("committing the change")
-    for _ in range(5):
+async def _settle() -> None:
+    """Yield to the loop long enough for the background writes to land."""
+    for _ in range(50):
         await asyncio.sleep(0)
-    clock.t = 30
-    await line.close(ok=True)
-    # three steps before the line's first write: only the newest is shown
-    assert wire.sent == ["🔧 This turn so far: 3 steps — latest: committing the change (at 5s)"]
-    assert wire.edits == [(42, "☑ This turn: 3 steps in 30s")]
 
 
-async def test_a_raised_turn_closes_as_stopped():
-    wire, clock = _Wire(), _Clock()
-    line = _line(wire, clock)
-    line.step("reading files")
-    line.step("editing files")
-    await asyncio.sleep(0)
-    await line.close(ok=False)
-    assert wire.edits[-1] == (42, "✖ This turn stopped after 2 steps")
+def _line(wire, clock=None, **kw):
+    return TurnProgressLine(send=wire.send, edit=wire.edit, delete=wire.delete,
+                            now=clock or _Clock(), sleep=kw.pop("sleep", _no_sleep),
+                            **kw)
+
+
+async def test_no_row_posts_nothing():
+    from drivers.turn_progress import _closing
+    wire = _Wire()
+    line = _line(wire)
+    line.finish()
+    assert not _closing
+    await _settle()
+    assert wire.sent == [] and wire.deleted == []
+
+
+async def test_a_single_row_stays_unticked_and_is_deleted_so():
+    from drivers.turn_progress import _closing
+    wire = _Wire()
+    line = _line(wire)
+    r = line.row("Download and install Gmail")
+    await _settle()
+    assert wire.sent == ["- [ ] Download and install Gmail"]
+    r.done()                         # over, but nothing later has started
+    await _settle()
+    line.finish()
+    await asyncio.gather(*list(_closing))
+    assert wire.edits == [] and wire.last == "- [ ] Download and install Gmail"
+    assert wire.deleted == [42]
+
+
+async def test_a_row_over_before_the_next_starts_is_ticked_when_it_starts():
+    wire = _Wire()
+    line = _line(wire)
+    line.row("A").done()
+    line.row("B")
+    await _settle()
+    assert wire.last == "- [x] A\n- [ ] B"
+
+
+async def test_a_row_still_running_when_the_next_starts_is_ticked_when_over():
+    wire = _Wire()
+    line = _line(wire)
+    a = line.row("A")
+    line.row("B")
+    await _settle()
+    assert wire.last == "- [ ] A\n- [ ] B"
+    a.done()
+    await _settle()
+    assert wire.last == "- [x] A\n- [ ] B"
+
+
+async def test_the_newest_row_is_ticked_only_once_a_later_one_starts():
+    wire = _Wire()
+    line = _line(wire)
+    a = line.row("A")
+    b = line.row("B")
+    b.done()
+    await _settle()
+    assert wire.last == "- [ ] A\n- [ ] B"
+    assert a is not b
+    line.row("C")
+    await _settle()
+    assert wire.last == "- [ ] A\n- [x] B\n- [ ] C"
+    a.done()
+    await _settle()
+    assert wire.last == "- [x] A\n- [x] B\n- [ ] C"
+
+
+async def test_rows_made_before_the_first_write_coalesce_into_one_post():
+    wire = _Wire()
+    line = _line(wire)
+    line.row("A")
+    line.row("B").done()
+    line.row("C")
+    await _settle()
+    assert wire.sent == ["- [ ] A\n- [x] B\n- [ ] C"] and wire.edits == []
+
+
+async def test_a_row_has_no_failed_state():
+    from drivers.turn_progress import StepRow
+    assert not hasattr(StepRow, "failed")
+
+
+async def test_a_label_shows_as_written_on_its_checklist_line():
+    """Characters rich Markdown reads as formatting are escaped, so the label
+    shows as written (through the real preparation the send applies)."""
+    from channels.tg_rich import prepare
+    wire = _Wire()
+    line = _line(wire)
+    line.row("Set up Todo for the my_agent agent")
+    line.row("Tell *Bo* `x` [a](b) <b>z</b> ~y~ |c|")
+    await _settle()
+    first, second = prepare(wire.last).split("\n")
+    assert first == "- [ ] Set up Todo for the my&#95;agent agent"
+    assert second == (r"- [ ] Tell \*Bo\* \`x\` \[a\](b) &lt;b\>z&lt;/b\> "
+                      r"\~y\~ \|c\|")
+
+
+async def test_a_row_not_kept_disappears_when_settled():
+    wire = _Wire()
+    line = _line(wire)
+    a = line.row("Work on it", keep=False)
+    line.row("B")
+    a.done()
+    await _settle()
+    assert wire.last == "- [ ] B"
+
+
+async def test_the_last_row_disappearing_deletes_the_message_and_a_later_row_posts_again():
+    wire = _Wire()
+    line = _line(wire)
+    a = line.row("Work on it", keep=False)
+    await _settle()
+    a.done()
+    await _settle()
+    assert wire.deleted == [42] and (42, "") not in wire.edits
+    line.row("B")
+    await _settle()
+    assert wire.sent == ["- [ ] Work on it", "- [ ] B"]
+
+
+async def test_a_row_that_comes_and_goes_during_the_spacing_deletes_nothing():
+    """After the message is deleted, a keep=False row that starts and settles
+    while the pump waits out the spacing has no message to delete; a later row
+    still posts."""
+    class _StrictWire(_Wire):
+        async def delete(self, message_id):
+            if message_id is None:
+                raise TypeError("no message id")
+            return await super().delete(message_id)
+
+    wire = _StrictWire()
+    gate = asyncio.Event()
+
+    async def sleep(_s: float) -> None:
+        await gate.wait()
+
+    line = _line(wire, sleep=sleep)
+    a = line.row("Work on it", keep=False)
+    await _settle()
+    a.done()                         # the pump waits out the spacing at the gate
+    gate.set()
+    await _settle()
+    assert wire.deleted == [42]
+    gate.clear()
+    b = line.row("Work on it", keep=False)
+    await _settle()                  # the pump is waiting out the spacing again
+    b.done()
+    gate.set()
+    await _settle()
+    line.row("C")
+    await _settle()
+    assert wire.deleted == [42]
+    assert wire.sent == ["- [ ] Work on it", "- [ ] C"]
+
+
+async def test_a_row_never_over_stays_unticked_and_the_message_is_deleted():
+    from drivers.turn_progress import _closing
+    wire = _Wire()
+    line = _line(wire)
+    line.row("A")
+    await _settle()
+    line.finish()
+    await asyncio.gather(*list(_closing))
+    assert wire.last == "- [ ] A" and wire.deleted == [42]
+
+
+async def test_only_the_last_eight_rows_show():
+    wire = _Wire()
+    line = _line(wire)
+    labels = [f"{i:02d}" + "x" * 58 for i in range(12)]
+    for label in labels:
+        line.row(label).done()
+    await _settle()
+    lines = wire.last.split("\n")
+    assert MAX_ROWS == 8
+    assert lines == [f"- [x] {label}" for label in labels[-8:-1]] + [
+        f"- [ ] {labels[-1]}"]
+    assert len(wire.last) < 4096
+
+
+async def test_settling_twice_is_ignored():
+    wire = _Wire()
+    line = _line(wire)
+    r = line.row("A")
+    r.done()
+    line.row("B")
+    r.done()
+    await _settle()
+    assert wire.last == "- [x] A\n- [ ] B" and r.over
+
+
+async def test_a_row_settled_after_the_close_posts_nothing_more():
+    from drivers.turn_progress import _closing
+    wire = _Wire()
+    line = _line(wire)
+    r = line.row("A")
+    await _settle()
+    line.finish()
+    await asyncio.gather(*list(_closing))
+    r.done()
+    line.row("B")
+    await _settle()
+    assert wire.sent == ["- [ ] A"] and wire.edits == [] and wire.deleted == [42]
 
 
 async def test_a_failed_post_leaves_nothing_to_close():
-    wire, clock = _Wire(send_ok=False), _Clock()
-    line = _line(wire, clock)
-    line.step("reading files")
-    await asyncio.sleep(0)
-    await line.close(ok=True)
-    assert wire.edits == []
+    wire = _Wire(send_ok=False)
+    line = _line(wire)
+    line.row("A")
+    await _settle()
+    await line.close()
+    assert wire.edits == [] and wire.deleted == []
 
 
 async def test_a_hung_transport_never_holds_the_turn():
-    wire, clock = _Wire(hang=True), _Clock()
-    line = _line(wire, clock, io_timeout_s=0.05)
-    line.step("reading files")
-    await asyncio.wait_for(line.close(ok=True), timeout=1.0)
-    assert wire.sent == [] and wire.edits == []
+    wire = _Wire(hang=True)
+    line = _line(wire, io_timeout_s=0.05)
+    line.row("A")
+    await asyncio.wait_for(line.close(), timeout=1.0)
+    assert wire.sent == [] and wire.edits == [] and wire.deleted == []
 
 
 async def test_edits_are_spaced():
@@ -125,24 +306,24 @@ async def test_edits_are_spaced():
 
     line = _line(wire, clock, sleep=sleep, spacing_s=3.0)
     clock.t = 0.5                    # the first post lands AFTER the line's start…
-    line.step("reading files")
+    a = line.row("A")
     # wait for that post to have landed before the clock moves: await the pump
-    # itself, never a count of loop turns — Python 3.11's wait_for runs the send
-    # in a task of its own and needs more turns than 3.12's (main QA, v0.344.59)
+    # itself, never a count of loop turns (wait_for's task count differs by
+    # Python version)
     await line._pump
-    assert wire.sent == ["🔧 This turn so far: 1 step — latest: reading files (at 0s)"]
+    assert wire.sent == ["- [ ] A"]
     clock.t = 1.0
-    line.step("editing files")
+    a.done()
+    line.row("B")
     await line._pump
-    await line.close(ok=True)
+    await line.close()
     # …so the spacing is counted from that write (3.0 - 0.5), not from the start,
-    # and the close waits a full spacing after the edit that landed at 3.5
+    # and the closing delete waits a full spacing after the edit that landed at 3.5
     assert waits == [pytest.approx(2.5), pytest.approx(3.0)]
-    assert wire.edits == [(42, "🔧 This turn so far: 2 steps — latest: editing files (at 1s)"), (42, "☑ This turn: 2 steps in 3s")]
+    assert wire.edits == [(42, "- [x] A\n- [ ] B")] and wire.deleted == [42]
 
 
-async def test_the_closing_edit_keeps_the_spacing():
-    """#1350 x1 (Astra): the close waits out the spacing like any write."""
+async def test_the_closing_delete_keeps_the_spacing():
     wire, clock = _Wire(), _Clock()
     waits: list[float] = []
 
@@ -152,32 +333,33 @@ async def test_the_closing_edit_keeps_the_spacing():
         await asyncio.sleep(0)
 
     line = _line(wire, clock, sleep=sleep, spacing_s=3.0)
-    line.step("reading files")
-    await asyncio.sleep(0)
-    await line.close(ok=True)
+    line.row("A")
+    await line._pump
+    await line.close()
     assert waits == [pytest.approx(3.0)]
-    assert wire.edits == [(42, "☑ This turn: 1 step in 0s")]
+    assert wire.edits == [] and wire.deleted == [42]
 
 
 async def test_finish_closes_in_the_background():
     from drivers.turn_progress import _closing
-    wire, clock = _Wire(), _Clock()
-    line = _line(wire, clock, spacing_s=0.0)
-    line.step("reading files")
-    line.finish(ok=False)
+    wire = _Wire()
+    line = _line(wire, spacing_s=0.0)
+    line.row("A")
+    line.finish()
+    assert _closing
     await asyncio.gather(*list(_closing))
-    assert wire.edits[-1] == (42, "✖ This turn stopped after 1 step")
+    assert wire.sent == ["- [ ] A"] and wire.deleted == [42]
 
 
 async def test_a_raising_send_is_contained_in_the_pump():
     async def boom(*_a, **_k):
         raise RuntimeError("telegram down")
-    clock = _Clock()
-    line = TurnProgressLine(send=boom, edit=boom, now=clock, sleep=_no_sleep)
-    line.step("reading files")
+    line = TurnProgressLine(send=boom, edit=boom, delete=boom, now=_Clock(),
+                            sleep=_no_sleep)
+    line.row("A")
     await line._pump                 # raises here if the error escaped
     assert line._pump.exception() is None
-    await line.close(ok=True)
+    await line.close()
 
 
 async def test_a_raising_edit_is_contained_in_the_pump_and_the_close():
@@ -189,39 +371,20 @@ async def test_a_raising_edit_is_contained_in_the_pump_and_the_close():
 
     async def boom(*_a, **_k):
         raise RuntimeError("telegram down")
-    clock = _Clock()
-    line = TurnProgressLine(send=send, edit=boom, now=clock, sleep=_no_sleep,
-                            spacing_s=0.0)
-    line.step("reading files")
+    line = TurnProgressLine(send=send, edit=boom, delete=boom, now=_Clock(),
+                            sleep=_no_sleep, spacing_s=0.0)
+    a = line.row("A")
     await line._pump
-    line.step("editing files")
+    a.done()
+    line.row("B")
     await line._pump
     assert line._pump.exception() is None
-    await line.close(ok=True)        # the closing edit raises inside; contained
-    assert sent == ["🔧 This turn so far: 1 step — latest: reading files (at 0s)"]
+    await line.close()               # the closing delete raises inside; contained
+    assert sent == ["- [ ] A"]
 
 
-async def test_the_closing_duration_is_the_turns_not_the_delivery_delay():
-    """#1350 x2 (Astra): finish() freezes the turn's elapsed time."""
-    from drivers.turn_progress import _closing
-    wire, clock = _Wire(), _Clock()
-
-    async def sleep(s: float) -> None:
-        clock.t += s
-        await asyncio.sleep(0)
-
-    line = _line(wire, clock, sleep=sleep, spacing_s=3.0)
-    line.step("reading files")
-    await asyncio.sleep(0)
-    clock.t = 1.0
-    line.finish(ok=True)
-    clock.t = 11.0                   # the close runs later; the turn took 1s
-    await asyncio.gather(*list(_closing))
-    assert wire.edits == [(42, "☑ This turn: 1 step in 1s")]
-
-
-async def test_a_timed_out_drain_still_spaces_the_closing_edit():
-    """#1350 x2 (Astra): the cancelled pump is settled before spacing."""
+async def test_a_timed_out_drain_still_spaces_the_closing_delete():
+    """The cancelled pump is settled before the spacing is counted."""
     clock = _Clock()
     starts: list[tuple[str, float]] = []
     hang_next = {"on": False}
@@ -237,86 +400,222 @@ async def test_a_timed_out_drain_still_spaces_the_closing_edit():
             await asyncio.Event().wait()
         return True
 
+    async def delete(mid):
+        starts.append(("delete", clock.t))
+        return True
+
     async def sleep(s: float) -> None:
         clock.t += s
         await asyncio.sleep(0)
 
-    line = TurnProgressLine(send=send, edit=edit, now=clock, sleep=sleep,
-                            spacing_s=3.0, io_timeout_s=0.01)
-    line.step("reading files")
-    await asyncio.sleep(0)
+    line = TurnProgressLine(send=send, edit=edit, delete=delete, now=clock,
+                            sleep=sleep, spacing_s=3.0, io_timeout_s=0.01)
+    a = line.row("A")
+    await line._pump
     clock.t = 1.0
     hang_next["on"] = True
-    line.step("editing files")
-    await line.close(ok=True)
+    a.done()
+    line.row("B")
+    await line.close()
     edits = [t for k, t in starts if k == "edit"]
-    assert len(edits) == 2 and edits[1] - edits[0] >= 3.0
+    deletes = [t for k, t in starts if k == "delete"]
+    assert len(edits) == 1 and len(deletes) == 1
+    assert deletes[0] - edits[0] >= 3.0
 
 
-# Moved from tests/test_summary_controller.py with the helpers they pin.
-class TestActivityMapping:
-    @pytest.mark.parametrize(
-        "tool,expected",
-        [
-            ("Read", "reading files"),
-            ("Glob", "reading files"),
-            ("Grep", "reading files"),
-            ("Write", "editing files"),
-            ("Edit", "editing files"),
-            ("NotebookEdit", "editing files"),
-            ("Bash", "running commands"),
-            ("Task", "planning"),
-            ("TaskOutput", "planning"),
-            ("TodoWrite", "planning"),
-            ("WebFetch", "researching"),
-            ("WebSearch", "researching"),
-            ("mcp__ha-control__call_service", "using ha-control tools"),
-            ("mcp__plugin_bank-feed_bank-feed__daily_sync",
-             "using plugin_bank-feed_bank-feed tools"),
-            ("mcp__casa-framework__emit_completion", "wrapping up"),
-            # #1350: Casa's own tools in the operator's words
-            ("mcp__casa-framework__plugin_update", "updating plugins"),
-            ("mcp__casa-framework__plugin_list", "updating plugins"),
-            ("mcp__casa-framework__config_git_commit", "committing the change"),
-            ("mcp__casa-framework__casa_reload", "reloading Casa"),
-            ("mcp__casa-framework__casa_reload_triggers", "reloading Casa"),
-            ("mcp__casa-framework__casa_restart_supervised", "reloading Casa"),
-            ("mcp__casa-framework__specialist_upgrade", "managing specialists"),
-            ("mcp__casa-framework__persona_apply", "managing personas"),
-            ("mcp__casa-framework__resident_persona_swap", "managing personas"),
-            ("mcp__casa-framework__list_vault_items", "wiring secrets"),
-            ("mcp__casa-framework__get_item_fields", "wiring secrets"),
-            ("mcp__casa-framework__set_plugin_env_reference", "wiring secrets"),
-            ("mcp__casa-framework__remove_plugin_env_reference", "wiring secrets"),
-            ("mcp__casa-framework__config_trigger_upsert", "updating triggers"),
-            ("mcp__casa-framework__query_engager", "using casa-framework tools"),
-            ("SomethingElse", "working"),
-            ("", "working"),
-        ],
-    )
-    def test_coarse_mapping(self, tool, expected):
-        assert activity_for_tool(tool) == expected
-
-    def test_mcp_server_name_capped_at_32(self):
-        # P1-B r4: the mcp server substring is capped at 32 chars AT SOURCE so
-        # the status line cannot blow the 4096 wire bound.
-        long = "s" * 100
-        out = activity_for_tool(f"mcp__{long}__do")
-        assert out == "using " + "s" * 32 + " tools"
+async def test_the_step_line_is_posted_as_a_silent_rich_checklist():
+    from telegram_channel_double import _mk_channel_with_fake_bot, rich_sent
+    ch, bot = _mk_channel_with_fake_bot()
+    mid = await ch.send_step_line(100, "- [x] A\n- [ ] B")
+    assert mid == 12345
+    bot.send_message.assert_not_awaited()
+    (sent,) = rich_sent(bot)
+    assert sent["chat_id"] == 100 and sent["disable_notification"] is True
+    assert sent["rich_message"] == {"markdown": "- [x] A\n- [ ] B"}
 
 
-class TestElapsedFormat:
-    @pytest.mark.parametrize(
-        "seconds,expected",
-        [
-            (0, "0s"),
-            (5, "5s"),
-            (59, "59s"),
-            (60, "1m 00s"),
-            (150, "2m 30s"),
-            (3600, "1h 00m"),
-            (3660, "1h 01m"),
-        ],
-    )
-    def test_format(self, seconds, expected):
-        assert format_elapsed(seconds) == expected
+async def test_a_step_line_that_cannot_be_posted_is_never_the_works_fault():
+    from telegram_channel_double import _mk_channel_with_fake_bot
+    ch, bot = _mk_channel_with_fake_bot()
+    bot.do_api_request.side_effect = RuntimeError("telegram down")
+    assert await ch.send_step_line(100, "- [ ] A") is None
+
+
+# --- the labels -----------------------------------------------------------
+
+_CASA = "mcp__casa-framework__"
+_NAMES = {"finance": "Alex", "assistant": "Ellen"}
+
+
+def _agent_name(role: str) -> str:
+    return _NAMES.get(role, role)
+
+
+def _label(tool: str, args: dict | None = None) -> str | None:
+    return step_label(tool, args or {}, agent_name=_agent_name)
+
+
+@pytest.mark.parametrize("tool,args,expected", [
+    ("plugin_assign", {"name": "gmail", "target": "specialist:finance"},
+     "Set up Gmail for Alex"),
+    ("plugin_unassign", {"name": "gmail", "target": "resident:assistant"},
+     "Take Gmail away from Ellen"),
+    ("plugin_remove", {"name": "todo-list"}, "Remove Todo List"),
+    ("verify_plugin_state", {"plugin_name": "gmail"}, "Check Gmail"),
+    ("list_vault_items", {"query": "gmail"}, "Look in 1Password"),
+    ("set_plugin_env_reference",
+     {"plugin": "gmail", "var_name": "X", "op_ref_or_value": "op://a/b/c"},
+     "Save a setting for Gmail"),
+    ("remove_plugin_env_reference", {"plugin": "gmail", "var_name": "X"},
+     "Remove a setting from Gmail"),
+    ("config_git_commit", {"message": "m"}, "Save the changes"),
+    ("casa_reload", {"scope": "agent"}, "Apply the changes"),
+    ("casa_reload_triggers", {}, "Apply the changes"),
+    ("casa_restart_supervised", {}, "Arrange a restart"),
+    ("config_trigger_upsert", {"role": "assistant"}, "Write the automation"),
+    ("config_trigger_delete", {"role": "assistant"}, "Remove the automation"),
+    ("specialist_install_request_approval", {},
+     "Check whether your approval is needed"),
+    ("specialist_install_commit", {}, "Install the new agent"),
+    ("specialist_upgrade", {"slug": "finance"}, "Update Alex"),
+    ("specialist_rollback", {"slug": "finance"}, "Put Alex back as it was"),
+    ("specialist_uninstall", {"slug": "finance"}, "Remove Alex"),
+    ("persona_install_commit", {}, "Add the personality"),
+    ("persona_apply", {}, "Change the personality"),
+    ("resident_persona_swap", {}, "Change the personality"),
+    ("resident_persona_reset", {}, "Change the personality"),
+    ("persona_remove", {}, "Clear out unused personalities"),
+    ("persona_prune", {}, "Clear out unused personalities"),
+])
+def test_every_table_row_has_its_label(tool, args, expected):
+    assert _label(_CASA + tool, args) == expected
+
+
+_HIDDEN_BUILTINS = ("Read", "Glob", "Grep", "Write", "Edit")
+_HIDDEN_CASA = (
+    "plugin_list", "persona_list", "specialist_install_inspect",
+    "persona_install_inspect", "get_item_fields", "emit_completion",
+    "trigger_ack_revoke", "callback_ack_revoke", "event_ack_revoke",
+    "persona_ack_revoke", "consent_reprompt",
+)
+
+
+def test_stage_row_tools_and_housekeeping_are_hidden():
+    assert STAGE_ROW_TOOLS == frozenset({"plugin_add", "plugin_update"})
+    for short in STAGE_ROW_TOOLS:
+        assert _label(_CASA + short, {"name": "gmail"}) is None
+    for name in _HIDDEN_BUILTINS:
+        assert _label(name, {"file_path": "/config/x"}) is None
+    for short in _HIDDEN_CASA:
+        assert _label(_CASA + short) is None
+
+
+def test_a_target_is_shown_by_display_name():
+    assert (_label(_CASA + "plugin_assign",
+                   {"name": "gmail", "target": "specialist:finance"})
+            == "Set up Gmail for Alex")
+
+
+def test_an_unknown_role_reads_as_the_role_agent():
+    assert (_label(_CASA + "plugin_assign",
+                   {"name": "gmail", "target": "specialist:ghost"})
+            == "Set up Gmail for the ghost agent")
+    assert _label(_CASA + "specialist_upgrade", {"slug": "ghost"}) == \
+        "Update the ghost agent"
+
+
+def test_the_name_helpers():
+    assert plugin_label("gmail") == "Gmail"
+    assert plugin_label("todo-list") == "Todo List"
+    assert plugin_label("bank_feed") == "Bank Feed"
+    assert plugin_label("") == "the plugin"
+    assert target_label("resident:assistant", _agent_name) == "Ellen"
+    assert target_label("finance", _agent_name) == "Alex"
+    assert target_label("specialist:", _agent_name) == "the agent"
+
+
+def test_an_unlisted_tool_shows_no_argument():
+    assert _label("mcp__gmail__send", {"body": "s3cret"}) == GENERIC_LABEL
+    assert _label(_CASA + "query_engager", {"x": "s3cret"}) == GENERIC_LABEL
+    assert _label("Bash", {"command": "s3cret"}) == GENERIC_LABEL
+    assert _label("", {}) == GENERIC_LABEL
+    assert GENERIC_LABEL == "Work on it"
+
+
+_NOT_NAMES = ("op://Casa/Gmail/credential", "x" * 200, "Gmail Bot",
+              "../etc", "-gmail", "GMAIL")
+
+
+@pytest.mark.parametrize("bad", _NOT_NAMES)
+def test_a_value_that_is_not_a_name_is_never_shown(bad):
+    cases = [
+        ("plugin_assign", {"name": bad, "target": "specialist:finance"},
+         "Set up the plugin for Alex"),
+        ("plugin_assign", {"name": "gmail", "target": bad},
+         "Set up Gmail for the agent"),
+        ("plugin_assign", {"name": "gmail", "target": "specialist:" + bad},
+         "Set up Gmail for the agent"),
+        ("plugin_unassign", {"name": bad, "target": bad},
+         "Take the plugin away from the agent"),
+        ("plugin_remove", {"name": bad}, "Remove the plugin"),
+        ("verify_plugin_state", {"plugin_name": bad}, "Check the plugin"),
+        ("set_plugin_env_reference", {"plugin": bad},
+         "Save a setting for the plugin"),
+        ("remove_plugin_env_reference", {"plugin": bad},
+         "Remove a setting from the plugin"),
+        ("specialist_upgrade", {"slug": bad}, "Update the agent"),
+        ("specialist_rollback", {"slug": bad}, "Put the agent back as it was"),
+        ("specialist_uninstall", {"slug": bad}, "Remove the agent"),
+    ]
+    for tool, args, expected in cases:
+        out = _label(_CASA + tool, args)
+        assert out == expected, (tool, args)
+        assert bad not in out
+
+
+def test_a_missing_or_odd_argument_still_gives_a_label():
+    assert _label(_CASA + "plugin_assign", {}) == "Set up the plugin for the agent"
+    assert _label(_CASA + "plugin_remove", {"name": 7}) == "Remove the plugin"
+    assert step_label(_CASA + "plugin_remove", None,  # type: ignore[arg-type]
+                      agent_name=_agent_name) == "Remove the plugin"
+
+
+_FORBIDDEN = ("op_ref_or_value", "var_name", "config", "content",
+              "old_string", "new_string", "prompt", "task", "context")
+
+
+def _tool_names_in_table() -> list[str]:
+    return [
+        "plugin_assign", "plugin_unassign", "plugin_remove",
+        "verify_plugin_state", "list_vault_items", "set_plugin_env_reference",
+        "remove_plugin_env_reference", "config_git_commit", "casa_reload",
+        "casa_reload_triggers", "casa_restart_supervised",
+        "config_trigger_upsert", "config_trigger_delete",
+        "specialist_install_request_approval", "specialist_install_commit",
+        "specialist_upgrade", "specialist_rollback", "specialist_uninstall",
+        "persona_install_commit", "persona_apply", "resident_persona_swap",
+        "resident_persona_reset", "persona_remove", "persona_prune",
+    ]
+
+
+def test_no_forbidden_argument_reaches_a_label():
+    args = {k: "ZZMARK" for k in _FORBIDDEN}
+    args["config"] = {"ZZMARK": "ZZMARK"}
+    args.update(name="gmail", plugin="gmail", plugin_name="gmail",
+                target="specialist:finance", slug="finance")
+    for short in _tool_names_in_table():
+        out = _label(_CASA + short, dict(args))
+        assert out is not None and out != GENERIC_LABEL, short
+        assert "ZZMARK" not in out, short
+    for name in _HIDDEN_BUILTINS:
+        assert _label(name, dict(args)) is None
+
+
+def test_every_allowed_configurator_tool_is_decided():
+    role = (Path(__file__).resolve().parent.parent / "casa" / "rootfs" / "opt"
+            / "casa" / "defaults" / "roles" / "executor" / "configurator"
+            / "role.yaml")
+    allowed = yaml.safe_load(role.read_text(encoding="utf-8"))["tools"]["allowed"]
+    assert len(allowed) > 20
+    undecided = [t for t in allowed if _label(t) == GENERIC_LABEL]
+    assert undecided == []
