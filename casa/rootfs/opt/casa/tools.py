@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from drivers.turn_progress import TurnProgressLine
     from trigger_registry import TriggerRegistry
 
 from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use

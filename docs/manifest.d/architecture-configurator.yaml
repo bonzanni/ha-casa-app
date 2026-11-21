@@ -25,6 +25,8 @@
     - casa/rootfs/opt/casa/tools.py::plugins_under_live_install
     - casa/rootfs/opt/casa/agent.py::_offers_configurator_restart
     - casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine
+    - casa/rootfs/opt/casa/drivers/turn_progress.py::step_label
+    - casa/rootfs/opt/casa/tools.py::_step_stage
   tests:
     - tests/test_configurator_run.py
     - tests/test_install_phase_health_dm.py

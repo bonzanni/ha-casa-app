@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.378.0] - 2026-11-21
+
+### Changed
+
+- While Casa installs or changes something for you, its message in your chat now lists what it is doing in plain words, for example "Download and install Gmail for Alex" and then "Get Gmail ready to use", as a checklist: a step's box is ticked once Casa moves on to the next step. Before, it showed one line with a step count and a general word for the latest activity.
+- The list goes away when Casa is done; what came of each step is in Casa's answer.
+
 ## [0.377.1] - 2026-11-20
 
 ### Fixed
