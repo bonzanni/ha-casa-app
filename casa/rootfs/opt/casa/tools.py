@@ -5222,7 +5222,7 @@ async def _run_delegated_turn(
                                     _ph["first_tool"] = time.monotonic()
                                 if _steps is not None:
                                     from drivers.turn_progress import activity_for_tool
-                                    _steps.step(activity_for_tool(
+                                    _steps.row(activity_for_tool(
                                         str(getattr(block, "name", ""))))
                     elif isinstance(sdk_msg, UserMessage):
                         if approval_scope is not None:
@@ -5241,7 +5241,7 @@ async def _run_delegated_turn(
                         result_msg = sdk_msg
     finally:
         if _steps is not None:
-            _steps.finish(ok=True)        # the line goes as the answer comes
+            _steps.finish()        # the line goes as the answer comes
         # #1207: the grants this run left waiting on the operator, for a
         # synchronous launcher's fold — published however the run ended (an
         # abort or a raise leaves the keyboard up all the same). Only calls

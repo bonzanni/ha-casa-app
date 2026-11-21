@@ -1,22 +1,17 @@
-"""#1350: one step log per configurator run, in the operator's DM.
+"""The configurator's progress line in the operator's DM: a short checklist.
 
-A configurator run uses several tools between the words it writes, and the
-chat used to sit silent for 30–55 s at a stretch. This line records the
-run's steps as they start and is closed by the same run:
+A configurator run works for a while between the words it writes. This line
+shows what it is doing as a list of rows, one per activity, in start order:
+``⏳ <label>`` while it runs, ``✓ <label>`` once done, ``✗ <label>`` if it
+failed. Each row changes only through its own handle, so a new row never
+settles an older one. Only the last ``MAX_ROWS`` rows show.
 
-- the first tool use posts ``🔧 This turn so far: 1 step — latest: <activity> (at 0s)``;
-- later steps edit it to the newest count, activity and time;
-- the turn's end edits it once more to ``☑ This turn: N steps in <elapsed>``,
-  or to ``✖ This turn stopped after N steps`` when the turn raised — or, with
-  a ``delete`` callable (the configurator's line), deletes it.
-
-Every text states something that has already happened when it is written, so
-it stays true whatever follows: a close that fails or never runs leaves a
-true "so far … latest …" record, never a claim about the present (#1350 d1/d2:
-lines claiming current state went false on reachable paths). Nothing is
-persisted. Sends and edits run in one background task this object owns —
-coalesced (the newest wanted text wins) and spaced — so the turn's message
-loop never waits on Telegram, and each transport call is bounded.
+The list lives in one message, edited in place and deleted when the run ends.
+A row made with ``keep=False`` leaves the list when it settles; if that
+empties the list, the message is deleted, and a later row posts a new one.
+Nothing is persisted. Sends, edits and deletes run in one background task this
+object owns — coalesced (the newest wanted text wins) and spaced — so the
+run never waits on Telegram, and each transport call is bounded.
 """
 from __future__ import annotations
 
@@ -30,7 +25,7 @@ logger = logging.getLogger(__name__)
 _SPACING_S = 3.0      # at least this long between two writes of the line
 _IO_TIMEOUT_S = 3.0   # bound on each Telegram call and on the close's drain
 
-# Tool-use activity phrases and the elapsed format.
+# Tool-use activity phrases.
 _MCP_SERVER_CAP = 32      # §5 P1-B: cap the mcp server substring AT SOURCE.
 
 # §5 S5: coarse tool_use → activity mapping.
@@ -107,41 +102,48 @@ def activity_for_tool(tool_name: str) -> str:
     return "working"
 
 
-def format_elapsed(seconds: float) -> str:
-    """Human-readable elapsed string (``45s`` / ``2m 30s`` / ``1h 05m``)."""
-    total = int(seconds) if seconds and seconds > 0 else 0
-    if total < 60:
-        return f"{total}s"
-    if total < 3600:
-        return f"{total // 60}m {total % 60:02d}s"
-    return f"{total // 3600}h {(total % 3600) // 60:02d}m"
-
-
-# #1350 x1: closes run here, never awaited by the turn — a hung Telegram must
-# not delay the turn, and a cancellation landing while the log closes must not
-# become the turn's outcome. Strong references until each close finishes.
+# Closes run here, never awaited by the run — a hung Telegram must not delay
+# it, and a cancellation landing while the line closes must not become the
+# run's outcome. Strong references until each close finishes.
 _closing: set[asyncio.Task] = set()
+
+MAX_ROWS = 8           # the rows the message shows: the last ones made
+
+_RUNNING, _DONE, _FAILED = "⏳", "✓", "✗"
 
 
 async def _default_sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
-def _steps(n: int) -> str:
-    return f"{n} step" if n == 1 else f"{n} steps"
+class StepRow:
+    """The handle of one row. Only the first ``done()`` / ``failed()`` counts."""
+
+    __slots__ = ("label", "keep", "mark", "_line")
+
+    def __init__(self, line: "TurnProgressLine", label: str, keep: bool) -> None:
+        self.label = label
+        self.keep = keep
+        self.mark = _RUNNING
+        self._line = line
+
+    def done(self) -> None:
+        self._line._settle(self, _DONE)
+
+    def failed(self) -> None:
+        self._line._settle(self, _FAILED)
 
 
 class TurnProgressLine:
-    """The progress line of one turn. ``send(text)`` posts it and returns the
-    message id (or None); ``edit(message_id, text)`` edits it; with
-    ``delete(message_id)`` the closed line is deleted rather than edited to
-    its closing text (the configurator's line in the DM)."""
+    """The progress line of one run. ``send(text)`` posts it and returns the
+    message id (or None); ``edit(message_id, text)`` edits it;
+    ``delete(message_id)`` removes it."""
 
     def __init__(
         self, *,
         send: Callable[[str], Awaitable[int | None]],
         edit: Callable[[int, str], Awaitable[bool]],
-        delete: "Callable[[int], Awaitable[bool]] | None" = None,
+        delete: Callable[[int], Awaitable[bool]],
         now: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = _default_sleep,
         spacing_s: float = _SPACING_S,
@@ -154,28 +156,49 @@ class TurnProgressLine:
         self._sleep = sleep
         self._spacing_s = spacing_s
         self._io_timeout_s = io_timeout_s
-        self._started = now()
-        self._count = 0
+        self._list: list[StepRow] = []
+        self._made_any = False
+        self._closed = False
+        # None: no message wanted / none shown
         self._wanted: str | None = None
         self._shown: str | None = None
         self._message_id: int | None = None
         self._post_failed = False
         self._last_write: float | None = None
         self._pump: asyncio.Task | None = None
-        self._elapsed_at_end: float | None = None
 
-    def step(self, activity: str) -> None:
-        """A tool use began. Never awaits."""
-        self._count += 1
-        elapsed = format_elapsed(self._now() - self._started)
-        self._wanted = (f"🔧 This turn so far: {_steps(self._count)} — "
-                        f"latest: {activity} (at {elapsed})")
+    def row(self, label: str, *, keep: bool = True) -> StepRow:
+        """Append a running row and return its handle. Never awaits."""
+        r = StepRow(self, label, keep)
+        self._made_any = True
+        self._list.append(r)
+        self._refresh()
+        return r
+
+    def _settle(self, r: StepRow, mark: str) -> None:
+        if r.mark != _RUNNING:
+            return
+        r.mark = mark
+        if not r.keep:
+            self._list.remove(r)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        if self._closed:
+            return
+        shown = self._list[-MAX_ROWS:]
+        self._wanted = "\n".join(f"{r.mark} {r.label}" for r in shown) or None
         if self._pump is None or self._pump.done():
             self._pump = asyncio.ensure_future(self._run())
 
-    async def _write(self, text: str) -> None:
+    async def _write(self, text: str | None) -> None:
         try:
-            if self._message_id is None:
+            if text is None:
+                # the list emptied: the message goes, never an empty edit
+                await asyncio.wait_for(
+                    self._delete(self._message_id), self._io_timeout_s)
+                self._message_id = None
+            elif self._message_id is None:
                 mid = await asyncio.wait_for(self._send(text), self._io_timeout_s)
                 if mid is None:
                     self._post_failed = True
@@ -186,7 +209,7 @@ class TurnProgressLine:
                     self._edit(self._message_id, text), self._io_timeout_s)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — progress is never the turn's fault
+        except Exception as exc:  # noqa: BLE001 — progress is never the run's fault
             if self._message_id is None:
                 self._post_failed = True
             logger.info("turn progress line write failed: %s", type(exc).__name__)
@@ -196,8 +219,9 @@ class TurnProgressLine:
         self._shown = text
 
     async def _run(self) -> None:
-        while (self._wanted is not None and self._wanted != self._shown
-               and not self._post_failed):
+        while self._wanted != self._shown and not self._post_failed:
+            if self._wanted is None and self._message_id is None:
+                return  # nothing up, nothing wanted
             if self._last_write is not None:
                 wait = self._spacing_s - (self._now() - self._last_write)
                 if wait > 0:
@@ -205,24 +229,22 @@ class TurnProgressLine:
             text = self._wanted
             await self._write(text)
             if self._shown != text and self._message_id is not None:
-                return  # an edit failed: leave it to the next step or the close
+                return  # a write failed: leave it to the next change or the close
 
-    def finish(self, *, ok: bool) -> None:
-        """The turn ended: close the log in the background. Never awaits, never
-        raises; a turn with no tool use posted nothing and spawns nothing."""
-        if self._count == 0:
+    def finish(self) -> None:
+        """The run ended: close the line in the background. Never awaits, never
+        raises; a run that made no row posted nothing and spawns nothing."""
+        if not self._made_any:
             return
-        # the turn's duration is its own, not its log's delivery delay (x2)
-        self._elapsed_at_end = self._now() - self._started
-        task = asyncio.ensure_future(self.close(ok=ok))
+        self._closed = True
+        task = asyncio.ensure_future(self.close())
         _closing.add(task)
         task.add_done_callback(_closing.discard)
 
-    async def close(self, *, ok: bool) -> None:
+    async def close(self) -> None:
         """Drains the pending write (bounded), waits out the spacing, then
-        writes the closing text once (bounded)."""
-        if self._elapsed_at_end is None:
-            self._elapsed_at_end = self._now() - self._started
+        deletes the message once (bounded)."""
+        self._closed = True
         pump = self._pump
         if pump is not None and not pump.done():
             try:
@@ -232,7 +254,7 @@ class TurnProgressLine:
                 raise
             except Exception:  # noqa: BLE001 — a timeout included
                 pump.cancel()
-                # settle it, so the spacing below counts its last write (x2)
+                # settle it, so the spacing below counts its last write
                 await asyncio.gather(pump, return_exceptions=True)
         if self._message_id is None:
             return
@@ -240,24 +262,9 @@ class TurnProgressLine:
             wait = self._spacing_s - (self._now() - self._last_write)
             if wait > 0:
                 await self._sleep(wait)
-        if self._delete is not None:
-            # A line with a delete goes away instead of being closed
-            try:
-                await asyncio.wait_for(self._delete(self._message_id), self._io_timeout_s)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.info("turn progress line delete failed: %s", type(exc).__name__)
-            return
-        if ok:
-            text = (f"☑ This turn: {_steps(self._count)} in "
-                    f"{format_elapsed(self._elapsed_at_end)}")
-        else:
-            text = f"✖ This turn stopped after {_steps(self._count)}"
         try:
-            await asyncio.wait_for(
-                self._edit(self._message_id, text), self._io_timeout_s)
+            await asyncio.wait_for(self._delete(self._message_id), self._io_timeout_s)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.info("turn progress line close failed: %s", type(exc).__name__)
+            logger.info("turn progress line delete failed: %s", type(exc).__name__)

@@ -494,7 +494,7 @@ async def test_an_interrupted_runs_step_line_is_deleted_at_boot(lease_file, monk
     monkeypatch.setattr(tools, "_channel_manager", make_transport(dm))
     lease = await configurator_run.acquire(run_key="turn-9", via="delegation", task="full audit")
     line = tools._configurator_step_line(_configurator_cfg(), {})
-    line.step("reading files")
+    line.row("reading files")
     for _ in range(10):
         await asyncio.sleep(0)
     assert json.loads(lease_file.read_text()).get("step_line") == [BOT, 123, 77]
