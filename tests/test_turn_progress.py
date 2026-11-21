@@ -145,6 +145,41 @@ async def test_the_last_row_disappearing_deletes_the_message_and_a_later_row_pos
     assert wire.sent == ["⏳ Work on it", "⏳ B"]
 
 
+async def test_a_row_that_comes_and_goes_during_the_spacing_deletes_nothing():
+    """After the message is deleted, a keep=False row that starts and settles
+    while the pump waits out the spacing has no message to delete; a later row
+    still posts."""
+    class _StrictWire(_Wire):
+        async def delete(self, message_id):
+            if message_id is None:
+                raise TypeError("no message id")
+            return await super().delete(message_id)
+
+    wire = _StrictWire()
+    gate = asyncio.Event()
+
+    async def sleep(_s: float) -> None:
+        await gate.wait()
+
+    line = _line(wire, sleep=sleep)
+    a = line.row("Work on it", keep=False)
+    await _settle()
+    a.done()                         # the pump waits out the spacing at the gate
+    gate.set()
+    await _settle()
+    assert wire.deleted == [42]
+    gate.clear()
+    b = line.row("Work on it", keep=False)
+    await _settle()                  # the pump is waiting out the spacing again
+    b.done()
+    gate.set()
+    await _settle()
+    line.row("C")
+    await _settle()
+    assert wire.deleted == [42]
+    assert wire.sent == ["⏳ Work on it", "⏳ C"]
+
+
 async def test_a_row_never_settled_stays_running_and_the_message_is_deleted():
     from drivers.turn_progress import _closing
     wire = _Wire()

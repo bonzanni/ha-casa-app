@@ -192,6 +192,11 @@ class TurnProgressLine:
             self._pump = asyncio.ensure_future(self._run())
 
     async def _write(self, text: str | None) -> None:
+        if text is None and self._message_id is None:
+            # the list emptied while no message was up (a row came and went
+            # during the spacing): nothing to delete
+            self._shown = None
+            return
         try:
             if text is None:
                 # the list emptied: the message goes, never an empty edit
