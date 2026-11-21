@@ -48,9 +48,10 @@ def _text(t):
     return AssistantMessage(content=[TextBlock(text=t)], model="sonnet")
 
 
-def _call(call_id):
-    return AssistantMessage(content=[ToolUseBlock(id=call_id, name=TOOL, input=dict(ARGS))],
-                            model="sonnet")
+def _call(call_id, *, name=TOOL, input=None):
+    return AssistantMessage(content=[ToolUseBlock(
+        id=call_id, name=name, input=dict(ARGS) if input is None else input)],
+        model="sonnet")
 
 
 def _result(call_id, *, error=True):

@@ -541,6 +541,160 @@ async def test_the_step_line_is_kept_and_deleted_by_its_address(lease_file):
     assert deleted == [TgAddress(BOT, 123, 77)] and len(sent) == 2
 
 
+# -- the rows a configurator run makes and settles -----------------------------
+
+_ASSIGN = "mcp__casa-framework__plugin_assign"
+_COMMIT = "mcp__casa-framework__config_git_commit"
+_GMAIL = {"name": "gmail", "target": "specialist:finance"}
+
+
+class _StepDM:
+    """Casa's own endpoint as far as the step line is concerned: every send,
+    edit and delete, in order."""
+    chat_id = "123"
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    def address(self, chat_id, message_id=None):
+        return TgAddress(self.bot_id, int(chat_id), message_id)
+
+    async def send_step_line(self, chat_id, text):
+        self.events.append(("send", text))
+        return 77
+
+    async def edit_dm_message(self, chat_id, message_id, text, buttons=None):
+        self.events.append(("edit", text))
+        return True
+
+    async def delete_dm_message(self, chat_id, message_id):
+        self.events.append(("delete", message_id))
+        return True
+
+    def texts(self):
+        return [e[1] for e in self.events if e[0] in ("send", "edit")]
+
+
+async def _settle():
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+@pytest.fixture
+def step_run(lease_file, monkeypatch):
+    """Runs the configurator over a scripted client, its step line going to a
+    recording DM with no spacing between writes."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    import tools
+    from drivers import turn_progress
+    from scripted_delegate import _Scripted
+    from test_delegate_to_agent import _with_origin
+
+    dm = _StepDM()
+    monkeypatch.setattr(tools, "_channel_manager", make_transport(dm))
+    monkeypatch.setattr(tools, "_build_specialist_options",
+                        lambda cfg, *, resolution=None, output_format=None:
+                        ClaudeAgentOptions())
+    monkeypatch.setattr(tools, "_delegated_resolution",
+                        lambda cfg: SimpleNamespace(plugins=[]))
+    monkeypatch.setattr(tools, "_build_world_state_summary", lambda: "")
+    monkeypatch.setattr(tools, "ClaudeSDKClient", _Scripted)
+    monkeypatch.setitem(tools._agent_role_map, "finance",
+                        SimpleNamespace(character=SimpleNamespace(name="Alex")))
+    monkeypatch.setitem(turn_progress.TurnProgressLine.__init__.__kwdefaults__,
+                        "spacing_s", 0.0)
+
+    async def run(*items):
+        _Scripted.load(*items)
+        try:
+            await _with_origin(
+                tools._run_delegated_agent(_configurator_cfg(), "go", ""), _origin())
+        finally:
+            await asyncio.gather(*list(turn_progress._closing))
+        return dm
+
+    run.dm = dm
+    return run
+
+
+def _settling():
+    from scripted_delegate import _Step
+    return _Step(_settle)
+
+
+async def test_a_tool_call_becomes_a_row_and_its_result_ticks_it(step_run):
+    from scripted_delegate import _call, _result
+    dm = await step_run(_call("A", name=_ASSIGN, input=dict(_GMAIL)), _settling(),
+                        _result("A", error=False), _settling())
+    assert dm.texts() == ["⏳ Set up Gmail for Alex", "✓ Set up Gmail for Alex"]
+    assert dm.events[-1] == ("delete", 77)
+
+
+async def test_an_error_result_crosses_the_row(step_run):
+    from scripted_delegate import _call, _result
+    dm = await step_run(_call("A", name=_ASSIGN, input=dict(_GMAIL)), _settling(),
+                        _result("A", error=True), _settling())
+    assert dm.texts()[-1] == "✗ Set up Gmail for Alex"
+    assert dm.events[-1] == ("delete", 77)
+
+
+async def test_two_calls_in_one_message_are_settled_by_their_own_results(step_run):
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+    from scripted_delegate import _result
+    both = AssistantMessage(content=[
+        ToolUseBlock(id="A", name=_ASSIGN, input=dict(_GMAIL)),
+        ToolUseBlock(id="B", name=_COMMIT, input={})], model="sonnet")
+    dm = await step_run(both, _settling(), _result("B", error=False), _settling(),
+                        _result("A", error=False), _settling())
+    assert dm.texts() == [
+        "⏳ Set up Gmail for Alex\n⏳ Save the changes",
+        "⏳ Set up Gmail for Alex\n✓ Save the changes",
+        "✓ Set up Gmail for Alex\n✓ Save the changes"]
+
+
+async def test_a_run_cut_before_the_result_still_deletes_the_line(step_run):
+    from scripted_delegate import _Step, _call
+
+    async def _cut():
+        raise RuntimeError("the CLI went away")
+
+    with pytest.raises(RuntimeError):
+        await step_run(_call("A", name=_ASSIGN, input=dict(_GMAIL)), _settling(), _Step(_cut))
+    assert step_run.dm.texts() == ["⏳ Set up Gmail for Alex"]
+    assert step_run.dm.events[-1] == ("delete", 77)
+
+
+async def test_a_hidden_tool_makes_no_row(step_run):
+    from scripted_delegate import _call, _result
+    dm = await step_run(_call("A", name="Read", input={"file_path": "/x"}), _settling(),
+                        _result("A", error=False), _settling())
+    assert dm.events == []
+
+
+async def test_step_stage_outside_a_run_does_nothing(step_run):
+    import tools
+    row = tools._step_stage("x")
+    row.done()
+    row.failed()
+    await _settle()
+    assert step_run.dm.events == []
+
+
+async def test_the_runs_line_is_visible_to_code_run_inside_the_stream(step_run):
+    import tools
+    from scripted_delegate import _Step
+
+    async def _stage():
+        tools._step_stage("Stage").done()
+        await _settle()
+
+    dm = await step_run(_Step(_stage))
+    assert "✓ Stage" in dm.texts()
+    assert dm.events[-1] == ("delete", 77)
+
+
 async def test_the_boot_notice_is_skipped_when_the_job_registry_announces_the_run(lease_file):
     import configurator_run
     sent: list = []

@@ -4417,6 +4417,37 @@ def _configurator_step_line(cfg: Any, origin: dict) -> Any:
         delete=lambda mid: delete(chat_id, mid))
 
 
+#: The step line of the delegated run this code runs inside; ``None`` outside a
+#: configurator run (each run sets its own, so a nested run never shows on its
+#: caller's line).
+_step_line: ContextVar["TurnProgressLine | None"] = ContextVar("_step_line", default=None)
+
+
+class _NoStepRow:
+    """The row of a step taken outside a configurator run: nothing shows."""
+
+    __slots__ = ()
+
+    def done(self) -> None:
+        pass
+
+    def failed(self) -> None:
+        pass
+
+
+_NO_STEP_ROW = _NoStepRow()
+
+
+def _step_stage(label: str) -> Any:
+    """A running row named *label* on the current run's step line, settled
+    through its ``done()`` / ``failed()``; a row that does nothing when no
+    configurator run is showing a line."""
+    line = _step_line.get()
+    if line is None:
+        return _NO_STEP_ROW
+    return line.row(label)
+
+
 def _known_role(value: object) -> str:
     """A registered agent role, else ``<other>``.
 
@@ -5081,6 +5112,9 @@ async def _run_delegated_turn(
     # observed below is attributed to the artifact this session really ran.
     binding: dict[str, str] = {}
     tool_calls: dict[str, tuple[str, float]] = {}
+    # the step line's running rows, by the tool call each one shows; a row is
+    # settled by its own call's result
+    step_rows: dict[str, Any] = {}
     # #1252: the text-bearing messages `text` is joined from, and where they
     # stop being the operator's because a protected call is waiting on the
     # operator's approval — read at each call's result, as the resident's
@@ -5097,11 +5131,13 @@ async def _run_delegated_turn(
     # processes itself)
     _tree = _bounded_tree.get() if _owner is None else None
     _bounded_tree.set(None)
-    # The configurator's live step line in the
-    # operator's DM, removed when the run ends.
-    _steps = _configurator_step_line(cfg, parent)
     # The session's extras: the long-run compaction window and the pad.
     _extras = specialist_session.session_env_and_pad(cfg, child_origin, run_id=run.session_id)
+    # The configurator's live step line in the operator's DM, removed when the
+    # run ends; set as this run's own line (or none) for the code run inside
+    # it, right before the `try` whose `finally` resets it.
+    _steps = _configurator_step_line(cfg, parent)
+    _steps_tok = _step_line.set(_steps)
 
     def _options_and_binding():
         res = resolution if resolution is not None \
@@ -5228,9 +5264,20 @@ async def _run_delegated_turn(
                                         getattr(block, "input", None) or {},
                                         agent_name=_display_name_for_role)
                                     if label is not None:
-                                        _steps.row(
-                                            label, keep=label != GENERIC_LABEL)
+                                        step_rows[getattr(block, "id", "")] = \
+                                            _steps.row(
+                                                label, keep=label != GENERIC_LABEL)
                     elif isinstance(sdk_msg, UserMessage):
+                        if step_rows:
+                            for block in getattr(sdk_msg, "content", None) or []:
+                                if isinstance(block, ToolResultBlock):
+                                    row = step_rows.pop(
+                                        getattr(block, "tool_use_id", ""), None)
+                                    if row is not None:
+                                        if getattr(block, "is_error", False):
+                                            row.failed()
+                                        else:
+                                            row.done()
                         if approval_scope is not None:
                             for block in getattr(sdk_msg, "content", None) or []:
                                 if isinstance(block, ToolResultBlock):
@@ -5246,6 +5293,7 @@ async def _run_delegated_turn(
                         # client raises before the loop reaches a ResultMessage).
                         result_msg = sdk_msg
     finally:
+        _step_line.reset(_steps_tok)
         if _steps is not None:
             _steps.finish()        # the line goes as the answer comes
         # #1207: the grants this run left waiting on the operator, for a

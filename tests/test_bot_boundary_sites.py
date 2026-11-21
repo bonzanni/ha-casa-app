@@ -614,7 +614,7 @@ IDENTITY_SITE_HITS = {
         "_erased_everything": 1, "_failure_message": 2, "_guest_access_from_resident": 1,
         "_guest_chat_of": 3,
         "_plugin_conversation_blocks": 1,
-        "_run_delegated_turn": 2,
+        "_run_delegated_turn": 5,
         "_scheduled_operator_target": 1, "_settle_setup_from_delegated_results": 1,
         "_take_complete_erasures": 1, "_tool_set_plugin_env_reference": 1,
         "_tool_verify_plugin_state": 8, "ask_user._finish_factory._finish": 1,
@@ -651,7 +651,8 @@ _IDS = "test_plugin_identities.py::"
 IDENTITY_FILES = {
     "channels/telegram.py": (ENDPOINT, "state and keys of one endpoint instance; the module "
                                        "holds no state shared between endpoints (pinned below)"),
-    "tools.py": (NOISE, "message text, tool-call counters and arguments, not keys"),
+    "tools.py": (NOISE, "message text, tool-call counters and arguments, step rows by "
+                        "tool-use id, not keys"),
     "result_broker.py": (SAFE, "keyed by a Casa-minted reference or tool-use id"),
     "run_admission.py": (SAFE, "confirmations are keyed by their Casa-minted id"),
     "authz_grants.py": (RULE_K, "test_ask_scopes.py::"
