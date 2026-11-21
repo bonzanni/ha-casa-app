@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Awaitable, Callable
 
@@ -25,81 +26,123 @@ logger = logging.getLogger(__name__)
 _SPACING_S = 3.0      # at least this long between two writes of the line
 _IO_TIMEOUT_S = 3.0   # bound on each Telegram call and on the close's drain
 
-# Tool-use activity phrases.
-_MCP_SERVER_CAP = 32      # §5 P1-B: cap the mcp server substring AT SOURCE.
+# --- the label of a step -------------------------------------------------
+#
+# A row names the activity a tool call is, in the operator's words. A label
+# is built before the tool's handler validates its arguments, so an argument
+# is shown only when it is shaped like a short name; anything else reads as
+# "the plugin" / "the agent". Only the arguments named below are ever read.
 
-# §5 S5: coarse tool_use → activity mapping.
-_ACTIVITY_READING = frozenset({"Read", "Glob", "Grep"})
-_ACTIVITY_EDITING = frozenset({"Write", "Edit", "NotebookEdit"})
-_ACTIVITY_RESEARCH = frozenset({"WebFetch", "WebSearch"})
+GENERIC_LABEL = "Work on it"
 
+# Shown by their own rows elsewhere (a plugin install or update is staged).
+STAGE_ROW_TOOLS = frozenset({"plugin_add", "plugin_update"})
 
-# #1350: Casa's own tools, in the operator's words — "using casa-framework
-# tools" told the operator nothing about what was happening. Keyed on
-# the tool name after the ``mcp__casa-framework__`` prefix: exact names first,
-# then name prefixes; anything unlisted keeps the generic phrase.
 _CASA_TOOL_PREFIX = "mcp__casa-framework__"
-_CASA_ACTIVITY_EXACT: dict[str, str] = {
-    "config_git_commit": "committing the change",
-    "casa_reload": "reloading Casa",
-    "casa_reload_triggers": "reloading Casa",
-    "casa_restart_supervised": "reloading Casa",
-    "list_vault_items": "wiring secrets",
-    "get_item_fields": "wiring secrets",
-    "set_plugin_env_reference": "wiring secrets",
-    "remove_plugin_env_reference": "wiring secrets",
-    "emit_completion": "wrapping up",
-}
-_CASA_ACTIVITY_PREFIX: tuple[tuple[str, str], ...] = (
-    ("plugin_", "updating plugins"),
-    ("specialist_", "managing specialists"),
-    ("persona_", "managing personas"),
-    ("resident_persona_", "managing personas"),
-    ("config_trigger_", "updating triggers"),
-)
+_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
+
+# Looking around and housekeeping: no row.
+_HIDDEN_BUILTINS = frozenset({"Read", "Glob", "Grep", "Write", "Edit"})
+_HIDDEN_CASA = frozenset({
+    "plugin_list", "persona_list", "specialist_install_inspect",
+    "persona_install_inspect", "get_item_fields", "emit_completion",
+    "trigger_ack_revoke", "callback_ack_revoke", "event_ack_revoke",
+    "persona_ack_revoke", "consent_reprompt",
+})
 
 
-def _casa_activity(name: str) -> str | None:
-    if not name.startswith(_CASA_TOOL_PREFIX):
-        return None
-    short = name[len(_CASA_TOOL_PREFIX):]
-    if short in _CASA_ACTIVITY_EXACT:
-        return _CASA_ACTIVITY_EXACT[short]
-    for prefix, phrase in _CASA_ACTIVITY_PREFIX:
-        if short.startswith(prefix):
-            return phrase
+def _short_name(value: object) -> str | None:
+    if isinstance(value, str) and _NAME_RE.fullmatch(value):
+        return value
     return None
 
 
-def activity_for_tool(tool_name: str) -> str:
-    """Coarse activity phrase for a ``tool_use`` block (§5 S5).
+def plugin_label(slug: str) -> str:
+    """A plugin's name for a label: ``"todo-list"`` → ``"Todo List"``."""
+    name = _short_name(slug)
+    if name is None:
+        return "the plugin"
+    return " ".join(w.capitalize() for w in re.split(r"[-_]+", name) if w)
 
-    Read/Glob/Grep → ``reading files``; Write/Edit/NotebookEdit → ``editing
-    files``; Bash → ``running commands``; Task*/TodoWrite → ``planning``;
-    WebFetch/WebSearch → ``researching``; ``mcp__<server>__…`` → ``using
-    <server> tools``; anything else → ``working``.
+
+def target_label(target: str, agent_name: Callable[[str], str]) -> str:
+    """An agent's name for a label, from ``resident:<role>``,
+    ``specialist:<role>`` or a bare role."""
+    role = target if isinstance(target, str) else ""
+    for prefix in ("resident:", "specialist:"):
+        if role.startswith(prefix):
+            role = role[len(prefix):]
+            break
+    if _short_name(role) is None:
+        return "the agent"
+    shown = agent_name(role)
+    return f"the {role} agent" if shown == role else shown
+
+
+_Formatter = Callable[[dict, Callable[[str], str]], str]
+
+
+def _fixed(label: str) -> _Formatter:
+    return lambda _args, _agent_name: label
+
+
+_LABELS: dict[str, _Formatter] = {
+    "plugin_assign": lambda a, n: (
+        f"Set up {plugin_label(a.get('name'))} for {target_label(a.get('target'), n)}"),
+    "plugin_unassign": lambda a, n: (
+        f"Take {plugin_label(a.get('name'))} away from "
+        f"{target_label(a.get('target'), n)}"),
+    "plugin_remove": lambda a, n: f"Remove {plugin_label(a.get('name'))}",
+    "verify_plugin_state": lambda a, n: f"Check {plugin_label(a.get('plugin_name'))}",
+    "list_vault_items": _fixed("Look in 1Password"),
+    "set_plugin_env_reference": lambda a, n: (
+        f"Save a setting for {plugin_label(a.get('plugin'))}"),
+    "remove_plugin_env_reference": lambda a, n: (
+        f"Remove a setting from {plugin_label(a.get('plugin'))}"),
+    "config_git_commit": _fixed("Save the changes"),
+    "casa_reload": _fixed("Apply the changes"),
+    "casa_reload_triggers": _fixed("Apply the changes"),
+    "casa_restart_supervised": _fixed("Arrange a restart"),
+    "config_trigger_upsert": _fixed("Write the automation"),
+    "config_trigger_delete": _fixed("Remove the automation"),
+    "specialist_install_request_approval": _fixed(
+        "Check whether your approval is needed"),
+    "specialist_install_commit": _fixed("Install the new agent"),
+    "specialist_upgrade": lambda a, n: f"Update {target_label(a.get('slug'), n)}",
+    "specialist_rollback": lambda a, n: (
+        f"Put {target_label(a.get('slug'), n)} back as it was"),
+    "specialist_uninstall": lambda a, n: f"Remove {target_label(a.get('slug'), n)}",
+    "persona_install_commit": _fixed("Add the personality"),
+    "persona_apply": _fixed("Change the personality"),
+    "resident_persona_swap": _fixed("Change the personality"),
+    "resident_persona_reset": _fixed("Change the personality"),
+    "persona_remove": _fixed("Clear out unused personalities"),
+    "persona_prune": _fixed("Clear out unused personalities"),
+}
+
+
+def step_label(
+    tool_name: str, tool_input: dict, *, agent_name: Callable[[str], str],
+) -> str | None:
+    """The row label for one tool call; ``None`` when the call gets no row.
+
+    *agent_name* maps a role to its display name (the role itself when it has
+    none). A tool the table does not list reads as ``GENERIC_LABEL`` and none
+    of its arguments is looked at.
     """
     name = tool_name or ""
-    if name in _ACTIVITY_READING:
-        return "reading files"
-    if name in _ACTIVITY_EDITING:
-        return "editing files"
-    if name == "Bash":
-        return "running commands"
-    if name.startswith("Task") or name == "TodoWrite":
-        return "planning"
-    if name in _ACTIVITY_RESEARCH:
-        return "researching"
-    casa = _casa_activity(name)
-    if casa is not None:
-        return casa
-    if name.startswith("mcp__"):
-        parts = name.split("__")
-        server = parts[1] if len(parts) > 1 and parts[1] else "mcp"
-        # §5 P1-B: cap the (unbounded) server substring AT SOURCE so the status
-        # line can never blow the 4096 wire bound.
-        return f"using {server[:_MCP_SERVER_CAP]} tools"
-    return "working"
+    if name in _HIDDEN_BUILTINS:
+        return None
+    if not name.startswith(_CASA_TOOL_PREFIX):
+        return GENERIC_LABEL
+    short = name[len(_CASA_TOOL_PREFIX):]
+    if short in STAGE_ROW_TOOLS or short in _HIDDEN_CASA:
+        return None
+    formatter = _LABELS.get(short)
+    if formatter is None:
+        return GENERIC_LABEL
+    args = tool_input if isinstance(tool_input, dict) else {}
+    return formatter(args, agent_name)
 
 
 # Closes run here, never awaited by the run — a hung Telegram must not delay

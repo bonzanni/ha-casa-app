@@ -437,6 +437,7 @@ IDENTITY_SITE_HITS = {
         "InCasaDriver._reconcile_live": 1, "InCasaDriver._reconcile_restart_entries": 1,
         "InCasaDriver.recover": 1,
     },
+    "drivers/turn_progress.py": {"<module>": 3},
     "engagement_registry.py": {
         "EngagementRegistry.__init__": 3, "EngagementRegistry._settle_job_posts": 3,
         "EngagementRegistry.counts_as_live": 1, "EngagementRegistry.ended_job_post_owner": 2,
@@ -823,6 +824,8 @@ IDENTITY_FUNCTIONS = {
                                                       "kept per role by design"),
     ("memory/occurrence.py", "post_key"): (SAFE, "keyed by a Casa-minted tool-use id"),
     ("approval_card.py", "tool_fallback"): (NOISE, "a card title, not a key"),
+    ("drivers/turn_progress.py", "<module>"): (NOISE, "progress-line labels and a tool "
+                                                      "name, not a key"),
 }
 
 

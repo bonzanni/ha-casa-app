@@ -5221,9 +5221,15 @@ async def _run_delegated_turn(
                                     _first_tool = True
                                     _ph["first_tool"] = time.monotonic()
                                 if _steps is not None:
-                                    from drivers.turn_progress import activity_for_tool
-                                    _steps.row(activity_for_tool(
-                                        str(getattr(block, "name", ""))))
+                                    from drivers.turn_progress import (
+                                        GENERIC_LABEL, step_label)
+                                    label = step_label(
+                                        str(getattr(block, "name", "")),
+                                        getattr(block, "input", None) or {},
+                                        agent_name=_display_name_for_role)
+                                    if label is not None:
+                                        _steps.row(
+                                            label, keep=label != GENERIC_LABEL)
                     elif isinstance(sdk_msg, UserMessage):
                         if approval_scope is not None:
                             for block in getattr(sdk_msg, "content", None) or []:

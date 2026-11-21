@@ -6,7 +6,14 @@ import asyncio
 
 import pytest
 
-from drivers.turn_progress import MAX_ROWS, TurnProgressLine, activity_for_tool
+from pathlib import Path
+
+import yaml
+
+from drivers.turn_progress import (
+    GENERIC_LABEL, MAX_ROWS, STAGE_ROW_TOOLS, TurnProgressLine, plugin_label,
+    step_label, target_label,
+)
 
 pytestmark = [pytest.mark.unit]
 
@@ -370,53 +377,181 @@ async def test_a_timed_out_drain_still_spaces_the_closing_delete():
     assert deletes[0] - edits[0] >= 3.0
 
 
-# Moved from tests/test_summary_controller.py with the helpers they pin.
-class TestActivityMapping:
-    @pytest.mark.parametrize(
-        "tool,expected",
-        [
-            ("Read", "reading files"),
-            ("Glob", "reading files"),
-            ("Grep", "reading files"),
-            ("Write", "editing files"),
-            ("Edit", "editing files"),
-            ("NotebookEdit", "editing files"),
-            ("Bash", "running commands"),
-            ("Task", "planning"),
-            ("TaskOutput", "planning"),
-            ("TodoWrite", "planning"),
-            ("WebFetch", "researching"),
-            ("WebSearch", "researching"),
-            ("mcp__ha-control__call_service", "using ha-control tools"),
-            ("mcp__plugin_bank-feed_bank-feed__daily_sync",
-             "using plugin_bank-feed_bank-feed tools"),
-            ("mcp__casa-framework__emit_completion", "wrapping up"),
-            # #1350: Casa's own tools in the operator's words
-            ("mcp__casa-framework__plugin_update", "updating plugins"),
-            ("mcp__casa-framework__plugin_list", "updating plugins"),
-            ("mcp__casa-framework__config_git_commit", "committing the change"),
-            ("mcp__casa-framework__casa_reload", "reloading Casa"),
-            ("mcp__casa-framework__casa_reload_triggers", "reloading Casa"),
-            ("mcp__casa-framework__casa_restart_supervised", "reloading Casa"),
-            ("mcp__casa-framework__specialist_upgrade", "managing specialists"),
-            ("mcp__casa-framework__persona_apply", "managing personas"),
-            ("mcp__casa-framework__resident_persona_swap", "managing personas"),
-            ("mcp__casa-framework__list_vault_items", "wiring secrets"),
-            ("mcp__casa-framework__get_item_fields", "wiring secrets"),
-            ("mcp__casa-framework__set_plugin_env_reference", "wiring secrets"),
-            ("mcp__casa-framework__remove_plugin_env_reference", "wiring secrets"),
-            ("mcp__casa-framework__config_trigger_upsert", "updating triggers"),
-            ("mcp__casa-framework__query_engager", "using casa-framework tools"),
-            ("SomethingElse", "working"),
-            ("", "working"),
-        ],
-    )
-    def test_coarse_mapping(self, tool, expected):
-        assert activity_for_tool(tool) == expected
+# --- the labels -----------------------------------------------------------
 
-    def test_mcp_server_name_capped_at_32(self):
-        # P1-B r4: the mcp server substring is capped at 32 chars AT SOURCE so
-        # the status line cannot blow the 4096 wire bound.
-        long = "s" * 100
-        out = activity_for_tool(f"mcp__{long}__do")
-        assert out == "using " + "s" * 32 + " tools"
+_CASA = "mcp__casa-framework__"
+_NAMES = {"finance": "Alex", "assistant": "Ellen"}
+
+
+def _agent_name(role: str) -> str:
+    return _NAMES.get(role, role)
+
+
+def _label(tool: str, args: dict | None = None) -> str | None:
+    return step_label(tool, args or {}, agent_name=_agent_name)
+
+
+@pytest.mark.parametrize("tool,args,expected", [
+    ("plugin_assign", {"name": "gmail", "target": "specialist:finance"},
+     "Set up Gmail for Alex"),
+    ("plugin_unassign", {"name": "gmail", "target": "resident:assistant"},
+     "Take Gmail away from Ellen"),
+    ("plugin_remove", {"name": "todo-list"}, "Remove Todo List"),
+    ("verify_plugin_state", {"plugin_name": "gmail"}, "Check Gmail"),
+    ("list_vault_items", {"query": "gmail"}, "Look in 1Password"),
+    ("set_plugin_env_reference",
+     {"plugin": "gmail", "var_name": "X", "op_ref_or_value": "op://a/b/c"},
+     "Save a setting for Gmail"),
+    ("remove_plugin_env_reference", {"plugin": "gmail", "var_name": "X"},
+     "Remove a setting from Gmail"),
+    ("config_git_commit", {"message": "m"}, "Save the changes"),
+    ("casa_reload", {"scope": "agent"}, "Apply the changes"),
+    ("casa_reload_triggers", {}, "Apply the changes"),
+    ("casa_restart_supervised", {}, "Arrange a restart"),
+    ("config_trigger_upsert", {"role": "assistant"}, "Write the automation"),
+    ("config_trigger_delete", {"role": "assistant"}, "Remove the automation"),
+    ("specialist_install_request_approval", {},
+     "Check whether your approval is needed"),
+    ("specialist_install_commit", {}, "Install the new agent"),
+    ("specialist_upgrade", {"slug": "finance"}, "Update Alex"),
+    ("specialist_rollback", {"slug": "finance"}, "Put Alex back as it was"),
+    ("specialist_uninstall", {"slug": "finance"}, "Remove Alex"),
+    ("persona_install_commit", {}, "Add the personality"),
+    ("persona_apply", {}, "Change the personality"),
+    ("resident_persona_swap", {}, "Change the personality"),
+    ("resident_persona_reset", {}, "Change the personality"),
+    ("persona_remove", {}, "Clear out unused personalities"),
+    ("persona_prune", {}, "Clear out unused personalities"),
+])
+def test_every_table_row_has_its_label(tool, args, expected):
+    assert _label(_CASA + tool, args) == expected
+
+
+_HIDDEN_BUILTINS = ("Read", "Glob", "Grep", "Write", "Edit")
+_HIDDEN_CASA = (
+    "plugin_list", "persona_list", "specialist_install_inspect",
+    "persona_install_inspect", "get_item_fields", "emit_completion",
+    "trigger_ack_revoke", "callback_ack_revoke", "event_ack_revoke",
+    "persona_ack_revoke", "consent_reprompt",
+)
+
+
+def test_stage_row_tools_and_housekeeping_are_hidden():
+    assert STAGE_ROW_TOOLS == frozenset({"plugin_add", "plugin_update"})
+    for short in STAGE_ROW_TOOLS:
+        assert _label(_CASA + short, {"name": "gmail"}) is None
+    for name in _HIDDEN_BUILTINS:
+        assert _label(name, {"file_path": "/config/x"}) is None
+    for short in _HIDDEN_CASA:
+        assert _label(_CASA + short) is None
+
+
+def test_a_target_is_shown_by_display_name():
+    assert (_label(_CASA + "plugin_assign",
+                   {"name": "gmail", "target": "specialist:finance"})
+            == "Set up Gmail for Alex")
+
+
+def test_an_unknown_role_reads_as_the_role_agent():
+    assert (_label(_CASA + "plugin_assign",
+                   {"name": "gmail", "target": "specialist:ghost"})
+            == "Set up Gmail for the ghost agent")
+    assert _label(_CASA + "specialist_upgrade", {"slug": "ghost"}) == \
+        "Update the ghost agent"
+
+
+def test_the_name_helpers():
+    assert plugin_label("gmail") == "Gmail"
+    assert plugin_label("todo-list") == "Todo List"
+    assert plugin_label("bank_feed") == "Bank Feed"
+    assert plugin_label("") == "the plugin"
+    assert target_label("resident:assistant", _agent_name) == "Ellen"
+    assert target_label("finance", _agent_name) == "Alex"
+    assert target_label("specialist:", _agent_name) == "the agent"
+
+
+def test_an_unlisted_tool_shows_no_argument():
+    assert _label("mcp__gmail__send", {"body": "s3cret"}) == GENERIC_LABEL
+    assert _label(_CASA + "query_engager", {"x": "s3cret"}) == GENERIC_LABEL
+    assert _label("Bash", {"command": "s3cret"}) == GENERIC_LABEL
+    assert _label("", {}) == GENERIC_LABEL
+    assert GENERIC_LABEL == "Work on it"
+
+
+_NOT_NAMES = ("op://Casa/Gmail/credential", "x" * 200, "Gmail Bot",
+              "../etc", "-gmail", "GMAIL")
+
+
+@pytest.mark.parametrize("bad", _NOT_NAMES)
+def test_a_value_that_is_not_a_name_is_never_shown(bad):
+    cases = [
+        ("plugin_assign", {"name": bad, "target": "specialist:finance"},
+         "Set up the plugin for Alex"),
+        ("plugin_assign", {"name": "gmail", "target": bad},
+         "Set up Gmail for the agent"),
+        ("plugin_assign", {"name": "gmail", "target": "specialist:" + bad},
+         "Set up Gmail for the agent"),
+        ("plugin_unassign", {"name": bad, "target": bad},
+         "Take the plugin away from the agent"),
+        ("plugin_remove", {"name": bad}, "Remove the plugin"),
+        ("verify_plugin_state", {"plugin_name": bad}, "Check the plugin"),
+        ("set_plugin_env_reference", {"plugin": bad},
+         "Save a setting for the plugin"),
+        ("remove_plugin_env_reference", {"plugin": bad},
+         "Remove a setting from the plugin"),
+        ("specialist_upgrade", {"slug": bad}, "Update the agent"),
+        ("specialist_rollback", {"slug": bad}, "Put the agent back as it was"),
+        ("specialist_uninstall", {"slug": bad}, "Remove the agent"),
+    ]
+    for tool, args, expected in cases:
+        out = _label(_CASA + tool, args)
+        assert out == expected, (tool, args)
+        assert bad not in out
+
+
+def test_a_missing_or_odd_argument_still_gives_a_label():
+    assert _label(_CASA + "plugin_assign", {}) == "Set up the plugin for the agent"
+    assert _label(_CASA + "plugin_remove", {"name": 7}) == "Remove the plugin"
+    assert step_label(_CASA + "plugin_remove", None,  # type: ignore[arg-type]
+                      agent_name=_agent_name) == "Remove the plugin"
+
+
+_FORBIDDEN = ("op_ref_or_value", "var_name", "config", "content",
+              "old_string", "new_string", "prompt", "task", "context")
+
+
+def _tool_names_in_table() -> list[str]:
+    return [
+        "plugin_assign", "plugin_unassign", "plugin_remove",
+        "verify_plugin_state", "list_vault_items", "set_plugin_env_reference",
+        "remove_plugin_env_reference", "config_git_commit", "casa_reload",
+        "casa_reload_triggers", "casa_restart_supervised",
+        "config_trigger_upsert", "config_trigger_delete",
+        "specialist_install_request_approval", "specialist_install_commit",
+        "specialist_upgrade", "specialist_rollback", "specialist_uninstall",
+        "persona_install_commit", "persona_apply", "resident_persona_swap",
+        "resident_persona_reset", "persona_remove", "persona_prune",
+    ]
+
+
+def test_no_forbidden_argument_reaches_a_label():
+    args = {k: "ZZMARK" for k in _FORBIDDEN}
+    args["config"] = {"ZZMARK": "ZZMARK"}
+    args.update(name="gmail", plugin="gmail", plugin_name="gmail",
+                target="specialist:finance", slug="finance")
+    for short in _tool_names_in_table():
+        out = _label(_CASA + short, dict(args))
+        assert out is not None and out != GENERIC_LABEL, short
+        assert "ZZMARK" not in out, short
+    for name in _HIDDEN_BUILTINS:
+        assert _label(name, dict(args)) is None
+
+
+def test_every_allowed_configurator_tool_is_decided():
+    role = (Path(__file__).resolve().parent.parent / "casa" / "rootfs" / "opt"
+            / "casa" / "defaults" / "roles" / "executor" / "configurator"
+            / "role.yaml")
+    allowed = yaml.safe_load(role.read_text(encoding="utf-8"))["tools"]["allowed"]
+    assert len(allowed) > 20
+    undecided = [t for t in allowed if _label(t) == GENERIC_LABEL]
+    assert undecided == []
