@@ -49,6 +49,15 @@ def test_run_script_pins_subagent_spawn_depth():
     )
 
 
+def test_run_script_sets_the_prompt_cache_lifetime():
+    """Every CLI session inherits a one-hour prompt cache, whatever the
+    credential: unset, the CLI falls back to five minutes on an API key."""
+    script = _read_run_script()
+    assert "\nexport CLAUDE_CODE_PROMPT_CACHE_TTL=1h\n" in script, (
+        "Missing prompt-cache lifetime in svc-casa/run"
+    )
+
+
 def test_run_script_exports_log_level():
     """v0.18.1: operator-facing log_level addon option must export to env.
 

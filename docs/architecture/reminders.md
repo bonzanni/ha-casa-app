@@ -180,7 +180,7 @@ No other missed occurrence in Casa is recoverable, a recurring reminder's includ
 
 This is the whole boundary between a resident managing its own reminders and a resident
 editing operator configuration. The red case is either tool touching an entry that carries no
-ownership marker — the heartbeat, the morning briefing, or a `reminder-`-prefixed dated
+ownership marker — the morning briefing, or a `reminder-`-prefixed dated
 one-shot the operator wrote themselves — or reaching another role's file. Creation also
 refuses a name already present under any owner, because a duplicate name is refused at
 registration and that is uncaught at boot.

@@ -29,6 +29,15 @@ unset _cc_oauth
 # agent's CLI subprocess (all use cli_path=/usr/local/bin/claude —
 # see claude_runtime.py).
 export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1
+# How long the CLI asks the API to keep a conversation's prompt cache. Left
+# unset, the CLI picks by credential: one hour on a subscription within plan
+# usage, five minutes on an API key or once a subscription draws on usage
+# credits. A resident's conversation is picked up again minutes to hours
+# later, and a five-minute cache makes each of those turns write its whole
+# context again. Set here so every CLI session Casa starts gets one hour
+# whatever the credential; a session that wants another value passes it in its
+# own options env, which wins over this. Needs CLI 2.1.242 or later.
+export CLAUDE_CODE_PROMPT_CACHE_TTL=1h
 _op_token="$(bashio::config 'onepassword_service_account_token')"
 [ "$_op_token" = "null" ] && _op_token=""
 export OP_SERVICE_ACCOUNT_TOKEN="$_op_token"

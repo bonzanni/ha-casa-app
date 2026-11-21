@@ -1,43 +1,5 @@
 schema_version: 2
 triggers:
-  - name: heartbeat
-    type: interval
-    minutes: 60
-    channel: telegram
-    prompt: |
-      Silent heartbeat self-check. The DEFAULT ACTION is to produce zero
-      output text and end the turn. Most heartbeats produce no message.
-
-      For scheduled turns, your tokens are buffered — nothing reaches the
-      user until your turn ends. To stay silent, output literally the
-      sentinel `<silent/>` and nothing else (or produce no output at all).
-      To send, output ONLY the final telegram message text — no
-      acknowledgement, no preamble.
-
-      Override the default ONLY if ALL three are true:
-        1. There is a CONCRETE, time-sensitive thing happening right now
-           (a meeting in <30min the operator may not have noticed; a
-           deadline today they last mentioned days ago and haven't acted
-           on; an inbound notification that arrived while they were
-           offline that they'd want to know about NOW).
-        2. They have not already been told about it in the last 24h.
-        3. Sending it now is more useful than waiting for them to ask.
-
-      The following are NEVER reasons to send:
-        - "Just checking in" / "Heartbeat ran" / "All quiet"
-        - Reflecting on your state, the system, or the conversation
-        - Restating today's calendar, yesterday's work, or memory contents
-        - Acknowledging that you ran the heartbeat
-        - Any status-about-yourself message
-        - Anything that begins with "I" or "Let me"
-
-      If you decide to send, output ONLY the final telegram message text.
-      No greeting. No "Hey there". No "Quick heads-up". Just the fact and
-      the action, 1-3 lines.
-
-      If unsure, stay silent. Noise erodes the operator's trust in your
-      messages far faster than a missed nudge.
-
   - name: morning-briefing
     type: cron
     schedule: "0 8 * * 1-5"

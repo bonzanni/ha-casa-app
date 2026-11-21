@@ -40,6 +40,14 @@ under from the snapshot they copied at entry, never from the holder, and a deleg
 binds the child's context to a frozen copy around `create_task` (INV-OUT-004 in
 [`output-boundary.md`](output-boundary.md)).
 
+A warm client saves the connect, not the tokens: what makes the next turn of a conversation
+cheap is the API's prompt cache, which outlives the client and is read again by a cold
+resume. How long that cache lasts is the CLI's choice, and left alone it depends on the
+credential. The service's run script therefore exports `CLAUDE_CODE_PROMPT_CACHE_TTL=1h`,
+which every CLI session Casa starts inherits, so a conversation resumed within the hour reads
+its context from the cache on a subscription and on an API key alike. A session's own options
+environment wins over the export.
+
 ## Contracts & invariants
 
 **INV-TURN-001**: The resume-versus-fresh decision is re-derived from a fresh session read while holding the pool entry's lock, and a cached client is reused only when its session id matches that decision exactly.
