@@ -87,36 +87,57 @@ async def test_no_row_posts_nothing():
     assert wire.sent == [] and wire.deleted == []
 
 
-async def test_a_row_runs_then_ticks():
+async def test_a_single_row_stays_unticked_and_is_deleted_so():
+    from drivers.turn_progress import _closing
     wire = _Wire()
     line = _line(wire)
     r = line.row("Download and install Gmail")
     await _settle()
-    assert wire.sent == ["⏳ Download and install Gmail"]
-    r.done()
+    assert wire.sent == ["- [ ] Download and install Gmail"]
+    r.done()                         # over, but nothing later has started
     await _settle()
-    assert wire.last == "✓ Download and install Gmail"
+    line.finish()
+    await asyncio.gather(*list(_closing))
+    assert wire.edits == [] and wire.last == "- [ ] Download and install Gmail"
+    assert wire.deleted == [42]
 
 
-async def test_a_failed_row_is_crossed():
+async def test_a_row_over_before_the_next_starts_is_ticked_when_it_starts():
     wire = _Wire()
     line = _line(wire)
-    r = line.row("Download and install Gmail")
+    line.row("A").done()
+    line.row("B")
     await _settle()
-    r.failed()
-    await _settle()
-    assert wire.last == "✗ Download and install Gmail"
+    assert wire.last == "- [x] A\n- [ ] B"
 
 
-async def test_rows_are_independent():
+async def test_a_row_still_running_when_the_next_starts_is_ticked_when_over():
+    wire = _Wire()
+    line = _line(wire)
+    a = line.row("A")
+    line.row("B")
+    await _settle()
+    assert wire.last == "- [ ] A\n- [ ] B"
+    a.done()
+    await _settle()
+    assert wire.last == "- [x] A\n- [ ] B"
+
+
+async def test_the_newest_row_is_ticked_only_once_a_later_one_starts():
     wire = _Wire()
     line = _line(wire)
     a = line.row("A")
     b = line.row("B")
     b.done()
     await _settle()
-    assert wire.last == "⏳ A\n✓ B"
+    assert wire.last == "- [ ] A\n- [ ] B"
     assert a is not b
+    line.row("C")
+    await _settle()
+    assert wire.last == "- [ ] A\n- [x] B\n- [ ] C"
+    a.done()
+    await _settle()
+    assert wire.last == "- [x] A\n- [x] B\n- [ ] C"
 
 
 async def test_rows_made_before_the_first_write_coalesce_into_one_post():
@@ -126,7 +147,27 @@ async def test_rows_made_before_the_first_write_coalesce_into_one_post():
     line.row("B").done()
     line.row("C")
     await _settle()
-    assert wire.sent == ["⏳ A\n✓ B\n⏳ C"] and wire.edits == []
+    assert wire.sent == ["- [ ] A\n- [x] B\n- [ ] C"] and wire.edits == []
+
+
+async def test_a_row_has_no_failed_state():
+    from drivers.turn_progress import StepRow
+    assert not hasattr(StepRow, "failed")
+
+
+async def test_a_label_shows_as_written_on_its_checklist_line():
+    """Characters rich Markdown reads as formatting are escaped, so the label
+    shows as written (through the real preparation the send applies)."""
+    from channels.tg_rich import prepare
+    wire = _Wire()
+    line = _line(wire)
+    line.row("Set up Todo for the my_agent agent")
+    line.row("Tell *Bo* `x` [a](b) <b>z</b> ~y~ |c|")
+    await _settle()
+    first, second = prepare(wire.last).split("\n")
+    assert first == "- [ ] Set up Todo for the my&#95;agent agent"
+    assert second == (r"- [ ] Tell \*Bo\* \`x\` \[a\](b) &lt;b\>z&lt;/b\> "
+                      r"\~y\~ \|c\|")
 
 
 async def test_a_row_not_kept_disappears_when_settled():
@@ -136,7 +177,7 @@ async def test_a_row_not_kept_disappears_when_settled():
     line.row("B")
     a.done()
     await _settle()
-    assert wire.last == "⏳ B"
+    assert wire.last == "- [ ] B"
 
 
 async def test_the_last_row_disappearing_deletes_the_message_and_a_later_row_posts_again():
@@ -149,7 +190,7 @@ async def test_the_last_row_disappearing_deletes_the_message_and_a_later_row_pos
     assert wire.deleted == [42] and (42, "") not in wire.edits
     line.row("B")
     await _settle()
-    assert wire.sent == ["⏳ Work on it", "⏳ B"]
+    assert wire.sent == ["- [ ] Work on it", "- [ ] B"]
 
 
 async def test_a_row_that_comes_and_goes_during_the_spacing_deletes_nothing():
@@ -184,10 +225,10 @@ async def test_a_row_that_comes_and_goes_during_the_spacing_deletes_nothing():
     line.row("C")
     await _settle()
     assert wire.deleted == [42]
-    assert wire.sent == ["⏳ Work on it", "⏳ C"]
+    assert wire.sent == ["- [ ] Work on it", "- [ ] C"]
 
 
-async def test_a_row_never_settled_stays_running_and_the_message_is_deleted():
+async def test_a_row_never_over_stays_unticked_and_the_message_is_deleted():
     from drivers.turn_progress import _closing
     wire = _Wire()
     line = _line(wire)
@@ -195,7 +236,7 @@ async def test_a_row_never_settled_stays_running_and_the_message_is_deleted():
     await _settle()
     line.finish()
     await asyncio.gather(*list(_closing))
-    assert wire.last == "⏳ A" and wire.deleted == [42]
+    assert wire.last == "- [ ] A" and wire.deleted == [42]
 
 
 async def test_only_the_last_eight_rows_show():
@@ -207,7 +248,8 @@ async def test_only_the_last_eight_rows_show():
     await _settle()
     lines = wire.last.split("\n")
     assert MAX_ROWS == 8
-    assert lines == [f"✓ {label}" for label in labels[-8:]]
+    assert lines == [f"- [x] {label}" for label in labels[-8:-1]] + [
+        f"- [ ] {labels[-1]}"]
     assert len(wire.last) < 4096
 
 
@@ -216,9 +258,10 @@ async def test_settling_twice_is_ignored():
     line = _line(wire)
     r = line.row("A")
     r.done()
-    r.failed()
+    line.row("B")
+    r.done()
     await _settle()
-    assert wire.last == "✓ A"
+    assert wire.last == "- [x] A\n- [ ] B" and r.over
 
 
 async def test_a_row_settled_after_the_close_posts_nothing_more():
@@ -232,7 +275,7 @@ async def test_a_row_settled_after_the_close_posts_nothing_more():
     r.done()
     line.row("B")
     await _settle()
-    assert wire.sent == ["⏳ A"] and wire.edits == [] and wire.deleted == [42]
+    assert wire.sent == ["- [ ] A"] and wire.edits == [] and wire.deleted == [42]
 
 
 async def test_a_failed_post_leaves_nothing_to_close():
@@ -268,15 +311,16 @@ async def test_edits_are_spaced():
     # itself, never a count of loop turns (wait_for's task count differs by
     # Python version)
     await line._pump
-    assert wire.sent == ["⏳ A"]
+    assert wire.sent == ["- [ ] A"]
     clock.t = 1.0
     a.done()
+    line.row("B")
     await line._pump
     await line.close()
     # …so the spacing is counted from that write (3.0 - 0.5), not from the start,
     # and the closing delete waits a full spacing after the edit that landed at 3.5
     assert waits == [pytest.approx(2.5), pytest.approx(3.0)]
-    assert wire.edits == [(42, "✓ A")] and wire.deleted == [42]
+    assert wire.edits == [(42, "- [x] A\n- [ ] B")] and wire.deleted == [42]
 
 
 async def test_the_closing_delete_keeps_the_spacing():
@@ -304,7 +348,7 @@ async def test_finish_closes_in_the_background():
     line.finish()
     assert _closing
     await asyncio.gather(*list(_closing))
-    assert wire.sent == ["⏳ A"] and wire.deleted == [42]
+    assert wire.sent == ["- [ ] A"] and wire.deleted == [42]
 
 
 async def test_a_raising_send_is_contained_in_the_pump():
@@ -332,10 +376,11 @@ async def test_a_raising_edit_is_contained_in_the_pump_and_the_close():
     a = line.row("A")
     await line._pump
     a.done()
+    line.row("B")
     await line._pump
     assert line._pump.exception() is None
     await line.close()               # the closing delete raises inside; contained
-    assert sent == ["⏳ A"]
+    assert sent == ["- [ ] A"]
 
 
 async def test_a_timed_out_drain_still_spaces_the_closing_delete():
@@ -370,11 +415,30 @@ async def test_a_timed_out_drain_still_spaces_the_closing_delete():
     clock.t = 1.0
     hang_next["on"] = True
     a.done()
+    line.row("B")
     await line.close()
     edits = [t for k, t in starts if k == "edit"]
     deletes = [t for k, t in starts if k == "delete"]
     assert len(edits) == 1 and len(deletes) == 1
     assert deletes[0] - edits[0] >= 3.0
+
+
+async def test_the_step_line_is_posted_as_a_silent_rich_checklist():
+    from telegram_channel_double import _mk_channel_with_fake_bot, rich_sent
+    ch, bot = _mk_channel_with_fake_bot()
+    mid = await ch.send_step_line(100, "- [x] A\n- [ ] B")
+    assert mid == 12345
+    bot.send_message.assert_not_awaited()
+    (sent,) = rich_sent(bot)
+    assert sent["chat_id"] == 100 and sent["disable_notification"] is True
+    assert sent["rich_message"] == {"markdown": "- [x] A\n- [ ] B"}
+
+
+async def test_a_step_line_that_cannot_be_posted_is_never_the_works_fault():
+    from telegram_channel_double import _mk_channel_with_fake_bot
+    ch, bot = _mk_channel_with_fake_bot()
+    bot.do_api_request.side_effect = RuntimeError("telegram down")
+    assert await ch.send_step_line(100, "- [ ] A") is None
 
 
 # --- the labels -----------------------------------------------------------

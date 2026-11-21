@@ -4431,17 +4431,14 @@ class _NoStepRow:
     def done(self) -> None:
         pass
 
-    def failed(self) -> None:
-        pass
-
 
 _NO_STEP_ROW = _NoStepRow()
 
 
 def _step_stage(label: str) -> Any:
-    """A running row named *label* on the current run's step line, settled
-    through its ``done()`` / ``failed()``; a row that does nothing when no
-    configurator run is showing a line."""
+    """An unticked row named *label* on the current run's step line, over
+    through its ``done()``; a row that does nothing when no configurator run
+    is showing a line."""
     line = _step_line.get()
     if line is None:
         return _NO_STEP_ROW
@@ -4449,10 +4446,10 @@ def _step_stage(label: str) -> Any:
 
 
 class _Stage:
-    """A row around one awaited stage of a handler, used as ``with``: ✗ when
-    the handler calls ``failed()`` or the stage raises (a cancellation
-    included), ✓ otherwise. Progress is never the handler's fault, so nothing
-    here raises into it."""
+    """A row around one awaited stage of a handler, used as ``with``: the row
+    is over when the stage is left, however it is left (a raise or a
+    cancellation included). Progress is never the handler's fault, so nothing
+    here raises into it, and the stage's exception passes through untouched."""
 
     __slots__ = ("_row",)
 
@@ -4463,21 +4460,14 @@ class _Stage:
             logger.info("step row not opened: %s", type(exc).__name__)
             self._row = _NO_STEP_ROW
 
-    def _settle(self, failed: bool) -> None:
-        try:
-            self._row.failed() if failed else self._row.done()
-        except Exception as exc:  # noqa: BLE001
-            logger.info("step row not settled: %s", type(exc).__name__)
-
-    def failed(self) -> None:
-        self._settle(True)
-
     def __enter__(self) -> "_Stage":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
-        # the first settle wins: a stage already marked failed stays so
-        self._settle(exc_type is not None)
+        try:
+            self._row.done()
+        except Exception as err:  # noqa: BLE001
+            logger.info("step row not settled: %s", type(err).__name__)
         return False
 
 
@@ -5329,10 +5319,7 @@ async def _run_delegated_turn(
                                     row = step_rows.pop(
                                         getattr(block, "tool_use_id", ""), None)
                                     if row is not None:
-                                        if getattr(block, "is_error", False):
-                                            row.failed()
-                                        else:
-                                            row.done()
+                                        row.done()
                         if approval_scope is not None:
                             for block in getattr(sdk_msg, "content", None) or []:
                                 if isinstance(block, ToolResultBlock):
@@ -15171,14 +15158,12 @@ async def plugin_add(args: dict) -> dict:
             # The step line's rows: this first one names the agents the call
             # asks for; the later ones name none, since the reload can skip
             # an agent that is not installed yet.
-            with _Stage(_plugin_add_stage_label(args)) as stage:
+            with _Stage(_plugin_add_stage_label(args)):
                 core = await _to_thread_settled(
                     _plugin_add_sync, name=args["name"], repo=args["repo"],
                     ref=args["ref"], subdir=args.get("subdir", ""),
                     targets=args.get("targets") or [],
                     expected_revision=args.get("expected_revision"))
-                if core.get("ok") is not True:
-                    stage.failed()
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
             return _result(core)
         if core.get("ok") is not True:
@@ -15253,12 +15238,10 @@ async def plugin_update(args: dict) -> dict:
         core, ack, seen = await _plugin_gate_phase(
             "plugin_update", "updated", args, reached)
         if core is None:
-            with _Stage(f"Update {name}") as stage:
+            with _Stage(f"Update {name}"):
                 core = await _to_thread_settled(
                     _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
                     expected_revision=args.get("expected_revision"))
-                if core.get("ok") is not True:
-                    stage.failed()
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
             return _result(core)
         if core.get("ok") is not True:

@@ -417,6 +417,8 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel.deliver_operator_proposal": 2,
         "TelegramChannel.deliver_operator_question": 1, "TelegramChannel.deliver_run_card": 1,
         "TelegramChannel.send_reply_line": 1, "TelegramChannel.mark_proposal": 1,
+        # the step line's rich send, addressed to the chat it was asked for
+        "TelegramChannel.send_step_line": 1,
         "TelegramChannel.speak_first": 1, "TelegramChannel.post_job_start_line": 1,
         "TelegramChannel.post_task_start": 1,
         "TelegramChannel.proposal_finish_hook._finish": 5,

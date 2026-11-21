@@ -624,19 +624,24 @@ def _settling():
     return _Step(_settle)
 
 
-async def test_a_tool_call_becomes_a_row_and_its_result_ticks_it(step_run):
+async def test_a_single_step_is_never_ticked_and_its_line_is_deleted(step_run):
+    """A step left waiting (on the operator's card, say) when the run ends is
+    the one Casa was on: it stays unticked until the line goes."""
     from scripted_delegate import _call, _result
     dm = await step_run(_call("A", name=_ASSIGN, input=dict(_GMAIL)), _settling(),
                         _result("A", error=False), _settling())
-    assert dm.texts() == ["⏳ Set up Gmail for Alex", "✓ Set up Gmail for Alex"]
+    assert dm.texts() == ["- [ ] Set up Gmail for Alex"]
     assert dm.events[-1] == ("delete", 77)
 
 
-async def test_an_error_result_crosses_the_row(step_run):
+@pytest.mark.parametrize("error", [False, True])
+async def test_a_step_is_ticked_when_the_next_starts_whatever_its_result(step_run, error):
     from scripted_delegate import _call, _result
     dm = await step_run(_call("A", name=_ASSIGN, input=dict(_GMAIL)), _settling(),
-                        _result("A", error=True), _settling())
-    assert dm.texts()[-1] == "✗ Set up Gmail for Alex"
+                        _result("A", error=error), _settling(),
+                        _call("B", name=_COMMIT, input={}), _settling())
+    assert dm.texts() == ["- [ ] Set up Gmail for Alex",
+                          "- [x] Set up Gmail for Alex\n- [ ] Save the changes"]
     assert dm.events[-1] == ("delete", 77)
 
 
@@ -648,10 +653,10 @@ async def test_two_calls_in_one_message_are_settled_by_their_own_results(step_ru
         ToolUseBlock(id="B", name=_COMMIT, input={})], model="sonnet")
     dm = await step_run(both, _settling(), _result("B", error=False), _settling(),
                         _result("A", error=False), _settling())
+    # the newer row is over first but nothing came after it: no change
     assert dm.texts() == [
-        "⏳ Set up Gmail for Alex\n⏳ Save the changes",
-        "⏳ Set up Gmail for Alex\n✓ Save the changes",
-        "✓ Set up Gmail for Alex\n✓ Save the changes"]
+        "- [ ] Set up Gmail for Alex\n- [ ] Save the changes",
+        "- [x] Set up Gmail for Alex\n- [ ] Save the changes"]
 
 
 async def test_a_run_cut_before_the_result_still_deletes_the_line(step_run):
@@ -662,7 +667,7 @@ async def test_a_run_cut_before_the_result_still_deletes_the_line(step_run):
 
     with pytest.raises(RuntimeError):
         await step_run(_call("A", name=_ASSIGN, input=dict(_GMAIL)), _settling(), _Step(_cut))
-    assert step_run.dm.texts() == ["⏳ Set up Gmail for Alex"]
+    assert step_run.dm.texts() == ["- [ ] Set up Gmail for Alex"]
     assert step_run.dm.events[-1] == ("delete", 77)
 
 
@@ -677,7 +682,6 @@ async def test_step_stage_outside_a_run_does_nothing(step_run):
     import tools
     row = tools._step_stage("x")
     row.done()
-    row.failed()
     await _settle()
     assert step_run.dm.events == []
 
@@ -691,7 +695,7 @@ async def test_the_runs_line_is_visible_to_code_run_inside_the_stream(step_run):
         await _settle()
 
     dm = await step_run(_Step(_stage))
-    assert "✓ Stage" in dm.texts()
+    assert "- [ ] Stage" in dm.texts()
     assert dm.events[-1] == ("delete", 77)
 
 

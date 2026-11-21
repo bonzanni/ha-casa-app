@@ -1,13 +1,15 @@
 """The configurator's progress line in the operator's DM: a short checklist.
 
 A configurator run works for a while between the words it writes. This line
-shows what it is doing as a list of rows, one per activity, in start order:
-``⏳ <label>`` while it runs, ``✓ <label>`` once done, ``✗ <label>`` if it
-failed. Each row changes only through its own handle, so a new row never
-settles an older one. Only the last ``MAX_ROWS`` rows show.
+shows what it is doing as a checklist, one row per activity, in start order:
+``- [ ] <label>`` while it is the step Casa is on, ``- [x] <label>`` once it is
+over and Casa has moved on to a later step. A row never says how its step
+turned out, only that Casa went on past it; the newest row stays unticked
+until something later starts. Each row changes only through its own handle,
+so a new row never ends an older one. Only the last ``MAX_ROWS`` rows show.
 
 The list lives in one message, edited in place and deleted when the run ends.
-A row made with ``keep=False`` leaves the list when it settles; if that
+A row made with ``keep=False`` leaves the list when it is over; if that
 empties the list, the message is deleted, and a later row posts a new one.
 Nothing is persisted. Sends, edits and deletes run in one background task this
 object owns — coalesced (the newest wanted text wins) and spaced — so the
@@ -152,7 +154,16 @@ _closing: set[asyncio.Task] = set()
 
 MAX_ROWS = 8           # the rows the message shows: the last ones made
 
-_RUNNING, _DONE, _FAILED = "⏳", "✓", "✗"
+# Characters a label could carry that rich Markdown would read as formatting
+# (or as the start of a link, a tag or a table cell): each is written escaped,
+# so the row shows the label exactly as it is.
+_MARKUP = re.compile(r"([\\`*_\[\]<>~|])")
+
+
+def _row_text(r: "StepRow", ticked: bool) -> str:
+    box = "[x]" if ticked else "[ ]"
+    label = _MARKUP.sub(r"\\\1", r.label)
+    return f"- {box} {label}"
 
 
 async def _default_sleep(seconds: float) -> None:
@@ -160,21 +171,21 @@ async def _default_sleep(seconds: float) -> None:
 
 
 class StepRow:
-    """The handle of one row. Only the first ``done()`` / ``failed()`` counts."""
+    """The handle of one row. Only the first ``done()`` counts."""
 
-    __slots__ = ("label", "keep", "mark", "_line")
+    __slots__ = ("label", "keep", "over", "_seq", "_line")
 
-    def __init__(self, line: "TurnProgressLine", label: str, keep: bool) -> None:
+    def __init__(self, line: "TurnProgressLine", label: str, keep: bool,
+                 seq: int) -> None:
         self.label = label
         self.keep = keep
-        self.mark = _RUNNING
+        self.over = False
+        self._seq = seq          # its place in start order
         self._line = line
 
     def done(self) -> None:
-        self._line._settle(self, _DONE)
-
-    def failed(self) -> None:
-        self._line._settle(self, _FAILED)
+        """The step is over, however it went."""
+        self._line._settle(self)
 
 
 class TurnProgressLine:
@@ -200,7 +211,7 @@ class TurnProgressLine:
         self._spacing_s = spacing_s
         self._io_timeout_s = io_timeout_s
         self._list: list[StepRow] = []
-        self._made_any = False
+        self._made = 0           # rows made so far, ever
         self._closed = False
         # None: no message wanted / none shown
         self._wanted: str | None = None
@@ -211,17 +222,17 @@ class TurnProgressLine:
         self._pump: asyncio.Task | None = None
 
     def row(self, label: str, *, keep: bool = True) -> StepRow:
-        """Append a running row and return its handle. Never awaits."""
-        r = StepRow(self, label, keep)
-        self._made_any = True
+        """Append an unticked row and return its handle. Never awaits."""
+        r = StepRow(self, label, keep, self._made)
+        self._made += 1
         self._list.append(r)
         self._refresh()
         return r
 
-    def _settle(self, r: StepRow, mark: str) -> None:
-        if r.mark != _RUNNING:
+    def _settle(self, r: StepRow) -> None:
+        if r.over:
             return
-        r.mark = mark
+        r.over = True
         if not r.keep:
             self._list.remove(r)
         self._refresh()
@@ -230,7 +241,9 @@ class TurnProgressLine:
         if self._closed:
             return
         shown = self._list[-MAX_ROWS:]
-        self._wanted = "\n".join(f"{r.mark} {r.label}" for r in shown) or None
+        # ticked: over, and a later row was made (Casa moved on past it)
+        self._wanted = "\n".join(
+            _row_text(r, r.over and r._seq < self._made - 1) for r in shown) or None
         if self._pump is None or self._pump.done():
             self._pump = asyncio.ensure_future(self._run())
 
@@ -282,7 +295,7 @@ class TurnProgressLine:
     def finish(self) -> None:
         """The run ended: close the line in the background. Never awaits, never
         raises; a run that made no row posted nothing and spawns nothing."""
-        if not self._made_any:
+        if not self._made:
             return
         self._closed = True
         task = asyncio.ensure_future(self.close())

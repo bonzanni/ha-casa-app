@@ -3380,16 +3380,17 @@ class TelegramChannel(Channel):
 
     async def send_step_line(self, chat_id: int, text: str) -> "int | None":
         """The configurator's step line in the operator's DM — Casa's
-        text, silent. Returns the message id, or None when not posted."""
+        text, a rich-message checklist, silent. Returns the message id, or
+        None when not posted."""
         if self._app is None:
             return None
         try:
-            msg = await self._app.bot.send_message(
-                chat_id=chat_id, text=text, disable_notification=True)
+            sent = await self._send_rich(chat_id, text, disable_notification=True)
         except Exception as exc:  # noqa: BLE001 — progress is never the work's fault
             logger.info("step line not posted: %s", type(exc).__name__)
             return None
-        return getattr(msg, "message_id", None)
+        mid = getattr(sent[0], "message_id", None) if sent else None
+        return mid if type(mid) is int else None
 
     async def delete_dm_message(self, chat_id: int, message_id: int) -> bool:
         """Delete one message Casa posted in a DM; a failure is logged."""

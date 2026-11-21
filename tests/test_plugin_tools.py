@@ -1823,31 +1823,41 @@ async def test_plugin_add_lists_its_stages(step_rows, monkeypatch):
     tools_mod, _ = _staged(monkeypatch)
     r = await tools_mod.plugin_add.handler(dict(_ADD_GMAIL))
     assert json.loads(r["content"][0]["text"])["ok"] is True
-    assert await step_rows() == ("✓ Download and install Gmail for Alex\n"
-                                 "✓ Get Gmail ready to use\n"
-                                 "✓ Check what Gmail still needs")
+    assert await step_rows() == ("- [x] Download and install Gmail for Alex\n"
+                                 "- [x] Get Gmail ready to use\n"
+                                 "- [ ] Check what Gmail still needs")
 
 
-async def test_a_refused_plugin_add_crosses_its_first_stage(step_rows, monkeypatch):
+def _next_row():
+    """A later step starting on the run's line, which ticks every row over."""
+    import tools as tools_mod
+    tools_mod._step_line.get().row("Next")
+
+
+async def test_a_refused_plugin_add_ends_its_first_stage_unmarked(step_rows, monkeypatch):
     tools_mod, calls = _staged(
         monkeypatch, add=lambda **kw: {"ok": False, "kind": "x"})
     await tools_mod.plugin_add.handler(dict(_ADD_GMAIL))
-    assert await step_rows() == "✗ Download and install Gmail for Alex"
+    assert await step_rows() == "- [ ] Download and install Gmail for Alex"
     assert calls["seq"] == 0
+    _next_row()
+    assert await step_rows() == "- [x] Download and install Gmail for Alex\n- [ ] Next"
 
 
 async def test_plugin_update_lists_its_stages(step_rows, monkeypatch):
     tools_mod, _ = _staged(monkeypatch)
     await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"})
-    assert await step_rows() == "✓ Update Gmail\n✓ Get Gmail ready to use"
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Get Gmail ready to use"
 
 
-async def test_a_refused_plugin_update_crosses_its_stage(step_rows, monkeypatch):
+async def test_a_refused_plugin_update_ends_its_stage_unmarked(step_rows, monkeypatch):
     tools_mod, calls = _staged(
         monkeypatch, update=lambda **kw: {"ok": False, "kind": "x"})
     await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"})
-    assert await step_rows() == "✗ Update Gmail"
+    assert await step_rows() == "- [ ] Update Gmail"
     assert calls["seq"] == 0
+    _next_row()
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Next"
 
 
 async def test_an_unchanged_plugin_update_opens_no_second_stage(step_rows, monkeypatch):
@@ -1855,7 +1865,7 @@ async def test_an_unchanged_plugin_update_opens_no_second_stage(step_rows, monke
         "ok": True, "unchanged": True, "name": "gmail",
         "targets": ["resident:finance"]})
     await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v1"})
-    assert await step_rows() == "✓ Update Gmail"
+    assert await step_rows() == "- [ ] Update Gmail"
     assert calls["seq"] == 0
 
 
@@ -1864,7 +1874,7 @@ async def test_updating_a_plugin_no_agent_has(step_rows, monkeypatch):
         "ok": True, "name": "gmail", "targets": [],
         "old_artifact_id": "a", "artifact_id": "a"})
     await tools_mod.plugin_update.handler({"name": "gmail", "new_ref": "v2"})
-    assert await step_rows() == "✓ Update Gmail\n✓ Get Gmail ready to use"
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Get Gmail ready to use"
 
 
 async def test_the_open_conversations_warning_opens_no_row(step_rows, monkeypatch):
@@ -1888,14 +1898,16 @@ async def test_a_call_refused_before_its_core_opens_no_row(step_rows, monkeypatc
     assert await step_rows() == ""
 
 
-async def test_a_core_that_raises_crosses_its_stage(step_rows, monkeypatch):
+async def test_a_core_that_raises_ends_its_stage_and_still_raises(step_rows, monkeypatch):
     def boom(**kw):
         raise RuntimeError("core broke")
 
     tools_mod, _ = _staged(monkeypatch, add=boom)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="core broke"):
         await tools_mod.plugin_add.handler(dict(_ADD_GMAIL))
-    assert await step_rows() == "✗ Download and install Gmail for Alex"
+    assert await step_rows() == "- [ ] Download and install Gmail for Alex"
+    _next_row()
+    assert await step_rows() == "- [x] Download and install Gmail for Alex\n- [ ] Next"
 
 
 async def test_a_cancelled_stage_is_not_left_running(step_rows, monkeypatch):
@@ -1913,7 +1925,10 @@ async def test_a_cancelled_stage_is_not_left_running(step_rows, monkeypatch):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert await step_rows() == "✓ Update Gmail\n✗ Get Gmail ready to use"
+    assert await step_rows() == "- [x] Update Gmail\n- [ ] Get Gmail ready to use"
+    _next_row()
+    assert await step_rows() == ("- [x] Update Gmail\n- [x] Get Gmail ready to use\n"
+                                 "- [ ] Next")
 
 
 @pytest.mark.parametrize("targets, label", [
@@ -1936,11 +1951,11 @@ async def test_the_install_row_names_the_agents_it_is_for(
     if targets is not None:
         args["targets"] = targets
     await tools_mod.plugin_add.handler(args)
-    assert await step_rows() == f"✗ {label}"
+    assert await step_rows() == f"- [ ] {label}"
 
 
 def test_a_row_outside_a_configurator_run_is_never_opened():
     import tools as tools_mod
     assert tools_mod._step_line.get() is None
-    with tools_mod._Stage("Update Gmail") as stage:
-        stage.failed()
+    with tools_mod._Stage("Update Gmail"):
+        pass
