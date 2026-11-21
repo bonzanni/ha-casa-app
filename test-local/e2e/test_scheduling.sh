@@ -14,13 +14,13 @@ build_image
 NAME="casa-sch-$$"
 trap "stop_container $NAME" EXIT
 
-log "Starting container with default triggers (heartbeat + morning-briefing)"
+log "Starting container with the default trigger (morning-briefing)"
 start_authed_container "$NAME" >/dev/null
 wait_healthy "$NAME"
 
-log "S-1: assert boot logs show 2 triggers registered for assistant"
-assert_log_contains "$NAME" "Registered 2 trigger(s) for agent 'assistant'"
-pass "S-1 assistant has 2 triggers registered (heartbeat + morning-briefing)"
+log "S-1: assert boot logs show 1 trigger registered for assistant"
+assert_log_contains "$NAME" "Registered 1 trigger(s) for agent 'assistant'"
+pass "S-1 assistant has 1 trigger registered (morning-briefing)"
 
 log "S-2: invoking assistant to ask about schedule"
 _S2_BODY='{"prompt": "What cron tasks are on your schedule today?"}'

@@ -57,7 +57,7 @@ being bookkeeping rather than the delivery
 ([`architecture/plugin-events.md`](plugin-events.md)). A turn whose message reaches the
 operator as its own final text is the other shape, needs no clause, and is harmed by one —
 the sentinel would be its whole final text and the turn would be suppressed. The shipped
-heartbeat and morning-briefing defaults are that shape, telling the agent to output only the
+morning-briefing default is that shape, telling the agent to output only the
 final message text; so is any turn that calls tools to look something up and then reports
 what it found. A turn that asks with `ask_user` has put its question in the chat only when the
 ask reports that it is awaiting the operator's answer; when it reports anything else, the turn

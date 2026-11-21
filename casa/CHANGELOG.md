@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.379.0] - 2026-11-21
+
+### Changed
+
+- Casa now asks Claude to keep a conversation's cached context for one hour whatever credential it runs on. On a Claude subscription within your plan's usage nothing changes, since one hour was already the default there. On an API key, or once a subscription goes over its plan usage, the default was five minutes, so a conversation picked up again later in the hour now uses less.
+
+### Removed
+
+- The assistant's hourly "heartbeat" trigger is no longer shipped. It was a silent self-check that ran every hour in a session of its own, where it could not see your chat, so it had little to act on while still using Claude every hour. Reminders, the morning briefing and plugin events are unchanged.
+- On upgrade, the heartbeat is removed from your assistant's triggers if you never edited it. If you changed it, your version is kept; delete it by asking Casa to remove the trigger.
+
 ## [0.378.0] - 2026-11-21
 
 ### Changed

@@ -60,8 +60,8 @@ take opposite endings:
   the sentinel.
 - from the turn's OWN final text, which Casa delivers when the turn ends. This
   shape must NOT be given the clause: the sentinel would be the whole final text,
-  the turn would be suppressed, and the operator would get nothing. The heartbeat
-  and morning-briefing defaults are this shape — they tell the agent to output
+  the turn would be suppressed, and the operator would get nothing. The
+  morning-briefing default is this shape — it tells the agent to output
   ONLY the final message text — and so is any turn that calls tools to look
   something up and then REPORTS what it found.
 

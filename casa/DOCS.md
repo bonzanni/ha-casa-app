@@ -194,9 +194,9 @@ question `ask_user` posts), which puts it in the chat by itself and leaves the
 turn with nothing left to say — that shape needs the clause. Or it arrives as the turn's
 own final text, which Casa delivers when the turn ends — that shape must NOT be
 given the clause, because the sentinel would then be the whole final text and
-you would get nothing. The shipped heartbeat and morning-briefing triggers are
-the second shape: they tell the agent to output only the final message text, and
-they name the sentinel only for the case where the turn has nothing worth
+you would get nothing. The shipped morning-briefing trigger is
+the second shape: it tells the agent to output only the final message text, and
+it names the sentinel only for the case where the turn has nothing worth
 saying. A turn that looks something up and then reports what it found is the
 second shape too, however many tools it called on the way.
 
