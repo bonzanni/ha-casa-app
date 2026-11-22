@@ -61,7 +61,8 @@ a summoned turn: `_guest_chat` (the chat's id, title and type) and `_guest_query
 inline message is bound under, the turn's cid). When the summons replied to the bot's own
 earlier message there, `_guest_reply_note` quotes that answer, clipped as a reply's quote is,
 and names who asked for it when Telegram says. The turn runs on the agent's own session,
-memory and notes; its prompt carries `agent.GUEST_CALL_NOTE` — the group's name, that the
+memory and notes — its opening is captured under a key whose chat is the group, since the
+message number is the group's ([`memory-capture.md`](memory-capture.md)); its prompt carries `agent.GUEST_CALL_NOTE` — the group's name, that the
 text answer is posted there and that a card, a file or anything else goes to the operator's
 chat with the agent — and then the reply note. The group is never a chat id, a route or a
 delivery: no typing lease is taken, nothing streams (`create_on_token` is `None` for a bound

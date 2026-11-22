@@ -213,6 +213,26 @@ async def test_telegram_redelivery_collapses(mem, tmp_path):
     assert operator[0]["text"] == "ping"
 
 
+async def test_a_group_summons_and_a_dm_with_one_number_are_both_kept(
+        mem, tmp_path):
+    """His summons in a group runs as a turn of his own chat but carries the
+    group's message number, a different counter from his chat's. His group
+    message 57 and his direct message 57 on the same bot are two operator
+    events; the same summons delivered twice is still one (#1660)."""
+    group = {"id": -100555, "title": "Family", "type": "supergroup"}
+    FakeClient.reset()
+    agent = _make_agent(tmp_path)
+    with patch("sdk_client_pool._default_make_client", FakeClient):
+        await agent._process(_operator_msg("what did we spend?", "57",
+                                           _guest_chat=dict(group)))
+        await agent._process(_operator_msg("what did we spend?", "57",
+                                           _guest_chat=dict(group)))
+        await agent._process(_operator_msg("remember: rent is 1200", "57"))
+    operator = [e["text"] for e in events(mem)
+                if e["speaker_kind"] == "operator"]
+    assert operator == ["what did we spend?", "remember: rent is 1200"]
+
+
 async def test_redelivery_with_a_regenerated_answer_keeps_both_answers(
         mem, tmp_path):
     """The same message admitted twice, with fresh channel state between,
