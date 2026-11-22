@@ -767,10 +767,60 @@ def gh_api_probe(path: str, *, timeout: float = 20.0, accept: str | None = None,
     except (FileNotFoundError, OSError) as exc:
         raise ResolveUnavailable(f"gh unavailable: {exc}") from exc
     status, headers, body = _parse_gh_http_response(proc.stdout or "")
+    if status is None and proc.returncode == _GH_EXIT_AUTH_REQUIRED:
+        # No token is configured: gh sends nothing at all. A public
+        # repository answers the same request without one.
+        return _anonymous_api_probe(path, timeout=timeout, accept=accept)
     if status is None:
         err = ((proc.stderr or "") + (proc.stdout or "")).strip()[:200]
         raise ResolveUnavailable(f"gh api failed for {path}: {err}")
     return status, headers, body
+
+
+# `gh help exit-codes`: 4 is "a command requires authentication". With no
+# token gh exits with it before contacting GitHub.
+_GH_EXIT_AUTH_REQUIRED = 4
+_GITHUB_API = "https://api.github.com/"
+
+
+def _anonymous_api_probe(path: str, *, timeout: float,
+                         accept: str | None) -> tuple[int, dict, str]:
+    """The same GitHub-API round trip with no credential, for an install that
+    has no GitHub token: public repositories answer it (a private one is a
+    404), at GitHub's lower rate limit for unauthenticated callers, which
+    comes back as the 403/429 the callers already classify. The body is the
+    whole JSON document; no ``jq`` is applied."""
+    import http.client
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    url = _GITHUB_API + urllib.parse.quote(path, safe="/?=&%@:+,~")
+    req = urllib.request.Request(url, headers={
+        "Accept": accept or "application/vnd.github+json",
+        "User-Agent": "casa-plugin-store",
+    })
+    class _SameHost(urllib.request.HTTPRedirectHandler):
+        # GitHub redirects a renamed repository within its own API host; a
+        # redirect anywhere else is not followed and comes back as its 3xx.
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if not newurl.startswith(_GITHUB_API):
+                return None
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    opener = urllib.request.build_opener(_SameHost)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return (resp.status,
+                    {k.lower(): v for k, v in resp.headers.items()},
+                    resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        return (exc.code,
+                {k.lower(): v for k, v in exc.headers.items()},
+                exc.read().decode("utf-8", errors="replace"))
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        # URLError and a timeout are OSError.
+        raise ResolveUnavailable(
+            f"GitHub request failed for {path}: {exc}") from exc
 
 
 _GH_NO_COMMIT_RE = re.compile(r"no commit found for sha", re.IGNORECASE)
