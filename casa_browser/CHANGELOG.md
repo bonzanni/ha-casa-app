@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.18] - 2026-11-23
+
+### Fixed
+
+- A site's ordinary delete, edit or options request sent with no body over HTTPS (removing an item from a basket, for example) now goes through. Until now the browser's proxy answered it with a 411 error the site never sent, so the page showed its own error or silently kept the item. A request body over the size limit is still refused before anything reaches the site (#1663).
+- If the check of a step you confirmed does not answer in time (a slow check, or Casa restarting), the question now lapses and the task carries on, without carrying out the step. Until now the question and the task stayed stuck until you pressed Stop (#1637).
+
 ## [0.1.17] - 2026-11-13
 
 ### Changed
