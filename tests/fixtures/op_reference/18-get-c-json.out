@@ -1,0 +1,57 @@
+{
+  "id": "tb36hv5fzncxqisulfg7vmipcq",
+  "title": "zz-vault-fixture-c",
+  "tags": ["casa-vault-fixture"],
+  "version": 1,
+  "vault": {
+    "id": "vvvvvvvvvvvvvvvvvvvvvvvvvv",
+    "name": "Casa"
+  },
+  "category": "SSH_KEY",
+  "created_at": "2026-11-22T04:08:55.260426011+01:00",
+  "updated_at": "2026-11-22T04:08:55.260426071+01:00",
+  "additional_information": "SHA256:REDACTED",
+  "fields": [
+    {
+      "id": "public_key",
+      "type": "STRING",
+      "label": "public key",
+      "value": "ssh-rsa REDACTED",
+      "reference": "op://Casa/zz-vault-fixture-c/public key"
+    },
+    {
+      "id": "fingerprint",
+      "type": "STRING",
+      "label": "fingerprint",
+      "value": "SHA256:REDACTED",
+      "reference": "op://Casa/zz-vault-fixture-c/fingerprint"
+    },
+    {
+      "id": "private_key",
+      "type": "SSHKEY",
+      "label": "private key",
+      "value": "-----BEGIN PRIVATE KEY-----\nREDACTED\n-----END PRIVATE KEY-----\n",
+      "reference": "op://Casa/zz-vault-fixture-c/private key",
+      "ssh_formats": {
+        "openssh": {
+          "reference": "op://Casa/zz-vault-fixture-c/private key?ssh-format=openssh",
+          "value": "REDACTED-OPENSSH-PRIVATE-KEY"
+        }
+      }
+    },
+    {
+      "id": "key_type",
+      "type": "STRING",
+      "label": "key type",
+      "value": "rsa",
+      "reference": "op://Casa/zz-vault-fixture-c/key type"
+    },
+    {
+      "id": "notesPlain",
+      "type": "STRING",
+      "purpose": "NOTES",
+      "label": "notesPlain",
+      "reference": "op://Casa/zz-vault-fixture-c/notesPlain"
+    }
+  ]
+}

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.381.0] - 2026-11-22
+
+### Added
+
+- Casa can now keep its secrets without 1Password. Leave the 1Password service account token empty and Casa uses a secrets store built into the app: your agents' bot tokens, drop-offs and plugins' secrets are kept there, and `op://` references in the options work as they do with 1Password. With a token set, Casa uses 1Password exactly as before; a token that is set but does not work is never swapped for the built-in store.
+- The built-in store keeps your secrets on the same machine as Casa and inside its backups, which is weaker than 1Password. See "Secrets without 1Password" in the documentation.
+
+### Changed
+
+- **Not backward compatible for installs without 1Password.** Your agents' bot tokens are fetched from Telegram again and kept in the built-in store. The old token files under `/data/agent-voices/tokens/` stay on disk and can be deleted by hand. Installs with a 1Password token are unaffected.
+- The 1Password token and default vault can no longer be set as a plugin environment entry; Casa says to change them in the app's configuration instead.
 ## [0.380.1] - 2026-11-22
 
 ### Fixed

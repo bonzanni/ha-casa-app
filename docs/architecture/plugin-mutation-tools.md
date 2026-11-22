@@ -229,6 +229,12 @@ null for a plugin of its own. An owned plugin moves with that specialist's upgra
 [`architecture/plugins.md`](plugins.md). A specialist inspection reports the same field under
 the same rule (INV-SPEC-018, [`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)).
 
+**`set_plugin_env_reference` refuses the two names Casa sets itself.** For
+`OP_SERVICE_ACCOUNT_TOKEN` and `ONEPASSWORD_DEFAULT_VAULT` (`plugin_store.CASA_OWNED_ENV_OPTIONS`)
+it writes nothing and returns `ok: false` naming the app option to change instead: an entry
+would override, for every plugin, the value Casa chose from its options at start. Any other
+name is written as before.
+
 ## Failure behavior
 
 **A guard refuses before the registry is touched.** Identity, source and requirement

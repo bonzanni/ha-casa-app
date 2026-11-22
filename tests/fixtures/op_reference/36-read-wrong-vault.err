@@ -1,0 +1,1 @@
+[ERROR] 2026/11/22 04:09:04 could not read secret 'op://zz-no-such-vault/zz-vault-fixture-a/password': could not get item zz-no-such-vault/zz-vault-fixture-a: "zz-no-such-vault" isn't a vault in this account. Specify the vault with its ID or name.

@@ -1,0 +1,21 @@
+#!/bin/sh
+# The `op` that Casa, its plugins and the terminal run.
+#
+# An install keeps its secrets in one of two places, and which one is written
+# to a file once, when the container starts (scripts/secrets-backend.sh): the
+# word `builtin` when no 1Password service-account token is configured,
+# `1password` when one is. On `builtin` this hands the command line to the
+# client of Casa's own store. On anything else, a missing or unreadable file
+# included, it becomes the 1Password CLI, which the image keeps beside it as
+# op-1password, with the same arguments, standard streams and open files.
+#
+# Only the file decides: no environment variable is looked at, and nothing
+# here is found through PATH.
+backend=
+if [ -r /run/casa-vault/backend ]; then
+    IFS= read -r backend < /run/casa-vault/backend || :
+fi
+if [ "$backend" = builtin ]; then
+    exec /opt/casa/venv/bin/python3 -I /opt/casa/vault_op_client.py "$@"
+fi
+exec /usr/local/bin/op-1password "$@"

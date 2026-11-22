@@ -67,3 +67,7 @@ rfc8785==0.1.4
 # rejects unsupported Markdown tokens/raw HTML and does byte-preserving
 # source-slice section extraction.
 markdown-it-py==4.0.0
+# Reads and writes the KeePass file of the built-in secrets store (vault_store.py). GPL-3.0: see THIRD-PARTY-NOTICES.md.
+pykeepass==4.2.0
+# The ciphers pykeepass encrypts that file with; pinned exactly so they change only by a deliberate bump here.
+pycryptodomex==3.24.2

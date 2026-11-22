@@ -1,0 +1,19 @@
+[
+  {
+    "id": "b2cldyb3w2xhmtouqlagcabksa",
+    "title": "zz-vault-fixture-a",
+    "tags": [
+      "casa-vault-fixture"
+    ],
+    "version": 1,
+    "vault": {
+      "id": "vvvvvvvvvvvvvvvvvvvvvvvvvv",
+      "name": "Casa"
+    },
+    "category": "PASSWORD",
+    "last_edited_by": "UUUUUUUUUUUUUUUUUUUUUUUUUU",
+    "created_at": "2026-11-22T03:08:42Z",
+    "updated_at": "2026-11-22T03:08:42Z",
+    "additional_information": "Sun Nov 22 04:08:41 CET 2026"
+  }
+]

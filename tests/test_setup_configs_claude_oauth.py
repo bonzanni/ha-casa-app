@@ -25,6 +25,18 @@ pytestmark = pytest.mark.unit
 
 
 SETUP_CONFIGS = Path("casa/rootfs/etc/s6-overlay/scripts/setup-configs.sh")
+HELPER = Path("casa/rootfs/opt/casa/scripts/secrets-backend-lib.sh")
+
+
+def _helper_on_1password(container_env_dir: Path) -> str:
+    """The functions setup-configs.sh sources before the block, which passes
+    the 1Password token through one of them. They read the secrets backend
+    from a file; here that file does not exist, which is an install that
+    uses 1Password, where the functions return what they are given."""
+    text = HELPER.read_text(encoding="utf-8")
+    assert text.count("/run/casa-vault/backend") == 2
+    return text.replace("/run/casa-vault/backend",
+                        (container_env_dir.parent / "no-backend-file").as_posix())
 
 
 def _extract_oauth_block() -> str:
@@ -96,7 +108,7 @@ def _run_block(
         "/run/s6/container_environment/CLAUDE_CODE_OAUTH_TOKEN", target
     )
 
-    full_script = bashio_stub + block_test
+    full_script = bashio_stub + _helper_on_1password(container_env_dir) + block_test
 
     proc = subprocess.run(
         ["sh", "-c", full_script],

@@ -73,8 +73,8 @@ stays for the next container start.
 
 **The container-start step** (`memory.maintenance.run`, `python -m memory.maintenance` from
 `scripts/memory-maintenance.sh`). `init-memory-maintenance` depends on `base`, and
-`init-setup-configs` depends on it. Every longrun reaches `init-setup-configs`, so all of
-them start after the step. With no intent it only removes a staged restore source that has no intent. With one,
+`init-setup-configs` and `svc-vault` depend on it. Every other longrun reaches
+`init-setup-configs`, so all of them start after the step. With no intent it only removes a staged restore source that has no intent. With one,
 before its first deletion it appends this container start's attempt — a hash of the host's
 boot id and PID 1's start time — and writes the intent, so an attempt that is cut off is
 still seen as one. (A test install can make it sleep at this point, before its first

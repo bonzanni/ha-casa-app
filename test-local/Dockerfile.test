@@ -70,6 +70,18 @@ RUN /opt/casa/venv/bin/pip install --no-cache-dir --force-reinstall --no-deps /t
 
 COPY casa/rootfs /
 
+# The secrets backend is not part of this image: the start scripts that choose
+# and read it are replaced by the test versions below, and no `op` is
+# installed. So the two units that belong to it, init-setup-configs's
+# dependency on them and the `op` front (which would have nothing to hand
+# over to) are left out, and the unit tree is the one this image always had.
+RUN rm -rf /etc/s6-overlay/s6-rc.d/init-secrets-backend \
+           /etc/s6-overlay/s6-rc.d/svc-vault \
+           /etc/s6-overlay/s6-rc.d/init-setup-configs/dependencies.d/svc-vault \
+           /etc/s6-overlay/user-bundles.d/user/contents.d/init-secrets-backend \
+           /etc/s6-overlay/user-bundles.d/user/contents.d/svc-vault \
+           /usr/local/bin/op
+
 RUN find /etc/s6-overlay/s6-rc.d -name 'up' -o -name 'run' -o -name 'finish' \
     | xargs chmod +x \
     && chmod +x /opt/casa/scripts/*.sh

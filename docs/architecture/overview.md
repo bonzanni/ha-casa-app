@@ -19,13 +19,14 @@ Casa is a Home Assistant app: a container running several supervised services, i
 a fleet of Claude-powered agents answers messages arriving over Telegram and a voice
 channel.
 
-Three services run under s6, each with a single job:
+Four services run under s6, each with a single job:
 
 | Service | Job |
 |---|---|
 | `svc-casa` | the main async application — channels, agents, HTTP surface |
 | `svc-nginx` | the front door — two listeners: HA ingress (Supervisor-source-restricted) and the published external API port, which has no source restriction and relies on route-level refusals |
 | `svc-ttyd` | an optional terminal, off unless enabled — an unauthenticated root shell, so it binds a root-restricted UNIX socket (not TCP loopback) that only the nginx worker and root can reach |
+| `svc-vault` | the built-in secrets store, served on a root-only UNIX socket when no 1Password token is set; on 1Password it reports ready and idles ([`builtin-secrets-store.md`](builtin-secrets-store.md)) |
 
 Two environment switches shape the process family broadly: `LOG_FORMAT` selects the log output shape (the format
 itself belongs to `architecture/observability.md`), and the `CASA_*` path/version variables
@@ -34,7 +35,7 @@ itself belongs to `architecture/observability.md`), and the `CASA_*` path/versio
 application uniformly — treating them as global root overrides silently splits reads from
 writes.
 
-The three services' `run` and `finish` scripts run through one interpreter, `/opt/casa/scripts/core-bashio.sh`, rather than naming bashio
+The services' `run` and `finish` scripts run through one interpreter, `/opt/casa/scripts/core-bashio.sh`, rather than naming bashio
 directly. Config materialisation puts the plugin tools directory first on every service's
 PATH, and a plugin publishes executables there under any name, so the interpreter removes
 that directory from PATH before bashio, its library or the script looks anything up, and
@@ -68,10 +69,13 @@ sockets of any type and talk to each other over them. No unit or end-to-end test
 profile, so `tests/test_apparmor_profile.py` pins the `abi` line, the network rules Casa needs
 and the `kill` grant as text.
 
-Four `init-*` one-shots exist — config validation, config materialisation, nginx setup and
-the plugin store — but they do **not** all precede every service. Each service names only
-the one-shots it needs: the nginx setup gates `svc-nginx` alone, the plugin store gates the
-main application, and the terminal depends only on config materialisation. Read the ordering in the `dependencies.d` directories, not here and not in
+Six `init-*` one-shots exist — config validation, the secrets backend, memory maintenance,
+config materialisation, nginx setup and the plugin store — but they do **not** all precede
+every service. Each service names only what it needs: the secrets store follows the
+secrets backend and memory maintenance, config materialisation waits for the secrets store
+so its `op read` calls find it listening, the nginx setup gates `svc-nginx` alone, the
+plugin store gates the main application, and the terminal depends only on config
+materialisation. Read the ordering in the `dependencies.d` directories, not here and not in
 a log statement; it is data, and it is what is actually true.
 
 Agents come in three tiers. Tier is the main axis along which lifetime, reach, validation
@@ -97,7 +101,9 @@ sets that boundary out.
 The dependency is declared in `init-setup-configs/dependencies.d` — check it there rather
 than taking this sentence's word for it. That directory also names
 `init-memory-maintenance`, the oneshot that carries out a pending memory wipe or restore before any
-service starts ([`memory-wipe.md`](memory-wipe.md), INV-MEM-035).
+service starts ([`memory-wipe.md`](memory-wipe.md), INV-MEM-035), and `svc-vault`, so the
+secrets store is ready before materialisation resolves a secret through it
+([`builtin-secrets-store.md`](builtin-secrets-store.md)).
 
 **INV-SYS-002**: A role claimed by both a resident and a specialist is a boot failure, raised when the role registry is built.
 
@@ -112,7 +118,7 @@ boot keeps the resident instead of raising. See `architecture/agent-taxonomy.md`
 **Validation fails.** Boot stops at the `init-validate-config` one-shot. Nothing later runs,
 so the app does not come up in a partly-configured state.
 
-**The one-shots do not treat failure alike.** All four sit in dependency chains, so any of
+**The one-shots do not treat failure alike.** All of them sit in dependency chains, so any of
 them failing blocks what depends on it — that part is uniform. What differs is how hard each
 one tries to fail. Config validation is the only one that reports an ordinary configuration
 defect as a non-zero exit; that is its job. The others mask most of what goes wrong

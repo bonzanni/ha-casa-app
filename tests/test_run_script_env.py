@@ -117,6 +117,23 @@ def test_run_script_never_exports_the_null_sentinel_as_webhook_secret():
     )
 
 
+def test_run_script_passes_the_1password_options_through_the_backend_helper():
+    """What Casa gets as its 1Password token and vault depends on the secrets
+    backend chosen at container start. The helper the script sources returns
+    the two option values unchanged on 1Password; on the built-in store it
+    returns the store's marker token and vault name. These are the only
+    exports of the two variables."""
+    script = _read_run_script()
+    source = ". /opt/casa/scripts/secrets-backend-lib.sh\n"
+    token = 'export OP_SERVICE_ACCOUNT_TOKEN="$(casa_op_token "$_op_token")"\n'
+    vault = 'export ONEPASSWORD_DEFAULT_VAULT="$(casa_op_vault "$_op_vault")"\n'
+    assert script.count(source) == 1
+    assert script.count(token) == 1 and script.count(vault) == 1
+    assert script.index(source) < script.index(token) < script.index(vault)
+    assert script.count("OP_SERVICE_ACCOUNT_TOKEN=") == 1
+    assert script.count("ONEPASSWORD_DEFAULT_VAULT=") == 1
+
+
 def test_run_script_exports_no_memory_backend():
     """Memory is built in: the run script passes no memory-server address and
     selects no memory backend."""

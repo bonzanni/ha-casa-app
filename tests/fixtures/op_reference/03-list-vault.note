@@ -1,0 +1,1 @@
+Filtered to the fixture rows (the vault's other items removed); re-serialised with json.dumps(indent=2), so byte layout differs from op's. See 04 for op's own layout. Rows without tags carry no "tags" key.

@@ -68,15 +68,24 @@ def test_the_step_runs_before_every_longrun():
     assert graph_violations(OVERLAY) == []
     longruns = [n for n in graph(OVERLAY) if (
         OVERLAY / "s6-rc.d" / n / "type").read_text().strip() == "longrun"]
-    assert sorted(longruns) == ["svc-casa", "svc-nginx", "svc-ttyd"]
+    assert sorted(longruns) == ["svc-casa", "svc-nginx", "svc-ttyd", "svc-vault"]
 
 
-def test_dropping_the_setup_configs_edge_is_reported(tmp_path):
+def test_dropping_an_edge_to_the_step_is_reported(tmp_path):
+    """A longrun with no path left to the step is reported.
+
+    svc-vault starts before init-setup-configs, so its own edge is its only
+    path: without it, it is the one reported. init-setup-configs reaches the
+    step through its own edge and through svc-vault; with both gone, so is
+    every path of the three longruns that start after it."""
     copy = tmp_path / "s6-overlay"
     shutil.copytree(OVERLAY, copy)
+    (copy / "s6-rc.d/svc-vault/dependencies.d" / STEP).unlink()
+    assert graph_violations(copy) == [f"svc-vault does not reach {STEP}"]
     (copy / "s6-rc.d/init-setup-configs/dependencies.d" / STEP).unlink()
-    out = graph_violations(copy)
-    assert len(out) == 3, out          # the three longruns
+    assert graph_violations(copy) == [
+        f"{name} does not reach {STEP}"
+        for name in ("svc-casa", "svc-nginx", "svc-ttyd", "svc-vault")]
 
 
 # --- the script scan --------------------------------------------------------------
@@ -145,7 +154,7 @@ def script_violations(text: str, paths: list[str]) -> tuple[int, list[str]]:
     return guarded, bad
 
 
-ONESHOT_SCRIPTS = ("validate-config.sh", "setup-configs.sh",
+ONESHOT_SCRIPTS = ("validate-config.sh", "secrets-backend.sh", "setup-configs.sh",
                    "setup-plugin-store.sh", "setup-nginx.sh")
 
 
@@ -167,7 +176,8 @@ def test_no_oneshot_touches_registry_content_outside_the_guard():
         counts[name] = guarded
     # today the only one is the projects migration: its copy, its removal
     # and its symlink
-    assert counts == {"validate-config.sh": 0, "setup-configs.sh": 3,
+    assert counts == {"validate-config.sh": 0, "secrets-backend.sh": 0,
+                      "setup-configs.sh": 3,
                       "setup-plugin-store.sh": 0, "setup-nginx.sh": 0}
 
 

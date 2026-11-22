@@ -112,6 +112,10 @@
   kind: meta
   summary: Manifest shard — the guest-summons document, born in its own shard because the own-voice and T-Z shards stand near the index ceiling.
 
+- doc: manifest.d/architecture-builtin-secrets-store.yaml
+  kind: meta
+  summary: Manifest shard — the built-in secrets store document, born in its own shard because the A-D shard stands near the 40 KB index ceiling.
+
 - doc: manifest.yaml
   kind: meta
   summary: The publication allowlist for this corpus.
