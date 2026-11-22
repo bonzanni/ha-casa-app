@@ -50,7 +50,9 @@ from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
     builtin_tools,
+    brief_cache_env,
     cli_session_settings,
+    idle_past_cache,
     with_cross_session_tools_denied,
 )
 from config import AgentConfig, effort_for
@@ -2716,6 +2718,14 @@ class Agent:
                     is_fresh=resume_sid is None, resume_sid=resume_sid,
                     user_text=user_text,
                 )
+                # A turn that never takes a pooled client (a scheduled fire,
+                # a webhook one-shot) and whose session has been quiet for
+                # over an hour writes a cache nothing reads within the hour.
+                if not use_pool and idle_past_cache(
+                        decision.old.last_active if decision.old else None,
+                        datetime.now(timezone.utc)):
+                    options = dataclasses.replace(options, env={
+                        **(options.env or {}), **brief_cache_env()})
                 client = ManagedSdkClient(
                     options, origin_ctxvar=origin_var,
                     cid_ctxvar=cid_var, engagement_ctxvar=self._engagement_var,

@@ -151,6 +151,11 @@ call. One the CLI runs without asking is no longer reachable, which is the inten
 developer tools. The deny lists still apply on top, and the same source sweep refuses an
 options construction whose `tools` is neither an empty list nor `builtin_tools(...)`.
 
+The same reasoning covers the skills the CLI ships with. They are made for software work at
+a terminal, and a session that loads skills lists them beside the installed plugins' skills
+at every start. The settings every session is started with (`cli_session_settings`) carry
+`disableBundledSkills`, which no caller can override, so a session lists plugin skills only.
+
 ## Failure behavior
 
 **An unknown tool name.** Resolution fails and the call is refused; nothing is invoked.

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.381.1] - 2026-11-22
+
+### Changed
+
+- An agent's session no longer lists the skills that ship inside the Claude CLI (code review, charts, scheduling and the like, made for software work at a terminal). No Casa agent has a use for them, and the list was sent at every session start. Skills from installed plugins are listed as before.
+- A scheduled turn whose session has been quiet for more than about an hour (a morning briefing, a reminder), and a webhook turn that runs in a session of its own, now uses the five-minute prompt cache. Such a turn finishes in seconds and nothing reads its cache afterwards, so the dearer one-hour cache was paid for and never used. Conversations, and triggers that fire every hour or more often, keep the one-hour cache.
+
 ## [0.381.0] - 2026-11-22
 
 ### Added

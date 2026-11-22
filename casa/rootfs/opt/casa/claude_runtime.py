@@ -9,6 +9,7 @@ import os
 import subprocess
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -44,6 +45,37 @@ LONG_SESSION_COMPACT_WINDOW = "200000"
 def long_session_env() -> dict[str, str]:
     """The env entries every long-running session is started with."""
     return {AUTO_COMPACT_WINDOW_ENV: LONG_SESSION_COMPACT_WINDOW}
+
+
+# The service exports a one-hour prompt cache for every CLI session, and a
+# cache write at that lifetime costs more than one at five minutes. It pays
+# back when the conversation is read again within the hour. A turn that fires
+# on a schedule slower than that (a morning briefing, a reminder, a webhook)
+# finishes in seconds and nothing reads what it wrote, so it takes the
+# five-minute cache, which still serves the steps of the turn itself. The
+# measure is a little over the hour, so a trigger that fires every hour, whose
+# next fire does read the cache, keeps the hour-long one.
+PROMPT_CACHE_TTL_ENV = "CLAUDE_CODE_PROMPT_CACHE_TTL"
+BRIEF_CACHE_IDLE = timedelta(minutes=70)
+
+
+def idle_past_cache(last_active, now: datetime) -> bool:
+    """Whether a session's last turn (its ISO timestamp, ``None`` for a
+    session that does not exist yet) is further back than the hour-long
+    cache reaches: nothing of it is left to read, and at that pace nothing
+    will read what this turn writes either."""
+    try:
+        last = datetime.fromisoformat(last_active)
+    except (TypeError, ValueError):
+        return True
+    if last.tzinfo is None:
+        return True
+    return now - last > BRIEF_CACHE_IDLE
+
+
+def brief_cache_env() -> dict[str, str]:
+    """The env entry of a session nothing reads again within the hour."""
+    return {PROMPT_CACHE_TTL_ENV: "5m"}
 
 
 # ``--replay-user-messages``: the CLI echoes each user message written to its
@@ -146,8 +178,11 @@ def with_cross_session_tools_denied(disallowed) -> list[str]:
 
 def cli_session_settings(extra: dict | None = None) -> str:
     """The ``settings=`` JSON every Casa CLI session is started with: *extra*
-    plus ``crossSessionInbound: "refuse"``, which no caller can override."""
-    return json.dumps({**(extra or {}),
+    plus ``crossSessionInbound: "refuse"``, which no caller can override, and
+    ``disableBundledSkills``. The CLI ships skills of its own, made for
+    software work at a terminal, and lists them at every session start beside
+    the skills of the installed plugins; no Casa agent has a use for them."""
+    return json.dumps({**(extra or {}), "disableBundledSkills": True,
                        "crossSessionInbound": CROSS_SESSION_INBOUND})
 
 

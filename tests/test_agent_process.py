@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -2280,6 +2281,7 @@ async def test_untrusted_webhook_trigger_gets_restricted_runtime(tmp_path):
     assert options.plugins == []
     assert options.setting_sources == []
     assert json.loads(options.settings) == {"disableAllHooks": True,
+                                            "disableBundledSkills": True,
                                             "crossSessionInbound": "refuse"}
     assert set(options.allowed_tools) == {
         "mcp__casa-framework__search_memory",
@@ -3097,3 +3099,84 @@ class TestIssue666SentinelHold:
         assert channel.send_response.call_count == 1
         assert channel.turn_finished.call_count == 0
         assert result.content == "actually, meeting at 3pm."
+
+
+# ---------------------------------------------------------------------------
+# The five-minute cache of a turn nothing reads again within the hour
+# ---------------------------------------------------------------------------
+
+
+class _OptionsRecordingClient(ScriptedToolClient):
+    options: list[Any] = []
+
+    def __init__(self, options):
+        super().__init__(options)
+        type(self).options.append(options)
+
+
+def _turn_script(sid: str) -> list[Any]:
+    return [_mk_init(sid, []), _mk_assistant("ok"), _mk_result(sid)]
+
+
+async def _run_turns(agent, *msgs, between=None) -> list[dict]:
+    """Run each message as one turn; return the env each client started with."""
+    _OptionsRecordingClient.options = []
+    _OptionsRecordingClient.reset(*[_turn_script("sid-c") for _ in msgs])
+    with patch("sdk_client_pool._default_make_client", _OptionsRecordingClient):
+        for i, msg in enumerate(msgs):
+            if i and between is not None:
+                between()
+            await agent._process(msg)
+    return [dict(o.env or {}) for o in _OptionsRecordingClient.options]
+
+
+class TestBriefCache:
+    TTL = "CLAUDE_CODE_PROMPT_CACHE_TTL"
+
+    async def test_scheduled_turn_on_a_new_session_takes_five_minutes(self, tmp_path):
+        agent = _make_agent(tmp_path)
+        (env,) = await _run_turns(agent, _scheduled_msg())
+        assert env[self.TTL] == "5m"
+
+    async def test_scheduled_turn_soon_after_the_last_keeps_the_hour(self, tmp_path):
+        agent = _make_agent(tmp_path)
+        first, second = await _run_turns(agent, _scheduled_msg(), _scheduled_msg())
+        assert first[self.TTL] == "5m"
+        assert self.TTL not in second
+
+    async def test_scheduled_turn_hours_after_the_last_takes_five_minutes(self, tmp_path):
+        agent = _make_agent(tmp_path)
+
+        def _age():
+            (entry,) = agent._session_registry._data.values()
+            entry["last_active"] = (
+                datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+
+        _first, second = await _run_turns(
+            agent, _scheduled_msg(), _scheduled_msg(), between=_age)
+        assert second[self.TTL] == "5m"
+
+    async def test_conversation_turn_keeps_the_hour(self, tmp_path):
+        agent = _make_agent(tmp_path)
+        (env,) = await _run_turns(agent, _request_msg())
+        assert self.TTL not in env
+
+    async def test_conversation_turn_off_the_pool_keeps_the_hour(self, tmp_path):
+        # A conversation turn lands on the per-turn path when the pool cannot
+        # take it; the person may well write again within the hour.
+        from sdk_client_pool import PoolUnavailable
+        agent = _make_agent(tmp_path)
+        with patch.object(agent._pool, "turn",
+                          AsyncMock(side_effect=PoolUnavailable("closing"))):
+            (env,) = await _run_turns(agent, _request_msg())
+        assert self.TTL not in env
+
+    async def test_the_measure_is_a_little_over_the_hour(self):
+        from claude_runtime import brief_cache_env, idle_past_cache
+        now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        at = lambda minutes: (now - timedelta(minutes=minutes)).isoformat()  # noqa: E731
+        assert idle_past_cache(None, now) is True
+        assert idle_past_cache("not a time", now) is True
+        assert idle_past_cache(at(61), now) is False
+        assert idle_past_cache(at(71), now) is True
+        assert brief_cache_env() == {self.TTL: "5m"}
