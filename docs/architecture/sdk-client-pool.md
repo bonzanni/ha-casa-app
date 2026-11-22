@@ -48,6 +48,14 @@ which every CLI session Casa starts inherits, so a conversation resumed within t
 its context from the cache on a subscription and on an API key alike. A session's own options
 environment wins over the export.
 
+One kind of turn uses that: a turn that never takes a pooled client (a scheduled fire, a
+webhook one-shot) and whose session was last active more than 70 minutes ago, or does not
+exist yet, starts its CLI with the five-minute value. A write to the hour-long cache costs
+more than a write to the five-minute one and pays back only when something reads it within
+the hour; a morning briefing or a reminder finishes in seconds and nothing does. A trigger
+that fires every hour or more often stays on the hour-long cache, since each fire reads what
+the one before wrote, and so does a conversation turn that lands on the per-turn path.
+
 ## Contracts & invariants
 
 **INV-TURN-001**: The resume-versus-fresh decision is re-derived from a fresh session read while holding the pool entry's lock, and a cached client is reused only when its session id matches that decision exactly.

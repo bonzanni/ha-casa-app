@@ -116,8 +116,10 @@ def test_shared_constants_name_the_three_tools_and_refuse():
     assert CROSS_SESSION_INBOUND == "refuse"
     # A caller's own value never relaxes the refusal.
     assert json.loads(cli_session_settings(
-        {"crossSessionInbound": "accept", "x": 1})) == {
-            "crossSessionInbound": "refuse", "x": 1}
+        {"crossSessionInbound": "accept", "disableBundledSkills": False,
+         "x": 1})) == {
+            "crossSessionInbound": "refuse", "disableBundledSkills": True,
+            "x": 1}
     assert with_cross_session_tools_denied(["Bash", "SendMessage"]) == [
         "Bash", "SendMessage", "ListAgents", "PushNotification",
         "ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "Monitor",
