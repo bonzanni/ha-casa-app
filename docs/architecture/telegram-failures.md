@@ -36,8 +36,9 @@ uses polling.
 and the other agents' bots start as usual, and Casa's endpoint stays not ready. A token
 Telegram rejects — revoked in BotFather, or an `op://` reference that could not be read at
 startup and was kept as text — is logged once at ERROR, saying what to check, and is not
-retried: only a restart reads the token again. Any other failure is handed to the reconnect
-supervisor, which retries it until the bot is up ([`telegram.md`](telegram.md)).
+retried: only a restart reads the token again. A bot that another endpoint already runs is
+refused and not retried either. Any other failure is handed to the reconnect supervisor, which
+retries it until the bot is up ([`telegram.md`](telegram.md)).
 
 **A duplicate update arrives.** A webhook redelivery is absorbed by a bounded, process-local
 recent-update cache consulted on the webhook path only, one per bot, so two bots' equal
