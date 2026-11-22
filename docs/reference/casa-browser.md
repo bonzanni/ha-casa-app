@@ -294,15 +294,17 @@ full garbage collection every two seconds rather than whenever Python's allocati
 for one. So ordinary browsing — image-heavy pages, form posts, uploads, or a page sending many
 requests — stays well below the proxy's memory limit. The enforcing proxy decides a request only
 once its whole body has arrived, so it bounds bodies before reading them: every request a
-browser can build is bounded — a body over 1 MiB, a chunked HTTP/1.1 body, or an HTTP/2 request
-with no declared length (except GET, HEAD and a CORS preflight, which a browser cannot give a
-body) is refused at its headers and its stream closed unread. Two buffers inside mitmproxy
+browser can build is bounded — a body over 1 MiB, a chunked HTTP/1.1 body, or an HTTP/2 `POST`
+or `PUT` with no declared length is refused at its headers and its stream closed unread. Chrome
+sends a bodiless `DELETE`, `PATCH` or `OPTIONS` with no length: their body is bounded (`413`)
+once read, before any upstream byte. Two buffers inside mitmproxy
 itself have no bound of their own: the data frames an HTTP/2 client sends after a GET, HEAD or
 preflight that declared none, and the bytes of an HTTP/1 request head that never ends. A browser
 never sends either; only a client writing its own frames on the browser's listener — an
-already-compromised browser process — can fill them. Two more can be filled by a page itself,
-though no ordinary page comes near the limit: a WebSocket message is held whole until its last
-fragment arrives (mitmproxy has no message-size limit and no hook before a message completes),
+already-compromised browser process — can fill them. Three more can be filled by a page itself,
+though no ordinary page comes near the limit: a body a page streams with `DELETE`, `PATCH` or
+`OPTIONS` is held whole until refused (none reaches the site); a WebSocket message is held whole until its last
+fragment arrives (mitmproxy has no message-size limit and no hook before a message completes);
 and every upload in flight is held about three times over (some 300 parallel 1 MB uploads
 approach the limit, measured). So a hostile page can force the proxy to restart whenever it
 likes; the restart fails closed, as below (accepted, operator ruling 2026-10-21). If any of

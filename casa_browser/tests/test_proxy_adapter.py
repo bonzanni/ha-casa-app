@@ -579,7 +579,7 @@ def test_alt_svc_removed(tmp):
 
 from mitmproxy.test import tflow, tutils  # noqa: E402
 
-from casa_browser.proxy_addon import EnforcingAddon  # noqa: E402
+from casa_browser.proxy_addon import MAX_REQUEST_BODY, EnforcingAddon  # noqa: E402
 
 BROWSER_PORT, BROKER_PORT = 3128, 3129
 
@@ -730,9 +730,10 @@ def test_chrome_update_hosts_not_infrastructure_outside_an_account_session():
     ("HTTP/2.0", "GET", {}, False),
     ("HTTP/2.0", "HEAD", {}, False),
     ("HTTP/2.0", "OPTIONS", {"access-control-request-method": "PUT"}, False),  # a preflight
-    ("HTTP/2.0", "OPTIONS", {}, True),
-    ("HTTP/2.0", "DELETE", {}, True),                     # fetch may stream a body on these
-    ("HTTP/2.0", "PATCH", {}, True),
+    ("HTTP/2.0", "PUT", {}, True),
+    ("HTTP/2.0", "OPTIONS", {}, False),                   # Chrome sends no length on these
+    ("HTTP/2.0", "DELETE", {}, False),                    # when bodiless; bounded once read
+    ("HTTP/2.0", "PATCH", {}, False),
     ("HTTP/2.0", "DELETE", {"content-length": "0"}, False),
     ("HTTP/1.1", "POST", {"transfer-encoding": "chunked"}, True),
     ("HTTP/1.1", "POST", {"content-length": "1", "transfer-encoding": "chunked"}, True),
@@ -749,6 +750,29 @@ def test_unbounded_bodies_refused_at_their_headers(version, method, headers, ref
     assert (f.response is not None) is refused
     if refused:
         assert f.killable is False  # killed: mitmproxy stops reading the body
+
+
+@pytest.mark.parametrize("method", ["DELETE", "PATCH", "OPTIONS"])
+def test_a_length_less_body_is_bounded_once_read(method):
+    """HTTP/2 DELETE, PATCH and OPTIONS without a declared length pass their headers (#1663);
+    their buffered body is bounded in the request hook, answered locally before any upstream."""
+    async def scenario():
+        a = _addon()
+        a.install(h.open_web_policy())
+        for body, refused in ((b"", False), (b"x" * (MAX_REQUEST_BODY + 1), True)):
+            f = _flow(method=method)
+            f.request.http_version = "HTTP/2.0"
+            f.request.headers.pop("content-length", None)
+            a.requestheaders(f)
+            assert f.response is None
+            f.request.raw_content = body  # what mitmproxy buffered by the end of the message
+            await a.request(f)
+            if refused:
+                assert f.response is not None and f.response.status_code == 413
+                assert a.events[-1].reason == "body_bound"
+            else:
+                assert f.response is None  # allowed: goes upstream
+    run(scenario)
 
 
 def test_a_memory_error_mitmproxy_catches_ends_the_process(monkeypatch):

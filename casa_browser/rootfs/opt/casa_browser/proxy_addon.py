@@ -85,12 +85,6 @@ def _binding_key(path: Path | None) -> bytes:
     return key
 
 
-def _bodiless_by_construction(req) -> bool:
-    """A request a browser cannot attach a body to: GET and HEAD (the Fetch standard forbids
-    a body on them) and a CORS preflight, an OPTIONS carrying ``access-control-request-method``,
-    a header pages cannot set. Every other request must declare its size."""
-    return req.method in ("GET", "HEAD") or (
-        req.method == "OPTIONS" and "access-control-request-method" in req.headers)
 PIN_TTL = 60.0
 
 _DEST_TYPES = {
@@ -545,9 +539,14 @@ class EnforcingAddon:
                                      or int(length) > MAX_REQUEST_BODY):
             status = 413
         elif (length is None and not req.http_version.startswith("HTTP/1")
-              and not _bodiless_by_construction(req)):
-            # HTTP/2 or later with no declared size: possibly a streamed upload, which
-            # mitmproxy would buffer whole before any decision.
+              and req.method in ("POST", "PUT")):
+            # HTTP/2 or later with no declared size: Chrome declares one on every POST and PUT
+            # (``content-length: 0`` when empty), so a missing one is a streamed upload.
+            # Chrome sends a bodiless DELETE, PATCH or OPTIONS with no length at all, so those
+            # pass here and their body is bounded in ``request`` once mitmproxy has buffered
+            # it (#1663). Accepted leftover: a page that deliberately streams a large body with
+            # one of those methods holds that much of the proxy's memory until the refusal;
+            # nothing of it reaches the site.
             status = 411
         if status is not None:
             # Refuse, and kill: a response set here does not end mitmproxy's body phase, so
@@ -562,6 +561,12 @@ class EnforcingAddon:
         if flow.response is not None or flow.request.method == "CONNECT":
             return
         listener = self._listener(flow)
+        if len(flow.request.raw_content or b"") > MAX_REQUEST_BODY:
+            # A body that declared no size (see ``requestheaders``), bounded now it is read.
+            self._refuse(flow, 413)
+            self._record(listener or "browser", Decision(False, "body_bound", "request_refused"),
+                         flow.request.method, flow=flow)
+            return
         if listener == "broker":
             await self._broker_request(flow)
             return

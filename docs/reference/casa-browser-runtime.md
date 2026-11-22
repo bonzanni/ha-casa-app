@@ -85,9 +85,12 @@ and a request without them is `other`. `policy.decide` runs first without addres
 allows, the host is resolved through the floor and the request is decided again on the policy
 current at that moment. A refusal is answered locally with an empty `403`. A request whose
 body cannot be bounded before it is read — a chunked HTTP/1.1 body, a declared length over
-1 MiB, or an HTTP/2 request with no declared length unless a browser cannot attach a body to it
-(GET, HEAD, a CORS preflight) — is refused at its headers and its stream killed, so the body is never read into memory (mitmproxy's own `body_size_limit` is not used:
-it aborts large responses before a hook can stream them). Two buffers inside mitmproxy have no
+1 MiB, or an HTTP/2 `POST` or `PUT` with no declared length — is refused at its headers and its stream killed, so the body is never read into memory (mitmproxy's own `body_size_limit` is not used:
+it aborts large responses before a hook can stream them). Any other HTTP/2 request without a
+declared length (Chrome sends a bodiless `DELETE`, `PATCH` or `OPTIONS` that way) is read whole
+and refused with `413` in the `request` hook when its body is over 1 MiB, before any upstream
+byte; the memory such a body holds until then is the accepted residual in
+[`casa-browser.md`](casa-browser.md), "Known limits". Two buffers inside mitmproxy have no
 bound a hook can reach — the accepted residual and the proxy's memory cap are described in
 [`casa-browser.md`](casa-browser.md), "Known limits". An absolute-form request target must name the same host as the tunnel. A
 `CONNECT` to a private literal or a malformed name is refused at the tunnel; opaque traffic
