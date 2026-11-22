@@ -18492,7 +18492,8 @@ async def _remove_and_settle(name: str) -> dict:
     republications either way). It is NOT an equivalence: the later prune may
     now remove zero records, the ready marker may already be gone with the
     purged dir, and the spool's abort notice lands earlier. And settlement
-    UNROUTES NOTHING — the old runtime overlay stands until the reload."""
+    unroutes only the removed plugin's event subscriptions, with their
+    consents — the rest of the old runtime overlay stands until the reload."""
     core = await asyncio.to_thread(_plugin_remove_sync, name=name)
     if core.get("ok") is not True:
         return core

@@ -137,8 +137,9 @@ held indefinitely and no durable consequence may wait on it. That ordering is wh
 callback teardown runs before the reload rather than after it: the plugin is already absent
 from the registry when the commit returns, and the callback reconcile computes from
 registry resolution, so for an absent plugin an earlier revocation can produce no route and
-no pending consent. The settlement itself unroutes nothing — the runtime overlay stands
-until the reload — and a cancelled removal, like a raising one, returns no envelope.
+no pending consent. Of the routes, the settlement itself drops only the removed plugin's
+event subscriptions, with their consents; the rest of the runtime overlay stands until the
+reload. A cancelled removal, like a raising one, returns no envelope.
 
 ## Extension points
 
