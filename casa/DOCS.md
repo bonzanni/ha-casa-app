@@ -14,7 +14,7 @@ Three long-lived **residents** ship with Casa:
 | Butler | Tina | Voice-first house control (lights, climate, locks, media, sensors), in short spoken answers. |
 | Concierge | Gary | A medium-trust voice agent for anyone in the room: general questions and delegated lookups, no house control and no private data. |
 
-Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, a mailbox, a hobby domain — installed from git repositories. The **configurator** ships with Casa and changes Casa's own configuration for you: ask Ellen, and its answers come to your chat. Specialists, plugins and personas all install the same way, by asking in chat.
+Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, browsing websites, a hobby domain — installed from git repositories. The **configurator** ships with Casa and changes Casa's own configuration for you: ask Ellen, and its answers come to your chat. Specialists, plugins and personas all install the same way, by asking in chat.
 
 A fresh install ships with no specialists installed; see [Installing a specialist from a repository](#installing-a-specialist-from-a-repository).
 
@@ -1730,8 +1730,8 @@ app past 0.78.0.
 ## Installing a specialist from a repository
 
 Specialists are no longer bundled with the app image — each one (the
-`finance` specialist, a Magic — The Gathering rules judge, and any future
-ones) lives in its own repository and is installed on demand through the
+`finance` specialist, the browsing specialist Fido, a Magic — The Gathering
+rules judge, and any future ones) lives in its own repository and is installed on demand through the
 configurator. Ask Ellen, for example: *"Install the finance specialist
 from bonzanni/casa-specialist-finance"*.
 
@@ -1887,6 +1887,29 @@ with the result — but nothing *forces* it into the sentence you read. **If you
 a restart and were not told what it costs, ask before you tap.**
 Treat it as a real possibility rather than a certainty either way: what a
 restart activates is settled at start-up, not when you ask for the change.
+
+## Browsing websites: Fido and Casa Browser
+
+Fido is the browsing specialist: it fetches, reads and downloads, and fills in and submits
+what a task asks for, on the websites you register (signed in) and on the open web, one
+task at a time, and reports back with its sources. Fido does not browse by itself. It
+drives **Casa Browser**, an optional, separate app from this same app repository, which
+holds the real browser, its network policy, your logins and the check that asks you before
+a step that needs it.
+
+To set it up:
+
+1. Install **Casa Browser** from the app store and configure it; its Documentation tab
+   lists what it needs.
+2. Ask the assistant to install Fido, for example: *"Install the browsing specialist from
+   bonzanni/casa-specialist-browser"*, and approve it like any other specialist (above).
+3. Pair the two: press **Pair with Casa** on the Casa Browser page, then, within two
+   minutes, ask Fido to pair.
+
+Fido needs Casa 0.376.0 or later and Casa Browser 0.1.12 or later. Installed without
+Casa Browser, it says plainly that the app is not answering. Fido talks to you from its
+own Telegram chat (see [Agents with their own chat](#agents-with-their-own-chat-v03600)).
+Its repository: [bonzanni/casa-specialist-browser](https://github.com/bonzanni/casa-specialist-browser).
 
 ## Plugin consumer infrastructure (v0.71.0)
 
