@@ -225,7 +225,7 @@ being written, never posted (INV-PLUG-060). A card that already expired is not r
 tool — `consent_reprompt` says so ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) —
 it comes back only by running the install or update again.
 
-**INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
+**INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and a superseded tarball generation is retained until the next install.
 
 Enforced in the tarball strategy: a requirement that can never succeed (no safe
 `verify_bin`) is refused at manifest level before any installer runs; the install-command
@@ -238,10 +238,15 @@ reclaimed only at the start of the *next* install, so an in-flight consumer of t
 previous tree gets a full install-to-install grace window. All three strategies share the
 atomic link publication.
 
-What it does not cover: the venv and npm strategies still rebuild their per-plugin
-package trees in place — their failure window can leave that one plugin's own requirement
-broken, but never another plugin's — and generation retention means up to two
-generations of a tarball requirement occupy disk between installs.
+The venv and npm strategies build each install in a fresh directory inside the plugin's
+own `venv-<plugin>` or `npm/<plugin>` directory and switch the launcher link only once the
+declared binary exists there; a failed install removes only that new directory, so the
+version in use keeps its environment and link. Unlike a tarball generation, the
+superseded venv or npm environment is removed right after the switch, not at the next
+install (a virtualenv carries its absolute path, so it is never renamed into place).
+
+What it does not cover: generation retention means up to two generations of a tarball
+requirement occupy disk between installs.
 
 ## Failure behavior
 
@@ -279,8 +284,8 @@ refused — and the winning strategy is recorded durably. A present-but-malforme
 declaration refuses rather than reading as "no requirements"; a binary name another
 plugin already publishes refuses rather than repointing the shared `tools/bin` entry —
 by manifest row, and independently by the live launcher's own target, so a corrupt
-manifest (which deliberately reads as empty) cannot authorize a takeover; a tarball
-reinstall preserves the working install until its
+manifest (which deliberately reads as empty) cannot authorize a takeover; a reinstall by
+any strategy preserves the working install until its
 replacement fully succeeds (INV-SPEC-007); and an update or removal that drops a
 previously published binary name retires that launcher link (ownership-checked against
 the plugin's own install namespace) instead of leaving it resolvable but unverified.
