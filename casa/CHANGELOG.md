@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.381.3] - 2026-11-23
+
+### Fixed
+
+- If Telegram rejects Casa's bot token at startup (a token revoked in BotFather, or a secret reference that could not be read), Casa no longer stops. Everything else starts as usual: voice, webhooks, reminders and the other agents' bots. The log says that Casa's bot did not start and what to check; restart the app once the token is right (#1652).
+- When a plugin update fails while installing its Python or npm tooling, the version you already had keeps working. Until now its tools were deleted before the new install had succeeded, so a failed update left the plugin broken until a later update went through (#1649).
+- When you call an agent in a group, it now remembers both that message and a direct message to it that happens to carry the same message number. Before, one of the two was silently left out of memory (#1660).
+- If Telegram cannot connect when Casa starts, the note that an update overwrote your config customizations and the "memory wiped" or "memory restored" line are no longer lost. They arrive once Telegram connects, or at the next start (#1653).
+
 ## [0.381.2] - 2026-11-23
 
 ### Fixed
