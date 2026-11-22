@@ -129,7 +129,8 @@ check with `plugin_list()`.
 and a thread cannot be cancelled, so a cancellation cannot stop a removal from committing —
 it can only stop the tool from continuing. Everything a committed removal owes DURABLY —
 retiring its setup obligation, invalidating its lifecycle grants and trigger consents,
-revoking its persisted callback consents and purging its callback spool — therefore runs as
+revoking its persisted callback consents and purging its callback spool, and revoking the
+event-subscription consents it held as a subscriber (#1657) — therefore runs as
 one unit that is drained to completion through repeated cancellation before the tool
 propagates it. Only the runtime reload is abandoned, because it is the one step that can be
 held indefinitely and no durable consequence may wait on it. That ordering is why the

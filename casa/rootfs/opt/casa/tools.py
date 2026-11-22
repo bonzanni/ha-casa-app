@@ -15293,6 +15293,12 @@ async def plugin_update(args: dict) -> dict:
         # them: they are bound to the artifact, which is still the one running.
         if core.get("old_artifact_id") != core.get("artifact_id"):
             _invalidate_lifecycle(artifact_id=core.get("old_artifact_id"))
+            # #1657: the old artifact's event consents go too, as its trigger
+            # consents just did, so an update back to that revision asks again.
+            # The new artifact mints new identities, so nothing still usable is
+            # lost.
+            await _settle_through_cancellation(
+                _revoke_event_consents(core["name"], "plugin_update"))
         with _Stage(f"Get {name} ready to use"):
             seq = await _reload_and_verify_targets(
                 core["name"], core["targets"], expect="present")
@@ -18466,8 +18472,10 @@ async def _remove_and_settle(name: str) -> dict:
     and nothing here dispatches a reload: the parent holds the RAW lock (so no
     task-identity owner is recorded) and a child that re-entered a guard keyed
     on task identity would deadlock against its own parent — the helper's own
-    docstring. Every step is BOUNDED: two synchronous calls and two `to_thread`
-    disk operations. The reload is deliberately NOT here. Shielding it was
+    docstring. Every step is BOUNDED: synchronous calls, `to_thread` disk
+    operations, and the event-consent revoke, which waits only for an in-flight
+    event reconcile or dispatch admission (neither takes the plugin-tools
+    lock). The reload is deliberately NOT here. Shielding it was
     measured (astra, refutation round): with a reload held, it leaves the
     removal task unfinished, the plugin lock held, a reload reader and an agent
     reload lock held, and STILL performs no teardown — a stranded revocation
@@ -18516,7 +18524,31 @@ async def _remove_and_settle(name: str) -> dict:
     # to make the re-armed setup round empty and authoritative, releasing a
     # setup dispatch on a consent this removal was supposed to revoke.
     await _remove_plugin_callbacks(name)
+    # #1657: the same for the event subscriptions it held as a subscriber. The
+    # ack identity carries the artifact id, so a reinstall of the same revision
+    # would find a surviving ack and be routed again with no consent card; the
+    # reconcile's prune cannot be relied on, since any resolver issue anywhere
+    # in the registry skips it.
+    await _revoke_event_consents(name, "plugin_remove")
     return core
+
+
+async def _revoke_event_consents(name: str, tool: str) -> None:
+    """Unroute *name* as an event subscriber and drop every event consent it
+    holds, so returning to an artifact it left asks the operator again.
+    Best-effort, like the callback teardown: a failure never fails the
+    mutation. Takes the event reconcile and dispatch-admission locks, which
+    nest inside the plugin-tools lock the caller holds (the same order
+    ``event_ack_revoke`` uses)."""
+    try:
+        import event_reconcile
+        removed = await event_reconcile.revoke_and_unroute(name)
+        if removed:
+            logger.info("%s: revoked %d event ack(s) for %s",
+                        tool, len(removed), name)
+    except Exception:  # noqa: BLE001
+        logger.warning("%s: event ack revoke failed (%s)", tool, name,
+                       exc_info=True)
 
 
 @tool(

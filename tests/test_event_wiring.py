@@ -34,6 +34,7 @@ here). These pin the load-bearing wiring requirements Task 10 adds:
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -322,6 +323,159 @@ class TestLifecycleSequencerReconcilesEvents:
         result = await tools_mod._reload_and_verify_targets(
             "p", [], expect="present")
         assert result["ok"] is True  # never fails the mutation
+
+
+# ---------------------------------------------------------------------------
+# #1657 — leaving an artifact drops the subscriber's event consents, so coming
+# back to it (a reinstall, or an update back to an earlier revision) asks the
+# operator again, exactly as the plugin's trigger and callback consents do.
+# The reconcile's own prune cannot be relied on for this: any resolver issue
+# anywhere in the registry makes the pass non-prunable.
+# ---------------------------------------------------------------------------
+
+
+def _subscriber_world(monkeypatch, tmp_path):
+    """A real ack store and the real reconciler over an injected registry: an
+    emitter `gmail`, a subscriber `finance`, and a standing registry-stage
+    issue on an unrelated plugin (so no reconcile pass is prunable)."""
+    import event_acks
+    import event_reconcile
+    import plugin_registry
+    import plugin_setup_episodes
+    import tools as tools_mod
+    from plugin_events import subscribe_declaration_digest
+
+    def plugin(name, revision, emits=(), subs=()):
+        casa = {}
+        if emits:
+            casa["emits"] = [{"name": n} for n in emits]
+        if subs:
+            casa["subscribes"] = [{"plugin": e, "event": ev} for e, ev in subs]
+        aid = plugin_registry.compute_artifact_id(
+            repo="acme/" + name, revision=revision, subdir="", name=name)
+        return SimpleNamespace(name=name, artifact_id=aid, path="/x",
+                               version=revision, manifest_name=name,
+                               manifest={"name": name, "casa": casa})
+
+    gmail = plugin("gmail", "v1", emits=["mail_arrived"])
+    fin_v1 = plugin("finance", "v1", subs=[("gmail", "mail_arrived")])
+    fin_v2 = plugin("finance", "v2", subs=[("gmail", "mail_arrived")])
+    standing = plugin_registry.PluginIssue(
+        name="weather", target="executor:browser", stage="registry",
+        reason_code=plugin_registry.IGNORED_EXECUTOR_TARGET, artifact_id=None)
+    state = {"plugins": [gmail, fin_v1]}
+
+    def resolver(target=None):
+        return SimpleNamespace(registry_valid=True,
+                               plugins=list(state["plugins"]),
+                               issues=[standing])
+
+    def entries():
+        return [{"name": p.name, "artifact_id": p.artifact_id,
+                 "targets": ["resident:assistant"]} for p in state["plugins"]]
+
+    store = event_acks.EventAckStore(tmp_path / "event_acks.json")
+    monkeypatch.setattr(event_acks, "ACKS", store)
+    monkeypatch.setattr(event_reconcile, "_routed", {})
+    monkeypatch.setattr(event_reconcile, "_kick_worker", lambda: None)
+    runtime = SimpleNamespace(
+        role_configs={"assistant": SimpleNamespace(channels=["telegram"])},
+        channel_manager=None)
+
+    async def reconcile():
+        await event_reconcile.reconcile_plugin_events(
+            runtime, acks=store, resolver=resolver, entries=entries,
+            prompt=False)
+
+    def desired():
+        return event_reconcile.compute_desired(
+            role_configs=runtime.role_configs, acks=store,
+            resolver=resolver, entries=entries)
+
+    # The lifecycle sequencer, reduced to the event reconcile it runs.
+    async def sequencer(name, targets, expect):
+        await reconcile()
+        return {}
+
+    monkeypatch.setattr(tools_mod, "_reload_and_verify_targets", sequencer)
+    monkeypatch.setattr(tools_mod, "_invalidate_lifecycle", lambda **kw: None)
+    monkeypatch.setattr(plugin_setup_episodes, "retire_for_removed",
+                        lambda plugin: None)
+
+    async def no_callbacks(name):
+        return None
+
+    monkeypatch.setattr(tools_mod, "_remove_plugin_callbacks", no_callbacks)
+    store.record("finance", fin_v1.artifact_id, "gmail", "mail_arrived",
+                 subscribe_declaration_digest(
+                     {"plugin": "gmail", "event": "mail_arrived"}),
+                 ["resident:assistant"], 1.0)
+    return SimpleNamespace(tools=tools_mod, er=event_reconcile, state=state,
+                           gmail=gmail, fin_v1=fin_v1, fin_v2=fin_v2,
+                           reconcile=reconcile, desired=desired)
+
+
+def _finance_routed(er) -> bool:
+    routed = er.get_routed()
+    return "finance" in routed.get(("gmail", "mail_arrived"), {})
+
+
+@pytest.mark.asyncio
+class TestLeavingAnArtifactRevokesItsEventConsent:
+    async def test_a_reinstall_after_removal_asks_again(
+            self, monkeypatch, tmp_path):
+        w = _subscriber_world(monkeypatch, tmp_path)
+        await w.reconcile()
+        assert _finance_routed(w.er)               # approved and delivering
+        assert w.desired().prunable is False       # the prune never runs here
+
+        def removed(name):
+            w.state["plugins"] = [w.gmail]
+            return {"ok": True, "name": name,
+                    "artifact_id": w.fin_v1.artifact_id,
+                    "targets": ["resident:assistant"]}
+
+        monkeypatch.setattr(w.tools, "_plugin_remove_sync", removed)
+        res = await w.tools.plugin_remove.handler({"name": "finance"})
+        assert json.loads(res["content"][0]["text"])["ok"] is True
+
+        w.state["plugins"] = [w.gmail, w.fin_v1]   # the same revision again
+        await w.reconcile()
+        assert not _finance_routed(w.er)
+        pending = w.desired().consent_needed
+        assert [(p["subscriber"], p["artifact_id"]) for p in pending] == [
+            ("finance", w.fin_v1.artifact_id)]
+
+    async def test_an_update_back_to_an_earlier_revision_asks_again(
+            self, monkeypatch, tmp_path):
+        w = _subscriber_world(monkeypatch, tmp_path)
+        await w.reconcile()
+        assert _finance_routed(w.er)
+
+        def updated_to(target, old):
+            def core(name, new_ref, expected_revision=None):
+                w.state["plugins"] = [w.gmail, target]
+                return {"ok": True, "name": name,
+                        "targets": ["resident:assistant"],
+                        "artifact_id": target.artifact_id,
+                        "old_artifact_id": old.artifact_id}
+            return core
+
+        monkeypatch.setattr(w.tools, "_resolved_observability",
+                            lambda name, manifest=None: {})
+        monkeypatch.setattr(w.tools, "_secret_candidates",
+                            lambda name, env, manifest=None: {})
+        for target, old in ((w.fin_v2, w.fin_v1), (w.fin_v1, w.fin_v2)):
+            monkeypatch.setattr(w.tools, "_plugin_update_sync",
+                                updated_to(target, old))
+            res = await w.tools.plugin_update.handler(
+                {"name": "finance", "new_ref": target.version})
+            assert json.loads(res["content"][0]["text"])["ok"] is True
+
+        assert not _finance_routed(w.er)
+        pending = w.desired().consent_needed
+        assert [(p["subscriber"], p["artifact_id"]) for p in pending] == [
+            ("finance", w.fin_v1.artifact_id)]
 
 
 # ---------------------------------------------------------------------------
