@@ -197,7 +197,6 @@ ORIGIN_SITES = {
     ("origin-builders", "casa_core.py", "_setup_turn_context"): (1, FRESH, "test_bot_webhook_routes.py::test_a_setup_turn_stays_on_casas_bot_after_its_role_is_bound_elsewhere"),
     ("origin-builders", "casa_core.py", "build_invoke_message"): (2, FRESH, "test_bot_webhook_routes.py::test_an_invoked_turn_is_born_with_its_roles_route"),
     ("origin-builders", "casa_core.py", "main._setup_dispatch"): (1, FRESH, "test_bot_webhook_routes.py::test_a_setup_turn_stays_on_casas_bot_after_its_role_is_bound_elsewhere"),
-    ("origin-builders", "casa_core.py", "notify_config_sync"): (1, RULE_C, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
@@ -1308,7 +1307,6 @@ TURN_CONTEXTS = {
     ("bus.py", "MessageBus.run_agent_loop._dispatch"): "a response echoing its request",
     ("casa_core.py", "build_invoke_message"): "stamped with the route the handler was given",
     ("casa_core.py", "main._setup_dispatch"): "built by _setup_turn_context, stamped Casa's",
-    ("casa_core.py", "notify_config_sync"): "a notice for Casa's own endpoint, not a turn",
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): "stamped with the "
                                                                    "receiving bot",
     ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): "stamped with the "

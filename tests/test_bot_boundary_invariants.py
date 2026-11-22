@@ -1593,13 +1593,12 @@ async def _c_plugin_health(h, tmp_path):
 
 
 async def _c_config_sync(h, tmp_path):
-    from bus import BusMessage, MessageType
-    outbound = _c_main_closure("_telegram_outbound", 'bus.register("telegram"',
-                               channel_manager=h.manager)
-    await outbound(BusMessage(
-        type=MessageType.NOTIFICATION, source="config_sync", target="telegram",
-        content="Configuration synced.", channel="telegram",
-        context=dict(_C_TURN_ON_222)))
+    import json
+    import casa_core
+    report = tmp_path / "config-sync-report.json"
+    report.write_text(json.dumps({"conflicts": [{"path": "agents/x.yaml"}]}))
+    await casa_core.notify_config_sync(h.manager, report_path=str(report))
+    assert json.loads(report.read_text())["notified"] is True
 
 
 async def _c_limit_line(h, tmp_path):

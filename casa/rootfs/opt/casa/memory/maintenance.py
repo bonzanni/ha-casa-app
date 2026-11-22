@@ -396,26 +396,37 @@ def notice_for(record: dict) -> str | None:
     return None
 
 
-def claim_outcome_notice(store) -> str | None:
-    """The outcome's line (a wipe or restore done, a restore abandoned),
-    once: ``notice_sent`` is set in the same transaction that reads it,
-    before the line is sent, so a crash costs the line rather than sending
-    it twice."""
+def pending_outcome_notice(store) -> str | None:
+    """The outcome's line (a wipe or restore done, a restore abandoned)
+    while it is still owed. Reading it marks nothing: the caller marks it
+    with :func:`mark_outcome_notice_sent` once the line was delivered, so a
+    line Telegram could not take is sent again at the next boot (#1653)."""
     if not store.available:
         return None
+    with store.transaction() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key = "
+                           "'last_maintenance'").fetchone()
+    if row is None:
+        return None
+    record = json.loads(row[0])
+    if record.get("notice_sent"):
+        return None
+    return notice_for(record)
+
+
+def mark_outcome_notice_sent(store) -> None:
+    """Record that the outcome's line reached the operator."""
+    if not store.available:
+        return
     with store.transaction(write=True) as conn:
         row = conn.execute("SELECT value FROM meta WHERE key = "
                            "'last_maintenance'").fetchone()
         if row is None:
-            return None
+            return
         record = json.loads(row[0])
-        line = notice_for(record)
-        if line is None or record.get("notice_sent"):
-            return None
         record["notice_sent"] = True
         conn.execute("UPDATE meta SET value = ? WHERE key = "
                      "'last_maintenance'", (json.dumps(record, sort_keys=True),))
-    return line
 
 
 # ---------------------------------------------------------------------------

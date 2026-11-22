@@ -59,8 +59,9 @@ def _crash_then_complete(tmp_path, kill_at: str, k: int) -> bool:
     assert maintenance.read_intent(str(root)) is None
     store = MemoryStore(str(w.under(root, registry.MEMORY_DIR)))
     assert store.open()
-    assert [maintenance.claim_outcome_notice(store) for _ in range(2)] == [
-        maintenance.FORGOTTEN_LINE, None]
+    assert maintenance.pending_outcome_notice(store) == maintenance.FORGOTTEN_LINE
+    maintenance.mark_outcome_notice_sent(store)
+    assert maintenance.pending_outcome_notice(store) is None
     return True
 
 
