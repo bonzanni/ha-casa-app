@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.381.4] - 2026-11-23
+
+### Fixed
+
+- When a specialist's answer cannot be posted in its own chat (a Telegram timeout, for example), Ellen is no longer told you already read it there. She passes the answer on herself, so it does not go missing (#1636).
+- Creating the new bot for an agent's handle change no longer restarts Casa while something is still open in the agent's current chat: a question waiting for you, or a reply being written. The card says the move waits; ask Ellen again once it is done (#1644).
+- If the bot a handle change was replacing has been deleted in BotFather, the next bot is set up as a first chat, with no restart and no card naming the deleted bot (#1645).
+- Removing a plugin, or updating it to a different revision, now withdraws the event subscriptions you approved for it. Reinstalling it, or going back to that revision, asks you again, as its webhooks and callbacks already did (#1657).
+
 ## [0.381.3] - 2026-11-23
 
 ### Fixed
