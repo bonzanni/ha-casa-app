@@ -42,6 +42,12 @@ tree relative to the artifact's internal metadata, not tampering: a writer able 
 store can change bytes and recorded checksum together, and nothing recomputes a digest from
 the source.
 
+**A ref resolves with or without a GitHub token.** Every ref, `latest` included, is turned
+into a commit by asking GitHub's API. With a token configured the request carries it. With
+none, the same request is made without a credential, so a public repository still
+resolves, a private one is reported as not found, and GitHub's lower rate limit for
+unauthenticated callers applies.
+
 **Resolution is snapshot-based, but not everything is cached.** Registry parsing and deep
 artifact validation happen when a snapshot is built; the checksum verdict is cached and never
 recomputed by resolution. Resolution does, however, re-read the artifact's `plugin.json` on

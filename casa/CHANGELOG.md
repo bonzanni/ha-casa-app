@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.380.1] - 2026-11-22
+
+### Fixed
+
+- Installing or upgrading a plugin or a specialist from a public GitHub repository now works when Casa has no GitHub token. Until now every install first asked GitHub which commit to take through a tool that refuses to run without a token, so an install with no token failed with `resolve_unavailable` before anything was downloaded. Casa now asks GitHub without a credential in that case. A private repository still needs a token and is reported as not found without one, and GitHub allows fewer such requests per hour from one address than with a token (#1631).
+
 ## [0.380.0] - 2026-11-22
 
 ### Changed

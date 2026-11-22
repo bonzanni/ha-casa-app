@@ -12,7 +12,11 @@ same-named branch when the release metadata is stale (Astra, design round 1).
 """
 from __future__ import annotations
 
+import io
 import json
+import os
+import shutil
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -220,3 +224,156 @@ def test_a_tag_pointing_at_a_non_commit_object_is_no_release_found():
     with patch("plugin_store.subprocess.run", _gh(routes)):
         with pytest.raises(NoReleaseFound):
             resolve_latest_release("o/r")
+
+
+# --- no GitHub token ----------------------------------------------------------
+
+_GH_LOGIN_HINT = ("To get started with GitHub CLI, please run:  gh auth login\n"
+                  "Alternatively, populate the GH_TOKEN environment variable "
+                  "with a GitHub API authentication token.\n")
+
+
+class _Resp:
+    def __init__(self, status, body, headers=None):
+        self.status, self._body = status, body
+        self.headers = {"Content-Type": "application/json", **(headers or {})}
+
+    def read(self):
+        return json.dumps(self._body).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _anonymous(routes: dict, seen: list):
+    """A fake ``urllib.request.urlopen`` over ``routes[path]``."""
+    import urllib.error
+
+    def _open(_self, req, timeout=None):
+        seen.append(req)
+        path = req.full_url.removeprefix("https://api.github.com/")
+        status, body = routes.get(path, (404, {"message": "Not Found"}))
+        if status >= 400:
+            raise urllib.error.HTTPError(req.full_url, status, "X",
+                                         {"X-RateLimit-Remaining": "0"},
+                                         io.BytesIO(json.dumps(body).encode()))
+        return _Resp(status, body)
+    return _open
+
+
+def _gh_without_a_token(argv, **_kw):
+    return _Proc(4, "", _GH_LOGIN_HINT)
+
+
+def test_without_a_token_a_public_repository_still_resolves():
+    """gh sends nothing when no token is set (exit 4, no HTTP status line);
+    the same paths are then asked of GitHub without a credential."""
+    routes = {
+        "repos/o/r/releases/latest": (200, {"tag_name": "v0.7.0"}),
+        "repos/o/r/git/ref/tags/v0.7.0": (200, _tag_ref("v0.7.0", SHA, "commit")),
+        "repos/o/r/commits/v0.7.0": (200, {"sha": SHA}),
+    }
+    seen: list = []
+    with patch("plugin_store.subprocess.run", _gh_without_a_token), \
+         patch("urllib.request.OpenerDirector.open", _anonymous(routes, seen)):
+        assert resolve_latest_release("o/r") == ("v0.7.0", SHA)
+        assert plugin_store.resolve_ref("o/r", "v0.7.0") == SHA
+    assert len(seen) == 3
+    assert all(r.get_header("Authorization") is None for r in seen)
+
+
+def test_without_a_token_a_repository_that_is_not_public_is_not_found():
+    with patch("plugin_store.subprocess.run", _gh_without_a_token), \
+         patch("urllib.request.OpenerDirector.open", _anonymous({}, [])):
+        with pytest.raises(plugin_store.RefNotFound):
+            plugin_store.resolve_ref("o/private", "v1.0.0")
+
+
+def test_without_a_token_a_rate_limit_keeps_its_classification():
+    routes = {"repos/o/r/releases/latest": (403, {"message": "API rate limit exceeded"})}
+    with patch("plugin_store.subprocess.run", _gh_without_a_token), \
+         patch("urllib.request.OpenerDirector.open", _anonymous(routes, [])):
+        with pytest.raises(plugin_store.ResolveUnavailable):
+            resolve_latest_release("o/r")
+
+
+def test_without_a_token_a_network_failure_is_unavailable():
+    def _down(_self, req, timeout=None):
+        raise OSError("network is unreachable")
+    with patch("plugin_store.subprocess.run", _gh_without_a_token), \
+         patch("urllib.request.OpenerDirector.open", _down):
+        with pytest.raises(plugin_store.ResolveUnavailable):
+            plugin_store.resolve_ref("o/r", "v1.0.0")
+
+
+def test_a_gh_failure_that_is_not_the_missing_token_is_not_retried_anonymously():
+    def _broken(argv, **_kw):
+        return _Proc(1, "", "gh: something else went wrong")
+
+    def _never(_self, req, timeout=None):
+        raise AssertionError("an anonymous request was made")
+    with patch("plugin_store.subprocess.run", _broken), \
+         patch("urllib.request.OpenerDirector.open", _never):
+        with pytest.raises(plugin_store.ResolveUnavailable):
+            plugin_store.resolve_ref("o/r", "v1.0.0")
+
+
+@pytest.mark.skipif(shutil.which("gh") is None, reason="the gh binary is not installed")
+def test_the_real_gh_exits_4_without_contacting_github_when_no_token_is_set(tmp_path):
+    """The fallback rests on this: with no credential anywhere, gh prints a
+    login hint, no HTTP status line, and exits 4."""
+    proc = subprocess.run(
+        ["gh", "api", "-i", "repos/o/r/releases/latest"],
+        capture_output=True, text=True, timeout=30,
+        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path),
+             "GH_CONFIG_DIR": str(tmp_path)})
+    assert proc.returncode == 4
+    assert "HTTP/" not in proc.stdout
+
+
+def test_without_a_token_a_redirect_to_another_host_is_not_followed():
+    """A local server answers every path with a redirect to another host; the
+    probe returns that 3xx and asks the other host nothing."""
+    import http.server
+    import threading
+
+    asked: list = []
+
+    class _Other(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            asked.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"sha": SHA}).encode())
+
+        def log_message(self, *_a):
+            pass
+
+    other = http.server.HTTPServer(("127.0.0.1", 0), _Other)
+
+    class _Api(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{other.server_port}/x")
+            self.end_headers()
+
+        def log_message(self, *_a):
+            pass
+
+    api = http.server.HTTPServer(("127.0.0.1", 0), _Api)
+    for srv in (other, api):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with patch("plugin_store.subprocess.run", _gh_without_a_token), \
+             patch("plugin_store._GITHUB_API", f"http://127.0.0.1:{api.server_port}/"):
+            status, _headers, _body = plugin_store.gh_api_probe("repos/o/r/commits/v1")
+            with pytest.raises(plugin_store.ResolveUnavailable):
+                plugin_store.resolve_ref("o/r", "v1")
+    finally:
+        for srv in (other, api):
+            srv.shutdown()
+            srv.server_close()
+    assert status == 302 and asked == []
