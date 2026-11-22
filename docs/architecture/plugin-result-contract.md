@@ -208,6 +208,10 @@ nothing left redeemable.
 ticket, or after the consumer call has closed.** It is refused with a code; no value ever
 rides on an error. Two racing redemptions of one reference release exactly one value.
 
+**A call presents a spent or unknown reference at admission.** It is refused before it
+runs, telling the model to fetch a fresh reference; a refused call leaves no in-flight
+record behind, so the retry deposits and returns like any other call.
+
 **A capability tool is called on a turn that has no grant identity** — a scheduled or
 webhook turn, or an engagement whose record is not an active specialist or plugin job with
 an operator origin. The call is refused before it runs, exactly as a protected tool is denied

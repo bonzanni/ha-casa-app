@@ -1277,13 +1277,17 @@ def make_plugin_admission_hook(
             # a guest run: the list is judged before anything is recorded
             return _deny(f"not executed: {tool_name} is not offered to guests")
         recorded = False
+        opened = False
 
         def _forget_record() -> None:
             # a denied call never runs and gets no terminal hook event: its
-            # callsCasa record goes with the denial (p3r4b)
+            # callsCasa record and its in-flight capability call go with the
+            # denial, so a retry can deposit and return normally (#1651)
             if recorded:
                 from operator_calls import CALLS
                 CALLS.close(client_id, str(tool_use_id or ""))
+            if opened:
+                store.close_call(client_id, str(tool_use_id or ""))
         try:
             import agent as agent_mod
             from handoff import child_chain, helper_under_operator_task
@@ -1413,6 +1417,7 @@ def make_plugin_admission_hook(
                     # session's own maps and this tool's server
                     contract_map=contract_map, protected=protected, entry=entry,
                     quiet=quiet)
+                opened = True
             if entry.consumes:
                 updated = dict(tool_input)
                 armed_any = False
