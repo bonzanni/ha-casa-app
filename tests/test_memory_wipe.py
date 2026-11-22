@@ -173,14 +173,18 @@ async def test_wipe_erases_every_registry_row_and_keeps_the_rest(
     assert capture.drain_spool(store) == 0
 
 
-def test_the_done_line_is_claimed_once(tmp_path):
+def test_the_done_line_stays_owed_until_marked_sent(tmp_path):
+    # #1653: reading the line marks nothing, so a boot whose Telegram could
+    # not deliver it leaves it for the next boot; once marked it is gone.
     root, proc = tmp_path / "root", w.fake_proc(tmp_path)
     assert maintenance.write_wipe_intent(str(root)) == "written"
     assert w.run_oneshot(root, proc).stdout.strip() == "done"
     store = MemoryStore(str(w.under(root, registry.MEMORY_DIR)))
     assert store.open()
-    lines = [maintenance.claim_outcome_notice(store) for _ in range(3)]
-    assert lines == [maintenance.FORGOTTEN_LINE, None, None]
+    lines = [maintenance.pending_outcome_notice(store) for _ in range(2)]
+    assert lines == [maintenance.FORGOTTEN_LINE] * 2
+    maintenance.mark_outcome_notice_sent(store)
+    assert maintenance.pending_outcome_notice(store) is None
 
 
 def test_without_an_intent_nothing_is_touched_but_an_orphan_restore_source(

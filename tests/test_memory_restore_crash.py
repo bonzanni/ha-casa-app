@@ -178,7 +178,7 @@ def test_an_abandonment_cut_between_the_intent_and_the_source(tmp_path):
         assert not w.under(root, r.RESTORE_SOURCE).exists()
     assert _texts(store.path) == before
     assert w.hits(root, [canary]) != []        # nothing was wiped
-    line = maintenance.claim_outcome_notice(r.store_at(root))
+    line = maintenance.pending_outcome_notice(r.store_at(root))
     assert line.startswith("The restore didn't happen (events.jsonl")
 
 

@@ -29,7 +29,10 @@ awaits the append, so every capture a turn made has returned by the time the tur
   trigger turns, and Casa's own turns such as a delegation's completion notice. An
   operator's message is keyed with the bot that received it, read from the route its
   endpoint stamped (`occurrence.message_key`); a context whose route is not a bot id is
-  logged as a failed opening and captures nothing, never a key without its bot. Once an
+  logged as a failed opening and captures nothing, never a key without its bot. A summons
+  in a group runs as a turn of his own chat but carries the group's message number, so its
+  key's chat is the group (`_guest_chat`), never his chat: his group message N and his
+  direct message N on one bot are two events. Once an
   operator's message is durable, its occurrence key goes on the turn's origin, where
   `correct_memory` finds the message to mark ([`memory-tools.md`](memory-tools.md)).
 - **Each text-bearing message the resident writes**, in the fold that streams it, before it

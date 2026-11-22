@@ -90,9 +90,10 @@ two phases, the second of which is this wipe loop keeping only the staged source
 ([`memory-export-restore.md`](memory-export-restore.md)). Every deletion treats an absent path as
 already done, so a run cut off anywhere re-runs to the same result. Any error stops the
 run and is recorded in the attempt; the script always exits 0, so a failure never stops the
-container from starting. Once the channels are up, `casa-main` sends "Done. I've forgotten
-everything. Your reminders, triggers, files and settings are still here." once, claimed in
-the same transaction that marks it sent.
+container from starting. Once Casa's Telegram endpoint is up, `casa-main` sends "Done. I've
+forgotten everything. Your reminders, triggers, files and settings are still here." once,
+and marks it sent only after Telegram took it: a boot whose endpoint never came up, or
+whose send failed, leaves it for the next boot (the same holds for the restore's lines).
 
 **A pending intent at `casa-main` boot.** Right after option and secret resolution — before
 plugin environment, memory construction, the writer, the scheduler, the channels, the internal socket and the public app — `casa_core.main()` reads the intent:

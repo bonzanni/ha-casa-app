@@ -14,7 +14,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 # Ensure the Casa package root is on sys.path regardless of cwd
 _CASA_ROOT = str(Path(__file__).resolve().parent)
@@ -1119,21 +1119,21 @@ def _build_role_registry(
 
 
 async def notify_config_sync(
-    bus: Any,
+    channel_manager: Any,
     *,
     report_path: str = "/data/config-sync-report.json",
 ) -> None:
-    """If the boot reconciler overwrote any runtime customization, push a
-    heads-up directly to the operator over the ``telegram`` outbound bus
-    target (``_telegram_outbound`` → operator's default chat), then mark the
+    """If the boot reconciler overwrote any runtime customization, send the
+    operator a heads-up through Casa's own Telegram endpoint, then mark the
     report notified to avoid duplicate alerts on an svc-only restart.
 
-    Delivered via the deterministic ``telegram`` outbound router (not an
-    LLM turn): a config-overwrite is a system event the operator must always
-    see, so we bypass the assistant's turn — which could stay silent (the
-    G-3 ``<silent/>`` doctrine-bleed history) and, with ``channel=""``, would
-    resolve to no channel and drop the text entirely (``agent.py:230,296``).
-    Non-fatal. Spec: 2026-06-08-config-sync-reconciler-design.md §3.6.
+    Sent directly, not as an LLM turn: a config-overwrite is a system event
+    the operator must always see, and an assistant turn could stay silent.
+    Like :func:`notify_plugin_health`, the report is marked ONLY after a
+    send that was not proven undelivered (#1653): with no channel, a channel
+    not ready yet, or a send Telegram refused, the report stays unmarked, so
+    boot sends it once the channel is up (see ``_after_telegram_ready``) or
+    the next boot does. Non-fatal.
     """
     try:
         with open(report_path, "r", encoding="utf-8") as fh:
@@ -1176,16 +1176,18 @@ async def notify_config_sync(
         "and carry any of it back."
     )
 
-    # Route to the "telegram" outbound target if a telegram channel exists.
-    if "telegram" in getattr(bus, "queues", {"telegram": None}):
-        await bus.notify(BusMessage(
-            type=MessageType.NOTIFICATION,
-            source="config_sync",
-            target="telegram",
-            content=content,
-            channel="telegram",
-            context={"cid": new_cid()},
-        ))
+    channel = _casa_endpoint(channel_manager)
+    if channel is None or not getattr(channel, "is_ready", True):
+        return  # not marked: sent once Telegram is up, or at the next boot
+    try:
+        outcome = await channel.send(
+            casa_text(content),
+            _operator_notice_context(channel_manager, {"cid": new_cid()}))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("config_sync notify: send failed: %s", exc)
+        return
+    if outcome is DeliveryOutcome.NOT_DELIVERED:
+        return
 
     report["notified"] = True
     try:
@@ -1691,6 +1693,42 @@ _placeholder_notified: set[str] = set()
 
 # #573: strong references for the boot scheduled-ask reconcile task.
 _SCHEDULED_ASK_TASKS: set = set()
+
+# #1653: strong references for the boot notices waiting on Telegram.
+_BOOT_NOTICE_TASKS: set = set()
+
+
+def _after_telegram_ready(ready: asyncio.Event | None,
+                          notice: Callable[[], Awaitable[Any]],
+                          what: str) -> None:
+    """Run the boot notice *notice* once Casa's Telegram endpoint has come
+    up, on a task of its own so the rest of boot does not wait for it (as the
+    scheduled-ask reconcile does). With no Telegram (*ready* is ``None``) it
+    runs at once and finds no channel. A notice marks itself sent only on
+    delivery, so one Casa stops before sending is sent at the next boot."""
+    async def _run() -> None:
+        try:
+            if ready is not None:
+                await ready.wait()
+            await notice()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a notice never stops Casa
+            logger.warning("%s not sent", what, exc_info=True)
+
+    task = asyncio.create_task(_run())
+    _BOOT_NOTICE_TASKS.add(task)
+    task.add_done_callback(_BOOT_NOTICE_TASKS.discard)
+
+
+async def _send_maintenance_line(channel: Any, store: Any, line: str) -> None:
+    """The memory wipe/restore outcome line, marked sent only once
+    ``notify_operator`` reports it delivered (#1653); otherwise it stays owed
+    and the next boot sends it."""
+    from memory import maintenance as memory_maintenance
+    if await channel.notify_operator(line):
+        await asyncio.to_thread(
+            memory_maintenance.mark_outcome_notice_sent, store)
 
 
 async def notify_placeholder_rewrites(channel_manager: Any) -> None:
@@ -3705,7 +3743,7 @@ async def main() -> None:
     # 12'. The memory wipe's lines reach the operator from here on. A wipe
     # intent still waiting for its restart (a respawn, or a crash before the
     # restart request) asks for it again now; a wipe the container-start
-    # step completed is reported once.
+    # step completed is reported once, when Telegram can deliver it.
     memory_maintenance.configure(
         notify=telegram_channel.notify_operator
         if telegram_channel is not None else None)
@@ -3714,12 +3752,16 @@ async def main() -> None:
             kind=_maintenance_intent.get("kind"))
     try:
         _maintenance_line = await asyncio.to_thread(
-            memory_maintenance.claim_outcome_notice, memory_store)
+            memory_maintenance.pending_outcome_notice, memory_store)
     except Exception:  # noqa: BLE001 — a notice must not stop the boot
-        logger.warning("memory maintenance line not claimed", exc_info=True)
+        logger.warning("memory maintenance line not read", exc_info=True)
         _maintenance_line = None
     if _maintenance_line is not None and telegram_channel is not None:
-        await telegram_channel.notify_operator(_maintenance_line)
+        _after_telegram_ready(
+            _telegram_ready,
+            lambda: _send_maintenance_line(
+                telegram_channel, memory_store, _maintenance_line),
+            "memory maintenance line")
 
     # 12''. The scratchpad's run operation: unavailable until its box has passed a
     # preflight through the whole of it; a failure is one ERROR and one operator line.
@@ -3800,9 +3842,11 @@ async def main() -> None:
             logger.warning("retiring ended jobs' keyboards failed", exc_info=True)
     await _resume_background_jobs(engagement_registry, tg_transport, skip=left_open, only=boot_job_ids)  # noqa: E501
 
-    # 13c. Surface any default-sync overwrites to the operator (direct
-    # telegram outbound — see notify_config_sync).
-    await notify_config_sync(bus)
+    # 13c. Surface any default-sync overwrites to the operator, once Casa's
+    # Telegram endpoint is up (see notify_config_sync).
+    _after_telegram_ready(
+        _telegram_ready, lambda: notify_config_sync(channel_manager),
+        "config sync notice")
     # init-plugin-store's health report is resolver-only (it ran before
     # agents/executor-registry existed). Now that they are constructed,
     # regenerate with RUNTIME verification (authorization, effective secrets,

@@ -1234,8 +1234,14 @@ class _TurnCapture:
             # An operator message is keyed by the bot that received it: the
             # route its endpoint stamped on the inbound turn. The key refuses
             # anything but a bot id, and the guard below logs that refusal.
+            # A summons in a group runs as a turn of his own chat but carries
+            # the group's message number, so the group is the key's chat:
+            # otherwise it would collide with his own chat's message N.
+            guest_chat = ctx.get("_guest_chat")
+            key_chat = (guest_chat.get("id") if isinstance(guest_chat, dict)
+                        else ctx.get("chat_id"))
             key = (occurrence.message_key(msg.channel, ctx.get("_tg_bot"),
-                                          ctx.get("chat_id"), provider_id)
+                                          key_chat, provider_id)
                    if provider_id else None)
             if not self._operator_authored:
                 speaker = "casa"

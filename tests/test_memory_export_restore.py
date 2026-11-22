@@ -82,8 +82,10 @@ def test_a_round_trip_is_equal_and_runs_only_in_the_step(tmp_path):
         assert [s for (s,) in conn.execute(
             "SELECT state FROM jobs ORDER BY job_id")] == [
             "committed", "queued", "failed", "queued"]
-    lines = [maintenance.claim_outcome_notice(after) for _ in range(2)]
-    assert lines == [maintenance.restored_line(manifest["created_at"]), None]
+    assert maintenance.pending_outcome_notice(after) == maintenance.restored_line(
+        manifest["created_at"])
+    maintenance.mark_outcome_notice_sent(after)
+    assert maintenance.pending_outcome_notice(after) is None
 
 
 def test_an_export_holds_the_readable_ledger_and_its_format(tmp_path):
@@ -248,7 +250,9 @@ def test_a_staged_export_that_fails_its_checks_is_abandoned(tmp_path, spoil):
     assert {t: r.table_lines(store.path, t)
             for t in export.exported_tables()} == before
     s = r.store_at(root)
-    [line, again] = [maintenance.claim_outcome_notice(s) for _ in range(2)]
+    line = maintenance.pending_outcome_notice(s)
+    maintenance.mark_outcome_notice_sent(s)
+    again = maintenance.pending_outcome_notice(s)
     assert line.startswith("The restore didn't happen (") and again is None
     assert line.endswith("memory is unchanged.")
 
