@@ -49,6 +49,7 @@ from channels.tg_rich import FORMAT_GUIDE
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
+    builtin_tools,
     cli_session_settings,
     with_cross_session_tools_denied,
 )
@@ -3823,6 +3824,7 @@ class Agent:
             cli_path=CLAUDE_CLI_PATH,
             max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=system_prompt,
+            tools=builtin_tools(allowed_tools, skills=skills == "all"),
             allowed_tools=allowed_tools,
             # Code-mandatory, whatever runtime.yaml says: the CLI's
             # cross-session tools (claude_runtime.CROSS_SESSION_TOOLS).

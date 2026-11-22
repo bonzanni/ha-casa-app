@@ -124,6 +124,40 @@ def test_shared_constants_name_the_three_tools_and_refuse():
         "RemoteTrigger", "ShareOnboardingGuide"]
 
 
+def test_builtin_tools_names_the_file_tools_and_the_granted_builtins():
+    """The names are literals on purpose, as above."""
+    from claude_runtime import builtin_tools
+
+    assert builtin_tools([], skills=False) == [
+        "Read", "Write", "Edit", "Glob", "Grep", "ToolSearch"]
+    assert builtin_tools([], skills=True) == [
+        "Read", "Write", "Edit", "Glob", "Grep", "Skill", "ToolSearch"]
+    # A grant adds its built-in once, by the name before any pattern; an MCP
+    # grant, at tool or server level, is not a built-in.
+    assert builtin_tools(
+        ["Read", "WebSearch", "Bash(git status *)", "Bash(ls *)",
+         "mcp__casa-framework__ask_user", "mcp__homeassistant", "Skill"],
+        skills=False) == [
+            "Read", "Write", "Edit", "Glob", "Grep", "ToolSearch",
+            "WebSearch", "Bash", "Skill"]
+
+
+def test_pinned_sdk_forwards_the_named_builtins_to_the_cli():
+    """``tools`` reaches the CLI as ``--tools``, and an empty list as an
+    empty value, which is how the CLI reads "no built-in"."""
+    import claude_agent_sdk
+
+    from claude_runtime import builtin_tools
+
+    argv = _argv(claude_agent_sdk.ClaudeAgentOptions(
+        cli_path="/x/claude", tools=builtin_tools(["WebSearch"], skills=True)))
+    assert argv[argv.index("--tools") + 1] == (
+        "Read,Write,Edit,Glob,Grep,Skill,ToolSearch,WebSearch")
+    argv = _argv(claude_agent_sdk.ClaudeAgentOptions(
+        cli_path="/x/claude", tools=[]))
+    assert argv[argv.index("--tools") + 1] == ""
+
+
 async def test_resident_options(tmp_path, monkeypatch):
     """A resident whose runtime.yaml denies nothing still denies the three."""
     from agent import Agent
@@ -140,7 +174,7 @@ async def test_resident_options(tmp_path, monkeypatch):
         role_artifact=STUB_ROLE_ARTIFACT, role="butler",
         model="claude-haiku-4-5", system_prompt="You are Tina.",
         character=CharacterConfig(name="Tina"),
-        tools=ToolsConfig(allowed=["Read"], disallowed=[]),
+        tools=ToolsConfig(allowed=["Read", "WebSearch"], disallowed=[]),
         memory=MemoryConfig(token_budget=800, read_strategy="cached"),
     )
     resident = Agent(
@@ -154,6 +188,12 @@ async def test_resident_options(tmp_path, monkeypatch):
             resume_sid=None, user_text="hello")
         _assert_locked(opts)
         _assert_no_user_source(opts)
+        # Named, never the CLI's default set: the file tools, Skill (the
+        # config loads skills), ToolSearch, and the one built-in the config
+        # grants beyond them, which shows the grants reach the list.
+        assert opts.tools == [
+            "Read", "Write", "Edit", "Glob", "Grep", "Skill", "ToolSearch",
+            "WebSearch"]
 
 
 @pytest.mark.parametrize("delivers_to_operator", [False, True])
@@ -175,7 +215,7 @@ def _specialist_cfg():
 
     return SimpleNamespace(
         role="finance", model="claude-haiku-4-5", system_prompt="You are Alex.",
-        tools=SimpleNamespace(allowed=["Read"], disallowed=[],
+        tools=SimpleNamespace(allowed=["Read", "WebSearch"], disallowed=[],
                               permission_mode="acceptEdits", max_turns=10),
         mcp_server_names=[], hooks=HooksConfig(), cwd="",
     )
@@ -190,18 +230,23 @@ def test_specialist_and_executor_options(monkeypatch):
 
     monkeypatch.setattr(tools_mod, "_mcp_registry", None)
     monkeypatch.setattr(tools_mod, "_agent_registry", None)
-    for opts in (
-        tools_mod._build_specialist_options(
+    file_tools = ["Read", "Write", "Edit", "Glob", "Grep", "Skill", "ToolSearch"]
+    for opts, built_ins in (
+        # The specialist's config grants one built-in beyond the file tools.
+        (tools_mod._build_specialist_options(
             _specialist_cfg(), resolution=ResolutionResult(registry_valid=True)),
-        tools_mod._build_specialist_options(
+         [*file_tools, "WebSearch"]),
+        (tools_mod._build_specialist_options(
             agent_loader.load_configurator(),
             resolution=ResolutionResult(registry_valid=True)),
+         file_tools),
     ):
         _assert_locked(opts)
         _assert_no_user_source(opts)
         # The per-delegation session id is chosen by the delegation runner,
         # never here: in_casa engagements launch and resume through these.
         assert opts.session_id is None
+        assert opts.tools == built_ins
 
 
 @pytest.mark.parametrize("kind", ["specialist"])
@@ -367,6 +412,7 @@ async def test_query_engager_synthesis_options(monkeypatch):
     assert len(launches) == 1
     _assert_locked(launches[0])
     _assert_loads_no_settings_source(launches[0])
+    assert launches[0].tools == []
 
 
 async def test_tier_classifier_options(monkeypatch):
@@ -518,7 +564,9 @@ def test_every_production_claude_options_passes_denial_and_settings():
     and at each one ``disallowed_tools`` is built by the deny helper (or the
     sub-agent clamp that returns it) and ``settings`` by
     ``cli_session_settings``. Presence of the keywords is not enough:
-    ``ClaudeAgentOptions(disallowed_tools=[], settings=...)`` fails here."""
+    ``ClaudeAgentOptions(disallowed_tools=[], settings=...)`` fails here.
+    Each site also names its built-in tools: ``tools`` is an empty list or
+    ``builtin_tools(...)``, never left to the CLI's default set."""
     observed: dict[tuple[str, str], int] = {}
     problems: list[str] = []
     for path in sorted(APP_ROOT.rglob("*.py")):
@@ -537,6 +585,11 @@ def test_every_production_claude_options_passes_denial_and_settings():
                     problems.append(f"{where}: {why}")
             if _call_name(kws.get("settings")) != "cli_session_settings":
                 problems.append(f"{where}: settings is not cli_session_settings(...)")
+            built_in = kws.get("tools")
+            if not (_call_name(built_in) == "builtin_tools"
+                    or (isinstance(built_in, ast.List) and not built_in.elts)):
+                problems.append(
+                    f"{where}: tools is neither [] nor builtin_tools(...)")
 
     assert observed == {k: 1 for k in EXPECTED_SITES}, (
         "ClaudeAgentOptions construction sites changed — new, moved, "

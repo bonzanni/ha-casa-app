@@ -134,6 +134,23 @@ The same helper also denies `ShareOnboardingGuide`, `OUTBOUND_SHARE_TOOLS` in
 file from the working directory to a claude.ai share link under the session's login,
 without a permission prompt.
 
+Every Claude CLI session Casa starts also names the built-in tools it is offered, and never takes the CLI's default set: none for a session that calls no built-in, and for an agent the file tools, `Skill` when it loads skills, `ToolSearch`, and the built-ins its own tool configuration grants.
+
+Left to its default, the pinned CLI offers a session every built-in it ships. Most are
+developer tools no agent here can use, each tool's definition is sent with every request,
+and a CLI upgrade adds to the set without a line changing in Casa, which is how the tools
+of the two invariants above arrived. So every options build passes `tools`:
+`builtin_tools` in `claude_runtime.py` for an agent, an empty list for a one-shot. The
+file tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`) are always named, because the CLI
+runs the read-only ones without asking and `acceptEdits` does the same for the writing
+ones inside the working directory; a role that should not have one denies it. A grant
+names its built-in before any `(pattern)`, so `Bash(git status *)` names `Bash`. A built-in
+that is neither a file tool nor granted is not offered. For one that asks permission, such
+as `WebSearch`, nothing is lost: without the grant the fail-closed callback refused the
+call. One the CLI runs without asking is no longer reachable, which is the intent for the
+developer tools. The deny lists still apply on top, and the same source sweep refuses an
+options construction whose `tools` is neither an empty list nor `builtin_tools(...)`.
+
 ## Failure behavior
 
 **An unknown tool name.** Resolution fails and the call is refused; nothing is invoked.
