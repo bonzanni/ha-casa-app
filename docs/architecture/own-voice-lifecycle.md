@@ -91,7 +91,7 @@ recorded in phase `switching` and is never bound in this process; its endpoint h
 it receives and says once that the chat is being set up. Casa edits the card ("Alex is
 moving to @new and says hi there in a moment.", which never mentions the restart) and asks the Supervisor for a restart
 (`supervisor_restart`), which answers only once Casa has stopped, so nothing Casa's stop
-waits for may be awaiting it — after `replace`'s busy check. At boot `casa_core._apply_own_chat_switches`
+waits for may be awaiting it — after the restart step's own busy check. At boot `casa_core._apply_own_chat_switches`
 (→ `Lifecycle.apply_switches`) runs once the durable stores and the tools are loaded and
 before the plugin outbox, the agents, Telegram, the workers, the HTTP server, the channels
 and the scheduler start; it reads only Casa's records and the token store. For each
