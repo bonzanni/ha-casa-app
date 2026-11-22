@@ -2062,12 +2062,23 @@ class Lifecycle:
 
     async def _restart_for_switch(self, role: str) -> dict:
         """Say on the card that *role* is moving, and ask for the restart that
-        moves it. A refused request leaves the move for the next restart."""
+        moves it. A refused request leaves the move for the next restart.
+        While something is still open on the old bot no restart is asked
+        for: the card says the move waits, and asking again once it is done
+        restarts (``replace``)."""
         agent = self.store.agents[role]
         label = self._label(role)
         new = (agent.get("suggestion") or {}).get("username") or ""
         new_rec = self.store.bots.get(agent["change"]["new_bot"]) or {}
         new = new_rec.get("username") or new
+        old_username = agent["change"]["old_username"]
+        busy = self._busy(role, agent["change"]["old_bot"], old_username)
+        if busy is not None:
+            await self._edit(agent.get("offer_card"),
+                             f"{label} still has something open in @{old_username}, so "
+                             f"the move to @{new} waits. Ask {self._resident()} again "
+                             "once it's done.")
+            return busy
         await self._edit(agent.get("offer_card"),
                          f"{label} is moving to @{new} and says hi there in a moment.")
         if await self._request_restart(role):
