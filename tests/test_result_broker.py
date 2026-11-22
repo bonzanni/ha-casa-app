@@ -510,6 +510,27 @@ async def test_exchange_tool_registers_and_arms():
 
 
 @pytest.mark.asyncio
+async def test_exchange_retry_after_a_stale_reference_returns_its_result():
+    # #1651: the stale-reference refusal tells the model to fetch a fresh
+    # reference and retry; that retry deposits and its result comes back.
+    store, _ = _store()
+    hook = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)
+    result_hook = rb.make_result_hook(_map(), client_id="c1", store=store)
+    with _Origin(DM):
+        stale = "casa-cap-" + "9" * 32
+        assert "not redeemable" in _deny_reason(
+            await hook(_pre(SWAP, {"l": stale}), "swap-1", {}))
+        fresh = _minted(store)
+        out = await hook(_pre(SWAP, {"l": fresh}), "swap-2", {})
+        assert "updatedInput" in out["hookSpecificOutput"]
+        ref, err = store.deposit(client_id="c1", slot="token", value="TOKEN")
+        assert err is None
+        assert await result_hook(
+            _post(SWAP, json.dumps({"token": ref}), {"l": fresh}), "swap-2", {}) == {}
+    assert store.inflight_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_authorization_runs_before_arming_and_its_deny_arms_nothing():
     store, _ = _store()
     calls = []

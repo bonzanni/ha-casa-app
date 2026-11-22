@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.381.2] - 2026-11-23
+
+### Fixed
+
+- When a plugin tool that trades one reference for another is refused because the reference it was given is no longer valid, the retry with a fresh reference now returns its result. Until now the refused call was left open for ten minutes, so every retry in that time was withheld and the agent said the plugin needed updating when it did not (#1651).
+
 ## [0.381.1] - 2026-11-22
 
 ### Changed
