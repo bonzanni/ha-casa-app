@@ -857,6 +857,78 @@ async def test_a_failed_restart_request_says_the_move_waits_for_the_next_restart
         "Alex moves to @CasaFinance4821Bot when Casa next restarts."
 
 
+@pytest.mark.parametrize("how", ["matching handle", "picked in the question"])
+async def test_creating_the_new_bot_while_something_is_open_on_the_old_one_waits(
+        world, root, how):
+    # #1644: the change card was posted while nothing was open; something
+    # opened on the old bot before the operator tapped Create.
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world)
+    world.open[ALEX_BOT] = ["a question awaiting an answer"]
+    if how == "matching handle":
+        bot = NEW_BOT
+        world.tokens[NEW_BOT] = NEW_TOKEN
+        await lc.on_created(created(NEW_BOT, "Alex", "CasaFinance4821Bot"), OPERATOR)
+    else:
+        bot = 777
+        world.tokens[777] = "777:another-token-zzzzzzzzzzzz"
+        await lc.on_created(created(777, "Alex", "HeyCasaFinanceBot"), OPERATOR)
+        await host.answer("Alex")
+    agent = lc.store.agents["finance"]
+    assert world.restarts == 0
+    assert lc.store.bots[bot]["phase"] == ovl.SWITCHING
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND and agent["bot_id"] == ALEX_BOT
+    new = lc.store.bots[bot]["username"]
+    assert world.card_text(agent["offer_card"]) == (
+        f"Alex still has something open in @HeyAlexTestBot, so the move to @{new} "
+        "waits. Ask Ellen again once it's done.")
+    del world.open[ALEX_BOT]
+    res = await lc.replace("finance", new)
+    assert res["status"] == "restarting" and world.restarts == 1
+
+
+async def test_deleting_the_old_bot_of_a_pending_change_makes_the_next_bot_a_first_one(
+        world, root):
+    # #1645: the bot a change replaces is deleted in BotFather before the new
+    # one exists; the next bot is a first bot, with no restart.
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world)
+    world.deleted.add(ALEX_BOT)
+    await lc.on_updated(created(ALEX_BOT, "Alex", "HeyAlexTestBot"), OPERATOR)
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
+    assert (await lc.offer("finance", "CasaFinance4821Bot"))["status"] == "offered"
+    agent = lc.store.agents["finance"]
+    assert world.card_text(agent["offer_card"]) == \
+        "Alex can get a separate chat with you. Tap below, then Create."
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", "CasaFinance4821Bot"), OPERATOR)
+    assert world.restarts == 0
+    assert lc.store.bots[NEW_BOT]["phase"] == ovl.BOUND and agent["bot_id"] == NEW_BOT
+    await lc.mark_open(NEW_BOT)
+    assert not any("HeyAlexTestBot" in text for text, _ in world.cards.values()
+                   if text.startswith("Alex has moved"))
+
+
+async def test_deleting_the_old_bot_of_a_created_switch_moves_as_a_first_chat(world, root):
+    # #1645, the new bot already exists: the restart binds it, and no card
+    # names the deleted bot.
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    world.deleted.add(ALEX_BOT)
+    await lc.on_updated(created(ALEX_BOT, "Alex", "HeyAlexTestBot"), OPERATOR)
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
+    await lc.close()
+    lc2, _host2 = make_lifecycle(world, root)
+    await lc2.apply_switches()
+    await lc2.boot()
+    assert lc2.store.bots[NEW_BOT]["phase"] == ovl.BOUND
+    await lc2.mark_open(NEW_BOT)
+    assert not any("@HeyAlexTestBot" in text for text, _ in world.cards.values()
+                   if text.startswith("Alex has moved"))
+    assert world.card_text(lc2.store.agents["finance"]["offer_card"]) == "Alex's chat is open."
+    await lc2.close()
+
+
 async def _created_switch(lc, host, world, new="CasaFinance4821Bot"):
     await _change_alex(lc, host, world, new)
     world.tokens[NEW_BOT] = NEW_TOKEN

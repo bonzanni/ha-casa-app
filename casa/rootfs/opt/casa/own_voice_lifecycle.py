@@ -1681,6 +1681,14 @@ class Lifecycle:
             if agent.get("bot_id") == bot_id:
                 agent["bot_id"] = None
                 agent["chat_open_at"] = None
+            change = agent.get("change")
+            if change is not None and change["old_bot"] == bot_id:
+                # The bot a pending change replaces is gone: the next bot is
+                # a first bot, and no card names the deleted one.
+                if change["new_bot"] is None:
+                    agent["change"] = None
+                else:
+                    change.update(old_bot=None, old_username="")
             await self._edit(agent.get("offer_card"),
                              f"{self._label(role)}'s chat was deleted — ask "
                              f"{self._resident()} for a new one.")
@@ -2062,12 +2070,23 @@ class Lifecycle:
 
     async def _restart_for_switch(self, role: str) -> dict:
         """Say on the card that *role* is moving, and ask for the restart that
-        moves it. A refused request leaves the move for the next restart."""
+        moves it. A refused request leaves the move for the next restart.
+        While something is still open on the old bot no restart is asked
+        for: the card says the move waits, and asking again once it is done
+        restarts (``replace``)."""
         agent = self.store.agents[role]
         label = self._label(role)
         new = (agent.get("suggestion") or {}).get("username") or ""
         new_rec = self.store.bots.get(agent["change"]["new_bot"]) or {}
         new = new_rec.get("username") or new
+        old_username = agent["change"]["old_username"]
+        busy = self._busy(role, agent["change"]["old_bot"], old_username)
+        if busy is not None:
+            await self._edit(agent.get("offer_card"),
+                             f"{label} still has something open in @{old_username}, so "
+                             f"the move to @{new} waits. Ask {self._resident()} again "
+                             "once it's done.")
+            return busy
         await self._edit(agent.get("offer_card"),
                          f"{label} is moving to @{new} and says hi there in a moment.")
         if await self._request_restart(role):

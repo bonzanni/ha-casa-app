@@ -142,6 +142,12 @@ as a tombstone (`revoked` if the subscriber is still installed, `removed` if not
 than deleting it outright. Fold's REPAIR step never recreates a record for a cohort
 member that sweep already dropped — only a fresh OPEN, driven by the live routed set at
 that moment, may re-admit a returning subscriber, and only after a genuine new consent.
+The artifact id hashes repository, revision, subdirectory and name, so returning to a
+revision recomputes its identity; leaving an artifact therefore revokes the subscriber's
+event consents explicitly (`revoke_and_unroute`), as its trigger consents are — on
+`plugin_remove`, and on a `plugin_update` that changes the artifact — and a reinstall or an
+update back asks again (#1657). The reconcile's prune is not relied on: any resolver issue
+in the registry skips it.
 
 What it does not cover: the emitter's own artifact id is deliberately excluded from the
 identity — an emitter-side upgrade that leaves its declared event name unchanged never

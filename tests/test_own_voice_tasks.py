@@ -811,6 +811,64 @@ async def test_ellens_close_links_alexs_chat(world, monkeypatch, mode):
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_an_answer_whose_post_failed_is_not_called_read(world, mode):
+    """#1636: when the answer's post in Alex's chat does not go out, Ellen is
+    not told the person read it there: she gets the answer to pass on, and the
+    durable completion holds that same text."""
+    from telegram.error import TimedOut
+    _FakeSpecialistClient.reset(response="Done. €420, mostly Albert Heijn.")
+    real = world.alex._app.bot.do_api_request.side_effect
+
+    async def refuse_the_answer(endpoint, *, api_kwargs, return_type=None):
+        if not api_kwargs.get("disable_notification"):
+            raise TimedOut()
+        return await real(endpoint, api_kwargs=api_kwargs, return_type=return_type)
+
+    world.alex._app.bot.do_api_request.side_effect = refuse_the_answer
+    payload, result = await _ellens_result(world, mode)
+    assert _alex_texts(world) == [START]                 # only the start post landed
+    assert "€420, mostly Albert Heijn." in result
+    assert _answer_note() not in result
+    assert "already read" not in result
+    if mode == "async":
+        # nothing posted: the stored completion is the notice announced
+        row = world.reg.job_registry.get(payload["delegation_id"])
+        assert row.result == result
+
+
+async def test_an_async_answer_is_durable_before_its_post_lands(world):
+    """#1636: the finished delegation's completion is written, answer and
+    all, before the post in Alex's chat is awaited, so a stop during that
+    post cannot lose it; it is the version that says nothing was read there.
+    Once the post lands, Ellen is told the person read it."""
+    _FakeSpecialistClient.reset(response="Done. €420, mostly Albert Heijn.")
+    real = world.alex._app.bot.do_api_request.side_effect
+    release = asyncio.Event()
+    held = asyncio.Event()
+
+    async def hold_the_answer(endpoint, *, api_kwargs, return_type=None):
+        if not api_kwargs.get("disable_notification"):
+            held.set()
+            await release.wait()
+        return await real(endpoint, api_kwargs=api_kwargs, return_type=return_type)
+
+    world.alex._app.bot.do_api_request.side_effect = hold_the_answer
+    payload = await _delegate("async")
+    await asyncio.wait_for(held.wait(), 5)
+    row = world.reg.job_registry.get(payload["delegation_id"])
+    assert row.execution_state.name == "SUCCEEDED"
+    assert row.result_available
+    assert "€420, mostly Albert Heijn." in row.result
+    assert _answer_note() not in row.result
+    assert not world.notified                        # not announced before the post
+    release.set()
+    await _settled()
+    (note,) = [m for m in world.notified if getattr(m.content, "delegation_id", "")]
+    assert note.content.text.endswith("\n\n" + _answer_note())
+    assert _alex_texts(world)[1:] == ["Done. €420, mostly Albert Heijn."]   # posted once
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
 async def test_a_result_with_both_notes_carries_only_the_answer_note(world, monkeypatch, mode):
     _post_card(world)
     _FakeSpecialistClient.reset(response="unused")

@@ -152,11 +152,18 @@ post echo's note, one close-the-loop note per result). A delegation still runnin
 `sync` one past its 60-second wait) carries `own_chat_note` on its `pending` result
 (`OWN_CHAT_PENDING_NOTE`): the person sees the work and will get the answer in that chat,
 so the requester owes no holding line — one written while the answer was landing
-reached the person after it. That prediction is the post's own rule: an endpoint still serves
-the task's delivery (`tools._task_endpoint`, the lookup the post makes, so an answer whose
-bot was released meanwhile is not called read), and the whole closing message is no
-silence — the same text both silence notes judge, so the notes never contradict each other
-or the chat. What the operator wrote into the task while it ran reaches the
+reached the person after it. A closing message is called read only once its post was
+delivered, the outcome `tools._settle_task` returns, so an answer whose post did not go out
+(a Telegram timeout, flood control, a bot released meanwhile, no endpoint at
+`tools._task_endpoint`) is not called read, and the result is the one for an answer not
+posted — the requester carries it itself. A `sync` result is composed after the post. An
+`async` delegation's completion is stored durably before the post, in the not-posted
+version, and the notice announces the posted version only when the post went out
+(`tools._settle_then_announce`), so the stored and announced texts differ only when the post
+went out and the live notice was then never delivered — a restart then replays an answer the
+requester passes on itself. A closing message
+that is silence posts nothing — the same text both silence notes judge, so the notes never
+contradict each other or the chat. What the operator wrote into the task while it ran reaches the
 requester as one more line after them, saying the agent already had those words and worked
 with them, so they are not the requester's to pass on or to start again as a new task
 (`OPERATOR_WORDS_NOTE`, from `task_input.take_said`);

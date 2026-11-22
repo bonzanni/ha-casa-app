@@ -859,20 +859,6 @@ def _task_endpoint(birth: TaskBirth) -> Any:
         return None
 
 
-def _answer_posts(birth: "TaskBirth | None", answer: str) -> bool:
-    """Whether settling the task *birth* with *answer* posts it in its
-    executor's own chat — the same rule the post itself applies: an endpoint
-    serves its delivery now, and *answer*, the delegate's whole closing
-    message, is not silence."""
-    try:
-        return (birth is not None and birth.in_own_chat
-                and _task_endpoint(birth) is not None
-                and _task_post_admitted(birth, answer, IntentKind.FINAL_REPLY) is not None)
-    except Exception:  # noqa: BLE001 — a steer, never the work's fault
-        logger.warning("task answer post not predicted", exc_info=True)
-        return False
-
-
 async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
                           slot: str, kind: str = "",
                           reply_to: "TgAddress | None" = None) -> bool:
@@ -956,27 +942,31 @@ async def _post_task_start(birth: TaskBirth) -> None:
 
 
 async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None,
-                       failure: str = "") -> None:
+                       failure: str = "") -> bool:
     """A task of an agent with its own chat has ended: the message its
     delegate closed its turn with, whole (nothing when that is silence), is
     posted at its delivery, and its executor's conversation, when it did not
-    ask for the work, gets a body-free note for its next turn. Never raises."""
+    ask for the work, gets a body-free note for its next turn. Returns whether
+    the answer was delivered there, which is what lets the requester be told
+    the person already read it (#1636). Never raises."""
     if birth is None:
-        return
+        return False
     reply_to = _TASK_REPLY_TO.pop(birth.task_id, None)
     if not birth.in_own_chat:
-        return
+        return False
+    posted = False
     try:
         if answer is not None:
             import result_broker as rb
-            await _post_task_text(birth, answer, intent=IntentKind.FINAL_REPLY,
-                                  slot="task-answer", kind=rb.TASK_ANSWER,
-                                  reply_to=reply_to)
+            posted = await _post_task_text(birth, answer, intent=IntentKind.FINAL_REPLY,
+                                           slot="task-answer", kind=rb.TASK_ANSWER,
+                                           reply_to=reply_to)
         _note_task(birth, "asked you",
                    "you answered" if answer is not None
                    else f"you couldn't finish it ({failure or 'unknown'})")
     except Exception:  # noqa: BLE001 — the requester's result never waits on this
         logger.warning("task %s not settled in its chat", birth.task_id[:8], exc_info=True)
+    return posted
 
 
 def _note_task(birth: TaskBirth, asked: str, outcome: str) -> None:
@@ -1039,7 +1029,7 @@ OWN_CHAT_ECHO_NOTE = (
 
 
 def _with_post_echo(text: str, owner: str, *, shown_in: str = "",
-                    answer_noted: bool = False) -> str:
+                    answer_noted: bool = False, events: "list | None" = None) -> str:
     """S3 §6: append the body-free echo of every post a plugin proved under
     *owner* (a delegation id or an engagement id) to *text* — Casa's own
     lines after the delegate's answer, drained atomically so a post is
@@ -1047,9 +1037,12 @@ def _with_post_echo(text: str, owner: str, *, shown_in: str = "",
     *shown_in*, the name of the delegate whose own chat the posts went to,
     says so and asks the resident to close the loop — unless *answer_noted*:
     the result then carries :data:`OWN_CHAT_ANSWER_NOTE`, which already
-    covers that chat, and one close-the-loop note is enough."""
+    covers that chat, and one close-the-loop note is enough. *events*, when
+    given, are the posts already drained under *owner*, so one drain can serve
+    more than one version of the text."""
     import result_broker as _rb
-    events = _rb.POSTS.drain(owner)
+    if events is None:
+        events = _rb.POSTS.drain(owner)
     if shown_in:
         lines = _rb.echo_lines(events, where=f"to the person in {shown_in}'s chat")
         notes = [] if answer_noted else [OWN_CHAT_ECHO_NOTE.format(name=shown_in)]
@@ -5662,13 +5655,18 @@ async def _settle_then_announce(
     *,
     birth: "TaskBirth | None" = None,
     raw_text: "str | None" = None,
+    if_posted: "DelegationComplete | None" = None,
 ) -> None:
     """Persist the terminal, THEN announce it, THEN acknowledge on delivery.
 
     A task of an agent with its own chat (*birth*) also settles there before
     the announcement: *raw_text*, the delegate's closing message, whole (never
     the bounded, annotated copy the requester is told), is posted at the
-    task's delivery, and its conversation's note is written.
+    task's delivery, and its conversation's note is written. *if_posted* is
+    the notice to announce instead of *complete* when that post was
+    delivered (#1636): *complete*, the version that says nothing was read
+    there, is what the terminal stores, so a restart before the post landed
+    replays an answer the requester carries itself.
 
     #701. Three properties, each of which the previous shape — two independent
     `create_task` calls — could not hold:
@@ -5708,7 +5706,9 @@ async def _settle_then_announce(
         _TASK_REPLY_TO.pop(record.id, None)
         return
     if complete.status == "ok":
-        await _settle_task(birth, answer=raw_text if raw_text is not None else "")
+        posted = await _settle_task(birth, answer=raw_text if raw_text is not None else "")
+        if posted and if_posted is not None:
+            complete = if_posted
     else:
         await _settle_task(birth, failure=str(complete.kind or ""))
     target_role = record.origin.get("role") or "assistant"
@@ -5832,6 +5832,7 @@ def _attach_completion_callback(
             return
         complete: DelegationComplete | None = None
         settle: Awaitable[VoiceJob | None] | None = None
+        if_posted: DelegationComplete | None = None
         raw_text: str | None = None
         # The notes name the delegate's own chat when the task shows there; a
         # continuation passes no birth, so its record supplies it. Whether the
@@ -5898,32 +5899,48 @@ def _attach_completion_callback(
                 # The closing message, when the cap cut it away: computed on
                 # the delegate's own words, before Casa's echo lines follow.
                 closing = _closing_beyond_cut(output, bounded, output_truncated)
-                # S3 §6: the echo rides the notice, after the bounded answer
-                # (Casa's lines are not the delegate's text the cap bounds).
-                posted = _answer_posts(birth, raw_text)
-                bounded = _with_post_echo(bounded, record.id, shown_in=_shown,
-                                          answer_noted=bool(_shown) and posted)
-                bounded = _with_silent_close_note(bounded, output, record.agent,
-                                                  own_chat=bool(_shown))
-                bounded = _with_own_chat_answer_note(
-                    bounded, _shown, posted,
-                    link=(_own_chat_link(birth.executor)
-                          if _shown and posted and birth is not None else None))
-                bounded = _with_operator_words(
-                    bounded, said, getattr(record, "executor", "") or record.agent)
-                bounded = _with_own_chat_offer_note(bounded, record.id)
-                complete = DelegationComplete(
-                    delegation_id=record.id,
-                    agent=record.agent,
-                    status="ok",
-                    text=bounded,
-                    origin=record.origin,
-                    elapsed_s=time.time() - record.started_at,
-                    output_truncated=output_truncated,
-                    closing_message=closing,
-                )
+                # #1636: the notice is built in two versions, as if the answer
+                # posted in the delegate's own chat and as if it did not; the
+                # durable completion stores the second, and the settle tail
+                # announces the first only when the post really went out. Each
+                # input that is taken once (the post echo, the person's words,
+                # the offers) is taken here, once, for both.
+                import result_broker as _rb
+                events = _rb.POSTS.drain(record.id)
+                after = _with_own_chat_offer_note(
+                    _with_operator_words(
+                        "", said, getattr(record, "executor", "") or record.agent),
+                    record.id)
+                link = _own_chat_link(birth.executor) if _shown and birth is not None else None
+
+                def _compose(posted: bool) -> DelegationComplete:
+                    # S3 §6: the echo rides the notice, after the bounded
+                    # answer (Casa's lines are not the delegate's text the cap
+                    # bounds).
+                    text = _with_post_echo(bounded, record.id, shown_in=_shown,
+                                           answer_noted=bool(_shown) and posted,
+                                           events=events)
+                    text = _with_silent_close_note(text, output, record.agent,
+                                                   own_chat=bool(_shown))
+                    text = _with_own_chat_answer_note(text, _shown, posted, link=link)
+                    if after:
+                        text = f"{text}\n\n{after}" if text else after
+                    return DelegationComplete(
+                        delegation_id=record.id,
+                        agent=record.agent,
+                        status="ok",
+                        text=text,
+                        origin=record.origin,
+                        elapsed_s=time.time() - record.started_at,
+                        output_truncated=output_truncated,
+                        closing_message=closing,
+                    )
+
+                complete = _compose(False)
+                if _shown:
+                    if_posted = _compose(True)
                 settle = _complete_delegation_durably(
-                    record.id, bounded, closing_message=closing)
+                    record.id, complete.text, closing_message=closing)
         except Exception as exc:
             kind = _delegation_failure_kind(exc)
             complete = DelegationComplete(
@@ -5947,7 +5964,7 @@ def _attach_completion_callback(
         # on there is still work whose outcome a restart must not ORPHAN.
         coro = (
             _settle_then_announce(record, complete, settle,
-                                  birth=birth, raw_text=raw_text)
+                                  birth=birth, raw_text=raw_text, if_posted=if_posted)
             if _bus is not None and complete is not None
             else settle
         )
@@ -8974,21 +8991,8 @@ async def delegate_to_agent(args: dict) -> dict:
         # spoken-text bound and carries none.
         closing = ("" if is_voice else
                    _closing_beyond_cut(delegated_output, text, output_truncated))
-        # S3 §6: what the plugin posted under this delegation, as body-free
-        # Casa lines after the answer (after the cap: not the delegate's text).
         _answer = None if is_voice else _closing_text(delegated_output)
-        _posted = _answer is not None and _answer_posts(_birth, _answer)
-        text = _with_post_echo(text, delegation_id, shown_in=_shown,
-                               answer_noted=bool(_shown) and _posted)
-        if not is_voice:
-            text = _with_silent_close_note(text, delegated_output, agent_name,
-                                           own_chat=bool(_shown))
-            text = _with_own_chat_answer_note(
-                text, _shown, _posted,
-                link=(_own_chat_link(_birth.executor)
-                      if _shown and _posted and _birth is not None else None))
-            text = _with_operator_words(text, _take_said(delegation_id), agent_name)
-            text = _with_own_chat_offer_note(text, delegation_id)
+        _posted = False
         if not is_voice:
             # #321: the specialist's work is DONE and its answer is in hand —
             # a failed terminal snapshot write must not raise it away (the
@@ -9013,8 +9017,23 @@ async def delegate_to_agent(args: dict) -> dict:
                         "Delegation %s completion reconciliation scheduling "
                         "failed; restart recovery required", delegation_id[:8],
                     )
-            # the delegate's closing message, whole, in its own chat
-            await _settle_task(_birth, answer=_answer)
+            # the delegate's closing message, whole, in its own chat — posted
+            # before the result is composed, so the result says the person
+            # read it there only when it went out (#1636)
+            _posted = await _settle_task(_birth, answer=_answer)
+        # S3 §6: what the plugin posted under this delegation, as body-free
+        # Casa lines after the answer (after the cap: not the delegate's text).
+        text = _with_post_echo(text, delegation_id, shown_in=_shown,
+                               answer_noted=bool(_shown) and _posted)
+        if not is_voice:
+            text = _with_silent_close_note(text, delegated_output, agent_name,
+                                           own_chat=bool(_shown))
+            text = _with_own_chat_answer_note(
+                text, _shown, _posted,
+                link=(_own_chat_link(_birth.executor)
+                      if _shown and _posted and _birth is not None else None))
+            text = _with_operator_words(text, _take_said(delegation_id), agent_name)
+            text = _with_own_chat_offer_note(text, delegation_id)
         elapsed = time.time() - started_at
         logger.info(
             "Delegation %s → %s ok (%.2fs)",
@@ -15274,6 +15293,12 @@ async def plugin_update(args: dict) -> dict:
         # them: they are bound to the artifact, which is still the one running.
         if core.get("old_artifact_id") != core.get("artifact_id"):
             _invalidate_lifecycle(artifact_id=core.get("old_artifact_id"))
+            # #1657: the old artifact's event consents go too, as its trigger
+            # consents just did, so an update back to that revision asks again.
+            # The new artifact mints new identities, so nothing still usable is
+            # lost.
+            await _settle_through_cancellation(
+                _revoke_event_consents(core["name"], "plugin_update"))
         with _Stage(f"Get {name} ready to use"):
             seq = await _reload_and_verify_targets(
                 core["name"], core["targets"], expect="present")
@@ -18447,8 +18472,10 @@ async def _remove_and_settle(name: str) -> dict:
     and nothing here dispatches a reload: the parent holds the RAW lock (so no
     task-identity owner is recorded) and a child that re-entered a guard keyed
     on task identity would deadlock against its own parent — the helper's own
-    docstring. Every step is BOUNDED: two synchronous calls and two `to_thread`
-    disk operations. The reload is deliberately NOT here. Shielding it was
+    docstring. Every step is BOUNDED: synchronous calls, `to_thread` disk
+    operations, and the event-consent revoke, which waits only for an in-flight
+    event reconcile or dispatch admission (neither takes the plugin-tools
+    lock). The reload is deliberately NOT here. Shielding it was
     measured (astra, refutation round): with a reload held, it leaves the
     removal task unfinished, the plugin lock held, a reload reader and an agent
     reload lock held, and STILL performs no teardown — a stranded revocation
@@ -18465,7 +18492,8 @@ async def _remove_and_settle(name: str) -> dict:
     republications either way). It is NOT an equivalence: the later prune may
     now remove zero records, the ready marker may already be gone with the
     purged dir, and the spool's abort notice lands earlier. And settlement
-    UNROUTES NOTHING — the old runtime overlay stands until the reload."""
+    unroutes only the removed plugin's event subscriptions, with their
+    consents — the rest of the old runtime overlay stands until the reload."""
     core = await asyncio.to_thread(_plugin_remove_sync, name=name)
     if core.get("ok") is not True:
         return core
@@ -18497,7 +18525,31 @@ async def _remove_and_settle(name: str) -> dict:
     # to make the re-armed setup round empty and authoritative, releasing a
     # setup dispatch on a consent this removal was supposed to revoke.
     await _remove_plugin_callbacks(name)
+    # #1657: the same for the event subscriptions it held as a subscriber. The
+    # ack identity carries the artifact id, so a reinstall of the same revision
+    # would find a surviving ack and be routed again with no consent card; the
+    # reconcile's prune cannot be relied on, since any resolver issue anywhere
+    # in the registry skips it.
+    await _revoke_event_consents(name, "plugin_remove")
     return core
+
+
+async def _revoke_event_consents(name: str, tool: str) -> None:
+    """Unroute *name* as an event subscriber and drop every event consent it
+    holds, so returning to an artifact it left asks the operator again.
+    Best-effort, like the callback teardown: a failure never fails the
+    mutation. Takes the event reconcile and dispatch-admission locks, which
+    nest inside the plugin-tools lock the caller holds (the same order
+    ``event_ack_revoke`` uses)."""
+    try:
+        import event_reconcile
+        removed = await event_reconcile.revoke_and_unroute(name)
+        if removed:
+            logger.info("%s: revoked %d event ack(s) for %s",
+                        tool, len(removed), name)
+    except Exception:  # noqa: BLE001
+        logger.warning("%s: event ack revoke failed (%s)", tool, name,
+                       exc_info=True)
 
 
 @tool(

@@ -129,15 +129,17 @@ check with `plugin_list()`.
 and a thread cannot be cancelled, so a cancellation cannot stop a removal from committing —
 it can only stop the tool from continuing. Everything a committed removal owes DURABLY —
 retiring its setup obligation, invalidating its lifecycle grants and trigger consents,
-revoking its persisted callback consents and purging its callback spool — therefore runs as
+revoking its persisted callback consents and purging its callback spool, and revoking the
+event-subscription consents it held as a subscriber (#1657) — therefore runs as
 one unit that is drained to completion through repeated cancellation before the tool
 propagates it. Only the runtime reload is abandoned, because it is the one step that can be
 held indefinitely and no durable consequence may wait on it. That ordering is why the
 callback teardown runs before the reload rather than after it: the plugin is already absent
 from the registry when the commit returns, and the callback reconcile computes from
 registry resolution, so for an absent plugin an earlier revocation can produce no route and
-no pending consent. The settlement itself unroutes nothing — the runtime overlay stands
-until the reload — and a cancelled removal, like a raising one, returns no envelope.
+no pending consent. Of the routes, the settlement itself drops only the removed plugin's
+event subscriptions, with their consents; the rest of the runtime overlay stands until the
+reload. A cancelled removal, like a raising one, returns no envelope.
 
 ## Extension points
 
