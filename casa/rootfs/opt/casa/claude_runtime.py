@@ -88,6 +88,42 @@ SELF_SCHEDULING_TOOLS = ("ScheduleWakeup", "CronCreate", "CronDelete",
 # ``can_use_tool`` never sees it. Denied with the rest.
 OUTBOUND_SHARE_TOOLS = ("ShareOnboardingGuide",)
 
+# The built-in tools a session is offered are named here, never inherited.
+# Left unset, ``tools`` gives a session every built-in the pinned CLI ships,
+# and a CLI upgrade adds to that set without a line changing in Casa: most of
+# them are developer tools no agent here can use, each one's definition is
+# sent with every request, and three of the deny lists above exist because a
+# new default turned out to act outside Casa. So every options builder passes
+# ``tools``: an empty list for a session that calls no built-in, and
+# :func:`builtin_tools` for an agent. A deny list still applies on top (the
+# CLI removes a disallowed tool from the named set too).
+#
+# The file tools are always named: the CLI runs the read-only ones without
+# asking, and ``acceptEdits`` does the same for the writing ones inside the
+# working directory, so an agent has them whether or not its config grants
+# them, unless its config denies them.
+FILE_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep")
+
+
+def builtin_tools(allowed, *, skills: bool) -> list[str]:
+    """The ``tools=`` value of an agent session: :data:`FILE_TOOLS`, ``Skill``
+    when the session loads skills, ``ToolSearch`` (the CLI's own loader for
+    deferred tools), and every built-in *allowed* grants. A grant names its
+    tool before any ``(pattern)``; an ``mcp__`` grant is not a built-in.
+
+    Measured on the pinned CLI: ``Skill`` must be named to be offered, and a
+    name the CLI does not ship is ignored."""
+    out = list(FILE_TOOLS)
+    if skills:
+        out.append("Skill")
+    out.append("ToolSearch")
+    for grant in allowed:
+        name = grant.split("(", 1)[0].strip()
+        if name and not name.startswith("mcp__") and name not in out:
+            out.append(name)
+    return out
+
+
 # The inbound half: ``crossSessionInbound: "refuse"`` makes the CLI drop every
 # message another session delivers to this one. Passed through ``--settings``
 # (the SDK's ``settings=`` option), the source the CLI reads right after

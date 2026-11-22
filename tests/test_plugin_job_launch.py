@@ -73,6 +73,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
                                     'ScheduleWakeup', 'CronCreate', 'CronDelete',
                                     'CronList', 'Monitor', 'RemoteTrigger',
                                     'ShareOnboardingGuide']
+    assert opts.tools == ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'ToolSearch']
     assert opts.permission_mode == 'default' and opts.setting_sources == []
     assert opts.skills == 'all' and opts.model == 'sonnet'
     assert opts.plugins == [{'type': 'local', 'path': str(worker.root)}]

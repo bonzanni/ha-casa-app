@@ -46,7 +46,9 @@ A resident-hosted launch uses a dedicated `kind="plugin"` engagement. Its
 `role_or_type` names the resident, while `origin["plugin_job"]` pins the plugin registry
 name and launch model, and the record keeps one declaring artifact. The worker loads that
 artifact's skills and MCP servers, plus only `report_job_progress` and `emit_completion`
-from Casa. Its native grants are `Skill` and `ToolSearch`; `Agent`, `Task`,
+from Casa. Its native grants are `Skill` and `ToolSearch`, and the built-in tools it is
+offered are named, as for every agent session: the file tools and those two
+([`mcp-and-tools.md`](mcp-and-tools.md)). `Agent`, `Task`,
 `AskUserQuestion` and `Bash` are denied, as are the CLI's cross-session tools (INV-MCP-013
 in [`mcp-and-tools.md`](mcp-and-tools.md)). `Bash` has to be denied outright: the pinned
 CLI runs a read-only command without asking the fail-closed callback, and when a

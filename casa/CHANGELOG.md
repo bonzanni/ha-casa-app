@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.380.0] - 2026-11-22
+
+### Changed
+
+- Each agent is now offered only the Claude Code built-in tools Casa names for it, instead of every built-in the Claude CLI ships. An agent gets the file tools (Read, Write, Edit, Glob, Grep), Skill when it loads skills, ToolSearch, and any built-in its own tool configuration grants. The CLI's other defaults, mostly developer tools such as worktrees, notebooks and workflows, are no longer described to the model in every request, so each conversation starts with a shorter context.
+- An agent that should use another built-in, such as WebSearch, needs it granted in its tool configuration; that grant was already required for the call to be approved. The developer tools are gone from every agent, including any the CLI would have run without a grant. A tool the configuration denies stays denied, and a built-in a later CLI version adds no longer reaches an agent unless Casa or the agent's configuration names it.
+- The short helper call that answers a question from memory search results no longer carries built-in tools it never used.
+
 ## [0.379.0] - 2026-11-21
 
 ### Changed
