@@ -1681,6 +1681,14 @@ class Lifecycle:
             if agent.get("bot_id") == bot_id:
                 agent["bot_id"] = None
                 agent["chat_open_at"] = None
+            change = agent.get("change")
+            if change is not None and change["old_bot"] == bot_id:
+                # The bot a pending change replaces is gone: the next bot is
+                # a first bot, and no card names the deleted one.
+                if change["new_bot"] is None:
+                    agent["change"] = None
+                else:
+                    change.update(old_bot=None, old_username="")
             await self._edit(agent.get("offer_card"),
                              f"{self._label(role)}'s chat was deleted — ask "
                              f"{self._resident()} for a new one.")

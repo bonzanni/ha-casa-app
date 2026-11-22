@@ -202,7 +202,7 @@ exists, unanswered, until the operator deletes it. A later install offers a new 
 it in `recovering`: any successful fetch is authoritative, and the bot returns to `bound`
 or `dormant`. Only `getManagedBotToken` failing with 403 Forbidden "user is deactivated"
 (`RELEASE_ON`, what Telegram answers for a bot deleted in BotFather) releases a bot: its
-endpoint stops, its journal goes, the agent waits for a new bot and its card says so. Every
+endpoint stops, its journal goes, a pending change forgets it, the agent waits for a first bot and its card says so. Every
 other failure is retried with backoff (30 s to one hour). While the resident's own bot is
 not authorized no fetch is tried and the log says so once. An uninstall's result carries
 `own_chat: {bot, released}`.
