@@ -46,6 +46,7 @@ from telegram.request import HTTPXRequest
 from telegram.error import (
     BadRequest,
     Forbidden,
+    InvalidToken,
     NetworkError,
     RetryAfter,
     TelegramError,
@@ -1190,6 +1191,13 @@ class TelegramChannel(Channel):
     async def start(self) -> None:
         """Initial bring-up. Starts the supervisor, runs one rebuild,
         then launches the health probe loop.
+
+        A transport failure is handed to the supervisor, which retries it.
+        On Casa's own bot no failure raises (#1652), since boot would stop
+        the whole app: a token Telegram rejects leaves the bot down and
+        unready until the app restarts, which reads the token again, and any
+        other failure is handed to the supervisor. An agent's own bot raises
+        any other failure to the own-chat lifecycle that started it.
         """
         self._supervisor = ReconnectSupervisor(
             rebuild_fn=self._rebuild,
@@ -1200,13 +1208,22 @@ class TelegramChannel(Channel):
         self._supervisor.start()
         try:
             await self._rebuild()
-        except (NetworkError, TimedOut) as exc:
-            # Transient failure on first bring-up — hand off to supervisor.
-            logger.error(
-                "Telegram initial bring-up failed (%s); handing off to supervisor",
-                exc,
-            )
-            self._supervisor.trigger(f"initial_bringup: {exc!r}")
+        except Exception as exc:  # noqa: BLE001 — sorted below
+            if not self.is_casa and not isinstance(exc, (NetworkError, TimedOut)):
+                raise
+            if isinstance(exc, InvalidToken):
+                # Not the exception's text: PTB puts the token itself in it.
+                logger.error(
+                    "Casa's Telegram bot did not start: Telegram rejected its "
+                    "bot token. Check the token in the app's options; if it "
+                    "is a 1Password reference (op://...), check that it could "
+                    "be read at startup (an earlier line says so). Restart "
+                    "the app once it is fixed.")
+            else:
+                logger.error(
+                    "Telegram initial bring-up failed (%s); handing off to "
+                    "supervisor", exc)
+                self._supervisor.trigger(f"initial_bringup: {exc!r}")
         self._probe_task = asyncio.create_task(self._health_probe_loop())
 
     async def stop(self) -> None:

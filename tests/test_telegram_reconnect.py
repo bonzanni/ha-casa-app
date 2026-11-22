@@ -202,6 +202,120 @@ class TestInitialSetWebhookFailure:
         assert patched_application_builder[1].bot.set_webhook.await_count == 1
 
 
+def _builder_failing_first_initialize(built: list, exc: BaseException):
+    """A builder whose first Application's ``initialize`` (``getMe``) raises
+    *exc*; every later one comes up."""
+    def builder():
+        chain = MagicMock()
+        chain.token = MagicMock(return_value=chain)
+
+        def build_once():
+            app = _make_fake_application()
+            if not built:
+                app.initialize = AsyncMock(side_effect=exc)
+            built.append(app)
+            return app
+
+        chain.build = build_once
+        return chain
+    return builder
+
+
+async def _boot_casa_bot(mock_bus):
+    """Casa's own bot registered and started the way the boot does it:
+    the Telegram transport inside the channel manager, ``start_all()``."""
+    from channels import ChannelManager
+    from channels.telegram import TelegramChannel
+    from channels.telegram_transport import TelegramTransport
+    from telegram_channel_double import MemoryBotIdStore
+
+    ch = TelegramChannel(
+        bot_token="op://Casa/Telegram/credential", chat_id="123",
+        default_agent="assistant", bus=mock_bus,
+    )
+    transport = TelegramTransport(casa_bot_ids=MemoryBotIdStore())
+    transport.add_endpoint(ch, casa=True)
+    cm = ChannelManager()
+    cm.register(transport)
+    await cm.start_all()
+    return cm, transport
+
+
+class TestBootBringUpFailure:
+    """#1652: a failure of Casa's own bot to come up at boot never escapes
+    ``start_all()`` (which would stop the whole app); the endpoint stays not
+    ready."""
+
+    async def test_rejected_token_leaves_the_bot_down_and_the_boot_running(
+        self, patched_application_builder, mock_bus, caplog, monkeypatch,
+    ):
+        caplog.set_level(logging.DEBUG, logger="channels.telegram")
+        import channels.telegram as telegram_mod
+        monkeypatch.setattr(telegram_mod, "_RECONNECT_INITIAL_MS", 1)
+        monkeypatch.setattr(telegram_mod, "_RECONNECT_CAP_MS", 4)
+        invalid_token = sys.modules["telegram.error"].InvalidToken
+        monkeypatch.setattr(
+            telegram_mod.Application, "builder",
+            _builder_failing_first_initialize(
+                patched_application_builder, invalid_token()))
+
+        cm, transport = await _boot_casa_bot(mock_bus)   # must not raise
+        # Time for several reconnect cycles, had one been started.
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+        try:
+            assert not transport.ready_event.is_set()
+            # A token Telegram rejected cannot become valid without a restart
+            # (which reads it again): no retry is made with it.
+            assert len(patched_application_builder) == 1
+            errors = [r.getMessage() for r in caplog.records
+                      if r.levelno == logging.ERROR]
+            assert len(errors) == 1, errors
+            assert "rejected" in errors[0] and "op://" in errors[0]
+        finally:
+            await cm.stop_all()
+
+    async def test_other_bring_up_failure_is_retried_until_the_bot_is_up(
+        self, patched_application_builder, mock_bus, monkeypatch,
+    ):
+        import channels.telegram as telegram_mod
+        monkeypatch.setattr(telegram_mod, "_RECONNECT_INITIAL_MS", 1)
+        monkeypatch.setattr(telegram_mod, "_RECONNECT_CAP_MS", 4)
+        retry_after = sys.modules["telegram.error"].RetryAfter
+        monkeypatch.setattr(
+            telegram_mod.Application, "builder",
+            _builder_failing_first_initialize(
+                patched_application_builder, retry_after(1)))
+
+        cm, transport = await _boot_casa_bot(mock_bus)   # must not raise
+        try:
+            await asyncio.wait_for(transport.ready_event.wait(), timeout=2)
+            assert len(patched_application_builder) == 2
+        finally:
+            await cm.stop_all()
+
+    async def test_an_agent_bot_rejected_token_still_reaches_its_starter(
+        self, patched_application_builder, mock_bus, monkeypatch,
+    ):
+        """The own-chat lifecycle reads an agent bot's failed start from
+        ``start()`` raising; only Casa's own bot absorbs it."""
+        import channels.telegram as telegram_mod
+        from channels.telegram import TelegramChannel
+        invalid_token = sys.modules["telegram.error"].InvalidToken
+        monkeypatch.setattr(
+            telegram_mod.Application, "builder",
+            _builder_failing_first_initialize(
+                patched_application_builder, invalid_token()))
+        ch = TelegramChannel(
+            bot_token="t", chat_id="123", default_agent="finance",
+            bus=mock_bus, is_casa=False, known_bot_id=777)
+        try:
+            with pytest.raises(invalid_token):
+                await ch.start()
+        finally:
+            await ch.stop()
+
+
 class TestHealthProbeLoop:
     async def test_probe_failure_triggers_supervisor(
         self, patched_application_builder, mock_bus,
