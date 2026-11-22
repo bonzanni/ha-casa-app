@@ -1907,3 +1907,20 @@ plaintext OR an `op://` reference.
 
 Plugin env vars resolved via `plugin-env.conf` (`/config/plugin-env.conf`),
 managed by Configurator.
+
+## Secrets without 1Password
+
+Leave `onepassword_service_account_token` empty and Casa keeps its secrets in a
+store built into the app instead of 1Password. Casa decides this each time the app
+starts: with a token it uses 1Password, without one the built-in store. A token
+that is set but does not work is never replaced by the built-in store.
+
+The built-in store keeps your secrets on the same machine as Casa, with the key
+that opens them, in the app's data and so inside its backups. That is weaker than
+1Password: whoever has a copy of the app's data or of a backup has the secrets
+too. Restoring a backup of the app restores them.
+
+There is no page to manage the secrets yet. Items are created by Casa itself (your
+agents' bot tokens, for example), by drop-offs and by plugins. `op://` references
+in the options work as they do with 1Password; the vault is the one named in
+`onepassword_default_vault`, `Casa` when that is empty.

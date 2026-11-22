@@ -35,9 +35,11 @@ Three rules shape every transition:
 
 Persisted state: the records in ``agent-voices.json`` (one per agent, one per
 bot), the held journals in ``agent-voices/held/<bot_id>.jsonl``, and each
-agent's token in its own 1Password item (``Telegram <Role>``, created once and
-then edited in place) or, without 1Password, in
-``agent-voices/tokens/<role>``. Before a bot is bound to a role its token is
+agent's token in its own ``op`` item (``Telegram <Role>``, created once and
+then edited in place) or, when no vault name and token are in effect, in
+``agent-voices/tokens/<role>``. The item is in 1Password, or, on an install
+without a 1Password token, in Casa's built-in secrets store, which answers the
+same ``op`` commands. Before a bot is bound to a role its token is
 kept in memory only and fetched again at every boot.
 
 The Telegram side lives behind :class:`TelegramHost`, so the transitions
@@ -387,8 +389,10 @@ def item_title(role: str) -> str:
 
 
 class TokenStore:
-    """Each bound agent's bot token: in its own 1Password item when Casa has
-    a vault and a service account, else in a file of its own.
+    """Each bound agent's bot token: in its own ``op`` item when a vault name
+    and a token are in effect, else in a file of its own. The item is in
+    1Password, or in Casa's built-in secrets store on an install without a
+    1Password token, where both are always in effect.
 
     The item is created once and then edited in place from a template piped
     on stdin, so the token never appears in ``op``'s argv and the item id

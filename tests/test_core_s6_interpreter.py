@@ -49,7 +49,10 @@ CORE_SCRIPTS = (
     "s6-rc.d/svc-nginx/finish",
     "s6-rc.d/svc-ttyd/run",
     "s6-rc.d/svc-ttyd/finish",
+    "s6-rc.d/svc-vault/run",
+    "s6-rc.d/svc-vault/finish",
     "scripts/memory-maintenance.sh",
+    "scripts/secrets-backend.sh",
     "scripts/setup-configs.sh",
     "scripts/setup-nginx.sh",
     "scripts/setup-plugin-store.sh",
@@ -201,7 +204,7 @@ def test_core_interpreter_chain(chain, rel):
 # --- K4: every core shebang names exactly the wrapper ------------------------
 
 def test_core_shebang_inventory():
-    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 11
+    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 14
     found = {str(p.relative_to(OVERLAY)) for p in OVERLAY.rglob("*")
              if p.is_file() and _first_line(p).startswith("#!/command/with-contenv")}
     assert found == set(CORE_SCRIPTS)

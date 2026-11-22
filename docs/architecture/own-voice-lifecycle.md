@@ -66,9 +66,9 @@ nothing, and the question is asked again without it. An agent has one bound bot 
 never rebound to another agent. The token is fetched with `getManagedBotToken`
 through the resident's bot's request layer, never the library's Bot method, whose DEBUG
 trace logs the return value; it is registered for log redaction before the bot's own first
-call logs its URL. It is stored per role — in its own 1Password item
-(`Telegram <Role>`, tag `casa-agent-bot`, created once then edited in place), or without
-1Password in `agent-voices/tokens/<role>`; before binding it is kept in memory and fetched
+call logs its URL. It is stored per role — in its own vault item, in 1Password or the
+built-in store (`Telegram <Role>`, tag `casa-agent-bot`, created once then edited in place),
+or with no vault name set in `agent-voices/tokens/<role>`; before binding it is kept in memory and fetched
 again at boot. A stored token is used only for the bot whose id it begins with
 (`token_belongs_to`); a token of another bot is never started, and the right one is
 fetched. Binding then runs the bot's **self-setup** — its display name (the name chosen
@@ -99,7 +99,7 @@ pending switch it asks `open_on_bot` again, durable kinds only: if anything stil
 the old bot the switch stays pending, the old bot boots as usual, and the card says Alex
 still had something open there; asking again with `replace` once it is done requests
 another restart, with no new bot to create. Otherwise it **retires** the old bot — its held
-journal and its stored token (1Password item or file) go, and its record stays, `released`,
+journal and its stored token (vault item or file) go, and its record stays, `released`,
 with its role and handle and no setup digest — and hands the new bot to the ordinary
 binding as `binding`; every step is persisted and idempotent, so a
 crash re-runs it from what is on disk. The agent keeps the old handle (`moved_from`) until
@@ -242,7 +242,7 @@ fails is logged and never stops the boot; the switch is tried again at the next 
 the tool answers `restart_failed`, and the switch completes at the next restart.
 
 **The old bot's token cannot be deleted.** Logged; the switch goes on. The binding writes the
-same 1Password item in place, and a stored token of another bot is never used.
+same vault item in place, and a stored token of another bot is never used.
 
 **An earlier bot Telegram will not hand back.** Nothing moves and no card is posted; the
 result says the bot is gone or not reachable, and the resident tells the operator.

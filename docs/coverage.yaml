@@ -361,6 +361,14 @@
   doc: architecture/triggers.md
 - item: casa/rootfs/opt/casa/vault_drop_off.py
   doc: architecture/vault-drop-off.md
+- item: casa/rootfs/opt/casa/vault_op.py
+  doc: architecture/builtin-secrets-store.md
+- item: casa/rootfs/opt/casa/vault_op_client.py
+  doc: architecture/builtin-secrets-store.md
+- item: casa/rootfs/opt/casa/vault_service.py
+  doc: architecture/builtin-secrets-store.md
+- item: casa/rootfs/opt/casa/vault_store.py
+  doc: architecture/builtin-secrets-store.md
 - item: casa/rootfs/opt/casa/verdict_broker.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/voice_job_result.py
@@ -405,6 +413,8 @@
   doc: architecture/memory-wipe.md
 - item: s6:init-plugin-store
   doc: architecture/overview.md
+- item: s6:init-secrets-backend
+  doc: architecture/builtin-secrets-store.md
 - item: s6:init-setup-configs
   doc: architecture/overview.md
 - item: s6:init-setup-nginx
@@ -417,6 +427,8 @@
   doc: architecture/overview.md
 - item: s6:svc-ttyd
   doc: architecture/overview.md
+- item: s6:svc-vault
+  doc: architecture/builtin-secrets-store.md
 - item: s6:user
   doc: architecture/overview.md
 - item: tool:ack_event
@@ -721,6 +733,8 @@
   doc: architecture/plugin-handoff.md
 - item: env:CASA_TZ
   doc: reference/operator-options.md
+- item: env:CASA_VAULT_KEY
+  doc: architecture/builtin-secrets-store.md
 - item: env:CASA_VERSION
   doc: architecture/overview.md
 - item: env:ENABLE_TERMINAL
@@ -805,6 +819,8 @@
   doc: architecture/personality.md
 - item: script:memory-maintenance.sh
   doc: architecture/memory-wipe.md
+- item: script:secrets-backend.sh
+  doc: architecture/builtin-secrets-store.md
 - item: script:setup-configs.sh
   doc: architecture/configuration.md
 - item: script:setup-nginx.sh

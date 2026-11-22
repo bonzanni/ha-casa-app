@@ -80,6 +80,16 @@ def test_inventory_pins_every_path_the_advisory_named() -> None:
     }
 
 
+def test_the_builtin_secrets_store_is_declared_private() -> None:
+    """The built-in store's directory, its KeePass file and its key: whoever
+    reads the key and the file reads every secret the install keeps there."""
+    declared = {e.path: (e.mode, e.kind)
+                for e in private_state.FILES + private_state.DIRS}
+    assert declared["/data/vault"] == (0o700, private_state.PRIVATE)
+    assert declared["/data/vault/casa.kdbx"] == (0o600, private_state.PRIVATE)
+    assert declared["/data/vault/key"] == (0o600, private_state.PRIVATE)
+
+
 def test_credential_entries_are_exactly_the_three_bearer_paths() -> None:
     """Only these three gate engagement startup; widening that set turns a
     confidentiality regression into a refusal to run engagements at all."""

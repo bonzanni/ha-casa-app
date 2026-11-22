@@ -1,0 +1,1 @@
+[ERROR] 2026/11/22 04:09:01 could not read secret 'op://Casa/zz-vault-fixture-a/nope': item 'Casa/zz-vault-fixture-a' does not have a field 'nope'

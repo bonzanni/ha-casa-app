@@ -66,6 +66,13 @@ kind) is also an `Agent` on the bus under its role, at boot and on every reload
 (`agent_registry.keeps_own_conversation`), so the operator's messages in its own chat reach it;
 every other specialist is reached only through delegation ([`own-voice.md`](own-voice.md)).
 
+**Three more role fields shape a specialist.** In `AgentConfig`, `own_chat` is an
+`OwnChatConfig` of the bot's two profile texts; `session.long_runs: true` marks a role whose
+requests are each one long conversation ([`scratchpad.md`](scratchpad.md)); and
+`voice_handoff: true` says the specialist suits the voice concierge — nothing at runtime
+reads it, and only the install and upgrade recipes act on it
+([`specialist-lifecycle.md`](specialist-lifecycle.md)).
+
 ## Contracts & invariants
 
 **INV-AGENT-001**: A role claimed by both a resident and a specialist is refused at boot, when the role registry is built.

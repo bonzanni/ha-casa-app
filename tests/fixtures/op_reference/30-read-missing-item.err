@@ -1,0 +1,1 @@
+[ERROR] 2026/11/22 04:09:00 could not read secret 'op://Casa/zz-vault-fixture-none/password': could not get item Casa/zz-vault-fixture-none: "zz-vault-fixture-none" isn't an item in the "Casa" vault. Specify the item with its UUID, name, or domain.

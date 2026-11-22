@@ -62,7 +62,10 @@ RUN set -eux; \
     rm -rf /tmp/gh*; \
     gh --version
 
-# 1Password op CLI for secret resolution (§8 universal resolver)
+# 1Password op CLI for secret resolution (§8 universal resolver). It is kept
+# as op-1password: the name `op` belongs to the front in rootfs
+# (/usr/local/bin/op, copied in below), which runs this program on an install
+# that uses 1Password and the built-in store's client on one that does not.
 ARG OP_CLI_VERSION=2.30.0
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
@@ -74,7 +77,8 @@ RUN set -eux; \
       "https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_CLI_VERSION}/op_linux_${OP_ARCH}_v${OP_CLI_VERSION}.zip"; \
     unzip /tmp/op.zip -d /usr/local/bin; \
     rm /tmp/op.zip; \
-    op --version
+    mv /usr/local/bin/op /usr/local/bin/op-1password; \
+    /usr/local/bin/op-1password --version
 
 # Python dependencies live in a venv under /opt/casa/venv — Debian
 # 12's system Python is PEP 668 "externally managed"; the venv keeps
@@ -114,7 +118,15 @@ RUN chmod +x /etc/s6-overlay/scripts/*.sh \
     && find /etc/s6-overlay/s6-rc.d -name 'run' -o -name 'finish' \
     | xargs chmod +x \
     && chmod +x /opt/casa/scripts/*.sh \
-    && chmod +x /usr/local/bin/casactl
+    && chmod +x /usr/local/bin/casactl /usr/local/bin/op
+
+# `op` is the front. Nothing has chosen a secrets backend in a build, so
+# it must hand over to the 1Password CLI and answer with that program's
+# version; a front that is missing, not executable or pointing elsewhere stops
+# the build here. This follows the permissions above because rootfs files are
+# tracked without the executable bit.
+RUN test "$(/usr/local/bin/op --version)" = "${OP_CLI_VERSION}" \
+    || { echo "/usr/local/bin/op does not reach the 1Password CLI ${OP_CLI_VERSION} at /usr/local/bin/op-1password" >&2; exit 1; }
 
 # #957: Casa's service database compiles in this image. At every container
 # start the base's stage2 (s6-overlay's rc.init) compiles the overlay's own

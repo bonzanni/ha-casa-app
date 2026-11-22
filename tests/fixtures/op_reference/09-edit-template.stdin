@@ -1,0 +1,1 @@
+{"title": "zz-vault-fixture-a", "category": "PASSWORD", "tags": ["casa-vault-fixture"], "fields": [{"id": "password", "type": "CONCEALED", "purpose": "PASSWORD", "label": "password", "value": "fixture-value-two"}]}

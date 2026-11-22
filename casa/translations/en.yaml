@@ -32,10 +32,10 @@ configuration:
       selected but public_url is not set, falls back to polling.
   onepassword_service_account_token:
     name: "1Password service account token"
-    description: "Token from https://developer.1password.com/docs/service-accounts/ — plaintext only, cannot be a op:// reference (root of trust). Read access to the vault named in 'onepassword_default_vault'."
+    description: "Token from https://developer.1password.com/docs/service-accounts/ — plaintext only, cannot be an op:// reference. Leave empty to use Casa's built-in secrets store instead of 1Password."
   onepassword_default_vault:
     name: "1Password default vault"
-    description: "Vault name used when an op:// reference omits the vault segment. Default: Casa."
+    description: "Vault name used when an op:// reference omits the vault segment, and the name of the built-in store's single vault. Default: Casa."
   webhook_secret:
     name: Webhook Secret (override)
     description: >-

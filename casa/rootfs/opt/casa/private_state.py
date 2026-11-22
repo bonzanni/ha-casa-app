@@ -119,6 +119,13 @@ FILES: tuple[Entry, ...] = (
           "Approval records: what the operator approved for each install or "
           "upgrade, its settings, the card that asked and the operator's "
           "words that led to it."),
+    Entry("/data/vault/casa.kdbx", 0o600, PRIVATE,
+          "The built-in secrets store, used when no 1Password token is set: "
+          "every secret Casa and its plugins keep there, encrypted with the "
+          "key beside it."),
+    Entry("/data/vault/key", 0o600, PRIVATE,
+          "The key that opens the built-in secrets store: whoever reads it "
+          "and the store reads every secret in it."),
 )
 
 # --- file globs ----------------------------------------------------------
@@ -150,6 +157,8 @@ DIRS: tuple[Entry, ...] = (
           "is bound to its agent, verbatim."),
     Entry("/data/agent-voices/tokens", 0o700, CREDENTIAL,
           "The agents' bot tokens, when no 1Password vault is configured."),
+    Entry("/data/vault", 0o700, PRIVATE,
+          "The built-in secrets store and its key."),
     Entry("/data/memory", 0o700, PRIVATE,
           "The memory store: every captured conversation turn verbatim, the "
           "ledgers written from them, and their exports."),

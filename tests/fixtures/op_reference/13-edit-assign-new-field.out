@@ -1,0 +1,14 @@
+ID:          26fm43is7gq3x2e72goieymjqy
+Title:       zz-vault-fixture-b
+Vault:       Casa (vvvvvvvvvvvvvvvvvvvvvvvvvv)
+Created:     2 seconds ago
+Updated:     now
+Favorite:    false
+Tags:        casa-vault-fixture
+Version:     3
+Category:    API_CREDENTIAL
+Fields:
+  valid from:       0
+  expires:          0
+  refresh token:    [use 'op item get 26fm43is7gq3x2e72goieymjqy --reveal' to reveal]
+  session note:     fixture plain text

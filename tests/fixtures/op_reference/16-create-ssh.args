@@ -1,0 +1,12 @@
+item
+create
+--category
+ssh
+--title
+zz-vault-fixture-c
+--vault
+Casa
+--tags
+casa-vault-fixture
+--ssh-generate-key
+rsa,4096

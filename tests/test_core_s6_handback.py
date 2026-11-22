@@ -26,7 +26,7 @@ import pytest
 import trusted_path
 from trusted_path import _root_path_fragment
 from test_core_s6_interpreter import (
-    DEFAULT_BLOCK, OVERLAY, WRAPPER, Chain, _populate, _stub, _write_exec)
+    DEFAULT_BLOCK, OVERLAY, REPO, WRAPPER, Chain, _populate, _stub, _write_exec)
 from test_core_s6_interpreter import pytestmark  # noqa: F401 — same host needs
 
 # #1248's ten PATH spellings of the plugin tools directory.
@@ -84,6 +84,12 @@ FINAL_PROGRAMS = {
     "s6-rc.d/svc-ttyd/run": "/usr/bin/ttyd",
 }
 
+# svc-casa sources this to learn what the 1Password options mean under the
+# secrets backend, which it reads from a file written at container start.
+HELPER = REPO / "casa" / "rootfs" / "opt" / "casa" / "scripts" / "secrets-backend-lib.sh"
+HELPER_IMAGE_PATH = "/opt/casa/scripts/secrets-backend-lib.sh"
+BACKEND_FILE = "/run/casa-vault/backend"
+
 
 class Body(Chain):
     def __init__(self, tmp_path: Path):
@@ -102,12 +108,23 @@ class Body(Chain):
                     f'exec /usr/bin/env > "{self.env_out}"\n')
         return rec
 
+    def helper_copy(self) -> Path:
+        """The shipped helper, reading a backend file that is not there: an
+        install that uses 1Password."""
+        text = HELPER.read_text()
+        assert text.count(BACKEND_FILE) == 2
+        copy = self.tmp / "secrets-backend-lib.sh"
+        copy.write_text(text.replace(BACKEND_FILE, str(self.tmp / "no-backend-file")))
+        return copy
+
     def script(self, rel: str) -> Path:
         text = (OVERLAY / rel).read_text()
         final = FINAL_PROGRAMS.get(rel)
         if final is not None:
             assert text.count(final) == 1, (rel, final)
             text = text.replace(final, str(self.recorder()))
+        if HELPER_IMAGE_PATH in text:
+            text = text.replace(HELPER_IMAGE_PATH, str(self.helper_copy()))
         copy = self.tmp / rel.replace("/", "_")
         copy.write_text(text)
         return copy

@@ -7,6 +7,13 @@ CONFIG_DIR="/config"
 DATA_DIR="/data"
 DEFAULTS_DIR="/opt/casa/defaults"
 
+# casa_op_token and casa_op_vault: what the two 1Password options mean under
+# the secrets backend chosen at start (scripts/secrets-backend.sh). On
+# 1Password they return the option values as they are; on the built-in store
+# they return its fixed token word and its vault name, so the `op read` calls
+# below are answered by that store.
+. /opt/casa/scripts/secrets-backend-lib.sh
+
 # ------------------------------------------------------------------
 # Directory scaffolding (idempotent).
 # ------------------------------------------------------------------
@@ -248,6 +255,7 @@ unset _tokfile
 # webhook_secret can be resolved to the value Casa actually verifies with.
 _op_tok_discovery="$(bashio::config 'onepassword_service_account_token')"
 [ "$_op_tok_discovery" = "null" ] && _op_tok_discovery=""
+_op_tok_discovery="$(casa_op_token "$_op_tok_discovery")"
 CASA_DISCOVERY_AUTH_ENABLED=true OP_SERVICE_ACCOUNT_TOKEN="$_op_tok_discovery" \
     python3 /opt/casa/supervisor_discovery.py || \
     bashio::log.warning "Supervisor discovery publisher exited non-zero"
@@ -275,6 +283,8 @@ mkdir -p "$HOME/.claude"
 # /etc/gitconfig SSH→HTTPS rewrite; private clones return 404/403.
 OP_TOK="$(bashio::config 'onepassword_service_account_token')"
 VAULT="$(bashio::config 'onepassword_default_vault')"
+OP_TOK="$(casa_op_token "$OP_TOK")"
+VAULT="$(casa_op_vault "$VAULT")"
 GH_TOKEN=""
 if [ -n "$OP_TOK" ] && [ "$OP_TOK" != "null" ] \
    && [ -n "$VAULT" ] && [ "$VAULT" != "null" ]; then
@@ -309,6 +319,7 @@ if [ -n "$CC_OAUTH" ] && [ "$CC_OAUTH" != "null" ]; then
     case "$CC_OAUTH" in
         op://*)
             OP_TOK2="$(bashio::config 'onepassword_service_account_token')"
+            OP_TOK2="$(casa_op_token "$OP_TOK2")"
             if [ -n "$OP_TOK2" ] && [ "$OP_TOK2" != "null" ]; then
                 CC_OAUTH=$(OP_SERVICE_ACCOUNT_TOKEN="$OP_TOK2" \
                     op read "$CC_OAUTH" 2>/dev/null) || CC_OAUTH=""

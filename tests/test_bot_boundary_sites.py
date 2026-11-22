@@ -636,6 +636,7 @@ IDENTITY_SITE_HITS = {
         "TriggerRegistry.reregister_for": 1,
     },
     "vault_drop_off.py": {"item_title": 1, "store": 1},
+    "vault_store.py": {"Store._entries": 1, "Store.list": 1},
     "verdict_broker.py": {
         "VerdictBroker.__init__": 1, "VerdictBroker._finish": 1, "VerdictBroker.cancel": 1,
         "VerdictBroker.cancel_scope": 1, "VerdictBroker.cancel_where": 1,
@@ -701,6 +702,8 @@ IDENTITY_FILES = {
     "mcp_registry.py": (SAFE, "conversation identities, qualified by role"),
     "background_jobs.py": (SAFE, "the per-plugin job mutex, install-global by design"),
     "vault_drop_off.py": (SAFE, "shared by roles, not by bots: no Telegram component"),
+    "vault_store.py": (NOISE, "the KeePass entries of the built-in secrets store, not keys: "
+                              "no Telegram component"),
     "approval_card.py": (SAFE, "the written-card cache is keyed by model, kind and a hash "
                                "of the facts, and holds only reply text: the card is "
                                "rebuilt for each request"),

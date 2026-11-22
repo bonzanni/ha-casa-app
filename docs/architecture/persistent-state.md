@@ -117,12 +117,20 @@ without it as owing nothing. Their contract is [`output-boundary.md`](output-bou
 and per bot, set aside when corrupt or foreign, owner-only; an agent's record also keeps
 every handle it was ever offered, a pending change to a new bot, and the handle it moved
 from until its new chat opens), the held journals
-`agent-voices/held/<bot>.jsonl`, and, without 1Password, each agent's token in
+`agent-voices/held/<bot>.jsonl`, and, when no vault name is in effect, each agent's token in
 `agent-voices/tokens/<role>` ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)). The
 groups the operator allowed a specialist's bot to answer everyone in are
 `agent-voices-guests.json` (per role and chat, each entry bound to the component installed
 when it was made; saved whole, atomically and owner-only; a file not of its shape is moved
 aside to `.corrupt` and the store starts empty — [`guest-summons.md`](guest-summons.md)).
+
+**Secrets without 1Password have a directory of their own.** `/data/vault/` (0700, in the
+private-state inventory) holds `casa.kdbx`, the built-in secrets store's KeePass database,
+and `key`, the text that opens it (both 0600; no key file when `CASA_VAULT_KEY` supplies the
+key). One service owns them. The database is replaced atomically on every save; when it
+exists and cannot be opened — no key, a wrong key, a damaged file — nothing in the
+directory is created, replaced or removed (INV-VAULT-004,
+[`builtin-secrets-store.md`](builtin-secrets-store.md)).
 
 ## Contracts & invariants
 

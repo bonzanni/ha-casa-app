@@ -19571,6 +19571,13 @@ def _tool_set_plugin_env_reference(
     var_name: str,
     op_ref_or_value: str,
 ) -> dict:
+    # Casa sets these itself at start from its app options; an entry here
+    # would silently override that choice for every plugin.
+    option = _CASA_OWNED_ENV.get(var_name)
+    if option is not None:
+        return {"ok": False,
+                "error": f"{var_name} is set by the app option '{option}'; "
+                         "change it in the app's configuration"}
     from plugin_env_conf import set_entry as _set_env_entry_local
     _set_env_entry_local(var_name, op_ref_or_value)
     return {"ok": True}

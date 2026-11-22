@@ -52,8 +52,8 @@ container variable can survive an empty option elsewhere.
 | `telegram_chat_id` | `TELEGRAM_CHAT_ID` | main startup → Telegram channel | empty | restart |
 | `telegram_bot_api_base` | `TELEGRAM_BOT_API_BASE` | Telegram channel rebuild | unset | restart |
 | `telegram_transport` | `TELEGRAM_TRANSPORT` | main startup | polling | restart |
-| `onepassword_service_account_token` | `OP_SERVICE_ACCOUNT_TOKEN` | secret resolver (`op` CLI); setup's token blocks | empty | restart |
-| `onepassword_default_vault` | `ONEPASSWORD_DEFAULT_VAULT` | setup's GitHub-token block; the configurator's vault tools fall back to it when their `vault` argument is omitted; `plugin_add` and `plugin_update` search it for a plugin's unresolved secrets; every configurator run's world state names it | Casa | restart |
+| `onepassword_service_account_token` | `OP_SERVICE_ACCOUNT_TOKEN` | the secrets-backend oneshot: set means 1Password, empty means the built-in store, and on the built-in store the variable holds the fixed word `casa-builtin-store` ([`builtin-secrets-store.md`](../architecture/builtin-secrets-store.md)); secret resolver (`op`); setup's token blocks | empty | restart |
+| `onepassword_default_vault` | `ONEPASSWORD_DEFAULT_VAULT` | setup's GitHub-token block; the configurator's vault tools fall back to it when their `vault` argument is omitted; `plugin_add` and `plugin_update` search it for a plugin's unresolved secrets; every configurator run's world state names it; on the built-in store it names the store's one vault, `Casa` when empty | Casa | restart |
 | `webhook_secret` | `WEBHOOK_SECRET` (else the persisted secret file) | setup's secret block; main startup | generated and persisted when empty | restart |
 | `primary_agent_model` | `PRIMARY_AGENT_MODEL` | role-slot model options → role model resolution | opus | restart |
 | `voice_agent_model` | `VOICE_AGENT_MODEL` | role-slot model options → role model resolution | haiku | restart |

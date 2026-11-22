@@ -1,0 +1,30 @@
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
+# svc-vault: the store built into Casa for an install that keeps its secrets
+# there (see scripts/secrets-backend.sh for how that is decided).
+#
+# s6 holds what depends on this service until a newline arrives on descriptor
+# 3 (notification-fd), so the first `op read` of a start finds the store
+# listening. The store writes it once its socket is bound.
+export BASHIO_LOG_NO_COLORS=true
+export NO_COLOR=1
+
+. /opt/casa/scripts/secrets-backend-lib.sh
+
+if [ "$(casa_secrets_backend)" != builtin ]; then
+    # Secrets are in 1Password: there is no store to serve, and no socket.
+    # Say ready at once and stay up, so nothing waits and s6 has nothing to
+    # restart.
+    echo >&3
+    exec 3>&-
+    exec sleep infinity
+fi
+
+# The key, when the install supplies one, arrives in CASA_VAULT_KEY from the
+# container environment. The store runs on the PATH this script was given,
+# without the plugin tools directory.
+_vault="$(bashio::config 'onepassword_default_vault')"
+exec /opt/casa/venv/bin/python3 /opt/casa/vault_service.py \
+    --dir /data/vault \
+    --socket /run/casa-vault/store.sock \
+    --vault-name "$(casa_op_vault "$_vault")" \
+    --ready-fd 3

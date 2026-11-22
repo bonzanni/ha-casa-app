@@ -38,12 +38,18 @@ export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1
 # whatever the credential; a session that wants another value passes it in its
 # own options env, which wins over this. Needs CLI 2.1.242 or later.
 export CLAUDE_CODE_PROMPT_CACHE_TTL=1h
+# The two 1Password options go through the secrets backend chosen at start
+# (scripts/secrets-backend.sh). On 1Password the helper returns them as they
+# are; on the built-in store it returns the store's fixed token word and its
+# vault name, which is what makes `op`, and the code that requires a token
+# before it calls `op`, work there.
+. /opt/casa/scripts/secrets-backend-lib.sh
 _op_token="$(bashio::config 'onepassword_service_account_token')"
 [ "$_op_token" = "null" ] && _op_token=""
-export OP_SERVICE_ACCOUNT_TOKEN="$_op_token"
+export OP_SERVICE_ACCOUNT_TOKEN="$(casa_op_token "$_op_token")"
 _op_vault="$(bashio::config 'onepassword_default_vault')"
 [ "$_op_vault" = "null" ] && _op_vault=""
-export ONEPASSWORD_DEFAULT_VAULT="$_op_vault"
+export ONEPASSWORD_DEFAULT_VAULT="$(casa_op_vault "$_op_vault")"
 unset _op_token _op_vault
 # #325: all are optional (password?/str?) — a cleared field makes bashio
 # yield the literal "null". Unnormalized, that is truthy for the token gate

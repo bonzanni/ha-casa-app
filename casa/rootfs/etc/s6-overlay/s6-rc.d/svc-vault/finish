@@ -1,0 +1,10 @@
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
+# Strip ANSI from bashio output for clean docker logs.
+export BASHIO_LOG_NO_COLORS=true
+export NO_COLOR=1
+
+# Code 0 = clean stop (s6 told it to). Code 256 = s6 "do-not-restart" sentinel.
+# Anything else means the store died and the supervisor will respawn it.
+if [ "${1}" -ne 0 ] && [ "${1}" -ne 256 ]; then
+    bashio::log.warning "The secrets store exited with code ${1} — supervisor will respawn"
+fi

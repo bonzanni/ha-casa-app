@@ -1,0 +1,14 @@
+ID:          tb36hv5fzncxqisulfg7vmipcq
+Title:       zz-vault-fixture-c
+Vault:       Casa (vvvvvvvvvvvvvvvvvvvvvvvvvv)
+Created:     1 second ago
+Updated:     1 second ago
+Favorite:    false
+Tags:        casa-vault-fixture
+Version:     1
+Category:    SSH_KEY
+Fields:
+  public key:     ssh-rsa REDACTED
+  fingerprint:    SHA256:REDACTED
+  private key:    [use 'op item get tb36hv5fzncxqisulfg7vmipcq --reveal' to reveal]
+  key type:       rsa
