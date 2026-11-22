@@ -76,6 +76,9 @@ the appliance a household agent should be.
 - **Specialists you add** — install an agent for [the family finances](#specialists),
   your health and training, a hobby; then "ask Ellen when the car insurance renews"
   just works.
+- **Browsing on your behalf** — the [browsing specialist, Fido](#specialists), works on
+  websites for you through the optional Casa Browser app: signed in on the sites you
+  register, or on the open web, and Casa Browser asks you before a step that needs your say.
 - **Executors for real work** — a configurator that changes Casa's own settings when you
   ask in chat.
 - **Personas** — swap how an agent sounds and behaves without changing what it's allowed
@@ -273,8 +276,9 @@ permissions:
 Beyond them, two tiers exist so the fleet can grow without the residents growing:
 
 - **Specialists** — ephemeral, role-keyed agents a resident delegates to for focused work
-  (finances, a hobby domain, a research area). They have no channel of their own; they
-  answer the resident that called them, and they are
+  (finances, browsing websites, a hobby domain, a research area). They answer the resident
+  that called them, and some, such as the browsing and finance specialists, also talk to you
+  from a Telegram chat of their own. They are
   [installed, upgraded, rolled back and uninstalled](docs/architecture/specialist-lifecycle.md)
   from git repositories — [several are public today](#specialists).
 - **Executors** — task-bounded agents a resident hands a change to. One ships: the
@@ -327,6 +331,7 @@ which hands the job to the configurator; the voice integration installs into Hom
 
 | Repository | What it gives you |
 |---|---|
+| [`casa-specialist-browser`](https://github.com/bonzanni/casa-specialist-browser) | Fido, a browsing specialist — fetches, reads and downloads, and fills in forms, on the sites you register and on the open web, and Casa Browser asks you before a step that needs your say. It drives the optional [Casa Browser](casa_browser/) app from this repository, which holds the real browser and your logins. |
 | [`casa-specialist-finance`](https://github.com/bonzanni/casa-specialist-finance) | A household-finance specialist — reads your bank accounts (read-only, PSD2), keeps a local transaction ledger you can tag and annotate, and answers spending questions with arithmetic rather than recollection. |
 | [`casa-specialist-mtg`](https://github.com/bonzanni/casa-specialist-mtg) | A Magic: The Gathering rules judge — citation-backed answers over an offline rules corpus. |
 

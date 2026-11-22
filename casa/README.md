@@ -10,7 +10,8 @@ An always-on fleet of Claude-powered AI agents inside your Home Assistant.
 - **Gary** — the concierge: a voice agent for anyone in the room, for general
   questions, with no house control and no private data.
 - **Specialists** — agents you add from their own repositories for focused work
-  (household finances, a Magic: The Gathering rules judge), each with scoped tool
+  (household finances, a Magic: The Gathering rules judge, and Fido, who works on
+  websites for you through the optional Casa Browser app), each with scoped tool
   permissions. None are installed by default.
 
 Also on board: cron-style scheduling with real timezone handling, built-in
