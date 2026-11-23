@@ -12,8 +12,9 @@ are mirrored here) and, on the identity side, of :mod:`trigger_consent`:
 * Approve → record the ack in :mod:`event_acks` (the SYNCHRONOUS commit
   step, before any await) and fire a reconcile so delivery starts — never
   an agent-continuation dispatch.
-* Deny / expiry → the subscription stays undelivered (``event_pending_ack``);
-  the next lifecycle reconcile may re-prompt.
+* Deny / expiry → the subscription stays undelivered; the next lifecycle
+  reconcile may re-prompt. After a Deny it is off on its own; after an expiry
+  it is still ``event_pending_ack`` and holds back the subscriber's others.
 
 **Deliberately standalone from the plugin-setup round ledger** (Critical-2,
 review round 1): unlike the trigger/callback consent flavors, event consent

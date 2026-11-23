@@ -18736,9 +18736,13 @@ async def callback_ack_revoke(args: dict) -> dict:
     "Revoke the operator's event-subscription consent for a plugin — for "
     "ONE subscription when both emitter and event are given, otherwise "
     "every subscription the plugin holds — and unroute it IMMEDIATELY (no "
-    "further delivery nudges are admitted once this returns). A later "
-    "re-approval re-consents; the consent DM re-prompts on the next plugin "
-    "mutation or reload.",
+    "further delivery nudges are admitted once this returns). The revoke "
+    "counts as the operator's Deny: the plugin's other subscriptions keep "
+    "delivering, and consent_reprompt does not re-ask it; the consent DM "
+    "re-asks on the next plugin mutation or reload, and an Approve there "
+    "re-consents. A Casa restart forgets the Deny: the revoked subscription "
+    "then waits for an answer again and holds the plugin's other "
+    "subscriptions back until it gets one.",
     {"type": "object",
      "properties": {"subscriber": {"type": "string"},
                     "emitter": {"type": "string"}, "event": {"type": "string"}},

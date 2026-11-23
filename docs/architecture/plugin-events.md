@@ -307,11 +307,15 @@ malformed entry darkens the whole block.
 `(subscriber, emitter, event)` pair — or every subscription a plugin holds, when
 `emitter`/`event` are omitted — from the published map before deleting its ack record,
 under the same dispatch-admission lock the pre-send gate uses, so no dispatch can be
-admitted for it once the call returns. A later re-approval re-consents; the consent DM
-re-prompts on the next reconcile, or on demand via the `consent_reprompt` tool — the
+admitted for it once the call returns. In the same locked step it records each dropped
+consent as a Deny in `consent_denials`, the registry a Deny tap writes. A subscription the
+operator denied or revoked is off on its own: it stays unrouted with no
+`event_pending_ack` row, and the plugin's other subscriptions keep routing; one still
+waiting for its first answer holds back the whole set, like any other gap. The next plugin
+mutation or reload re-asks it and an Approve re-consents; `consent_reprompt` — the
 prompt-only re-issue shared by all three consent kinds (its contract is in
-[`plugin-mutation-tools.md`](plugin-mutation-tools.md)), which skips subscriptions the
-operator explicitly denied.
+[`plugin-mutation-tools.md`](plugin-mutation-tools.md)) — skips it. The registry lives in
+memory, so after a restart such a subscription reads as unanswered again.
 
 **Explicitly out of scope** (future hardening, not present today): casa-brokered emission
 (nothing yet lets casa compose or filter an emission on its way through), per-plugin

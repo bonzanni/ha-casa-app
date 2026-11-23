@@ -26,6 +26,10 @@ def _reset_published(monkeypatch):
     """The published routed map is a module global — never leak between
     tests."""
     monkeypatch.setattr(er, "_routed", event_spool.ROUTING_UNAVAILABLE)
+    # A revoke or a Deny records the operator's decision in this
+    # process-wide registry; one test's decision must not reach the next.
+    import consent_denials
+    monkeypatch.setattr(consent_denials, "_denied", set())
     yield
 
 
@@ -640,6 +644,189 @@ async def test_revoke_pair_only_unroutes_named_pair(fake_event_episodes,
     routed = er.get_routed()
     assert "finance" not in routed[("gmail", "mail_in")]
     assert "finance" in routed[("slack", "msg_in")]
+
+
+# ---------------------------------------------------------------------------
+# #1656 — a subscription the operator turned off is off on its own
+# ---------------------------------------------------------------------------
+
+
+def _two_subscription_world(tmp_path):
+    """finance subscribes to gmail's mail_in AND calendar's changed."""
+    gmail = _rp("gmail", emits=["mail_in"])
+    calendar = _rp("calendar", emits=["changed"])
+    finance = _rp("finance", subscribes=[("gmail", "mail_in"),
+                                         ("calendar", "changed")])
+    plugins = [gmail, calendar, finance]
+    return SimpleNamespace(
+        plugins=plugins, resolver=_resolver(plugins), entries=_entries(*plugins),
+        role_configs=_role_configs(assistant=["telegram"]),
+        acks=EventAckStore(path=tmp_path / "acks.json"))
+
+
+def _subs(routed, key):
+    return set((routed.get(key) or {}).keys())
+
+
+def _card_coordinator(monkeypatch):
+    import authz_grants
+    import verdict_broker
+    broker = verdict_broker.VerdictBroker()
+    monkeypatch.setattr(verdict_broker, "BROKER", broker)
+    coord = authz_grants.ChallengeCoordinator()
+    monkeypatch.setattr(authz_grants, "CHALLENGES", coord)
+    return broker, coord
+
+
+async def _answer_only_card(broker, coord, option_index):
+    """Tap *option_index* on the one open consent card (0 Approve, 1 Deny)."""
+    for _ in range(8):
+        await asyncio.sleep(0)
+    (key,) = list(coord._entries)
+    ch = coord._entries[key]
+    claim = broker.claim(namespace="resident_ask", scope=ch.scope,
+                         request_id=ch.rid, option_index=option_index,
+                         actor_id=200)
+    assert not isinstance(claim, str), f"claim rejected: {claim}"
+    assert broker.commit(claim) is True
+    ch.req.meta["on_commit_sync"](option_index)
+    for _ in range(8):
+        await asyncio.sleep(0)
+
+
+async def test_revoking_one_subscription_keeps_the_other_delivering(
+        tmp_path, fake_event_episodes):
+    """The operator stops finance's gmail events; its calendar events keep
+    arriving — the pending wake survives the sweep, the queued emission
+    survives it too and becomes the next wake."""
+    w = _two_subscription_world(tmp_path)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    runtime = SimpleNamespace(role_configs=w.role_configs, channel_manager=None)
+
+    async def reconcile():
+        await er.reconcile_plugin_events(runtime, acks=w.acks,
+                                         resolver=w.resolver,
+                                         entries=w.entries, prompt=False)
+
+    await reconcile()
+    spool = event_spool.EventSpool(tmp_path / "events")
+    try:
+        spool.ensure_emitter_dirs("calendar")
+        now = 1_000_000.0
+        event_spool.emit(spool.root / "calendar", "changed")
+        spool.fold_pass(er.to_spool_shape(er.get_routed()), now)
+        in_flight = spool.read_delivery("calendar", "changed", "finance")
+        assert in_flight["status"] == "pending"
+        # a second calendar change arrives while that wake is in flight
+        event_spool.emit(spool.root / "calendar", "changed")
+
+        removed = await er.revoke_and_unroute("finance", "gmail", "mail_in",
+                                              acks=w.acks)
+        assert [(r["emitter"], r["event"]) for r in removed] == [
+            ("gmail", "mail_in")]
+        await reconcile()
+
+        routed = er.get_routed()
+        assert _subs(routed, ("calendar", "changed")) == {"finance"}
+        assert _subs(routed, ("gmail", "mail_in")) == set()
+        # Health names nothing waiting for approval: the operator answered.
+        desired = er.compute_desired(role_configs=w.role_configs, acks=w.acks,
+                                     resolver=w.resolver, entries=w.entries)
+        assert [i for i in desired.issues
+                if i["reason_code"] == "event_pending_ack"] == []
+
+        rep = spool.sweep(er.to_spool_shape(routed),
+                          {p.name for p in w.plugins}, True, now + 1)
+        assert rep.terminalized == 0
+        assert rep.deleted_watermark == 0
+        assert spool.read_delivery(
+            "calendar", "changed", "finance")["status"] == "pending"
+        assert len(spool.list_emissions("calendar", "changed")) == 1
+
+        # finance handles the wake; the queued change becomes the next one.
+        assert spool.ack("calendar", "changed", in_flight["ack_token"],
+                         now=now + 2)[0] == "acked"
+        spool.fold_pass(er.to_spool_shape(er.get_routed()), now + 3)
+        nxt = spool.read_delivery("calendar", "changed", "finance")
+        assert nxt["status"] == "pending"
+        assert nxt["gen"] != in_flight["gen"]
+        assert spool.list_emissions("calendar", "changed") == []
+    finally:
+        spool.close()
+
+
+async def test_re_approving_a_revoked_subscription_routes_it_again(
+        tmp_path, fake_event_episodes, monkeypatch):
+    """The way back: the next reconcile that prompts re-asks the revoked
+    subscription, and an Approve routes it alongside the other."""
+    broker, coord = _card_coordinator(monkeypatch)
+    import agent as agent_mod
+    w = _two_subscription_world(tmp_path)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    telegram = _FakeTelegram()
+    runtime = SimpleNamespace(role_configs=w.role_configs,
+                              channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+    _fixed_consent_target(monkeypatch, telegram)
+
+    await er.revoke_and_unroute("finance", "gmail", "mail_in", acks=w.acks)
+    await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
+                                     entries=w.entries, prompt=True)
+    routed = er.get_routed()
+    assert _subs(routed, ("gmail", "mail_in")) == set()
+    assert _subs(routed, ("calendar", "changed")) == {"finance"}
+
+    async def _no_health_regen():
+        return None
+    monkeypatch.setattr(er, "_regen_health_safe", _no_health_regen)
+
+    await _answer_only_card(broker, coord, 0)
+    # the Approve's own reconcile computes in a worker thread
+    for _ in range(300):
+        if _subs(er.get_routed(), ("gmail", "mail_in")):
+            break
+        await asyncio.sleep(0.01)
+    routed = er.get_routed()
+    assert _subs(routed, ("gmail", "mail_in")) == {"finance"}
+    assert _subs(routed, ("calendar", "changed")) == {"finance"}
+
+
+async def test_denying_one_of_two_on_first_prompt_routes_the_approved_one(
+        tmp_path, fake_event_episodes, monkeypatch):
+    broker, coord = _card_coordinator(monkeypatch)
+    import agent as agent_mod
+    w = _two_subscription_world(tmp_path)
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    telegram = _FakeTelegram()
+    runtime = SimpleNamespace(role_configs=w.role_configs,
+                              channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+    _fixed_consent_target(monkeypatch, telegram)
+
+    await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
+                                     entries=w.entries, prompt=True)
+    # still waiting for the first answer: the whole set is held back
+    assert _subs(er.get_routed(), ("calendar", "changed")) == set()
+
+    await _answer_only_card(broker, coord, 1)          # Deny
+    await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
+                                     entries=w.entries, prompt=False)
+    routed = er.get_routed()
+    assert _subs(routed, ("calendar", "changed")) == {"finance"}
+    assert _subs(routed, ("gmail", "mail_in")) == set()
+
+
+def test_a_subscription_never_answered_still_holds_back_the_whole_set(tmp_path):
+    w = _two_subscription_world(tmp_path)
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    desired = er.compute_desired(role_configs=w.role_configs, acks=w.acks,
+                                 resolver=w.resolver, entries=w.entries)
+    assert desired.routed == {}
+    assert [i["reason_code"] for i in desired.issues] == ["event_pending_ack"]
+    assert [(p["emitter"], p["event"]) for p in desired.consent_needed] == [
+        ("gmail", "mail_in")]
 
 
 def test_revoke_with_sentinel_routed_is_a_noop(monkeypatch):
