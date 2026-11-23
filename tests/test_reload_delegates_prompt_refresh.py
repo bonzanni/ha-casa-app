@@ -47,7 +47,7 @@ def _cfg(role: str, name: str, *, delegates=()) -> AgentConfig:
         model="claude-sonnet-4-6",
         character=CharacterConfig(name=name),
         tools=ToolsConfig(allowed=[], permission_mode="acceptEdits"),
-        memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=1000),
         system_prompt="base prompt",
         delegates=[DelegateEntry(agent=d, purpose="p", when="w")
                    for d in delegates],
@@ -66,10 +66,10 @@ def _make_runtime(tmp_path: Path):
     return CasaRuntime(
         agents={}, role_configs={},
         specialist_registry=MagicMock(), 
-        engagement_registry=MagicMock(), agent_registry=MagicMock(),
+        agent_registry=MagicMock(),
         trigger_registry=MagicMock(), mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=MagicMock(), engagement_driver=MagicMock(), policy_lib=MagicMock(),
+        bus=MagicMock(), policy_lib=MagicMock(),
         config_dir=str(tmp_path), agents_dir=str(tmp_path / "agents"),
         home_root=str(tmp_path / "home"),
         defaults_root=str(tmp_path / "defaults"),

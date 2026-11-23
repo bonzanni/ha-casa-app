@@ -2208,16 +2208,6 @@ def test_read_marker_absent_for_unknown_emitter(spool):
     assert m.state == MarkerState.ABSENT
 
 
-def test_delete_ready_removes_marker(spool):
-    spool.write_ready(E, {"a": 1})
-    assert spool.delete_ready(E) is True
-    assert spool.read_marker(E).state == MarkerState.ABSENT
-
-
-def test_delete_ready_of_missing_emitter_dir_is_true(spool):
-    assert spool.delete_ready("nobody") is True
-
-
 def test_list_emissions_reflects_current_files(spool):
     _emit(spool, when=1000.0)
     _emit(spool, when=1001.0)

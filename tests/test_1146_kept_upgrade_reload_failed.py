@@ -189,11 +189,10 @@ async def h(tmp_path, monkeypatch):
     trigger_registry.callback_overlay_unavailable.return_value = False
     runtime = CasaRuntime(
         agents=_CountingAgents({ROLE: old}), role_configs={}, specialist_registry=registry,
-        engagement_registry=MagicMock(),
         agent_registry=AgentRegistry.build(residents={}, specialists=registry.all_configs()),
         trigger_registry=trigger_registry, mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=bus, engagement_driver=MagicMock(),
+        bus=bus,
         policy_lib=MagicMock(),
         config_dir=str(tmp_path), agents_dir=str(agents_dir),
         home_root=str(tmp_path / "home"), defaults_root="/opt/casa",

@@ -383,7 +383,7 @@ IDENTITY_SITE_HITS = {
         "CallbackSpool._sweep_results": 4, "CallbackSpool._write_ahead": 2,
         "CallbackSpool._write_removal_record": 1, "CallbackSpool.attempts_pass": 1,
         "CallbackSpool.claim": 1, "CallbackSpool.ensure_plugin_dirs": 3,
-        "CallbackSpool.gc_orphan_dirs": 1, "CallbackSpool.list_results": 1,
+        "CallbackSpool.gc_orphan_dirs": 1,
         "CallbackSpool.recovery_pass": 1, "CallbackSpool.remove_plugin": 2,
         "CallbackSpool.sweep": 1, "CallbackSpool.update_attempt_nudge": 2, "Claim": 1,
         "Claim.key": 1, "_validate_removal": 1, "in_flight_key": 1,

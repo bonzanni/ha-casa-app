@@ -155,20 +155,6 @@ def test_artifact_id_mismatch_is_per_entry_skip(tmp_path):
     assert data.entries == [] and data.entry_issues[0].reason_code == "entry_invalid"
 
 
-def test_legacy_content_revision_is_serializable(tmp_path):
-    src = {
-        "type": "github", "repo": "x/y", "ref": "master",
-        "revision": "legacy-content:" + "ab" * 32, "subdir": "",
-    }
-    e = _entry()
-    e["source"] = src
-    e["artifact_id"] = compute_artifact_id(
-        repo="x/y", revision=src["revision"], subdir="", name=e["name"])
-    p = _write(tmp_path, {"schema_version": 1, "plugins": [e]})
-    data = load_registry(p)
-    assert data.valid and len(data.entries) == 1
-
-
 def test_unknown_fields_preserved_roundtrip(tmp_path):
     doc = {"schema_version": 1, "future_field": {"x": 1},
            "plugins": [dict(_entry(), custom_note="keep me")]}

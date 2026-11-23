@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from provenance import APPROVAL_KEY
 import shutil
 import stat
 from pathlib import Path
@@ -124,7 +125,7 @@ async def _call_as_approved_run(tool, args: dict, acks, *, specialists_dir):
     record = approval_records.approve(record.rid)
     token = agent_mod.origin_var.set({
         "role": "assistant", "user_text": "install it",
-        approval_records.APPROVAL_KEY: {"rid": record.rid, "generation": record.generation}})
+        APPROVAL_KEY: {"rid": record.rid, "generation": record.generation}})
     try:
         return await tool.handler(args)
     finally:
@@ -960,11 +961,9 @@ def _runtime_with_registry(specialist_registry, *, role_configs=None):
     return CasaRuntime(
         agents={}, role_configs={} if role_configs is None else role_configs,
         specialist_registry=specialist_registry,
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(), session_registry=MagicMock(),
         channel_manager=MagicMock(), bus=MagicMock(),
-        engagement_driver=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/x", agents_dir="/x/agents",
         home_root="/x/home", defaults_root="/opt/casa",

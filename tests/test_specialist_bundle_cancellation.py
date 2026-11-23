@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 import plugin_registry
+from provenance import APPROVAL_KEY
 import specialist_bundle_journal
 import specialist_install
 import specialist_receipt
@@ -307,7 +308,7 @@ async def _approve(case) -> dict:
             case.approval_kind, f"{insp.component_id}:{insp.slug}",
             identity_for_inspection(insp, values=values), values)
     rec = approval_records.approve(rec.rid)
-    origin[approval_records.APPROVAL_KEY] = {"rid": rec.rid, "generation": rec.generation}
+    origin[APPROVAL_KEY] = {"rid": rec.rid, "generation": rec.generation}
     return origin
 
 

@@ -73,7 +73,8 @@ from channels.tg_address import (
     scope as tg_scope,
 )
 from provenance import (
-    carry_route, drop_guest_markers, route_context, task_delivery_marker,
+    APPROVAL_KEY, carry_route, drop_guest_markers, route_context,
+    task_delivery_marker,
 )
 from output_boundary import (
     ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
@@ -6979,7 +6980,7 @@ async def _configurator_lease(cfg, task_text: str):
     origin = _snapshot_origin() or {}
     run_key = str(origin.get("_delegation_id") or _delegation_quota_key.get() or "")
     lease = await configurator_run.acquire(run_key=run_key, via="delegation", task=task_text)
-    approval = origin.get(approval_records.APPROVAL_KEY)
+    approval = origin.get(APPROVAL_KEY)
     if isinstance(approval, dict):
         gen = approval.get("generation")
         verdict = (approval_records.startable(str(approval.get("rid") or ""), gen)
@@ -15866,8 +15867,7 @@ def _inspection_from_checked(checked: Any, staged_dir: Path) -> Any:
 def _run_approval() -> "dict | None":
     """The approval Casa started this run for (the origin's ``_approval``),
     or ``None``."""
-    import approval_records
-    value = (_snapshot_origin() or {}).get(approval_records.APPROVAL_KEY)
+    value = (_snapshot_origin() or {}).get(APPROVAL_KEY)
     return value if isinstance(value, dict) else None
 
 
@@ -16038,7 +16038,7 @@ async def specialist_install_request_approval(args: dict) -> dict:
     # event wake, a narration) records none, so its run is never told them as the
     # operator's
     asked = (operator_words(origin) or "")[:approval_records.ASKED_MAX]
-    carrying = origin.get(approval_records.APPROVAL_KEY)
+    carrying = origin.get(APPROVAL_KEY)
     carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
     async with _plugin_tools_guard():
         if mode == "upgrade" and await _to_thread_settled(
@@ -17066,7 +17066,7 @@ async def persona_install_inspect(args: dict) -> dict:
     # event wake, a narration) records none, so its run is never told them as the
     # operator's
     asked = (operator_words(origin) or "")[:approval_records.ASKED_MAX]
-    carrying = origin.get(approval_records.APPROVAL_KEY)
+    carrying = origin.get(APPROVAL_KEY)
     carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
     async with _plugin_tools_guard():
         record, outcome, superseded = approval_records.request(
@@ -19609,7 +19609,6 @@ def _tool_verify_plugin_state(
     revision = src.get("revision", "")
     path = Path(store_root) / plugin_name / str(artifact_id)
     reasons: list[str] = []
-    provenance_warning = revision.startswith("legacy-content:")
     present = path.is_dir()
     checksum_valid = False
     if not present:
@@ -19971,8 +19970,7 @@ def _tool_verify_plugin_state(
                     "revision": revision, "targets": entry.get("targets", []),
                     "ignored_targets": plugin_registry.ignored_targets_for(
                         reg, plugin_name)},
-        "artifact": {"present": present, "checksum_valid": checksum_valid,
-                     "provenance_warning": provenance_warning},
+        "artifact": {"present": present, "checksum_valid": checksum_valid},
         "tools": tools_status,
         "secrets": secrets_status,
         "mcp_commands": command_status,

@@ -170,7 +170,8 @@ def test_retire_stale_bin_removes_only_owned_links(tmp_path: Path) -> None:
     bin_dir.mkdir(parents=True)
 
     # Owned (tarball generation dir) — removed, dangling target included.
-    os.symlink(tools / "plug-1.0.g-abc" / "bin" / "oldtool", bin_dir / "oldtool")
+    os.symlink(tools / "tarball" / "plug" / "1.0.g-abc" / "bin" / "oldtool",
+               bin_dir / "oldtool")
     retire_stale_bin("oldtool", "plug", tools)
     assert not (bin_dir / "oldtool").is_symlink()
 

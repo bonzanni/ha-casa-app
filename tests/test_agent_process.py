@@ -219,7 +219,6 @@ def _make_agent(
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
         memory=MemoryConfig(
             token_budget=1000,
-            read_strategy="per_turn",
         ),
         # Task 9: a real resident identity triple so session registration and
         # the resume gate operate on canonical {role_id, binding_digest}.
@@ -476,18 +475,16 @@ class TestHealthNoticeDeliveryConfirmation:
     async def test_an_ambiguous_transport_failure_does_not_repeat_the_notice(
         self, tmp_path, monkeypatch,
     ):
-        """The agent's handling of a channel whose send returns
-        ``DeliveryOutcome.UNKNOWN``: that is not a proven failure — the notice
-        may have been shown — so the agent does not release it, and the next
-        turn's reply goes out without it. Only ``NOT_DELIVERED``, or a send
+        """The agent's handling of a channel whose send returns nothing
+        (``None``, a channel off the contract): that is not a proven failure —
+        the notice may have been shown — so the agent does not release it, and
+        the next turn's reply goes out without it. Only ``NOT_DELIVERED``, or a send
         that raised before its head landed, offers the notice again.
         """
-        from channels import DeliveryOutcome
-
         agent, stub = self._agent_with_notice(
             tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
-        stub.send_response.return_value = DeliveryOutcome.UNKNOWN
+        stub.send_response.return_value = None
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
@@ -1450,7 +1447,6 @@ def _make_agent_with_registry(
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
         memory=MemoryConfig(
             token_budget=1000,
-            read_strategy="per_turn",
         ),
         # Task 9: real resident identity triple (see _make_agent).
         role_id=resident_role_id(role),
@@ -2895,10 +2891,9 @@ class TestDeliveryAcknowledgedAnnouncements:
         [
             (DeliveryOutcome.DELIVERED, True),
             (DeliveryOutcome.NOT_DELIVERED, False),
-            (DeliveryOutcome.UNKNOWN, False),
             (None, False),
         ],
-        ids=["delivered", "not-delivered", "unknown", "off-contract"],
+        ids=["delivered", "not-delivered", "off-contract"],
     )
     async def test_only_a_transport_confirmed_delivery_acknowledges(
         self, tmp_path, outcome, acknowledged,

@@ -126,7 +126,7 @@ async def test_resident_builder_enforces_the_live_profile(tmp_path, profiled):
         model="claude-haiku-4-5", system_prompt="You are Tina.",
         character=CharacterConfig(name="Tina"),
         tools=ToolsConfig(allowed=["Read"], disallowed=[]),
-        memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+        memory=MemoryConfig(token_budget=800),
     )
     resident = Agent(
         config=cfg, session_registry=SessionRegistry(str(tmp_path / "sessions.json")),

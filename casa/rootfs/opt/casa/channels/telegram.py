@@ -338,37 +338,35 @@ async def _safe_answer(cq: Any, text: str) -> None:
 
 def _parse_callback_data(
     data: str,
-) -> tuple[str | None, str | None, int | None, str | None]:
+) -> tuple[str | None, str | None, int | None]:
     """Parse inline-keyboard ``callback_data`` into ``(namespace, request_id,
-    option_index, kind)``, or ``(None, None, None, None)`` on any malformed
-    shape.
+    option_index)``, or ``(None, None, None)`` on any malformed shape.
 
     Accepted shapes:
     - v1 (current): ``v1|<ns>|<request_id>|<option_index>``, ``ns`` one of
-      ``_CALLBACK_NAMESPACES``, ``option_index`` an int. ``kind`` is
-      always ``None`` (a single-select tap).
+      ``_CALLBACK_NAMESPACES``, ``option_index`` an int.
 
     Oversized payloads (> 64 bytes, Telegram's own cap) are rejected
     defensively even though nothing this process composes should ever
     generate one.
     """
     if len(data.encode("utf-8")) > _CALLBACK_DATA_MAX_BYTES:
-        return None, None, None, None
+        return None, None, None
     if data.startswith("v1|"):
         parts = data.split("|", 3)
         if len(parts) != 4:
-            return None, None, None, None
+            return None, None, None
         _, ns, request_id, idx_s = parts
         if not request_id:
-            return None, None, None, None
+            return None, None, None
         if ns not in _CALLBACK_NAMESPACES:
-            return None, None, None, None
+            return None, None, None
         try:
             idx = int(idx_s)
         except ValueError:
-            return None, None, None, None
-        return ns, request_id, idx, None
-    return None, None, None, None
+            return None, None, None
+        return ns, request_id, idx
+    return None, None, None
 
 
 # A background job's buttons in the direct chat. They carry the engagement id
@@ -1165,8 +1163,6 @@ class TelegramChannel(Channel):
         # finished: a second tap answers "already finishing" instead of
         # starting a second funnel run.
         self._job_cancels: set[str] = set()
-        # Tasks retiring ended jobs' keyboards (strong references).
-        self._job_ui_tasks: set[asyncio.Task] = set()
         # The inline messages of turns this bot was summoned to in groups it
         # is not a member of, by the key the turn's context carries
         # (``_guest_query``); each is removed by its terminal edit.
@@ -3957,38 +3953,6 @@ class TelegramChannel(Channel):
         if not reg.record_job_post(rec.id, address, keyboard=kind):
             await self._retire_job_post(reg.get(rec.id) or rec, (address, kind))
 
-    def retire_job_keyboards(self, rec) -> None:
-        """Take a terminal job's keyboard posts off the record (synchronously,
-        so each is retired once) and edit them away on a task of their own.
-        Never awaits. With more than one bot the transport's own
-        ``retire_job_keyboards`` is the observer: it hands each endpoint only
-        that bot's posts; here, a post of another bot keeps its keyboard."""
-        reg = self._engagement_registry
-        if reg is None:
-            return
-        posts = reg.take_ui_posts(rec.id)
-        if not posts:
-            return
-        try:
-            task = asyncio.get_running_loop().create_task(
-                self._retire_job_posts(rec, posts))
-        except RuntimeError:  # no loop — nothing can be edited now
-            return
-        self._job_ui_tasks.add(task)
-        task.add_done_callback(self._job_ui_tasks.discard)
-
-    def retire_ended_job_keyboards(self) -> int:
-        """Boot: retire the keyboards of every terminal job that still
-        carries some. Returns how many records it scheduled."""
-        reg = self._engagement_registry
-        lister = getattr(reg, "records_with_ui_posts", None) if reg is not None else None
-        if lister is None:
-            return 0
-        records = list(lister())
-        for rec in records:
-            self.retire_job_keyboards(rec)
-        return len(records)
-
     async def _retire_job_posts(self, rec, posts: list) -> None:
         for post in posts:
             try:
@@ -4631,7 +4595,7 @@ class TelegramChannel(Channel):
             else:
                 await _safe_answer(cq, "expired")
             return
-        ns, request_id, idx, _kind = _parse_callback_data(data)
+        ns, request_id, idx = _parse_callback_data(data)
         if ns is None:
             await _safe_answer(cq, "expired")
             return

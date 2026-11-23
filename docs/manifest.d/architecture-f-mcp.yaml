@@ -100,7 +100,6 @@
   when_changing: hook resolution, hook policy parameters and their types, the configurator's hook list, or what path_scope admits
   covers:
     - casa/rootfs/opt/casa/hooks.py::resolve_hooks
-    - casa/rootfs/opt/casa/hooks.py::build_policy_callbacks_from_hooks_yaml
     - casa/rootfs/opt/casa/hooks.py::guest_pin_matcher
   tests:
     - tests/test_hooks_policy_param_types.py

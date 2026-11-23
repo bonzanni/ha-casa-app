@@ -108,7 +108,7 @@ class TestReregisterFor:
         with pytest.raises(TriggerError):
             reg.reregister_for("assistant", [hook, bad], channels=["telegram"])
         assert reg.get_webhook_target("hooked") is None
-        assert reg.get_auth_policy("hooked") is None
+        assert reg.webhook_route("hooked") is None
 
     def test_reregister_unknown_role_is_noop_then_registers(self):
         from config import TriggerSpec

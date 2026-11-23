@@ -445,7 +445,6 @@ class ToolsConfig:
 @dataclass
 class MemoryConfig:
     token_budget: int = 4000
-    read_strategy: str = "per_turn"
 
 
 @dataclass

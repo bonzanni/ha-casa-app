@@ -464,8 +464,9 @@ async def test_a_scheduled_question_restored_at_boot_stays_in_the_lane_of_the_bo
 
     # Cancelling 222's lane leaves it; cancelling 111's settles it, and its
     # keyboard is edited and its outcome carried through 111.
-    assert scheduled_asks.cancel_for_chat(FINANCE_BOT, OPERATOR, "x") == 0
-    assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_new") == 1
+    assert scheduled_asks.displace_scheduled_for_chat(FINANCE_BOT, OPERATOR, "x") == 0
+    assert scheduled_asks.displace_scheduled_for_chat(
+        CASA_BOT, OPERATOR, "operator_new") == 1
     for _ in range(200):
         if a_asks.casa.continuations:
             break

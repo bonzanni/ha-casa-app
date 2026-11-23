@@ -456,11 +456,6 @@ def _revoked_before_reconcile(rec: dict) -> str | None:
     the live path's own outcome, reason included.
     """
     for sel in _BOOT_REVOCATIONS:
-        if "chat_id" in sel:
-            if (rec.get("chat_id") == sel["chat_id"]
-                    and rec.get("bot_id") == sel["bot_id"]):
-                return sel["reason"]
-            continue
         if sel.get("role") != rec.get("role"):
             continue
         labels = sel.get("labels")
@@ -524,38 +519,11 @@ def revoke_trigger(
     ))
 
 
-def cancel_for_chat(bot_id: int, chat_id: int, reason: str) -> int:
-    """Cancel every pending SCHEDULED ask in one DM on one bot.
-
-    The operator's attention lane is not one broker scope — a protected-action
-    challenge registers under ``authz:<bot>:<chat>`` while these live under
-    ``dm:<bot>:<chat>`` — and this makes a machine-timed question non-actionable in
-    one no-await block against the broker's own live map. An operator's own
-    ``ask_user`` carries no ``scheduled`` marker and is never touched.
-
-    #680: the authorization challenge no longer calls this. It displaced at
-    ADMISSION, so a challenge whose keyboard then failed to post left the
-    operator with neither question; it now calls the marker-free
-    :func:`displace_scheduled_for_chat` from its own driver, once the keyboard
-    is on screen. What remains here is the marker-WRITING primitive — the
-    selection is identical, and the boot-revocation marker is the whole
-    difference between the two.
-    """
-    from verdict_broker import BROKER
-
-    lane = scope("dm", bot_id, chat_id)
-    _note_boot_revocation(reason, bot_id=bot_id, chat_id=chat_id)
-    return len(BROKER.cancel_where(
-        namespace=NAMESPACE, reason=reason,
-        predicate=lambda r: _is_scheduled(r) and r.scope == lane,
-    ))
-
-
 def cancel_non_scheduled_for_chat(bot_id: int, chat_id: int, reason: str) -> int:
     """Cancel every pending NON-scheduled (human-raised) ask in one DM on one
     bot.
 
-    The exact inverse selection of :func:`cancel_for_chat`, under the same
+    The exact inverse selection of :func:`displace_scheduled_for_chat`, under the same
     discipline: ONE no-await block against the broker's live map, never the
     durable store. ``cancel_where`` is NAMESPACE-WIDE, so the predicate binds
     ``r.scope`` as well as the marker — without the scope clause this would
@@ -583,10 +551,9 @@ def cancel_non_scheduled_for_chat(bot_id: int, chat_id: int, reason: str) -> int
 
 def displace_scheduled_for_chat(bot_id: int, chat_id: int, reason: str) -> int:
     """Retire a live SCHEDULED ask in one DM on one bot because a human question has just
-    TAKEN the lane — and, unlike :func:`cancel_for_chat`, leave no boot marker.
+    TAKEN the lane — and, unlike a revocation, leave no boot marker.
 
-    Same selection, one difference, and the difference is the point (#648).
-    A marker exists so a revocation landing in the boot window — live map
+    The missing marker is the point (#648). A marker exists so a revocation landing in the boot window — live map
     empty, records still on disk — settles the record it meant to revoke.
     This caller has nothing to settle: if the live map is empty, the previous
     process's keyboard is still on screen, unedited, and nothing was told

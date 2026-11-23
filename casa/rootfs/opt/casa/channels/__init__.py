@@ -16,16 +16,15 @@ class DeliveryOutcome(Enum):
     keys on the first unit of output, not on total success: a multi-page reply
     whose page 1 landed HAS shown the notice, whatever happens to page 3.
 
-    ``UNKNOWN`` is what a channel that has not opted into the contract yields
-    (it returns ``None``, which callers coerce). Those callers keep today's
-    behavior EXPLICITLY rather than by omission — the distinction matters,
-    because treating "channel is off the contract" as "delivery failed" would
-    re-offer a notice forever on a channel that cannot report.
+    A channel that has not opted into the contract returns ``None``; callers
+    keep today's behavior for it EXPLICITLY rather than by omission — the
+    distinction matters, because treating "channel is off the contract" as
+    "delivery failed" would re-offer a notice forever on a channel that cannot
+    report.
     """
 
     DELIVERED = "delivered"
     NOT_DELIVERED = "not_delivered"
-    UNKNOWN = "unknown"
 
 
 class UnconfirmedDelivery(RuntimeError):

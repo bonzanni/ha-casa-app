@@ -125,12 +125,12 @@ async def test_empty_report_is_noop(tmp_path):
 
 
 async def test_warning_only_change_fires_dm(tmp_path):
-    """Sol #17: a warning-only report (e.g. legacy_provenance from offline-adopt)
-    must fire the operator DM — new_fingerprints now spans warnings, and the DM
-    body lists them (not a vacuous '0 items')."""
+    """Sol #17: a warning-only report (e.g. target_pending) must fire the
+    operator DM — new_fingerprints now spans warnings, and the DM body lists
+    them (not a vacuous '0 items')."""
     path = tmp_path / "health.json"
-    w = PluginIssue(name="lantern", target=None, stage="migration",
-                    reason_code="legacy_provenance")
+    w = PluginIssue(name="lantern", target="specialist:mtg", stage="reload",
+                    reason_code="target_pending")
     plugin_health.write_report(issues=[], warnings=[w], path=path)
     report = plugin_health.load_report(path)
     assert len(plugin_health.new_fingerprints(report)) == 1
@@ -141,7 +141,7 @@ async def test_warning_only_change_fires_dm(tmp_path):
     # #551: the DM addresses the same human as the in-band notice, so it names
     # the plugin and what happened — never the internal reason code.
     assert "lantern" in cm._channel.sent[0][0]
-    assert "legacy_provenance" not in cm._channel.sent[0][0]
+    assert "target_pending" not in cm._channel.sent[0][0]
     # marked notified → second call is a no-op (deduped).
     await casa_core.notify_plugin_health(cm, path=str(path))
     assert len(cm._channel.sent) == 1

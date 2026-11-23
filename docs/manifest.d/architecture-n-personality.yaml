@@ -88,7 +88,6 @@
     - casa/rootfs/opt/casa/explanation_store.py
     - casa/rootfs/opt/casa/config_git.py::init_repo
     - casa/rootfs/opt/casa/private_state.py::enforce
-    - casa/rootfs/opt/casa/private_state.py::credential_modes_ok
     - casa/rootfs/opt/casa/casa_core.py::_repair_private_state
   tests:
     - tests/test_atomic_io.py

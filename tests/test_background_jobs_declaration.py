@@ -90,7 +90,7 @@ def _cfg(role: str, name: str, *, delegates=(), allowed=()):
         system_prompt="You are helpful.",
         character=CharacterConfig(name=name),
         tools=ToolsConfig(allowed=list(allowed), permission_mode="acceptEdits"),
-        memory=MemoryConfig(token_budget=0, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=0),
         delegates=list(delegates),
     )
 

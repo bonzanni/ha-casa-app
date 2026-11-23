@@ -125,7 +125,7 @@ async def agent_fixture(tmp_path, scripted_factory):
         system_prompt="You are helpful.",
         character=CharacterConfig(name="Test"),
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
-        memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=1000),
         role_id=resident_role_id("assistant"),
         kind="resident",
         binding_digest=RESIDENT_DIGEST,
@@ -510,7 +510,7 @@ async def test_facade_schema_refresh_reconnects_only_butler_with_new_config(
                 ),
                 mcp_server_names=["homeassistant"],
                 memory=MemoryConfig(
-                    token_budget=1000, read_strategy="per_turn",
+                    token_budget=1000,
                 ),
                 role_id=resident_role_id(role),
                 kind="resident",

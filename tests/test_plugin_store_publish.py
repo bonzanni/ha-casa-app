@@ -742,7 +742,7 @@ def test_publish_from_tree_excludes_git_and_uses_given_revision(tmp_path):
     (src / ".git").mkdir()
     (src / ".git" / "HEAD").write_text("ref: x", encoding="utf-8")
     store, staging = tmp_path / "store", tmp_path / "staging"
-    rev = "legacy-content:" + "c" * 64
+    rev = f"git:{SHA}"
     res = publish_from_tree(name="probe", repo="o/r", ref="master",
                             revision=rev, subdir="", src_root=src,
                             store_root=store, staging_root=staging)
@@ -811,7 +811,7 @@ def test_publish_from_tree_rejects_escaping_symlink(tmp_path):
     store, staging = tmp_path / "store", tmp_path / "staging"
     with pytest.raises(StoreError) as ei:
         publish_from_tree(name="probe", repo="o/r", ref="master",
-                          revision="legacy-content:" + "c" * 64, subdir="",
+                          revision=f"git:{SHA}", subdir="",
                           src_root=src, store_root=store, staging_root=staging)
     assert ei.value.reason_code == "unsafe_archive"
     assert not (store / "probe").exists()             # nothing published
@@ -826,7 +826,7 @@ def test_publish_from_tree_allows_internal_symlink(tmp_path):
     os.symlink("target.md", src / "skills" / "link.md")   # internal, relative
     store, staging = tmp_path / "store", tmp_path / "staging"
     res = publish_from_tree(name="probe", repo="o/r", ref="master",
-                            revision="legacy-content:" + "c" * 64, subdir="",
+                            revision=f"git:{SHA}", subdir="",
                             src_root=src, store_root=store, staging_root=staging)
     assert (Path(res.path) / "skills" / "link.md").is_symlink()  # preserved
 
@@ -855,7 +855,7 @@ def test_publish_rejects_cyclic_symlink(tmp_path):
     store, staging = tmp_path / "store", tmp_path / "staging"
     with pytest.raises(StoreError) as ei:
         publish_from_tree(name="probe", repo="o/r", ref="master",
-                          revision="legacy-content:" + "c" * 64, subdir="",
+                          revision=f"git:{SHA}", subdir="",
                           src_root=src, store_root=store, staging_root=staging)
     assert ei.value.reason_code == "unsafe_archive"
 

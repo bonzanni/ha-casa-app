@@ -47,7 +47,6 @@ from typing import Literal
 
 from canonical_bytes import checksum_json
 from channels.tg_address import TgAddress
-from provenance import APPROVAL_KEY  # noqa: F401 — re-exported: the origin key naming a run's approval
 
 logger = logging.getLogger(__name__)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from provenance import APPROVAL_KEY
 import threading
 from types import SimpleNamespace
 
@@ -127,7 +128,7 @@ async def _approved(lib, kind="specialist_install", values=VALUES):
 def _origin_with(record):
     return {"role": "assistant", "execution_role": "configurator", "channel": "telegram",
             "chat_id": OPERATOR, "cid": "c", "user_text": "install weather",
-            approval_records.APPROVAL_KEY: {"rid": record.rid,
+            APPROVAL_KEY: {"rid": record.rid,
                                             "generation": record.generation}}
 
 
@@ -214,7 +215,7 @@ async def test_a_run_that_makes_no_governed_call_leaves_the_approval_for_the_nex
         import agent as agent_mod
         payload = await tools_mod.specialist_install_commit.handler(dict(ARGS))
         results.append(json.loads(payload["content"][0]["text"]))
-        assert agent_mod.origin_var.get()[approval_records.APPROVAL_KEY]["rid"] == record.rid
+        assert agent_mod.origin_var.get()[APPROVAL_KEY]["rid"] == record.rid
         return out
     tools_mod._run_delegated_agent = _governed
     try:

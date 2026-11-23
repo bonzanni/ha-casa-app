@@ -51,7 +51,6 @@ from claude_agent_sdk import (
 )
 
 from claude_runtime import with_system_prompt_file
-from drivers.driver_protocol import DriverProtocol
 from error_kinds import ErrorKind, api_error_kind, result_api_error_kind
 from engagement_registry import LAUNCH_CWD_KEY, EngagementRecord
 import job_inbox
@@ -483,7 +482,7 @@ class JobFacts:
     active_ts: float | None
 
 
-class InCasaDriver(DriverProtocol):
+class InCasaDriver:
     """Holds one continuous ClaudeSDKClient session per live job.
 
     The registry hooks and the job callbacks are injected to keep the driver

@@ -148,7 +148,7 @@ _INGRESS_IDENTITY: dict[str, IngressIdentityPolicy] = {
         peer_strategy="fixed", peer="invoke_caller",
     ),
     "webhook_trigger": IngressIdentityPolicy(
-        # Clearance is per-trigger (trigger_registry.get_clearance); the table
+        # Clearance is per-trigger (trigger_registry.webhook_route); the table
         # carries the public FLOOR that applies when a trigger declares none.
         surface="webhook", authenticated=True, clearance="public",
         peer_strategy="webhook_name", peer=None,

@@ -62,11 +62,11 @@
     INV-ENG-010: [tests/test_emit_completion_tool.py::TestEmitCompletionCancellation::test_in_casa_teardown_cannot_cancel_finalize_tail]
 
 - doc: architecture/engagements.md
-  summary: Durable engagements — their records, how one is launched, and the driver protocol.
-  when_changing: engagement lifecycle, engagement launch, or the driver protocol
+  summary: Durable engagements — their records, how one is launched, and the driver's lifecycle methods.
+  when_changing: engagement lifecycle, engagement launch, or the driver's lifecycle methods
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRecord
-    - casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver
     - casa/rootfs/opt/casa/tools.py::_launch_interactive_engagement
   tests:
     - tests/test_engagement_stays_open.py

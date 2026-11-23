@@ -206,7 +206,7 @@ by default. Write access is a separate, deliberate addition
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.handle_update`
 
 **Tests**
-- `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`
+- `tests/test_memory_read_matrix.py::test_every_read_path_returns_only_what_the_reader_may_read`
 - `tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction`
 - `tests/test_butler_friends_view.py`
 - `tests/test_memory_withdrawal.py`

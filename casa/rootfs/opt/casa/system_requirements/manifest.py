@@ -45,9 +45,8 @@ class BinOwnershipError(RuntimeError):
 
 def _rel_owned_by(parts: "tuple[str, ...]", plugin_name: str) -> bool:
     """Whether a tools_root-relative path lies inside *plugin_name*'s own
-    install namespace (tarball generations, venv, npm, and the legacy
-    in-place tarball layout). Shared by claim/retire so the two ownership
-    answers can't drift."""
+    install namespace (tarball generations, venv, npm). Shared by
+    claim/retire so the two ownership answers can't drift."""
     if not parts:
         return False
     head = parts[0]
@@ -56,7 +55,6 @@ def _rel_owned_by(parts: "tuple[str, ...]", plugin_name: str) -> bool:
         or (head == "npm" and len(parts) > 1 and parts[1] == plugin_name)
         or (head == "tarball" and len(parts) > 1 and parts[1] == plugin_name)
         or head == plugin_name
-        or head.startswith(f"{plugin_name}-")   # legacy in-place tarball layout
     )
 
 

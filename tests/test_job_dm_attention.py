@@ -238,6 +238,7 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
     # registers it.
     from telegram_channel_double import make_transport
     cm = make_transport(ch)
+    r.transport = cm.get("telegram")
     r.bus = MagicMock()
     r.bus.notify = AsyncMock()
     tools.init_tools(channel_manager=cm, bus=r.bus,
@@ -247,11 +248,11 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
 
 
 async def _drain(r):
-    """Every channel task done (a Cancel's funnel, the keyboard edits), every
-    message the job accepted written, taken up and its turn ended (or
-    dropped), and every deferred persist written."""
+    """Every channel and transport task done (a Cancel's funnel, the keyboard
+    edits), every message the job accepted written, taken up and its turn
+    ended (or dropped), and every deferred persist written."""
     def _pending():
-        return [t for t in (r.ch._turn_tasks | r.ch._job_ui_tasks)
+        return [t for t in (r.ch._turn_tasks | r.transport._job_ui_tasks)
                 if not t.done()]
 
     for _ in range(200):
@@ -555,7 +556,7 @@ class TestAskAndTap:
     async def test_job_buttons_are_matched_before_the_generic_parser(self):
         from channels.telegram import _parse_callback_data, _parse_job_callback
         data = "v1|job_q|" + "a" * 32 + "|ABCDEFGH|3"
-        assert _parse_callback_data(data) == (None, None, None, None)
+        assert _parse_callback_data(data) == (None, None, None)
         assert _parse_job_callback(data) == ("q", "a" * 32, "ABCDEFGH", 3)
 
 
@@ -649,11 +650,11 @@ class TestStartLineCancelAndRetirement:
         r.reg.record_job_post(r.rec.id, A(960), keyboard=JOB_POST_QUESTION)
         r.reg._terminal_observer = None          # as if the edits never ran
         await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
-        assert r.ch.retire_ended_job_keyboards() == 1
+        assert r.transport.retire_ended_job_keyboards() == 1
         await _drain(r)
         assert [m["message_id"] for m in r.bot.markups] == [960]
         assert r.bot.edits == [] and r.bot.sent == []
-        assert r.ch.retire_ended_job_keyboards() == 0
+        assert r.transport.retire_ended_job_keyboards() == 0
 
     async def test_launch_death_retires_the_keyboards_too(self, tmp_path, monkeypatch):
         import tools

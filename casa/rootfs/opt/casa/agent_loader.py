@@ -1059,7 +1059,6 @@ def _build_runtime_fields(
     memory = runtime.get("memory") or {}
     cfg.memory = MemoryConfig(
         token_budget=int(memory.get("token_budget", 4000)),
-        read_strategy=memory.get("read_strategy", "per_turn"),
     )
 
     session = runtime.get("session") or {}
@@ -1685,8 +1684,7 @@ def load_configurator() -> AgentConfig:
             voice_guard=str(tools_block.get("voice_guard") or "none"),
         ),
         mcp_server_names=list(role.get("mcp_servers") or []),
-        memory=MemoryConfig(token_budget=int(memory.get("token_budget", 0)),
-                            read_strategy=str(memory.get("read_strategy", "per_turn"))),
+        memory=MemoryConfig(token_budget=int(memory.get("token_budget", 0))),
         session=SessionConfig(strategy="ephemeral"),
         channels=[],
         cwd=CONFIGURATOR_CWD,

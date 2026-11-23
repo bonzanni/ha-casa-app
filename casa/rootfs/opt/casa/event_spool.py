@@ -746,22 +746,6 @@ class EventSpool:
             finally:
                 os.close(efd)
 
-    def delete_ready(self, emitter: str) -> bool:
-        with self._lock:
-            self._require_open()
-            try:
-                efd = self._emitter_fd(emitter)
-            except FileNotFoundError:
-                return True
-            except OSError:
-                return False
-            try:
-                gone = _retire_marker_entry(READY_NAME, efd)
-                _fsync(efd, emitter)
-                return gone
-            finally:
-                os.close(efd)
-
     def read_marker(self, emitter: str) -> Marker:
         with self._lock:
             if self._closed or not _safe_component(emitter):

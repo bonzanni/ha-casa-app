@@ -95,7 +95,7 @@ def _butler(tmp_path, mcp_registry):
         tools=ToolsConfig(
             allowed=["mcp__homeassistant"], permission_mode="acceptEdits",
         ),
-        memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+        memory=MemoryConfig(token_budget=800),
         mcp_server_names=["homeassistant"],
         role_id=resident_role_id("butler"), kind="resident",
         binding_digest=RESIDENT_DIGEST,

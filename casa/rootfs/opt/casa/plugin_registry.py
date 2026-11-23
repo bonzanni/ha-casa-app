@@ -36,7 +36,7 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # profile" and is never stored — an absent key IS full access.
 PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,23}$")
 FULL_PROFILE = "full"
-REVISION_RE = re.compile(r"^(git:[0-9a-f]{40}|legacy-content:[0-9a-f]{64})$")
+REVISION_RE = re.compile(r"^git:[0-9a-f]{40}$")
 BUNDLED_SOURCE = "bundled"
 _SOURCE_TYPES = {"github", BUNDLED_SOURCE}
 # #923: the reason code for a stored worker target Casa does not serve.
@@ -677,9 +677,8 @@ def snapshot_store_root() -> Path:
 
 
 def _resolve_entry(entry: dict, snap: "_Snapshot", target: str | None,
-                   ) -> tuple[ResolvedPlugin | None, PluginIssue | None,
-                              PluginIssue | None]:
-    """Returns (plugin, issue, warning) — plugin XOR issue."""
+                   ) -> tuple[ResolvedPlugin | None, PluginIssue | None]:
+    """Returns (plugin, issue) — plugin XOR issue."""
     name = entry["name"]
     artifact_id = entry["artifact_id"]
     store_root = snap.store_root
@@ -687,7 +686,7 @@ def _resolve_entry(entry: dict, snap: "_Snapshot", target: str | None,
     if deep is not None:   # cached artifact_verdict result (Sol F1/R2-1):
         return None, PluginIssue(name=name, target=target, stage="resolve",
                                  reason_code=deep,
-                                 artifact_id=artifact_id), None
+                                 artifact_id=artifact_id)
     path = Path(store_root) / name / artifact_id
     try:
         manifest = json.loads(
@@ -697,12 +696,7 @@ def _resolve_entry(entry: dict, snap: "_Snapshot", target: str | None,
         # Raced-away since snapshot load — treat as invalid, never partial.
         return None, PluginIssue(name=name, target=target, stage="resolve",
                                  reason_code="artifact_invalid",
-                                 artifact_id=artifact_id), None
-    warning = None
-    if entry["source"]["revision"].startswith("legacy-content:"):
-        warning = PluginIssue(name=name, target=target, stage="resolve",
-                              reason_code="legacy_provenance",
-                              artifact_id=artifact_id)
+                                 artifact_id=artifact_id)
     profiles = entry.get("profiles")
     profile = (profiles.get(target)
                if target is not None and isinstance(profiles, dict) else None)
@@ -712,7 +706,7 @@ def _resolve_entry(entry: dict, snap: "_Snapshot", target: str | None,
         manifest=manifest,
         manifest_name=entry.get("manifest_name") or name,
         profile=profile,
-    ), None, warning
+    ), None
 
 
 def _resolve_from(snap: "_Snapshot", target: str | None) -> ResolutionResult:
@@ -734,13 +728,11 @@ def _resolve_from(snap: "_Snapshot", target: str | None) -> ResolutionResult:
     for entry in reg.entries:
         if target is not None and target not in entry.get("targets", []):
             continue
-        plugin, issue, warning = _resolve_entry(entry, snap, target)
+        plugin, issue = _resolve_entry(entry, snap, target)
         if plugin is not None:
             result.plugins.append(plugin)
         if issue is not None:
             result.issues.append(issue)
-        if warning is not None:
-            result.warnings.append(warning)
     return result
 
 

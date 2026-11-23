@@ -156,9 +156,9 @@ async def _settle():
 # --- the keyboard --------------------------------------------------------------------
 
 def test_the_parser_accepts_the_proposal_namespace():
-    assert _parse_callback_data(f"v1|proposal|{RID}|2") == ("proposal", RID, 2, None)
-    assert _parse_callback_data("v1|proposal||0") == (None, None, None, None)
-    assert _parse_callback_data(f"v1|proposal|{RID}|x") == (None, None, None, None)
+    assert _parse_callback_data(f"v1|proposal|{RID}|2") == ("proposal", RID, 2)
+    assert _parse_callback_data("v1|proposal||0") == (None, None, None)
+    assert _parse_callback_data(f"v1|proposal|{RID}|x") == (None, None, None)
 
 
 async def test_the_keyboard_is_posted_with_one_button_per_label_and_the_message_is_filed(

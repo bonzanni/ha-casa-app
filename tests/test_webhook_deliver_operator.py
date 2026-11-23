@@ -477,7 +477,7 @@ def _resident(tmp_path, *, with_telegram: bool = True):
         role=ROLE, model="claude-sonnet-4-6",
         system_prompt="You are helpful.", character=CharacterConfig(name="Test"),
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
-        memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=1000),
     )
     agent = Agent(
         config=cfg,

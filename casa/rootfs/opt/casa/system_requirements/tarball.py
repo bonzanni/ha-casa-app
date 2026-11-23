@@ -210,28 +210,17 @@ def _fsync_tree(root: Path) -> None:
 
 def _reclaim_superseded_generations(
     gens_dir: Path, tools_bin: Path, verify_bin: str,
-    *, tools_root: Path, plugin_name: str,
 ) -> None:
     """Start-of-install reclaim (review round 2): remove every generation of
     THIS plugin except the one the launcher currently serves, plus crashed
-    staging leftovers and no-longer-serving legacy in-place layouts.
+    staging leftovers.
 
     Running this at the START of the next install — never right after
     publication — leaves the superseded generation on disk for a whole
     install-to-install grace window, so an in-flight consumer that resolved
     the launcher just before a retarget can finish against its tree. The
     per-plugin ``gens_dir`` namespace means no glob can ever match another
-    plugin's directories, whatever its name's prefix relationship.
-
-    Legacy flat layouts (pre-generation ``<plugin>-<version>`` directly under
-    tools_root, EVERY version — Terra r3-2) are swept too, guarded against
-    prefix collisions by the system-requirements manifest: a candidate whose
-    name actually belongs to another manifest plugin (reclaiming for ``foo``
-    must never touch ``foo-bar-1.0``, owned by plugin ``foo-bar``) or to the
-    venv namespace is skipped."""
-    from .manifest import read_manifest
-
-    manifest_plugins = read_manifest()["plugins"]
+    plugin's directories, whatever its name's prefix relationship."""
     # Terra r4-1 / Sol r5-1: on a verify_bin RENAME the incoming name has no
     # link yet, so serving-detection keyed on it alone would sweep the tree
     # the plugin's PRIOR launcher still serves — and keying on the manifest
@@ -260,23 +249,6 @@ def _reclaim_superseded_generations(
     for entry in entries:
         if not _serving(entry):
             shutil.rmtree(entry, ignore_errors=True)
-
-    other_names = [p["name"] for p in manifest_plugins
-                   if p.get("name") and p["name"] != plugin_name]
-    for candidate in tools_root.glob(f"{plugin_name}-*"):
-        if not candidate.is_dir() or candidate.is_symlink() or _serving(candidate):
-            continue
-        if candidate.name.startswith("venv-"):
-            continue  # a plugin literally named "venv" never sweeps venv trees
-        # Sol r4-2: the LONGEST matching plugin name owns the directory —
-        # installing `foo` must skip `foo-bar-0.9` (owned by `foo-bar`),
-        # but installing `foo-bar` must still reclaim its own `foo-bar-0.9`
-        # even though it also matches the shorter sibling `foo`.
-        if any((candidate.name == other or candidate.name.startswith(f"{other}-"))
-               and len(other) > len(plugin_name)
-               for other in other_names):
-            continue
-        shutil.rmtree(candidate, ignore_errors=True)
 
 
 def install_tarball(
@@ -344,9 +316,7 @@ def install_tarball(
     fsync_directory(tools_root.parent)
     fsync_directory(tools_root)
     fsync_directory(tools_root / "tarball")
-    _reclaim_superseded_generations(
-        gens_dir, tools_bin, verify_bin,
-        tools_root=tools_root, plugin_name=plugin_name)
+    _reclaim_superseded_generations(gens_dir, tools_bin, verify_bin)
     install_dir = gens_dir / f"{version}.g-{uuid.uuid4().hex[:8]}"
 
     with tempfile.TemporaryDirectory() as tmp:

@@ -217,10 +217,8 @@ abandoned with a warning rather than held open, and its client stays in what the
 pool retains for the next close to take. The alternative — waiting until every
 transport is provably cut — is a stop with no bound at all, which is the one
 thing teardown may not be.
-The same forced cut is what an agent close reaches for when its own cancellation
-arrives before it ever entered the pool. What is promised is completion of the
-SDK's close protocol — the disconnect that flushes the transcript is started and
-awaited — not that the protocol never escalates to terminating the CLI, which is
+What the forced cut promises is completion of the SDK's close protocol — the
+disconnect that flushes the transcript is started and awaited — not that the protocol never escalates to terminating the CLI, which is
 the SDK's own behaviour and not Casa's to promise.
 
 Retaining what the pool opened is what makes that cover routes no drain record

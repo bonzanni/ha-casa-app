@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import logging
 from pathlib import Path
 
 import pytest
@@ -25,23 +24,12 @@ def _load_config_module():
         pytest.fail("voice_delivery_config module is absent")
 
 
-def _clear_config(monkeypatch):
-    """v0.125.0 (#228): kept so the boot-event test still proves the log line
-    carries no operator data — the env vars themselves are gone."""
-    for key in (
-        "VOICE_ROUTE_FRESHNESS_SECONDS",
-        "VOICE_JOB_DELIVERY_TTL_SECONDS",
-        "VOICE_JOB_ROUTE_CAP",
-    ):
-        monkeypatch.delenv(key, raising=False)
-
-
 def test_voice_delivery_config_is_constant():
-    config = _load_config_module().load_voice_delivery_config()
+    config = _load_config_module()
 
-    assert config.route_freshness_s == 60
-    assert config.delivery_ttl_s == 900
-    assert config.route_cap == 5
+    assert config.ROUTE_FRESHNESS_S == 60
+    assert config.DELIVERY_TTL_S == 900
+    assert config.ROUTE_CAP == 5
 
 
 def test_env_cannot_override_the_delivery_constants(monkeypatch):
@@ -58,55 +46,24 @@ def test_env_cannot_override_the_delivery_constants(monkeypatch):
     ):
         monkeypatch.setenv(key, value)
 
-    config = _load_config_module().load_voice_delivery_config()
+    config = importlib.reload(_load_config_module())
 
     assert (
-        config.route_freshness_s,
-        config.delivery_ttl_s,
-        config.route_cap,
+        config.ROUTE_FRESHNESS_S,
+        config.DELIVERY_TTL_S,
+        config.ROUTE_CAP,
     ) == (60, 900, 5)
 
 
-def test_voice_delivery_config_emits_one_static_sanitized_boot_event(
-    monkeypatch, caplog,
-):
-    _clear_config(monkeypatch)
-    monkeypatch.setenv("WEBHOOK_SECRET", "voice-secret-canary")
-    monkeypatch.setenv("VOICE_ROUTE_ID", "route-id-canary")
-    monkeypatch.setenv("VOICE_PROMPT", "prompt-canary")
-    monkeypatch.setenv("VOICE_RESULT", "result-canary")
-    caplog.set_level(logging.INFO, logger="voice_delivery_config")
-
-    _load_config_module().load_voice_delivery_config()
-
-    events = [
-        record.getMessage()
-        for record in caplog.records
-        if record.getMessage().startswith("voice_delivery_config ")
-    ]
-    assert events == [
-        "voice_delivery_config route_freshness_s=60 ttl_s=900 route_cap=5",
-    ]
-    rendered = "\n".join(events)
-    for canary in (
-        "voice-secret-canary",
-        "route-id-canary",
-        "prompt-canary",
-        "result-canary",
-    ):
-        assert canary not in rendered
-
-
-def test_boot_wires_one_config_snapshot_into_all_voice_delivery_consumers():
+def test_boot_wires_the_constants_into_all_voice_delivery_consumers():
     source = (
         Path(__file__).resolve().parent.parent
         / "casa" / "rootfs" / "opt" / "casa" / "casa_core.py"
     ).read_text(encoding="utf-8")
 
-    assert "voice_delivery_config = load_voice_delivery_config()" in source
-    assert "result_ttl_seconds=voice_delivery_config.delivery_ttl_s" in source
-    assert "freshness_s=voice_delivery_config.route_freshness_s" in source
-    assert "voice_job_route_cap=voice_delivery_config.route_cap" in source
+    assert "result_ttl_seconds=DELIVERY_TTL_S" in source
+    assert "freshness_s=ROUTE_FRESHNESS_S" in source
+    assert "voice_job_route_cap=ROUTE_CAP" in source
 
 
 def test_addon_no_longer_declares_the_voice_delivery_options():

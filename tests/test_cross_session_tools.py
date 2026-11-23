@@ -177,7 +177,7 @@ async def test_resident_options(tmp_path, monkeypatch):
         model="claude-haiku-4-5", system_prompt="You are Tina.",
         character=CharacterConfig(name="Tina"),
         tools=ToolsConfig(allowed=["Read", "WebSearch"], disallowed=[]),
-        memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+        memory=MemoryConfig(token_budget=800),
     )
     resident = Agent(
         config=cfg,

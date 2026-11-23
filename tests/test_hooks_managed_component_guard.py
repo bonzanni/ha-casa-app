@@ -296,18 +296,11 @@ def _shipped_hooks_yaml(executor: str) -> dict:
 
 
 async def test_shipped_yaml_declares_policy_for_both_executors():
-    """The shipped configurator's hooks carry the policy, and
-    build_policy_callbacks_from_hooks_yaml (the agent loader's load-time
-    constructibility check) materializes it under its canonical matcher."""
-    from hooks import build_policy_callbacks_from_hooks_yaml
+    """The shipped configurator's hooks carry the policy."""
     for executor in ("configurator",):
         data = _shipped_hooks_yaml(executor)
         declared = [e.get("policy") for e in data["pre_tool_use"]]
         assert "managed_component_guard" in declared, executor
-        built = build_policy_callbacks_from_hooks_yaml(data)
-        assert "managed_component_guard" in built, executor
-        matcher, _cb = built["managed_component_guard"]
-        assert matcher == "Write|Edit|Bash"
 
 
 async def test_shipped_configurator_yaml_resolves_on_sdk_path():
@@ -707,18 +700,19 @@ class TestGuardIsCodeMandatoryInCasa:
         assert await _stack_denies_managed(opts)
 
 
-class TestTheLoadTimeBuildOfTheGuard:
+class TestTheResolvedGuard:
     async def test_a_declared_guard_builds_under_its_canonical_matcher(self):
-        """build_policy_callbacks_from_hooks_yaml (the agent loader's
-        load-time constructibility check) builds a declared guard under the
-        HOOK_POLICIES matcher, never the config-editable declared one, and
-        the built callback denies a specialist hand-write."""
-        from hooks import build_policy_callbacks_from_hooks_yaml
-        built = build_policy_callbacks_from_hooks_yaml({"pre_tool_use": [
-            {"policy": "managed_component_guard", "matcher": "Read"}]})
-        assert "managed_component_guard" in built
-        matcher, cb = built["managed_component_guard"]
-        assert matcher == "Write|Edit|Bash"
+        """resolve_hooks builds a declared guard under the HOOK_POLICIES
+        matcher, never the config-editable declared one, and the built
+        callback denies a specialist hand-write."""
+        from config import HooksConfig
+        from hooks import resolve_hooks
+        resolved = resolve_hooks(HooksConfig(pre_tool_use=[
+            {"policy": "managed_component_guard", "matcher": "Read"}]),
+            default_cwd="/config")
+        [hm] = resolved["PreToolUse"]
+        assert hm.matcher == "Write|Edit|Bash"
+        [cb] = hm.hooks
         out = await cb(dict(_SPECIALIST_WRITE), None, {})
         assert _decision(out) == "deny"
 

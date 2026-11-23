@@ -9,7 +9,7 @@ writes its sessions under ``$HOME/.claude/projects/<project dir named after
 its cwd>``; once the engagement is terminal nothing resumes or reads them
 again.
 
-For each terminal ``driver == "in_casa"`` record this pass deletes, and selects
+For each terminal record this pass deletes, and selects
 nothing else:
 
 - ``kind == "plugin"``: the job's whole per-engagement project dir (its cwd is
@@ -311,8 +311,6 @@ async def reap_engagement_transcripts(registry, *,
     try:
         targets = []
         for rec in registry.terminal_records():
-            if rec.driver != "in_casa":
-                continue        # only in_casa sessions leave CLI transcripts here
             try:
                 target = _target_for(rec, counts)
             except Exception:  # noqa: BLE001 — one record never stops the pass

@@ -135,8 +135,6 @@ async def test_new_on_one_bot_leaves_the_other_bots_ask_challenge_and_grant():
     assert grants.purge_chat(FINANCE_BOT, OPERATOR) == 1
     assert scheduled_asks.cancel_non_scheduled_for_chat(
         FINANCE_BOT, OPERATOR, "typed_answer") == 0
-    assert scheduled_asks.cancel_for_chat(
-        FINANCE_BOT, OPERATOR, "new_session") == 0
 
     assert sorted(_pending(CASA_BOT)) == ["ask-111", "sched-111"]
     assert _pending(CASA_BOT, "authz") == ["authz-111"]
@@ -250,18 +248,6 @@ async def test_boot_drops_a_question_whose_bot_has_no_endpoint():
     assert scheduled_asks.STORE.all() == []
     assert te.casa.edits == te.finance.edits == []
     assert te.casa.continuations == te.finance.continuations == []
-
-
-async def test_a_revocation_in_the_boot_window_settles_only_its_bots_record():
-    te = _two()
-    await scheduled_asks.STORE.put(_record())
-    await scheduled_asks.STORE.put(_record(
-        rid="rid-111", bot_id=CASA_BOT, role="assistant",
-        scope=scope("dm", CASA_BOT, OPERATOR)))
-    scheduled_asks.cancel_for_chat(FINANCE_BOT, OPERATOR, "new_session")
-    counts = await scheduled_asks.reconcile_at_boot(te.transport, now=0.0)
-    assert counts["revoked_before_reconcile"] == 1 and counts["restored"] == 1
-    assert _pending(CASA_BOT) == ["rid-111"] and _pending(FINANCE_BOT) == []
 
 
 # ---------------------------------------------------------------------------

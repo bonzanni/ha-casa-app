@@ -30,11 +30,10 @@ def _make_runtime():
     from runtime import CasaRuntime
     return CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=MagicMock(), engagement_driver=MagicMock(),
+        bus=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/x", agents_dir="/x/agents",
         home_root="/x/home", defaults_root="/opt/casa",

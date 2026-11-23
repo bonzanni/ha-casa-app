@@ -9,6 +9,7 @@ they always did."""
 from __future__ import annotations
 
 import json
+from provenance import APPROVAL_KEY
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +27,7 @@ def _inside_the_ordinary_run(env, call):
     results: list = []
 
     async def _hook(origin):
-        assert approval_records.APPROVAL_KEY not in origin
+        assert APPROVAL_KEY not in origin
         results.append(await call())
     env.runs.hook = _hook
     return results

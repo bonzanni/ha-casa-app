@@ -177,7 +177,7 @@ def _make_agent(tmp_path) -> Agent:
         system_prompt="You are helpful.",
         character=CharacterConfig(name="Test"),
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
-        memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=1000),
         role_id=resident_role_id("assistant"),
         kind="resident",
         binding_digest=RESIDENT_DIGEST,

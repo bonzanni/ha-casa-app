@@ -957,13 +957,12 @@ class SdkClientPool:
         await asyncio.shield(close_group)
 
     async def aclose(self, *, drain_timeout: float = 120.0,
-                     salvage_timeout: float = SALVAGE_TIMEOUT,
-                     force: bool = False) -> None:
+                     salvage_timeout: float = SALVAGE_TIMEOUT) -> None:
         """Close the pool. #881: this call OWNS its cleanup to the end.
 
         Normally it drains: each recorded entry's lock awaited up to
         ``drain_timeout``, force-closed when that expires, then one further
-        window for the invalidation closers. Two things now hold whatever
+        window for the invalidation closers. One thing now holds whatever
         happens to the caller:
 
         * a cancellation — the container's 15 s bound around ``Agent.aclose``,
@@ -972,11 +971,7 @@ class SdkClientPool:
           cut over everything this pool has opened and not yet cut, and only
           then propagates. Before this, a cancelled close left what it had
           already removed from the entry map connected, with its transcript
-          unflushed and no later call on that path to reclaim it;
-        * ``force=True`` says the caller is already gone and there is no point
-          waiting for a lock — used by ``Agent.aclose`` when its own
-          cancellation arrived before it ever reached the pool. It runs the
-          SAME forced cut, so no teardown route reaches cleanup any other way.
+          unflushed and no later call on that path to reclaim it.
         """
         self._closing = True
         if self._sweeper is not None:
@@ -1009,30 +1004,25 @@ class SdkClientPool:
                 barrier.set_result(None)
         pending = entries + orphans
         cancelled: BaseException | None = None
-        drain = None
-        if force:
-            await self._forced_cut(None, pending, draining, salvage_timeout)
-        else:
-            drain = asyncio.ensure_future(
-                self._drain_recorded(pending, draining, invalidation_groups,
-                                     drain_timeout),
-            )
-            try:
-                # wait() never cancels its awaitable, so a cancellation
-                # delivered here leaves the drain to be stopped deliberately
-                # below rather than mid-disconnect.
-                await asyncio.wait({drain})
-            except asyncio.CancelledError as exc:
-                cancelled = exc
-                drain.cancel()
-                await self._forced_cut(drain, pending, draining,
-                                       salvage_timeout)
+        drain = asyncio.ensure_future(
+            self._drain_recorded(pending, draining, invalidation_groups,
+                                 drain_timeout),
+        )
+        try:
+            # wait() never cancels its awaitable, so a cancellation
+            # delivered here leaves the drain to be stopped deliberately
+            # below rather than mid-disconnect.
+            await asyncio.wait({drain})
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+            drain.cancel()
+            await self._forced_cut(drain, pending, draining,
+                                   salvage_timeout)
         if self in SdkClientPool._instances:
             SdkClientPool._instances.remove(self)
         if cancelled is not None:
             raise cancelled
-        if drain is not None:
-            drain.result()
+        drain.result()
 
     async def _drain_recorded(self, pending, draining, invalidation_groups,
                               drain_timeout: float) -> None:

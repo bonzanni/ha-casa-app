@@ -256,8 +256,7 @@ def _next_generation(prev: dict) -> int:
 
 def new_fingerprints(report: dict) -> list[str]:
     """Issue AND warning fingerprints not yet notified (order-preserving,
-    deduped). Sol #17: warnings (e.g. ``legacy_provenance`` from an offline
-    adopt — a real trust downgrade) are operator-relevant and must also fire the
+    deduped). Sol #17: warnings are operator-relevant and must also fire the
     one-time DM, not merely land in the report."""
     notified = set(report.get("notified_fingerprints") or [])
     seen: set[str] = set()
@@ -358,7 +357,6 @@ _REASON_PHRASES = {
     "verify_exception": "could not be checked",
     "postcondition_failed": "did not finish starting up",
     "snapshot_raced": "hit an error while starting up",
-    "legacy_provenance": "was installed without the usual provenance checks",
     "duplicate_name": "clashes with another plugin's name",
     "name_mismatch": "does not match the name it was installed under",
 }

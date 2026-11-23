@@ -2615,8 +2615,7 @@ def resolve_hooks(
                 f"available: {sorted(HOOK_POLICIES)}"
             )
         # REVISION 3 (Terra plan-review r3, #360): strip the transport-only
-        # ``matcher``/``timeout`` keys before the factory call, exactly like
-        # build_policy_callbacks_from_hooks_yaml already does above. Without
+        # ``matcher``/``timeout`` keys before the factory call. Without
         # this, a snapshot carrying a stray ``matcher`` (e.g. because an
         # executor's yaml declared one) made every factory call raise
         # TypeError on an unexpected kwarg — turning a config-editable
@@ -2641,86 +2640,3 @@ def resolve_hooks(
         ))
 
     return {"PreToolUse": matchers}
-
-
-def _compose_hook_callbacks(
-    callbacks: list["HookCallback"],
-) -> "HookCallback":
-    """#313: one callback running every duplicate declaration of a policy.
-
-    Runs each callback in declaration order and returns the FIRST non-allow
-    result (allow is ``None``/``{}``; the shipped non-allow shapes are
-    ``_deny`` and the relay's ask). Matches the SDK path, where every
-    declaration is its own matcher and any deny blocks the call.
-    """
-    async def _composed(input_data, tool_use_id, context):
-        for cb in callbacks:
-            result = await cb(input_data, tool_use_id, context)
-            if result:
-                return result
-        return {}
-    return _composed
-
-
-def build_policy_callbacks_from_hooks_yaml(
-    hooks_yaml_data: dict,
-) -> dict[str, tuple[str, "HookCallback"]]:
-    """Build ``{policy_name: (matcher, callback)}`` from an executor hooks.yaml.
-
-    The agent loader calls this at load for every executor as a
-    constructibility check (#312): a declaration whose factory raises fails
-    the executor at load rather than at enforcement time.
-
-    Policies with no HOOK_POLICIES factory are skipped here. The per-entry
-    ``matcher``/``timeout`` keys are not factory parameters, so they are
-    stripped before the factory call.
-    """
-    grouped: dict[str, tuple[str, list["HookCallback"]]] = {}
-    declared_matchers: dict[str, Any] = {}
-    for entry in (hooks_yaml_data.get("pre_tool_use") or []):
-        name = entry.get("policy")
-        policy = HOOK_POLICIES.get(name)
-        if policy is None:
-            continue
-        # Sol r2-1: duplicate declarations of one policy must agree on their
-        # declared ``matcher`` (including all leaving it absent). The SDK
-        # path deliberately ignores declared matchers (they are
-        # config-editable; HOOK_POLICIES matchers are the trust anchor) — so
-        # per-declaration matcher scoping of duplicates is unenforceable and
-        # the composite would surprise (intersection under the canonical
-        # matcher). Refuse the config loudly instead:
-        # with #312's load-time constructibility check this fail-closes the
-        # executor at load/commit, not silently at enforcement time.
-        if name in declared_matchers:
-            if declared_matchers[name] != entry.get("matcher"):
-                raise UnknownPolicyError(
-                    f"policy {name!r} is declared more than once with "
-                    f"differing matchers ({declared_matchers[name]!r} vs "
-                    f"{entry.get('matcher')!r}); duplicate declarations "
-                    f"must agree on their matcher"
-                )
-        else:
-            declared_matchers[name] = entry.get("matcher")
-        params = {
-            k: v for k, v in entry.items()
-            if k not in ("policy", "matcher", "timeout")
-        }
-        _matcher, callbacks = grouped.setdefault(
-            name, (policy["matcher"], []))
-        callbacks.append(policy["factory"](**params))
-    # #313: a policy declared MORE THAN ONCE must enforce every declaration.
-    # The SDK path registers one HookMatcher per declaration and runs all of
-    # them (any deny blocks); this dict is keyed by policy name, so a plain
-    # ``out[name] = ...`` would be last-writer-wins.
-    # Duplicates compose into ONE callback that runs each declaration in
-    # order and returns the first non-allow result (deny/ask), restoring the
-    # SDK's intersection semantics.
-    out: dict[str, tuple[str, "HookCallback"]] = {
-        name: (
-            matcher,
-            callbacks[0] if len(callbacks) == 1
-            else _compose_hook_callbacks(callbacks),
-        )
-        for name, (matcher, callbacks) in grouped.items()
-    }
-    return out

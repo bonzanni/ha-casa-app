@@ -85,7 +85,7 @@ def _agent(tmp_path, role: str, *, seed_resumed: str | None = None) -> Agent:
         system_prompt=f"You are {role}.",
         character=CharacterConfig(name=role.capitalize()),
         tools=ToolsConfig(allowed=_real_allowed(role), permission_mode="acceptEdits"),
-        memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=1000),
     )
     reg = SessionRegistry(str(tmp_path / f"{role}.json"))
     if seed_resumed is not None:

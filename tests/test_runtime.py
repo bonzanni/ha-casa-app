@@ -13,14 +13,12 @@ def test_casa_runtime_holds_all_required_fields():
         agents={},
         role_configs={},
         specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(),
         trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(),
         channel_manager=MagicMock(),
         bus=MagicMock(),
-        engagement_driver=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/addon_configs/casa",
         agents_dir="/addon_configs/casa/agents",
@@ -36,11 +34,10 @@ def test_casa_runtime_agents_is_mutable():
 
     rt = CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=MagicMock(), engagement_driver=MagicMock(),
+        bus=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/x", agents_dir="/x/agents",
         home_root="/x/home", defaults_root="/opt/casa",
@@ -54,11 +51,10 @@ def test_init_tools_accepts_runtime():
     from tools import init_tools
     rt = CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=MagicMock(), engagement_driver=MagicMock(),
+        bus=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/x", agents_dir="/x/agents",
         home_root="/x/home", defaults_root="/opt/casa",
@@ -67,7 +63,7 @@ def test_init_tools_accepts_runtime():
         rt.channel_manager, rt.bus, rt.specialist_registry, rt.mcp_registry,
         agent_role_map={}, agent_registry=rt.agent_registry,
         trigger_registry=rt.trigger_registry,
-        engagement_registry=rt.engagement_registry,
+        engagement_registry=MagicMock(),
         runtime=rt,
     )
     import tools

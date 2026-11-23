@@ -61,18 +61,6 @@ def test_manifest_name_mismatch_is_artifact_invalid(tmp_path):
     assert [i.reason_code for i in res.issues] == ["artifact_invalid"]
 
 
-def test_legacy_content_loads_with_warning(tmp_path):
-    store = tmp_path / "store"
-    rev = "legacy-content:" + "c" * 64
-    e = _entry("probe", ["specialist:finance"], revision=rev)
-    _mk_artifact(store, "probe", e["artifact_id"], revision=rev)
-    reload_snapshot(registry_path=_mk_registry(tmp_path, [e]),
-                    store_root=store)
-    res = resolve_for("specialist:finance")
-    assert [rp.name for rp in res.plugins] == ["probe"]
-    assert [w.reason_code for w in res.warnings] == ["legacy_provenance"]
-
-
 def test_tampered_user_artifact_detected_at_snapshot_reload(tmp_path):
     """Sol F1: deep validation at snapshot load — a tampered NON-bundled
     artifact must yield corrupt_artifact, never a loaded plugin."""
