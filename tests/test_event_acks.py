@@ -636,6 +636,7 @@ def test_approving_clears_the_denial(tmp_path):
     path = tmp_path / "acks.json"
     store = EventAckStore(path=path)
     store.deny(*_SUB, 1000.0)
+    assert EventAckStore(path=path).is_denied(_identity()) is True  # on file
     store.record(*_SUB, 1001.0)
 
     for s in (store, EventAckStore(path=path)):
@@ -721,6 +722,7 @@ def test_a_removal_revoke_forgets_the_denials_too(tmp_path):
     store.deny(*_SUB, 1000.0)
     store.deny("other-plugin", "art-1", "gmail", "new-mail", "digest-3",
                ["resident:assistant"], 1000.0)
+    assert EventAckStore(path=path).is_denied(_identity()) is True  # on file
 
     assert store.revoke_subscriber("finance") == []     # it held no ack
 
@@ -737,6 +739,7 @@ def test_prune_stale_drops_a_stale_denial(tmp_path):
     store.deny("finance", "art-1", "outlook", "new-mail", "digest-2",
                ["resident:assistant"], 1000.0)
     stale = _identity(emitter="outlook", digest="digest-2")
+    assert EventAckStore(path=path).is_denied(stale) is True        # on file
 
     store.prune_stale({_identity()})
 
@@ -746,11 +749,13 @@ def test_prune_stale_drops_a_stale_denial(tmp_path):
 
 
 def test_subscribers_on_counts_a_subscriber_holding_only_a_denial(tmp_path):
-    store = EventAckStore(path=tmp_path / "acks.json")
+    path = tmp_path / "acks.json"
+    store = EventAckStore(path=path)
     store.deny(*_SUB, 1000.0)
     store.record("other-plugin", "art-2", "gmail", "new-mail", "digest-3",
                  ["resident:assistant"], 1000.0)
 
-    assert store.subscribers_on(["art-1"]) == {"finance"}
-    assert store.subscribers_on(["art-1", "art-2"]) == {"finance",
+    for s in (store, EventAckStore(path=path)):
+        assert s.subscribers_on(["art-1"]) == {"finance"}
+        assert s.subscribers_on(["art-1", "art-2"]) == {"finance",
                                                         "other-plugin"}

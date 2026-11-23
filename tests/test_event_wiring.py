@@ -718,8 +718,12 @@ class TestLeavingASpecialistBundleRevokesItsEventConsent:
                           events=("mail_arrived", "mail_read"))
         for event in turned_off:
             await w.turn_off(event)
+        # The answer is on file and in effect after a restart — otherwise
+        # "asks again" below could not tell a denial the uninstall dropped
+        # from one that was never kept. Off by the operator's answer:
+        # nothing waits for approval, and what is still approved delivers.
+        w.restart()
         await w.reconcile()
-        # off by the operator's answer: nothing is waiting for approval
         assert w.desired().issues == []
         assert _owned_routed(w.er) is ("mail_arrived" not in turned_off)
         assert w.desired().prunable is False       # the prune never runs here

@@ -904,6 +904,28 @@ def _waiting_for_approval(w):
             if i["reason_code"] == "event_pending_ack"]
 
 
+async def _still_off_after_a_restart(w, runtime, telegram):
+    """Restart, then check gmail's subscription — the one turned off — is
+    still off on its own: the calendar one routes, nothing waits for
+    approval, and neither boot nor a re-prompt posts a card for it. A test
+    of what later FORGETS a denial runs this first: a denial that was never
+    kept would otherwise look the same as one correctly forgotten."""
+    _restart(w)
+    await _reconcile(w, runtime)
+    routed = er.get_routed()
+    assert _subs(routed, ("calendar", "changed")) == {"finance"}
+    assert _subs(routed, ("gmail", "mail_in")) == set()
+    assert _waiting_for_approval(w) == []
+    report = []
+    await er.reprompt_pending(runtime, report=report, acks=w.acks,
+                              resolver=w.resolver, entries=w.entries)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert report == [{"kind": "event", "plugin": "finance",
+                       "name": "gmail:mail_in", "status": "denied"}]
+    assert telegram.posts == []
+
+
 async def _until_routed(key):
     # a card's own reconcile computes in a worker thread
     for _ in range(300):
@@ -921,14 +943,7 @@ async def test_a_revoked_subscription_stays_off_after_a_restart_and_the_other_ke
     _ack(w.acks, "finance", "art-1", "calendar", "changed")
     await _turn_off(w, "gmail", "mail_in")
 
-    _restart(w)
-    await _reconcile(w, runtime)
-
-    routed = er.get_routed()
-    assert _subs(routed, ("calendar", "changed")) == {"finance"}
-    assert _subs(routed, ("gmail", "mail_in")) == set()
-    assert _waiting_for_approval(w) == []
-    assert telegram.posts == []
+    await _still_off_after_a_restart(w, runtime, telegram)
 
 
 async def test_a_denied_card_stays_denied_after_a_restart(
@@ -992,14 +1007,7 @@ async def test_revoking_a_subscription_never_approved_is_remembered_and_frees_th
     await _reconcile(w, runtime)
     assert _subs(er.get_routed(), ("calendar", "changed")) == {"finance"}
 
-    _restart(w)
-    await _reconcile(w, runtime)
-
-    routed = er.get_routed()
-    assert _subs(routed, ("calendar", "changed")) == {"finance"}
-    assert _subs(routed, ("gmail", "mail_in")) == set()
-    assert _waiting_for_approval(w) == []
-    assert telegram.posts == []
+    await _still_off_after_a_restart(w, runtime, telegram)
 
 
 async def test_an_operator_revoke_still_revokes_when_the_plugins_cannot_be_read(
@@ -1016,18 +1024,23 @@ async def test_an_operator_revoke_still_revokes_when_the_plugins_cannot_be_read(
 
     assert len(removed) == 1
     identity = _identity("finance", "art-1", "gmail", "mail_in")
-    assert w.acks.get(identity) is None
-    assert w.acks.is_denied(identity) is True
+    on_disk = EventAckStore(path=w.acks.path)
+    assert on_disk.get(identity) is None
+    assert on_disk.is_denied(identity) is True
 
 
 async def test_removing_the_plugin_forgets_its_denials(
-        tmp_path, fake_event_episodes):
+        tmp_path, fake_event_episodes, monkeypatch):
     """A reinstall of the same revision asks afresh: every subscription is
     waiting for its first answer, the one turned off included."""
+    _card_coordinator(monkeypatch)
     w = _two_subscription_world(tmp_path)
+    runtime, telegram = _dm_runtime(monkeypatch, w)
     _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
     _ack(w.acks, "finance", "art-1", "calendar", "changed")
     await _turn_off(w, "gmail", "mail_in")
+    await _still_off_after_a_restart(w, runtime, telegram)
+
     await er.revoke_and_unroute("finance", acks=w.acks)     # plugin_remove
 
     _restart(w)
@@ -1047,6 +1060,7 @@ async def test_a_denial_for_the_old_version_does_not_carry_to_the_new_one(
     _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
     _ack(w.acks, "finance", "art-1", "calendar", "changed")
     await _turn_off(w, "gmail", "mail_in")
+    await _still_off_after_a_restart(w, runtime, telegram)
 
     # the plugin moves to a new revision; its old consents were not revoked
     gmail, calendar, _old = w.plugins
