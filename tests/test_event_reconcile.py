@@ -1273,3 +1273,120 @@ async def test_consent_approve_regenerates_health(monkeypatch, tmp_path,
 
     assert acks.get(_identity("finance", "art-1", "gmail", "mail_in")) is not None
     assert regen == [[]]        # health regenerated exactly once on approve
+
+
+async def test_approving_one_of_two_subscriptions_does_not_claim_delivery(
+        tmp_path, fake_event_episodes, monkeypatch):
+    """#1642: a subscriber's subscriptions are delivered all together, so
+    approving one while the other is unanswered delivers nothing. Its card
+    must not say it receives the event; approving the other delivers both,
+    and that card does."""
+    broker, coord = _card_coordinator(monkeypatch)
+    import agent as agent_mod
+    w = _two_subscription_world(tmp_path)
+
+    class _Recording(_FakeTelegram):
+        def __init__(self):
+            super().__init__()
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text,
+                                  literal=False):
+            self.edits.append(text)
+            return True
+
+    telegram = _Recording()
+    runtime = SimpleNamespace(role_configs=w.role_configs,
+                              channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+    _fixed_consent_target(monkeypatch, telegram)
+    passes: list = []
+
+    async def _count_pass():
+        passes.append(True)
+    monkeypatch.setattr(er, "_regen_health_safe", _count_pass)
+
+    await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
+                                     entries=w.entries, prompt=True)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert len(telegram.posts) == 2
+
+    async def _approve(emitter):
+        key = next(k for k in coord._entries if k.emitter == emitter)
+        ch = coord._entries[key]
+        claim = broker.claim(namespace="resident_ask", scope=ch.scope,
+                             request_id=ch.rid, option_index=0, actor_id=200)
+        assert broker.commit(claim) is True
+        ch.req.meta["on_commit_sync"](0)
+        before = len(passes)
+        for _ in range(300):
+            if len(passes) > before:
+                break
+            await asyncio.sleep(0.01)
+        for _ in range(8):
+            await asyncio.sleep(0)
+
+    await _approve("gmail")
+    assert _subs(er.get_routed(), ("gmail", "mail_in")) == set()
+    assert telegram.edits[-1] == (
+        "✅ Approved — 'finance' starts receiving 'mail_in' from 'gmail' once "
+        "its other subscriptions are approved too")
+
+    await _approve("calendar")
+    assert _subs(er.get_routed(), ("calendar", "changed")) == {"finance"}
+    assert telegram.edits[-1].startswith(
+        "✅ Enabled — 'finance' now receives 'changed'")
+
+
+async def test_approving_with_a_missing_emitter_blames_no_other_approval(
+        tmp_path, fake_event_episodes, monkeypatch):
+    """#1642: finance's other subscription is on a plugin that is not
+    installed, so nothing waits for an approval; the card names no reason."""
+    broker, coord = _card_coordinator(monkeypatch)
+    import agent as agent_mod
+    gmail = _rp("gmail", emits=["mail_in"])
+    finance = _rp("finance", subscribes=[("gmail", "mail_in"),
+                                         ("calendar", "changed")])
+    plugins = [gmail, finance]
+    resolver, entries = _resolver(plugins), _entries(*plugins)
+    acks = EventAckStore(path=tmp_path / "acks.json")
+
+    class _Recording(_FakeTelegram):
+        def __init__(self):
+            super().__init__()
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text,
+                                  literal=False):
+            self.edits.append(text)
+            return True
+
+    telegram = _Recording()
+    runtime = SimpleNamespace(role_configs=_role_configs(assistant=["telegram"]),
+                              channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+    _fixed_consent_target(monkeypatch, telegram)
+    passes: list = []
+
+    async def _count_pass():
+        passes.append(True)
+    monkeypatch.setattr(er, "_regen_health_safe", _count_pass)
+
+    await er.reconcile_plugin_events(runtime, acks=acks, resolver=resolver,
+                                     entries=entries, prompt=True)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert len(telegram.posts) == 1
+    await _answer_only_card(broker, coord, 0)
+    for _ in range(300):
+        if passes:
+            break
+        await asyncio.sleep(0.01)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert _subs(er.get_routed(), ("gmail", "mail_in")) == set()
+    assert telegram.edits == [
+        "✅ Approved — checking…",
+        "✅ Approved — 'finance' is not receiving 'mail_in' yet. Ask me to "
+        "check the plugin."]

@@ -673,16 +673,19 @@ def _fire_consent_prompts(
     channel, chat_id, operator_id = (
         target.endpoint, target.address.chat_id, target.operator_id)
 
-    async def _reconcile_again() -> None:
+    async def _reconcile_again() -> tuple[list[str], list]:
         # Captures THIS reconcile's inputs. If a reload_full rebinds the
         # runtime registries before the tap lands, the swap goes to the old
         # registry object — harmless: the ack is persisted, so the next
-        # lifecycle reconcile routes it on the live one.
-        await reconcile_plugin_triggers(
+        # lifecycle reconcile routes it on the live one. Returns the routed
+        # names and the issues, which the consent card is written from
+        # (#1642).
+        issues = await reconcile_plugin_triggers(
             trigger_registry=trigger_registry, role_configs=role_configs,
             channel_manager=channel_manager, acks=acks,
             secrets_dir=secrets_dir, prompt=False, resolver=resolver,
             global_secret_ok=global_secret_ok, regen_health=True)
+        return trigger_registry.plugin_overlay_names(), issues
 
     # The setup-round membership was SEALED by the caller, before this
     # function's reachability gate (#451) and therefore before any keyboard
@@ -1011,16 +1014,17 @@ async def reprompt_pending(
     role_configs = getattr(runtime, "role_configs", None) or {}
     acks = acks if acks is not None else _default_acks()
 
-    async def _reconcile_again() -> None:
+    async def _reconcile_again() -> tuple[list[str], list]:
         import agent as agent_mod
         live = getattr(agent_mod, "active_runtime", None)
         if live is None or getattr(live, "trigger_registry", None) is None:
-            return
-        await reconcile_plugin_triggers(
+            return [], []
+        issues = await reconcile_plugin_triggers(
             trigger_registry=live.trigger_registry,
             role_configs=getattr(live, "role_configs", None) or {},
             channel_manager=getattr(live, "channel_manager", None),
             prompt=False, regen_health=True)
+        return live.trigger_registry.plugin_overlay_names(), issues
 
     async with _RECONCILE_LOCK:
         try:

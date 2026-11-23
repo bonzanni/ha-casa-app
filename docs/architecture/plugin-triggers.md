@@ -29,7 +29,10 @@ set of registered routes, and reconciliation swaps the whole thing at once rathe
 mutating entries. Resident registrations are untouched by that swap.
 
 **Approval is all-or-nothing per plugin.** If one declared trigger fails any check, none of
-that plugin's triggers route. Partial routing is deliberately not offered.
+that plugin's triggers route. Partial routing is deliberately not offered. So an Approve
+takes the card's buttons off at once and writes the outcome after the reconcile it fires:
+enabled only when that reconcile left the route in place; waiting on the other triggers only
+when their consent is the plugin's sole gap; otherwise not active yet, naming no reason.
 
 **Approval and the secret it authorizes land at different moments.** The acknowledgement
 persists in the operator's tap; the per-trigger secret is minted by the reconcile that

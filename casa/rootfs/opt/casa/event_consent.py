@@ -198,17 +198,18 @@ def prompt_event_consent(
                         literal=True,
                     )
                     return
-                # Edit the SUCCESS state FIRST, then reconcile, then overwrite
-                # ONLY on failure (the authz edit-first ordering).
+                # #1642: take the buttons off at once, then write the result
+                # from the routing map and issues the reconcile produced. A
+                # subscriber's subscriptions are delivered all together, so
+                # this approval alone may deliver nothing; the card blames
+                # the other approvals only when they are its sole gap.
                 await channel.edit_dm_message(
-                    chat_id, message_id,
-                    f"✅ Enabled — '{subscriber}' now receives '{event}' "
-                    f"from '{emitter}' ({_target_roles(targets)})",
-                    literal=True,
-                )
+                    chat_id, message_id, "✅ Approved — checking…",
+                    literal=True)
+                issues: Any = ()
                 if reconcile_cb is not None:
                     try:
-                        await reconcile_cb()
+                        issues = await reconcile_cb() or ()
                     except Exception:  # noqa: BLE001 — surface, never raise
                         logger.exception(
                             "post-consent event reconcile failed "
@@ -220,6 +221,26 @@ def prompt_event_consent(
                             "failed — run plugin_verify",
                             literal=True,
                         )
+                        return
+                import event_reconcile
+                routed = event_reconcile.get_routed()
+                delivered = isinstance(routed, dict) and subscriber in (
+                    routed.get((emitter, event)) or {})
+                gaps = {i.get("reason_code") for i in issues
+                        if isinstance(i, dict) and i.get("name") == subscriber}
+                if delivered:
+                    text = (f"✅ Enabled — '{subscriber}' now receives "
+                            f"'{event}' from '{emitter}' "
+                            f"({_target_roles(targets)})")
+                elif gaps == {"event_pending_ack"}:
+                    text = (f"✅ Approved — '{subscriber}' starts receiving "
+                            f"'{event}' from '{emitter}' once its other "
+                            "subscriptions are approved too")
+                else:
+                    text = (f"✅ Approved — '{subscriber}' is not receiving "
+                            f"'{event}' yet. Ask me to check the plugin.")
+                await channel.edit_dm_message(
+                    chat_id, message_id, text, literal=True)
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id,

@@ -1194,3 +1194,71 @@ async def test_reconcile_kicks_setup_worker(monkeypatch, tmp_path):
         registry, plugins_by_target={}, role_configs={}, acks=TriggerAckStore(path=tmp_path / "acks.json"),
         tmp_path=tmp_path, prompt=False)
     assert kicked["n"] >= 1
+
+
+async def test_approving_one_of_two_triggers_does_not_claim_it_is_live(
+        monkeypatch, tmp_path):
+    """#1642: a plugin routes all of its triggers or none, so approving one of
+    two leaves it unrouted. Its card must not say it is live; approving the
+    other one routes both, and that card does."""
+    import authz_grants
+    import tools as tools_mod
+    import verdict_broker
+
+    broker = verdict_broker.VerdictBroker()
+    monkeypatch.setattr(verdict_broker, "BROKER", broker)
+    coord = authz_grants.ChallengeCoordinator()
+    monkeypatch.setattr(authz_grants, "CHALLENGES", coord)
+    regen: list = []
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                        lambda extra: regen.append(extra))
+
+    class _Recording(_FakeTelegram):
+        def __init__(self):
+            super().__init__()
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text,
+                                  literal=False):
+            self.edits.append(text)
+            return True
+
+    registry = _registry()
+    acks = TriggerAckStore(path=tmp_path / "acks.json")
+    telegram = _Recording()
+    p = _plugin(triggers=[_trigger(), _trigger(name="transcript")])
+    await _reconcile(
+        registry, plugins_by_target={None: [p], "resident:assistant": [p]},
+        role_configs=_role_configs(assistant=["webhook"]),
+        acks=acks, tmp_path=tmp_path,
+        channel_manager=_FakeChannelManager(telegram))
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert len(telegram.posts) == 2
+
+    async def _approve(effective):
+        key = next(k for k in coord._entries if k.effective == effective)
+        ch = coord._entries[key]
+        claim = broker.claim(namespace="resident_ask", scope=ch.scope,
+                             request_id=ch.rid, option_index=0, actor_id=100)
+        assert broker.commit(claim) is True
+        ch.req.meta["on_commit_sync"](0)
+        before = len(regen)
+        for _ in range(100):
+            if len(regen) > before:
+                break
+            await asyncio.sleep(0.02)
+        for _ in range(8):
+            await asyncio.sleep(0)
+
+    await _approve("plg-elevenlabs--voicemail")
+    assert registry.get_webhook_target("plg-elevenlabs--voicemail") is None
+    assert telegram.edits[-1] == (
+        "✅ Approved — /webhook/plg-elevenlabs--voicemail starts working once "
+        "the elevenlabs plugin's other webhooks are approved too")
+
+    await _approve("plg-elevenlabs--transcript")
+    assert registry.get_webhook_target(
+        "plg-elevenlabs--transcript") == "assistant"
+    assert telegram.edits[-1].startswith(
+        "✅ Enabled — POST /webhook/plg-elevenlabs--transcript")

@@ -331,6 +331,27 @@ async def test_reconcile_failure_warns_but_keeps_the_ack(monkeypatch, tmp_path):
     assert "⚠️" in channel.edits[-1][2]
 
 
+async def test_approve_takes_the_buttons_off_before_the_reconcile_ends(
+        monkeypatch, tmp_path):
+    """#1642: the card is edited (which removes its keyboard) as soon as the
+    ack is recorded, not only once the reconcile returns."""
+    broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+    release = asyncio.Event()
+
+    async def _slow_reconcile():
+        await release.wait()
+        return []
+
+    handle = _prompt(coord, channel, acks, reconcile_cb=_slow_reconcile)
+    await handle.settled_post()
+    _tap(broker, coord, next(iter(coord._entries)), 0)
+    await _settle()
+    assert [e[2] for e in channel.edits] == ["✅ Approved — checking…"]
+    release.set()
+    await _settle()
+    assert len(channel.edits) == 2
+
+
 async def test_revoke_cancels_a_pending_keyboard(monkeypatch, tmp_path):
     """The revoke path kills a subscriber's live consent keyboards
     (``cancel_matching(plugin=…)``, the generic filter every consent-kind

@@ -298,6 +298,50 @@ async def test_reconcile_failure_overwrites_with_warning(monkeypatch, tmp_path):
     assert "⚠️" in channel.edits[-1][2]
 
 
+async def test_approve_takes_the_buttons_off_before_the_reconcile_ends(
+        monkeypatch, tmp_path):
+    """#1642: the card is edited (which removes its keyboard) as soon as the
+    ack is recorded, not only once the reconcile returns."""
+    broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+    release = asyncio.Event()
+
+    async def _slow_reconcile():
+        await release.wait()
+        return ["plg-elevenlabs--voicemail"], []
+
+    handle = _prompt(coord, channel, acks, reconcile_cb=_slow_reconcile)
+    await handle.settled_post()
+    _tap(broker, coord, next(iter(coord._entries)), 0)
+    await _settle()
+    assert [e[2] for e in channel.edits] == ["✅ Approved — checking…"]
+    release.set()
+    await _settle()
+    assert channel.edits[-1][2] == (
+        "✅ Enabled — POST /webhook/plg-elevenlabs--voicemail now routes to "
+        "assistant")
+
+
+async def test_approve_not_live_for_another_reason_claims_no_reason(
+        monkeypatch, tmp_path):
+    """#1642: when the plugin is held back by something other than its
+    unanswered webhooks, the card does not blame them."""
+    from plugin_registry import PluginIssue
+    broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+
+    async def _reconcile():
+        return [], [PluginIssue(name="elevenlabs", target="resident:ghost",
+                                stage="triggers",
+                                reason_code="trigger_channel_missing")]
+
+    handle = _prompt(coord, channel, acks, reconcile_cb=_reconcile)
+    await handle.settled_post()
+    _tap(broker, coord, next(iter(coord._entries)), 0)
+    await _settle()
+    assert channel.edits[-1][2] == (
+        "✅ Approved — /webhook/plg-elevenlabs--voicemail is not active yet. "
+        "Ask me to check the plugin.")
+
+
 async def test_lifecycle_cancel_by_artifact_kills_pending_consent(
     monkeypatch, tmp_path,
 ):

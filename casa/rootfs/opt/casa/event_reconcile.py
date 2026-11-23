@@ -545,7 +545,7 @@ def _fire_consent_prompts(pending: "list[dict]", *, role_configs: dict,
     channel, chat_id, operator_id = (
         target.endpoint, target.address.chat_id, target.operator_id)
 
-    async def _reconcile_again() -> None:
+    async def _reconcile_again() -> "list[dict]":
         # SOL-P2a: the reconcile fired at COMMIT time (when the operator
         # taps Approve, possibly minutes/hours after this prompt was
         # posted) must re-derive role_configs/channel_manager from the
@@ -559,7 +559,8 @@ def _fire_consent_prompts(pending: "list[dict]", *, role_configs: dict,
         # still see their own doubles on retry).
         import agent as agent_mod
         live_runtime = getattr(agent_mod, "active_runtime", None)
-        await reconcile_plugin_events(
+        # The issues are what the consent card is written from (#1642).
+        return await reconcile_plugin_events(
             live_runtime, acks=acks, resolver=resolver, entries=entries,
             prompt=False, regen_health=True)
 
@@ -729,13 +730,14 @@ async def reprompt_pending(
     role_configs = getattr(runtime, "role_configs", None) or {}
     acks = acks if acks is not None else _default_acks()
 
-    async def _reconcile_again() -> None:
+    async def _reconcile_again() -> "list[dict]":
         # SOL-P2a discipline: live-runtime lookup at approve time.
         import agent as agent_mod
         live = getattr(agent_mod, "active_runtime", None)
         if live is None:
-            return
-        await reconcile_plugin_events(live, prompt=False, regen_health=True)
+            return []
+        return await reconcile_plugin_events(live, prompt=False,
+                                             regen_health=True)
 
     async with _RECONCILE_LOCK:
         try:

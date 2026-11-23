@@ -624,7 +624,7 @@ IDENTITY_SITE_HITS = {
     },
     "trigger_consent.py": {
         "ConsentTarget": 1, "TriggerConsentKey": 1, "casa_consent_target": 1,
-        "prompt_trigger_consent": 1, "prompt_trigger_consent._finish_factory._finish": 1,
+        "prompt_trigger_consent": 1, "prompt_trigger_consent._finish_factory._finish": 2,
         "render_trigger_consent_message": 1, "trigger_card_request": 1,
     },
     "trigger_reconcile.py": {
