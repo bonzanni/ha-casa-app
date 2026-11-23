@@ -416,3 +416,47 @@ async def test_in_flight_is_released_even_if_the_dispatch_raises():
 
     sched.get_job.return_value = None
     assert reg.has_job("assistant", "reminder-a1b2c3") is False
+
+
+# ---------------------------------------------------------------------------
+# #1648 — the hour the clock repeats in autumn
+# ---------------------------------------------------------------------------
+
+
+async def test_daily_reminder_in_the_repeated_hour_fires_once(monkeypatch, request):
+    """On the night daylight saving time ends, 02:30 happens twice; a reminder
+    for "every day at 02:30" must still arrive once that night."""
+    from zoneinfo import ZoneInfo
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from config import TriggerSpec
+
+    import reminders
+    from timekeeping import resolve_tz
+
+    rome = ZoneInfo("Europe/Rome")
+    monkeypatch.setenv("CASA_TZ", "Europe/Rome")
+    resolve_tz.cache_clear()
+    request.addfinalizer(resolve_tz.cache_clear)
+    fields = reminders.derive_schedule(
+        datetime(2027, 10, 30, 2, 30, tzinfo=rome), "daily", rome)
+    sched = AsyncIOScheduler(timezone=rome)
+    sched.start(paused=True)
+    try:
+        reg = _registry(scheduler=sched)
+        reg.register_agent("assistant", [TriggerSpec(
+            name="reminder-dst1648", channel="telegram", prompt="x",
+            managed_by="agent", **fields)], ["telegram"])
+        trigger = sched.get_job("assistant:reminder-dst1648").trigger
+
+        fires, prev = [], None
+        now = datetime(2027, 10, 30, 12, 0, tzinfo=rome)
+        for _ in range(3):
+            prev = trigger.get_next_fire_time(prev, now)
+            fires.append(prev.isoformat())
+            now = prev
+    finally:
+        sched.shutdown(wait=False)
+
+    assert fires == ["2027-10-31T02:30:00+02:00", "2027-11-01T02:30:00+01:00",
+                     "2027-11-02T02:30:00+01:00"]

@@ -138,7 +138,9 @@ to rewrite the file at all.
 **A recurring reminder keeps its first occurrence as an anchor.** The derived cron fields
 drive the recurrence — evaluated in the scheduler's timezone, which is what keeps a series
 firing at the same local time across a DST boundary — while the anchor becomes the
-scheduler's start date, so "every Thursday from the 20th" cannot fire on the 6th.
+scheduler's start date, so "every Thursday from the 20th" cannot fire on the 6th. When the
+clock goes back and a local time happens twice, a recurring reminder fires only at the first
+pass (#1648), so "every day at 02:30" arrives once that night.
 
 **What a cron cannot express exactly is refused, not approximated.** A repeating reminder must
 land on a whole minute, and a monthly one on the 28th or earlier — cron has minute resolution

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Callable
 
 from aiohttp import web
+from apscheduler.triggers.cron import CronTrigger
 
 from bus import BusMessage, MessageBus, MessageType
 from config import TriggerSpec
@@ -142,6 +143,22 @@ def _translate_cron_dow(field: str) -> str:
             if d not in out:
                 out.append(d)
     return ",".join(_DOW_TOKENS[d] for d in out)
+
+
+class _WallClockCronTrigger(CronTrigger):
+    """A cron trigger that skips the second pass of a repeated hour (#1648).
+
+    When the clock goes back, a wall-clock time such as 02:30 happens twice
+    and the stock trigger fires at both; a reminder for "every day at 02:30"
+    would arrive twice. The second pass is the one with ``fold=1`` whose
+    offset differs from the first pass, so that fire is skipped."""
+
+    def get_next_fire_time(self, previous_fire_time, now):
+        nxt = super().get_next_fire_time(previous_fire_time, now)
+        while (nxt is not None and nxt.fold
+               and nxt.utcoffset() != nxt.replace(fold=0).utcoffset()):
+            nxt = super().get_next_fire_time(nxt, nxt)
+        return nxt
 
 
 @dataclass
@@ -415,18 +432,28 @@ class TriggerRegistry:
             # set on the 3rd would otherwise fire on the 6th and 13th.
             # Recurrence is still driven by the cron fields, evaluated in the
             # scheduler's timezone, so this does not affect DST correctness.
-            extra: dict = {}
-            if trig.at:
-                import reminders
-                extra["start_date"] = reminders.parse_at(trig.at)
-            self._scheduler.add_job(
-                _fire, trigger="cron",
-                minute=minute, hour=hour, day=day, month=month,
+            cron: dict = {
+                "minute": minute, "hour": hour, "day": day, "month": month,
                 # #343: cron 0/7=Sunday vs APScheduler 3.x 0=Monday —
                 # translate to day names (identical meaning in both).
-                day_of_week=_translate_cron_dow(day_of_week), id=job_id,
-                **extra,
-            )
+                "day_of_week": _translate_cron_dow(day_of_week),
+            }
+            if trig.at:
+                import reminders
+                cron["start_date"] = reminders.parse_at(trig.at)
+            if trig.managed_by == "agent":
+                # #1648: a repeating reminder fires once per wall-clock time,
+                # so the hour the clock repeats in autumn fires only once. The
+                # zone is the one the reminder tool derived the fields in,
+                # which is also the scheduler's.
+                from timekeeping import resolve_tz
+                self._scheduler.add_job(
+                    _fire, id=job_id, trigger=_WallClockCronTrigger(
+                        timezone=resolve_tz(), **cron),
+                )
+            else:
+                self._scheduler.add_job(_fire, trigger="cron", id=job_id,
+                                        **cron)
         self._seen_job_ids.add(job_id)
         self._specs_by_job_id[job_id] = trig
 
