@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/1234567/principal/</href>
+    <propstat>
+      <prop>
+        <addressbook-home-set xmlns="urn:ietf:params:xml:ns:carddav">
+          <href xmlns="DAV:">https://p00-contacts.example.invalid:443/1234567/carddav/</href>
+        </addressbook-home-set>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>

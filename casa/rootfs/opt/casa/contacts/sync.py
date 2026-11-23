@@ -1,0 +1,165 @@
+"""Sync one address-book source into the contacts store.
+
+A source hands over every card it holds, or raises :class:`SourceError`; it
+never hands over a partial list, because :func:`contacts.store.replace_source`
+reads a missing card as a deleted contact. The import step does not know where
+the cards came from: every row it writes carries the source's name, and other
+sources are untouched.
+
+Priority from the address book comes only from membership of the group named
+:data:`PRIORITY_GROUP`; it is written as ``group``-origin marks, which never
+override the operator's own.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import sqlite3
+from dataclasses import dataclass
+from typing import Protocol
+
+from contacts import numbers as phone_numbers
+from contacts import store as cstore
+from contacts.store import ContactsStore, Person
+from contacts.vcard import Card
+
+logger = logging.getLogger(__name__)
+
+PRIORITY_GROUP = "Priority"
+
+EMPTY_ERROR = "the address book came back empty"
+
+
+class SourceError(Exception):
+    """A source could not deliver its whole address book. The message is
+    safe to show the operator and never holds credentials."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class Source(Protocol):
+    name: str
+
+    async def fetch(self) -> list[Card]:
+        """Every card the source holds; raises :class:`SourceError`."""
+        ...
+
+
+@dataclass(frozen=True)
+class Result:
+    ok: bool
+    added: int
+    removed: int
+    kept: int
+    skipped_numbers: int
+    note_changed: tuple[str, ...]
+    error: str
+    tell_operator: bool
+
+
+def _failed(error: str, tell_operator: bool) -> Result:
+    return Result(ok=False, added=0, removed=0, kept=0, skipped_numbers=0,
+                  note_changed=(), error=error, tell_operator=tell_operator)
+
+
+def _people(source: str, cards: list[Card],
+            default_region: str) -> tuple[list[Person], int]:
+    """Person cards as :class:`Person` rows, with group names on members;
+    returns them and the count of numbers that could not be read."""
+    groups: dict[str, list[str]] = {}
+    for card in cards:
+        if card.is_group:
+            for member in card.members:
+                names = groups.setdefault(member, [])
+                if card.name not in names:
+                    names.append(card.name)
+    people: list[Person] = []
+    skipped = 0
+    for card in cards:
+        if card.is_group:
+            continue
+        numbers: list[str] = []
+        for raw, _label in card.tels:
+            e164 = phone_numbers.to_e164(raw, default_region)
+            if e164 is None:
+                skipped += 1
+            elif e164 not in numbers:
+                numbers.append(e164)
+        people.append(Person(
+            source=source, uid=card.uid, name=card.name,
+            first_name=card.first_name, org=card.org, note=card.note,
+            numbers=tuple(numbers), groups=tuple(groups.get(card.uid, ())),
+            related=card.related))
+    return people, skipped
+
+
+def _record_failure(store: ContactsStore, source: str, error: str) -> bool:
+    with store.transaction(write=True) as conn:
+        return cstore.record_sync(conn, source, ok=False, error=error)
+
+
+def _set_group_priority(conn: sqlite3.Connection, source: str,
+                        people: list[Person]) -> None:
+    """Make ``group``-origin priority marks match :data:`PRIORITY_GROUP`
+    membership; an unchanged mark keeps its original time."""
+    marked = {r[0] for r in conn.execute(
+        "SELECT uid FROM marks WHERE source = ? AND field = 'priority' "
+        "AND origin = 'group'", (source,))}
+    for person in people:
+        member = PRIORITY_GROUP in person.groups
+        if member and person.uid not in marked:
+            cstore.set_mark(conn, source, person.uid, "priority", "1",
+                            "group")
+        elif not member and person.uid in marked:
+            cstore.clear_mark(conn, source, person.uid, "priority", "group")
+
+
+def _apply(store: ContactsStore, source: str,
+           people: list[Person]) -> tuple[dict | None, bool]:
+    """The whole write, in one transaction: ``(replace_source's result,
+    False)``, or ``(None, tell_operator)`` when the floor refused an empty
+    book while the mirror holds people (recorded as a failure)."""
+    with store.transaction(write=True) as conn:
+        if not people and cstore.count(conn, source) > 0:
+            return None, cstore.record_sync(conn, source, ok=False,
+                                            error=EMPTY_ERROR)
+        changed = cstore.replace_source(conn, source, people)
+        _set_group_priority(conn, source, people)
+        cstore.record_sync(conn, source, ok=True)
+        return changed, False
+
+
+async def run(store: ContactsStore, source: Source, *,
+              default_region: str) -> Result:
+    """Fetch *source* and mirror it into *store*. A failed or empty fetch
+    leaves the store's people, numbers and marks as they were."""
+    try:
+        cards = await source.fetch()
+    except SourceError as exc:
+        tell = await asyncio.to_thread(
+            _record_failure, store, source.name, exc.message)
+        logger.warning("contacts sync from %s failed: %s", source.name,
+                       exc.message)
+        return _failed(exc.message, tell)
+
+    people, skipped = _people(source.name, cards, default_region)
+    changed, tell = await asyncio.to_thread(
+        _apply, store, source.name, people)
+    if changed is None:
+        logger.warning("contacts sync from %s refused: %s", source.name,
+                       EMPTY_ERROR)
+        return _failed(EMPTY_ERROR, tell)
+
+    logger.info(
+        "contacts sync from %s: %d added, %d removed, %d kept, "
+        "%d numbers skipped", source.name, changed["added"],
+        changed["removed"], changed["kept"], skipped)
+    return Result(ok=True, added=changed["added"], removed=changed["removed"],
+                  kept=changed["kept"], skipped_numbers=skipped,
+                  note_changed=tuple(changed["note_changed"]), error="",
+                  tell_operator=False)
