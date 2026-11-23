@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.381.6] - 2026-11-23
+
+### Fixed
+
+- When Claude's API fails, or the Claude process dies, after an agent has already used a tool in a turn, Casa no longer runs the turn again from the start. That rerun could launch a delegation, start a job or send a message twice. You now get the usual "try again" line once, and your next message continues the same conversation, so the agent knows what it already did. A turn that failed before using any tool is still retried as before. This also applies to voice turns and scheduled turns: after a tool ran, they report the fault instead of quietly trying again (#1654).
+
 ## [0.381.5] - 2026-11-23
 
 ### Fixed

@@ -90,9 +90,11 @@ one line with angle brackets swapped for guillemets and cut (64 and 128 characte
 in a name can close the frame early. The query is the time envelope, then the reply note
 when the summons replied to the bot's earlier answer, then the friend's words. No memory view
 is served, no correction note read, nothing captured, no chat notes drained, none of a
-specialist conversation's session extras applied. Transient SDK faults retry as on any turn;
-the whole run, retries included, is bounded by `GUEST_RUN_TIMEOUT_S` (120 s), past which it
-fails as a timeout with its client closed.
+specialist conversation's session extras applied. A transient SDK fault retries the run
+whole, even after a tool ran: a guest run keeps no session to continue, so the rule that
+ends a conversation's turn there (INV-TURN-017) does not apply. The whole run, retries
+included, is bounded by `GUEST_RUN_TIMEOUT_S` (120 s), past which it fails as a timeout with
+its client closed.
 
 **A guest run's options are built apart** (`tools._build_guest_options`). Nothing of the
 specialist's own grant set is read — not its allowed tools, hooks document or server list,

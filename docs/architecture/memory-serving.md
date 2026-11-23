@@ -66,7 +66,9 @@ resume also re-renders the view and checks its hash. The rule is checked when a 
 connects and again at the end of every turn, inside the turn's session gate: a session
 without such a record (its view could not be recorded or bound, or its record was replaced
 by another session's) has its warm client released then, and any session that cannot resume
-on its record starts afresh, once, and the reason is logged. The one exception is a store
+on its record starts afresh, once, and the reason is logged. A turn that fails but keeps
+its session (INV-TURN-017 in [`turn-loop.md`](turn-loop.md)) binds its view to that session
+the same way, so the next turn resumes it. The one exception is a store
 that cannot be read at all: that is no verdict, and the session is kept on its own frozen
 view. The session's resume pointer is dropped durably before the new view is rendered and
 recorded, so a retry of that turn (a connect that times out) starts a session too and never

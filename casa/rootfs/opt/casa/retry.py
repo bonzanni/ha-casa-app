@@ -123,6 +123,7 @@ async def retry_sdk_call(
     fn: Callable[[], Awaitable[T]],
     *,
     on_retry: Callable[[int, Exception, int], None] | None = None,
+    may_retry: Callable[[Exception], bool] | None = None,
 ) -> T:
     """Run ``fn`` with exponential-backoff retry on transient SDK faults.
 
@@ -130,6 +131,12 @@ async def retry_sdk_call(
     SDK_ERROR (via ``agent._classify_error``). Honours a
     ``Retry-After`` hint if the exception message carries one; falls
     back to jittered exponential backoff otherwise.
+
+    ``may_retry``, when given, is asked about each fault of a retryable
+    kind: the caller knows whether the attempt that failed may be run
+    again (one that already ran a tool may not). False raises that
+    exception at once, as the last attempt does: nothing is slept and
+    ``on_retry`` is not called.
 
     ``asyncio.CancelledError`` is re-raised immediately without
     counting as an attempt; a retry loop must not swallow caller
@@ -148,6 +155,8 @@ async def retry_sdk_call(
             last_exc = exc
             is_last = attempt == MAX_ATTEMPTS - 1
             if is_last:
+                raise
+            if may_retry is not None and not may_retry(exc):
                 raise
             hinted = parse_retry_after_ms(exc)
             if hinted is not None:

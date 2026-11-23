@@ -80,8 +80,10 @@ def _limit_script(text: str | None) -> list:
 
 
 def _sdk_error_attempt() -> list:
-    # ConnectionError classifies as SDK_ERROR, which retry consumes.
-    return _work(1) + [ConnectionError("broken")]
+    # ConnectionError classifies as SDK_ERROR, which retry consumes — while
+    # the failed attempt has seen no tool call (#1654: one that has is not
+    # run again), so this attempt fails before its first message.
+    return [ConnectionError("broken")]
 
 
 class _Client(ScriptedToolClient):

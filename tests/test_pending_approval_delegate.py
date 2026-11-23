@@ -32,6 +32,7 @@ from authz_grants import (
     AuthzDeps, ChallengeCoordinator, GrantStore, make_resident_authz_hook,
     _DENY_POSTED,
 )
+from error_kinds import _USER_MESSAGES, ErrorKind
 from session_registry import SessionRegistry
 
 from test_authz_hook import _deny_reason
@@ -821,30 +822,29 @@ async def test_unreadable_delegate_without_waiting_child_keeps_tail(tmp_path, sh
     assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
 
 
-async def test_failed_attempt_record_is_not_fed_at_later_unreadable_delegate_result(
-        tmp_path):
-    """The scope's records are per TURN and survive a retry; the fold's state is
-    per attempt. A record attempt 1 left (its result never folded) is not
-    evidence about attempt 2's d-2, whose child left nothing waiting."""
+async def test_a_turn_that_delegated_and_then_faults_is_not_run_again(tmp_path):
+    """#1654: the delegate ran in an attempt that then met a transient fault.
+    The turn ends there, on that attempt: one client, one delegation, one
+    approval card. A second attempt would delegate again, to a model that
+    cannot see the first one ran. (This test used to pin that a record the
+    failed attempt left was not fed to the retry's delegate result; no
+    attempt follows one that ran a tool any more.)"""
     turn = _Turn(tmp_path)
-    seen = _Seen()
     c1, h1, _r1 = turn.delegate("d-1", _child_denied(turn=turn))
-    attempt_1 = [_text("A1"), c1, h1, seen.step(), CLIConnectionError("reset")]
-    c2, h2, r2 = _unreadable(turn.delegate("d-2", [_text("CHILD-ONLY")]), _x0t)
-    attempt_2 = [_text("BEFORE"), c2, h2, seen.step(), r2, _text(TAIL)]
+    attempt_1 = [_text("A1"), c1, h1, CLIConnectionError("reset")]
+    c2, h2, r2 = turn.delegate("d-2", [_text("CHILD-ONLY")])
+    attempt_2 = [_text("BEFORE"), c2, h2, r2, _text(TAIL)]
     await turn.run(attempt_1, retries=[attempt_2])
-    assert len(turn.factory.clients) == 2
-    assert [len(c.queries) for c in turn.factory.clients] == [1, 1]
-    assert len(turn.results) == 2
+    assert len(turn.factory.clients) == 1
+    assert [len(c.queries) for c in turn.factory.clients] == [1]
+    assert len(turn.results) == 1
     assert [_deny_reason(a) for a in turn.answers] == [_DENY_POSTED]
     assert len(turn.channel.posts) == 1
-    assert seen.scopes[0] is seen.scopes[1]
-    d1 = turn.results[0]["delegation_id"]
-    assert seen.records == [{d1: (("pending", _key()),)}] * 2
-    assert turn.channel.tokens == ["A1", "BEFORE", "BEFORE\n\n" + TAIL]
-    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
-    # Never fed, never popped: the dead attempt's record is still there.
-    assert seen.scopes[0].delegated_approvals == {d1: (("pending", _key()),)}
+    assert turn.channel.tokens == ["A1"]
+    # No answer was delivered; the person gets the fault's own line, once.
+    assert turn.channel.final_texts() == []
+    assert [str(c.args[0]) for c in turn.channel.send.await_args_list] == [
+        _USER_MESSAGES[ErrorKind.SDK_ERROR]]
 
 
 async def test_later_readable_delegate_consume_releases_unreadable_cut(tmp_path):

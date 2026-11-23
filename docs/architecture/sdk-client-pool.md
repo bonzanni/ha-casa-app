@@ -86,7 +86,9 @@ The sequencing is looser than "before anything else": the error result is still 
 the turn's message handler like any other message, and invalidation happens after the receive
 loop — what is guaranteed is that the entry is invalid by the time the call returns.
 Retryable errors are re-raised so the retry wrapper sees them; non-retryable ones return
-with the entry marked invalid for the pool to drop.
+with the entry marked invalid for the pool to drop. Whether a re-raised error is retried,
+and that the dropped entry's session may still be registered for the conversation, is
+INV-TURN-017 in [`turn-loop.md`](turn-loop.md).
 
 The one exception is a stop. `ManagedSdkClient.interrupt_turn` marks the entry `stopped` and
 asks the client's `interrupt()`, bounded at two seconds; it refuses an entry with no turn in

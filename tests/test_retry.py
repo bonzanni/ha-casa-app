@@ -265,6 +265,67 @@ class TestRetrySdkCall:
         sleep.assert_not_awaited()
         assert attempts["n"] == 1
 
+    async def test_may_retry_false_raises_the_fault_at_once(self):
+        """A caller that says this attempt must not be run again gets the
+        original exception back after one attempt: no backoff is slept and
+        no retry is reported.
+
+        Pins INV-TURN-005 (retry only while the failed attempt may be run
+        again). Red case demonstrated: a retry wrapper that does not ask
+        ``may_retry`` runs the attempt three times and fails this test."""
+        attempts = {"n": 0}
+        fault = _sdk_error()
+        asked: list[Exception] = []
+        seen: list[int] = []
+
+        async def fn():
+            attempts["n"] += 1
+            raise fault
+
+        def may_retry(exc: Exception) -> bool:
+            asked.append(exc)
+            return False
+
+        with patch_retry_sleep() as sleep:
+            with pytest.raises(Exception) as excinfo:
+                await retry_sdk_call(
+                    fn, on_retry=lambda a, e, ms: seen.append(a),
+                    may_retry=may_retry)
+
+        assert excinfo.value is fault
+        assert asked == [fault]
+        assert attempts["n"] == 1
+        assert seen == []
+        sleep.assert_not_awaited()
+
+    async def test_may_retry_true_retries_as_before(self):
+        attempts = {"n": 0}
+
+        async def fn():
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise _sdk_error()
+            return "ok"
+
+        with patch_retry_sleep() as sleep:
+            result = await retry_sdk_call(fn, may_retry=lambda exc: True)
+
+        assert result == "ok"
+        assert sleep.await_count == 1
+
+    async def test_may_retry_is_not_asked_about_a_fault_that_is_not_retryable(
+            self):
+        asked: list[Exception] = []
+
+        async def fn():
+            raise _unknown()
+
+        with patch_retry_sleep():
+            with pytest.raises(ValueError):
+                await retry_sdk_call(
+                    fn, may_retry=lambda exc: asked.append(exc) or True)
+        assert asked == []
+
 
 # ---------------------------------------------------------------------------
 # Hardening: retry-after cap + env validation
