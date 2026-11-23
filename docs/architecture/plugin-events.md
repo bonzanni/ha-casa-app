@@ -52,9 +52,7 @@ and a close of the sentinel alone is suppressed instead of landing in the operat
 Narration written before that closing sentinel on a wake that sent nothing still arrives,
 without the tag: `ack_event` is bookkeeping, not a send (INV-OUT-006, the ruling on
 #1075). If
-the agent never acks — a crash, a bug, a forgetful agent — the ladder simply
-exhausts after six accepted dispatches instead of hanging forever, and the exhaustion note
-tells the operator so. The trade-off is accepted because a missed ack costs promptness,
+the agent never acks — a crash, a bug, a forgetful agent — the ladder simply exhausts once the sixth accepted dispatch has gone an hour (`FINAL_GRACE_S`) without an ack, instead of hanging forever, and the exhaustion note tells the operator so. The trade-off is accepted because a missed ack costs promptness,
 not data: the subscriber's next independent wake still finds the same durable state.
 
 **The spool is a same-uid protocol, not an inter-plugin security boundary** (callbacks
@@ -103,9 +101,7 @@ member that sweep already dropped — only a fresh OPEN, driven by the live rout
 that moment, may re-admit a returning subscriber, and only after a genuine new consent.
 The artifact id hashes repository, revision, subdirectory and name, so returning to a
 revision recomputes its identity; leaving an artifact therefore revokes the subscriber's
-event consents explicitly (`revoke_and_unroute`), as its trigger consents are — on
-`plugin_remove`, and on a `plugin_update` that changes the artifact — and a reinstall or an
-update back asks again (#1657). The reconcile's prune is not relied on: any resolver issue
+event consents explicitly (`revoke_and_unroute`), as its trigger consents are — on `plugin_remove`, on a `plugin_update` that changes the artifact, and in a specialist bundle's sequencer for each owned artifact its swap removed — and a reinstall, an update back or a rollback asks again (#1657, #1671). The reconcile's prune is not relied on: any resolver issue
 in the registry skips it.
 
 What it does not cover: the emitter's own artifact id is deliberately excluded from the
@@ -125,6 +121,11 @@ approval" while the consent message says delivery could not be started. The rege
 runs after the reconcile lock is released and holds the plugin-tools guard, since the report
 lock orders the write and not the computation before it — the trigger and callback consent
 paths do the same.
+
+An Approve takes the card's buttons off at once and writes the outcome after the reconcile it
+fires: enabled only when that reconcile left the subscription delivering; waiting on the
+subscriber's other subscriptions only when their consent is its sole gap; otherwise not active
+yet, naming no reason.
 
 **INV-EV-005**: An ack token, the emission envelope, and the mint payload never reach a log line, a health surface, an operator notice, or a tool reply beyond naming the acked subscriber, and an ack mutates a record only on a live token match at that record's current generation.
 

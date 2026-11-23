@@ -69,8 +69,7 @@ generation refuses a stale caller outright) and by
 re-stamping it. The ladder is `PHASE_OFFSETS = (0s, 5m, 30m, 2h, 6h, 24h)`, anchored on
 the record's own `minted_ts`, budgeted at `MAX_NUDGES = 6` bus-accepted dispatches; a
 bus-rejected attempt spends no budget and instead defers on an escalating capped delay.
-The sixth accepted dispatch's exhaustion is a single conditional write setting
-`status=done, outcome=exhausted, noted=False` together — never three separate writes. The
+The sixth accepted dispatch leaves the record pending with a final due time `FINAL_GRACE_S` (one hour) out, so that wake's turn can still ack; only when that slot passes unacknowledged does the worker exhaust it, in a single conditional write setting `status=done, outcome=exhausted, noted=False` together — never three separate writes — and then runs another pass at once so an event queued behind that wake opens. The
 operator note is then delivered notify-then-mark, exactly like the removal notes: the
 worker's exhaustion scan sends it through the observed notify seam (which raises when the
 Telegram channel is absent or not yet started, rather than false-succeeding) and only a
