@@ -905,13 +905,13 @@ class TestInteractiveEngagementPermitRelease:
         observer end to end."""
         telem = SpecialistTelemetry()
 
-        def _observer(engagement, result_msg):
+        def _observer(engagement, result_msg, cost_usd):
             if getattr(engagement, "kind", "") != "specialist":
                 return
             from tokens import extract_usage
             telem.record_cost(
                 engagement.role_or_type,
-                cost_usd=float(getattr(result_msg, "total_cost_usd", 0.0) or 0.0),
+                cost_usd=cost_usd,
                 usage=extract_usage(result_msg),
             )
 
@@ -924,6 +924,30 @@ class TestInteractiveEngagementPermitRelease:
         assert snap.total_cost_usd == pytest.approx(0.07)
         assert snap.total_input_tokens == 30
 
+    async def test_interactive_cost_is_each_turns_own_not_the_running_total(
+            self, caplog):
+        """#1655: on a long-lived job session the CLI's ``total_cost_usd`` is
+        a running total. Each turn's ``turn_done`` line and the specialist's
+        telemetry get only that turn's cost: three turns charged 0.04, 0.01
+        and 0.01 add up to 0.06, not 0.15. A total below the previous one (a
+        fresh session on the same client) counts in full."""
+        telem = SpecialistTelemetry()
+
+        def _observer(engagement, result_msg, cost_usd):
+            telem.record_cost(engagement.role_or_type, cost_usd=cost_usd,
+                              usage={})
+
+        client = _FakeDriverClient(costs=[0.04, 0.05, 0.06, 0.02])
+        with caplog.at_level(logging.INFO, logger="sdk"):
+            await _run_turns(_engagement("e1", "specialist", "finance"),
+                             client, 4, result_observer=_observer)
+
+        logged = [r.getMessage().split("cost_usd=")[1].split()[0]
+                  for r in caplog.records
+                  if r.name == "sdk" and "turn_done" in r.getMessage()]
+        assert logged == ["0.0400", "0.0100", "0.0100", "0.0200"]
+        assert telem.snapshot("finance").total_cost_usd == pytest.approx(0.08)
+
 
 def _engagement(eid, kind, role):
     from engagement_registry import EngagementRecord
@@ -933,6 +957,26 @@ def _engagement(eid, kind, role):
         started_at=0.0, last_user_turn_ts=0.0,
         completed_at=None, sdk_session_id=None, origin={}, task="t",
     )
+
+
+async def _run_turns(rec, client, n, **driver_kw):
+    """Run *n* turns, one after another, on *rec*'s one job session."""
+    from drivers.in_casa_driver import InCasaDriver
+    try:
+        from tests.turn_scripted_session import attach_session
+    except ImportError:
+        from turn_scripted_session import attach_session
+
+    ended = asyncio.Event()
+    drv = InCasaDriver(on_turn_end=lambda r, res, err: ended.set(), **driver_kw)
+    attach_session(drv, rec, client)
+    try:
+        for i in range(n):
+            ended.clear()
+            drv.submit_casa(rec, f"turn {i}")
+            await asyncio.wait_for(ended.wait(), 5)
+    finally:
+        await drv.cancel(rec)
 
 
 async def _run_one_turn(rec, client, **driver_kw):
@@ -965,17 +1009,20 @@ class _FakeDriverClient(_Session):
     """A job session whose one turn yields an AssistantMessage per entry of
     ``texts`` then a ResultMessage carrying cost/usage."""
 
-    def __init__(self, *, total_cost_usd=None, usage=None, texts=("done",)):
+    def __init__(self, *, total_cost_usd=None, usage=None, texts=("done",),
+                 costs=None):
         self._total_cost_usd = total_cost_usd
         self._usage = usage
         self._texts = list(texts)
+        # One running total per turn, in order; else the same every turn.
+        self._costs = list(costs) if costs is not None else None
 
     async def receive_response(self):
         from claude_agent_sdk import AssistantMessage, TextBlock
         for text in self._texts:
             yield AssistantMessage(content=[TextBlock(text=text)], model="m")
-        yield _mk_result_message(
-            total_cost_usd=self._total_cost_usd, usage=self._usage)
+        total = self._costs.pop(0) if self._costs else self._total_cost_usd
+        yield _mk_result_message(total_cost_usd=total, usage=self._usage)
 
 
 # ---------------------------------------------------------------------------

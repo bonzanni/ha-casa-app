@@ -67,10 +67,12 @@ logger = logging.getLogger(__name__)
 _TERMINAL = frozenset({"completed", "cancelled", "error"})
 
 
-ResultObserver = Callable[[EngagementRecord, ResultMessage], None]
-"""(engagement, ResultMessage) → None — Task 6 (spec §4.6) per-turn cost/usage
-observer. Called synchronously for every ``ResultMessage`` seen on an
-engagement turn; casa_core wires it to feed interactive specialist cost into
+ResultObserver = Callable[[EngagementRecord, ResultMessage, float], None]
+"""(engagement, ResultMessage, cost_usd) → None — Task 6 (spec §4.6) per-turn
+cost/usage observer. Called synchronously for every ``ResultMessage`` seen on
+an engagement turn, with that turn's own cost (the result's
+``total_cost_usd`` is the session's running total, #1655); casa_core wires it
+to feed interactive specialist cost into
 ``SpecialistTelemetry`` (filtering by ``engagement.kind``). Must not raise."""
 
 TurnEndHandler = Callable[[EngagementRecord, ResultMessage, "ErrorKind | None"], None]
@@ -433,6 +435,9 @@ class _JobSession:
     # The CLI reports ``total_cost_usd`` cumulatively for its own process, so
     # the job's cost at a turn end is this plus that.
     cost_base: float = 0.0
+    # That cumulative total at this session's last result: a turn's own cost
+    # is the difference from it (#1655).
+    cost_total: float | None = None
     # When this session last showed activity (``time.time()``; memory only):
     # stamped synchronously by the write that opens a turn and by the reader
     # at every frame of the stream. An open turn therefore always has a time
@@ -1346,10 +1351,14 @@ class InCasaDriver(DriverProtocol):
             done = [t.uuid for t in segment.taken_up if t.journaled]
             if done:
                 job_inbox.remove(rec.id, done)
-            sdk_logging.log_turn_done(result, started_ms=segment.started_ms)
+            total = sdk_logging.result_total_cost(result)
+            cost = sdk_logging.turn_cost(total, session.cost_total)
+            session.cost_total = total
+            sdk_logging.log_turn_done(result, started_ms=segment.started_ms,
+                                      cost_usd=cost)
             if self._result_observer is not None:
                 try:
-                    self._result_observer(rec, result)
+                    self._result_observer(rec, result, cost)
                 except Exception:  # noqa: BLE001
                     logger.warning("result_observer raised for engagement %s",
                                    rec.id[:8], exc_info=True)

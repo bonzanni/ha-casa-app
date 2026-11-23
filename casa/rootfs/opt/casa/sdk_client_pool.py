@@ -103,6 +103,9 @@ class ManagedSdkClient:
         # a stop is too late, and the result means what it says. Cleared when
         # the next turn starts.
         self.result_received = False
+        # The CLI's running ``total_cost_usd`` at this client's last result:
+        # a turn's own cost is the difference from it (#1655).
+        self.cost_total: float | None = None
         self.created_at = monotonic()
         self.last_used = monotonic()
         self._client: Any = None
@@ -218,6 +221,7 @@ class ManagedSdkClient:
         leaves the client warm."""
         from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage
 
+        import sdk_logging
         from error_kinds import (
             ApiErrorTurn, ErrorKind, api_error_kind, result_api_error_kind,
         )
@@ -260,6 +264,15 @@ class ManagedSdkClient:
                     s = getattr(sdk_msg, "session_id", None)
                     if s:
                         self.sid = s
+                    total = sdk_logging.result_total_cost(sdk_msg)
+                    token = sdk_logging.forwarded_turn_cost.set(
+                        sdk_logging.turn_cost(total, self.cost_total))
+                    self.cost_total = total
+                    try:
+                        await on_message(sdk_msg)
+                    finally:
+                        sdk_logging.forwarded_turn_cost.reset(token)
+                    continue
                 await on_message(sdk_msg)
         except asyncio.CancelledError:
             await self._cleanup_after_cancel()

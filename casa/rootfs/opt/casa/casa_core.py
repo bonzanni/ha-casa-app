@@ -3209,13 +3209,13 @@ async def main() -> None:
     # delegations are captured in tools._run_delegated_agent). Only
     # kind="specialist" engagements feed specialist telemetry; executor
     # engagements are out of scope for this counter.
-    def _specialist_result_observer(engagement, result_msg) -> None:
+    def _specialist_result_observer(engagement, result_msg, cost_usd) -> None:
         if getattr(engagement, "kind", "") != "specialist":
             return
         from tokens import extract_usage
         specialist_telemetry.record_cost(
             engagement.role_or_type,
-            cost_usd=float(getattr(result_msg, "total_cost_usd", 0.0) or 0.0),
+            cost_usd=cost_usd,
             usage=extract_usage(result_msg),
         )
 

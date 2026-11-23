@@ -178,14 +178,44 @@ def log_tool_result(
     )
 
 
+def result_total_cost(sdk_msg: ResultMessage) -> float:
+    """The CLI's ``total_cost_usd`` on a result, 0.0 when absent."""
+    return float(getattr(sdk_msg, "total_cost_usd", 0.0) or 0.0)
+
+
+def turn_cost(total: float, previous_total: float | None) -> float:
+    """One turn's cost from the CLI's ``total_cost_usd``, which is a running
+    total for a client's session (``usage`` is per turn). The difference from
+    the previous result on the same client; the full total for the client's
+    first result, and for a total below the previous one (a fresh session on
+    the same client starts its total again), so it is never negative (#1655).
+    """
+    if previous_total is None or total < previous_total:
+        return total
+    return total - previous_total
+
+
+# The cost of the turn whose result a pooled client (``ManagedSdkClient``) is
+# forwarding to its message handler right now. Set around that one call, in
+# the handler's own task, because the handler cannot see the client.
+forwarded_turn_cost: ContextVar[float | None] = ContextVar(
+    "forwarded_turn_cost", default=None,
+)
+
+
 def log_turn_done(
     sdk_msg: ResultMessage,
     *,
     started_ms: float,
+    cost_usd: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
     """INFO ``turn_done turns=N cost_usd=N.NNNN in_tok=N out_tok=N
     cache_read=N cache_write=N ms=N``.
+
+    ``cost_usd`` is this turn's cost, like the token counts beside it: the
+    caller's figure when given, else the one a pooled client is forwarding,
+    else the result's total (a client's first result is its whole cost).
 
     E2 (observability): the cache token fields were omitted, which made the
     cost line unexplainable — a cached prompt shows ``in_tok=3`` yet costs
@@ -193,7 +223,11 @@ def log_turn_done(
     ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` are the
     Anthropic usage keys the SDK forwards."""
     turns = getattr(sdk_msg, "num_turns", 0) or 0
-    cost = float(getattr(sdk_msg, "total_cost_usd", 0.0) or 0.0)
+    cost = cost_usd
+    if cost is None:
+        cost = forwarded_turn_cost.get()
+    if cost is None:
+        cost = result_total_cost(sdk_msg)
     usage = getattr(sdk_msg, "usage", {}) or {}
     in_tok = int(usage.get("input_tokens", 0) or 0)
     out_tok = int(usage.get("output_tokens", 0) or 0)
@@ -300,6 +334,7 @@ def install_sdk_task_noise_filter(loop) -> None:
 
 __all__ = [
     "extract_tool_target",
+    "forwarded_turn_cost",
     "install_sdk_task_noise_filter",
     "log_system_init",
     "log_assistant_message",
@@ -307,6 +342,8 @@ __all__ = [
     "log_tool_result",
     "log_turn_done",
     "make_stderr_logger",
+    "result_total_cost",
     "suppress_structured_voice_sdk_payload_logs",
+    "turn_cost",
     "with_stderr_callback",
 ]
