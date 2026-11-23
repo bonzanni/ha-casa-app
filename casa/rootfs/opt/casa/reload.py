@@ -240,7 +240,6 @@ def _trigger_secret_snapshot(runtime: Any, role: str | None) -> Any:
         return None
     try:
         import resident_trigger_secrets
-        import trigger_reconcile
         cfg = (getattr(runtime, "role_configs", None) or {}).get(role)
         if cfg is None:
             # A specialist is not in `role_configs`. `casa_reload_triggers`
@@ -549,7 +548,7 @@ async def _specialist_roles_dir(runtime: Any) -> str:
     Stale-index fix (Plan 2 review, no GH issue): boot (casa_core.py)
     constructs its own ``InstalledSpecialistIndex`` and publishes it via
     ``specialist_registry.set_active_installed_index`` so admin/inspection
-    reads (``live_installed_specialist_slugs``/``live_collision_slugs``/
+    reads (``live_installed_specialist_slugs``/
     ``get_installed_instance`` — Task-14 handlers) see live state. Every
     install/upgrade/rollback/uninstall + reload path funnels through THIS
     helper on every specialist-tier reload, but until now it only asked
@@ -941,7 +940,7 @@ class _CloseLedger:
         for old_agent, runtime, role, entry in pending:
             try:
                 _start_agent_close(
-                    old_agent, runtime=runtime, role=role, draining_entry=entry)
+                    old_agent, runtime=runtime, draining_entry=entry)
             except Exception:  # noqa: BLE001 — one stand-in must not strand the rest
                 logger.warning(
                     "agent close could not be started at reload exit",
@@ -958,7 +957,7 @@ _CLOSE_LEDGER: contextvars.ContextVar["_CloseLedger | None"] = (
 
 
 def _start_agent_close(
-    old_agent, *, runtime=None, role=None, draining_entry=None,
+    old_agent, *, runtime=None, draining_entry=None,
 ) -> None:
     """Create the background drain task for one replaced Agent, now."""
     aclose = getattr(old_agent, "aclose", None)
@@ -1018,7 +1017,7 @@ def _schedule_agent_close(old_agent, *, runtime=None, role=None) -> None:
     ledger = _CLOSE_LEDGER.get()
     if ledger is not None and ledger.record(old_agent, runtime, role, entry):
         return
-    _start_agent_close(old_agent, runtime=runtime, role=role, draining_entry=entry)
+    _start_agent_close(old_agent, runtime=runtime, draining_entry=entry)
 
 
 _PROMPT_REFRESH_TASKS: set[asyncio.Task] = set()
@@ -1437,7 +1436,7 @@ def _note_retirement_outcome(role: str, failed: list[str]) -> None:
 
 async def _retire_disabled_specialist(
     actions: list[str], runtime: Any, role: str, *, roles_dir: str | None,
-    context: str, suffix: str = "",
+    context: str,
 ) -> None:
     """The FULL retirement a scope that has just READ a specialist's
     ``enabled: false`` from disk owes it (#786): the core teardown, then the
@@ -1455,7 +1454,7 @@ async def _retire_disabled_specialist(
     the rows already earned. The map refresh names its own failure as a
     row (``refresh_role_map_failed``). No step on this path fails silently.
     """
-    await _teardown_disabled_specialist(actions, runtime, role, suffix=suffix)
+    await _teardown_disabled_specialist(actions, runtime, role)
     try:
         await asyncio.to_thread(runtime.specialist_registry.load, roles_dir=roles_dir)
     except Exception as exc:  # noqa: BLE001
@@ -1482,8 +1481,8 @@ async def _retire_disabled_specialist(
             f"but the AgentRegistry rebuild failed, so the agent registry "
             f"and the delegation map may still name it: {exc}",
         ) from exc
-    actions.append(f"rebuild_agent_registry{suffix}")
-    actions.extend(f"{a}{suffix}" for a in _refresh_role_map(runtime, context=context))
+    actions.append("rebuild_agent_registry")
+    actions.extend(_refresh_role_map(runtime, context=context))
 
 
 def _resident_identity_changed(new_cfg: Any, live_cfg: Any) -> bool:
@@ -1751,7 +1750,6 @@ async def _reload_role_after_policies(
     teardown, the cascade still reports the teardown beside the failure.
     """
     # Determine tier
-    base = runtime.config_dir
     agents_dir = runtime.agents_dir
     resident_dir = os.path.join(agents_dir, role)
     specialist_dir = os.path.join(agents_dir, "specialists", role)

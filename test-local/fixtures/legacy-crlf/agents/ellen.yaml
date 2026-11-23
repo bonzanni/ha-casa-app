@@ -1,8 +1,0 @@
-name: "Ellen"
-role: main
-description: "Legacy assistant config from pre-2.1"
-model: opus
-personality: "You are Ellen."
-memory:
-  peer_name: ellen
-  token_budget: 8000

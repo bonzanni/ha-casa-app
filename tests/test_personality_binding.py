@@ -451,57 +451,27 @@ def test_materialize_override_binding_default_args_produce_the_pre_n1c_digest() 
     assert binding.effective_config_digest == EMPTY_CONFIG_DIGEST
 
 
-# --- #205: load_binding validates exactly once ------------------------------
+# --- #205: the shared verifier --------------------------------------------
 
 
-def test_load_binding_reports_a_malformed_file_with_its_path(tmp_path: Path) -> None:
-    """A malformed binding file must raise a path-qualified ValueError.
+def test_verify_binding_record_roundtrips_a_well_formed_binding() -> None:
+    """The happy path verifies the digest and returns the record."""
+    from personality_binding import _raw_from_binding, verify_binding_record
 
-    #205 removed a duplicate ``jsonschema.validate`` from ``load_binding``:
-    ``verify_binding_record`` already validates against the same
-    binding.v1.json. The duplicate ran FIRST and raised a bare
-    ``jsonschema.ValidationError`` carrying no file context, pre-empting the
-    path-prefixed ``ValueError`` the function's own except-block produces —
-    so the caller could never tell WHICH binding file was bad. Guard the
-    surviving contract: one validation, one error shape, with the path.
-    """
-    from personality_binding import atomic_write_binding, load_binding
-
-    path = tmp_path / "binding.yaml"
-    atomic_write_binding(path, _binding())
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    del raw["persona_checksum"]          # schema-required → validation failure
-    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-    with pytest.raises(ValueError, match=str(path)):
-        load_binding(path)
-
-
-def test_load_binding_roundtrips_a_well_formed_file(tmp_path: Path) -> None:
-    """The happy path still verifies the digest and returns the record —
-    dropping the duplicate validate must not drop validation itself."""
-    from personality_binding import atomic_write_binding, load_binding
-
-    path = tmp_path / "binding.yaml"
     original = _binding()
-    atomic_write_binding(path, original)
-
-    assert load_binding(path) == original
+    assert verify_binding_record(_raw_from_binding(original)) == original
 
 
-def test_load_binding_still_rejects_a_tampered_digest(tmp_path: Path) -> None:
+def test_verify_binding_record_rejects_a_tampered_digest() -> None:
     """Schema-valid but integrity-broken: the shared verifier's digest
-    recomputation is the check that must survive the de-duplication."""
-    from personality_binding import atomic_write_binding, load_binding
+    recomputation rejects it."""
+    from personality_binding import _raw_from_binding, verify_binding_record
 
-    path = tmp_path / "binding.yaml"
-    atomic_write_binding(path, _binding())
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw = _raw_from_binding(_binding())
     raw["persona_version"] = "9.9.9"     # schema-valid, digest no longer matches
-    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(ValueError, match="binding_digest"):
-        load_binding(path)
+        verify_binding_record(raw)
 
 
 def test_a_tuple_noop_with_differing_desired_sidecar_bytes_replaces_active_without_rotating(

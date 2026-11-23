@@ -54,15 +54,6 @@ class ItemNotFound(StoreError):
         self.ref = ref
 
 
-class FieldNotFound(StoreError):
-    """For callers that look up one field of an item; the store returns whole items."""
-
-    def __init__(self, item_title: str, label: str):
-        super().__init__(f"item {item_title!r} has no field {label!r}")
-        self.item_title = item_title
-        self.label = label
-
-
 class Ambiguous(StoreError):
     def __init__(self, ref: str, ids: list[str]):
         super().__init__(f"more than one item is called {ref!r}")

@@ -55,7 +55,6 @@ async def _webhook_app(*, secret, targets, clearances=None, bus=None):
         webhook_rate_limiter=RateLimiter(capacity=0, window_s=60.0),
         webhook_secret=secret,
         trigger_registry=_make_registry(targets, clearances),
-        default_role="assistant",
         bus=bus,
         secrets_dir="/data/webhook_secrets",
     )

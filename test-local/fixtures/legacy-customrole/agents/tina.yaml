@@ -1,8 +1,0 @@
-name: "Tina"
-role: voice
-description: "Legacy butler with non-canonical role"
-model: haiku
-personality: "You are Tina."
-memory:
-  peer_name: tina
-  token_budget: 2000

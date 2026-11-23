@@ -441,10 +441,6 @@ _ASK_BUTTON_WORDS_FIT = 32
 # proposal's tombstone lasts (verdict_broker._RETIRE_S), "expired" otherwise.
 _PROPOSAL_SETTLED_PER_CHAT = 256
 
-# A5 · F-MULTI checkbox glyphs (also the multi decoration prefix the resolver
-# validates against — see ``_classify_button_labels``).
-_MULTI_BOX_ON = "☑"
-
 
 def _button_short(item: "str | dict") -> str | None:
     """The agent-supplied ``short`` of an options-list ITEM, iff it is a
@@ -472,7 +468,7 @@ def _floor_captions(n: int) -> list[str]:
 
 
 def _fit_captions(
-    texts: list, own: list, numbered: bool, multi: bool,
+    texts: list, own: list, numbered: bool,
 ) -> "tuple[str | None, list[str]]":
     """One whole-set attempt: ``(None, captions)`` when every text is non-blank,
     the set is pairwise-distinct (casefold) and every caption fits, else
@@ -488,16 +484,13 @@ def _fit_captions(
         return "dup", _floor_captions(n)
     captions = [f"{i + 1} · {t}" if numbered else t for i, t in enumerate(texts)]
     for i, cap in enumerate(captions):
-        decorated = f"{_MULTI_BOX_ON} {cap}" if multi else cap
         if (own[i] and len(texts[i]) > _ASK_BUTTON_WORDS_FIT) or (
-                len(decorated) > _ASK_BUTTON_CAPTION_CAP):
+                len(cap) > _ASK_BUTTON_CAPTION_CAP):
             return "too_long", _floor_captions(n)
     return None, captions
 
 
-def _classify_button_labels(
-    options: list, multi: bool,
-) -> "tuple[str | None, list[str]]":
+def _classify_button_labels(options: list) -> list[str]:
     """Whole-set classification behind ``resolve_button_labels``
     (Sol r2-3/r2-7).
 
@@ -507,14 +500,12 @@ def _classify_button_labels(
     caption is ``n · <text>`` so a summary still points at its numbered full
     option in the body. The set floors to ``Option n`` only when a text is
     blank, two collide (casefold), an own label is wider than
-    ``_ASK_BUTTON_WORDS_FIT``, or a DECORATED caption (``☑ `` prefix on a
-    multi ask) exceeds the 64-char contract (Sol r3-5). If the shorts fail, the
-    plain labels get one try of their own before the floor. Purely mechanical
-    — length and distinctness, never content.
+    ``_ASK_BUTTON_WORDS_FIT``, or a caption exceeds the 64-char contract
+    (Sol r3-5). If the shorts fail, the plain labels get one try of their own
+    before the floor. Purely mechanical — length and distinctness, never
+    content.
 
-    Returns ``(floor_reason, captions)``: ``None`` and the stored captions
-    (undecorated — the checkbox glyph is a render-time concern, D2 item 3), or
-    one of ``blank|dup|too_long`` and the numbered floor. Pure; never mutates
+    Returns the captions, or the numbered floor. Pure; never mutates
     ``options``; never raises.
     """
     shorts = [_button_short(o) for o in options]
@@ -522,15 +513,15 @@ def _classify_button_labels(
     has_short = [s is not None for s in shorts]
     texts = [s if s is not None else lab for s, lab in zip(shorts, labels)]
     own = [not h for h in has_short]
-    reason, captions = _fit_captions(texts, own, any(has_short), multi)
+    reason, captions = _fit_captions(texts, own, any(has_short))
     if reason is not None and any(has_short):
-        alt_reason, alt = _fit_captions(labels, [True] * len(labels), False, multi)
+        alt_reason, alt = _fit_captions(labels, [True] * len(labels), False)
         if alt_reason is None:
-            return None, alt
-    return reason, captions
+            return alt
+    return captions
 
 
-def resolve_button_labels(options: list, multi: bool) -> list[str]:
+def resolve_button_labels(options: list) -> list[str]:
     """THE pure whole-set button-label resolver (spec D2 item 1).
 
     ``options`` items are either a bare ``str`` (full label, no short) or
@@ -541,8 +532,7 @@ def resolve_button_labels(options: list, multi: bool) -> list[str]:
     never mutated, never raises. Run BEFORE ``BROKER.register`` so the
     resolved captions can be placed in static broker meta (wiring: Task A5).
     """
-    _reason, captions = _classify_button_labels(options, multi)
-    return captions
+    return _classify_button_labels(options)
 
 
 def short_option_labels(
@@ -569,7 +559,7 @@ def short_option_labels(
         }
         for i, lab in enumerate(labels)
     ]
-    return resolve_button_labels(options, multi=False)
+    return resolve_button_labels(options)
 
 
 def _canonical_question(question: str, number: int) -> str:
@@ -4104,7 +4094,7 @@ class TelegramChannel(Channel):
         button). The buttons stay: a second tap is a second answer."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         options = question.get("options") or []
-        captions = resolve_button_labels(list(options), multi=False)
+        captions = resolve_button_labels(list(options))
         rows = [[InlineKeyboardButton(
             text=(f"✔ {captions[i]}" if i == index else str(captions[i])),
             callback_data=job_question_callback(rec.id, qid, i))]

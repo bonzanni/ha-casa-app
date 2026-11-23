@@ -35,10 +35,6 @@ class McpServerRegistry:
             "headers": headers,
         }
 
-    def register_sdk(self, name: str, server_config: dict[str, Any]) -> None:
-        """Register an MCP server from a raw config dict."""
-        self._servers[name] = server_config
-
     def register_sdk_factory(self, name: str, factory: SdkFactory) -> None:
         """Register a role-aware SDK server configuration factory."""
         self._sdk_factories[name] = factory
@@ -61,11 +57,6 @@ class McpServerRegistry:
             self._role_surface_digests[(name, role)] = surface_digest
         else:
             self._role_surface_digests.pop((name, role), None)
-
-    def unregister_role_sdk(self, name: str, role: str) -> None:
-        """Remove a role-specific SDK server override if present."""
-        self._role_servers.pop((name, role), None)
-        self._role_surface_digests.pop((name, role), None)
 
     def role_surfaces(
         self,

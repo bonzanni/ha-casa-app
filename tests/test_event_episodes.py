@@ -148,7 +148,6 @@ def wired(tmp_path, monkeypatch):
     monkeypatch.setattr(ee, "_worker_task", None)
     monkeypatch.setattr(ee, "_kick", None)
     monkeypatch.setattr(ee, "_now", state.now)
-    ee._pending_hints.clear()
 
     state.wire()
     try:
@@ -562,16 +561,6 @@ async def test_recovery_never_raises(wired, monkeypatch):
     monkeypatch.setattr(wired.spool, "recovery_pass", boom)
     await ee.recovery(boot=True)          # must not propagate
     assert ee._kick.is_set()
-
-
-def test_kick_is_o1_and_touches_no_spool(wired, monkeypatch):
-    def _boom(*a, **k):
-        raise AssertionError("kick touched the spool")
-
-    monkeypatch.setattr(ee, "_get_spool", _boom)
-    ee.kick(EMITTER, EVENT)
-    assert (EMITTER, EVENT) in ee._pending_hints
-    assert ee._kick is not None and ee._kick.is_set()
 
 
 def test_kick_all_sets_the_wake_event(wired):

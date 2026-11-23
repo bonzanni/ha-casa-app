@@ -33,13 +33,11 @@ from config import (
     TTSConfig,
     VoiceConfig,
     load_yaml_with_env,
-    resolve_model,
     _substitute_env,
 )
 from policies import PolicyLibrary, render_disclosure_section
 from role_artifact import RoleArtifactSource, load_role_artifact
 from role_slot import (
-    EMPTY_CONFIG_DIGEST,
     FIXED_RESIDENT_SLOTS,
     _ha_model_options,
     materialize_role,
@@ -1062,7 +1060,6 @@ def _build_runtime_fields(
     cfg.memory = MemoryConfig(
         token_budget=int(memory.get("token_budget", 4000)),
         read_strategy=memory.get("read_strategy", "per_turn"),
-        cross_peer_token_budget=int(memory.get("cross_peer_token_budget", 2000)),
     )
 
     session = runtime.get("session") or {}
@@ -1512,7 +1509,7 @@ def _activate_resident_binding(
 
 def load_all_agents(
     agents_dir: str, *, policies: PolicyLibrary | None,
-    roles_dir: str | None = None, bindings_dir: str | None = None,
+    roles_dir: str | None = None,
 ) -> dict[str, AgentConfig]:
     """Walk *agents_dir* for resident directories.
 
@@ -1521,8 +1518,7 @@ def load_all_agents(
     the agent role. Raises ``LoadError`` on the first malformed agent —
     strict-mode from day one.
 
-    ``roles_dir``/``bindings_dir`` — see ``load_agent_from_dir``; propagated
-    unchanged.
+    ``roles_dir`` — see ``load_agent_from_dir``; propagated unchanged.
     """
     found: dict[str, AgentConfig] = {}
     if not os.path.isdir(agents_dir):
@@ -1537,7 +1533,7 @@ def load_all_agents(
                 f"is a directory; flat YAML files are no longer supported"
             )
         cfg = load_agent_from_dir(
-            path, policies=policies, roles_dir=roles_dir, bindings_dir=bindings_dir,
+            path, policies=policies, roles_dir=roles_dir,
         )
         found[cfg.role] = cfg
 
@@ -1657,20 +1653,18 @@ CONFIGURATOR_CWD = "/config"
 CONFIGURATOR_NAME = "Configurator"
 
 
-def load_configurator(
-    *, roles_dir: str | None = None, configurator_dir: str | None = None,
-) -> AgentConfig:
+def load_configurator() -> AgentConfig:
     """Build the configurator's ``AgentConfig`` from the image: kind
     ``executor``, run as a delegate through the specialist builder with
     ``cwd=/config``, its hooks from the role artifact's ``hooks.pre_tool_use``
     and its system prompt from ``prompt.md``. Raises :class:`LoadError`."""
-    artifact = _load_executor_role_artifact(CONFIGURATOR_ROLE, roles_dir)
+    artifact = _load_executor_role_artifact(CONFIGURATOR_ROLE, None)
     role = artifact.role
     try:
         role_slot_value = materialize_role(source=artifact, options=_ha_model_options())
     except Exception as exc:  # noqa: BLE001 — one typed error for the caller
         raise LoadError(f"configurator: role artifact invalid: {exc}") from exc
-    prompt_path = os.path.join(configurator_dir or CONFIGURATOR_DIR, "prompt.md")
+    prompt_path = os.path.join(CONFIGURATOR_DIR, "prompt.md")
     try:
         with open(prompt_path, encoding="utf-8") as fh:
             prompt = fh.read()

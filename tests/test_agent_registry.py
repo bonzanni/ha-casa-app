@@ -48,18 +48,6 @@ def test_role_to_name_unknown_returns_role_itself():
     assert reg.role_to_name("ghost") == "ghost"
 
 
-def test_all_known_returns_residents_and_specialists_with_tier():
-    reg = AgentRegistry.build(
-        residents={"assistant": _cfg("assistant", "Ellen", card="primary")},
-        specialists={"finance": _cfg("finance", "Alex", card="money")},
-    )
-    known = {k.role: k for k in reg.all_known()}
-    assert known["assistant"].name == "Ellen"
-    assert known["assistant"].tier == "resident"
-    assert known["assistant"].card == "primary"
-    assert known["finance"].tier == "specialist"
-
-
 def test_cross_tier_role_collision_resident_wins(caplog):
     """#343: a specialist sharing a resident's role must NOT silently
     overwrite it — boot refuses this outright (_build_role_registry

@@ -106,11 +106,6 @@ def retirement_clause(
     return _resolve(kind, reason, expired_clause)[1]
 
 
-def is_expiry(kind: str | None, reason: str | None) -> bool:
-    """Did this question run out of time, as opposed to being retired?"""
-    return _resolve(kind, reason, DEFAULT_EXPIRED_CLAUSE)[0] is _EXPIRED
-
-
 def retired_body(
     body: str, kind: str | None, reason: str | None, *,
     expired_clause: str = DEFAULT_EXPIRED_CLAUSE,

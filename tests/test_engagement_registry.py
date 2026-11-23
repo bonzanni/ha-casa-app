@@ -255,9 +255,8 @@ class TestRegistryStateTransitions:
         rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         await reg.mark_idle(rec.id)
         assert rec.status == "idle"
-        await reg.update_user_turn(rec.id, ts=3000.0)
+        assert reg.begin_turn_delivery(rec.id) is True
         assert rec.status == "active"
-        assert rec.last_user_turn_ts == 3000.0
 
     async def test_persist_session_id(self, tmp_path):
         from engagement_registry import EngagementRegistry
@@ -444,7 +443,7 @@ class TestRegistryStateTransitions:
         reg = EngagementRegistry(tombstone_path=str(path))
         await reg.load()
         assert reg.get("b" * 32) is not None
-        await reg.update_user_turn("b" * 32, 3000.0)
+        await reg.mark_idle("b" * 32)
         row = json.loads(path.read_text())[0]
         assert "last_idle_reminder_ts" not in row
         assert "procedural_epoch" not in row
@@ -557,7 +556,7 @@ class TestTombstoneAtomicity:
         monkeypatch.setattr(atomic_io.os, "replace", boom)
         # _write_tombstone_locked swallows the exception (logs a warning), so
         # the mutation call itself must not raise — but disk must be untouched.
-        await reg.update_user_turn(rec.id, ts=time.time())
+        await reg.mark_idle(rec.id)
 
         on_disk = json.loads(tombstone.read_text(encoding="utf-8"))
         assert on_disk == first  # prior tombstone intact, not truncated
@@ -844,7 +843,7 @@ class TestTombstoneWriteSettlesOnCancel:
             done.set()
 
         monkeypatch.setattr(reg, "_write_tombstone", slow_write)
-        task = asyncio.ensure_future(reg.update_user_turn(rec.id, 2000.0))
+        task = asyncio.ensure_future(reg.mark_idle(rec.id))
         await asyncio.sleep(0.05)      # write is blocked in the thread
         task.cancel()
         await asyncio.sleep(0.05)
@@ -862,9 +861,8 @@ class TestBeginTurnDelivery:
     run against a record boot reconcile had rewritten `active→idle`: the
     bridge grant-gate binds only `active`, so every non-terminal casa tool
     that turn called was refused `tool_not_granted`, including tools the
-    engagement genuinely holds. Nothing on the redelivery path called
-    `update_user_turn`, which is what the ordinary Telegram arrival path uses
-    to flip the record on the way in.
+    engagement genuinely holds. Nothing on the redelivery path flipped the
+    record on the way in.
     """
 
     async def _mk(self, tmp_path, name="e.json"):
@@ -896,9 +894,8 @@ class TestBeginTurnDelivery:
 
     async def test_reactivation_does_not_restamp_the_user_turn_clock(
             self, tmp_path):
-        """A redelivery is not a new user turn. Re-stamping the clock (which
-        is why `update_user_turn` is NOT reused) would push the idle sweep's
-        suspend threshold out by the age of the engagement on every
+        """A redelivery is not a new user turn. Re-stamping the clock would
+        push the idle sweep's suspend threshold out by the age of the engagement on every
         restart."""
         reg, rec = await self._mk(tmp_path)
         await reg.mark_idle(rec.id)

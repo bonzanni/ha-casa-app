@@ -196,8 +196,8 @@ class TestSuccess:
         assert kicks == [(PLUGIN, callback_spool.state_hash(STATE))]
 
     async def test_nudge_seam_delegates_to_episode_kick(self, monkeypatch):
-        # The nudge seam delegates to callback_episodes.kick: it records an
-        # in-memory hint and signals the worker, touching NO durable state
+        # The nudge seam delegates to callback_episodes.kick: it signals the
+        # worker, touching NO durable state
         # (request-path O(1)). Reaching for the spool at all — the only
         # filesystem the module has since v0.147 retired its JSON store —
         # would prove otherwise.
@@ -205,11 +205,11 @@ class TestSuccess:
         monkeypatch.setattr(
             callback_episodes, "_get_spool",
             lambda *a, **k: pytest.fail("kick reached for the spool"))
-        callback_episodes._pending_hints.clear()
+        wake = asyncio.Event()
+        monkeypatch.setattr(callback_episodes, "_kick", wake)
         h = "0" * 64
         assert callback_http._nudge(PLUGIN, h) is None
-        assert (PLUGIN, h) in callback_episodes._pending_hints
-        callback_episodes._pending_hints.clear()
+        assert wake.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -1068,11 +1068,6 @@ class TestLogHygiene:
                  if r.name == callback_http.logger.name]
         assert any("outcome=ok" in line and EFFECTIVE in line
                    for line in lines)
-
-    async def test_reason_enum_is_the_spec_set(self):
-        assert callback_http.REASONS == frozenset({
-            "ok", "unknown_name", "bad_state", "no_pending", "expired",
-            "result_exists", "write_failed"})
 
     @pytest.mark.parametrize("raw,reason", [
         ("state=" + "n" * 22, "no_pending"),

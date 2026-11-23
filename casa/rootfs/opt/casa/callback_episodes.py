@@ -61,10 +61,10 @@ the artifacts themselves; this module owns only the delivery half of it:
   durable backstop is the deferral streak in the attempt file.
 
 **Request-path discipline.** :func:`kick` is O(1) and touches no file: it
-records an in-memory hint and signals the worker. Correctness never depends
-on the hint — the attempt ledger is the truth and
+signals the worker. Correctness never depends on the kick — the attempt
+ledger is the truth and
 :func:`callback_spool.CallbackSpool.attempts_pass` re-derives it every pass —
-so a hint lost to a crash converges rather than dropping the flow.
+so a kick lost to a crash converges rather than dropping the flow.
 """
 from __future__ import annotations
 
@@ -106,11 +106,6 @@ _kick: asyncio.Event | None = None
 #: alone. Non-durable by construction: the durable schedule is in the ledger,
 #: and every pass recomputes this from it.
 _next_due: float | None = None
-
-# In-memory, non-durable request-path hint set: kick() appends here (O(1)) and
-# the worker drains it. Correctness never depends on it — the attempt ledger is
-# the backstop — so a hint lost to a crash converges on the next pass.
-_pending_hints: set[tuple[str, str]] = set()
 
 # #532: removal-note filenames whose DM was SENT but whose durable mark then
 # failed — later passes retry only the mark (see _process_removal_records).
@@ -155,12 +150,10 @@ def configure(*, dispatch, resolve_registry_entry, get_spool,
 # ---------------------------------------------------------------------------
 
 def kick(plugin: str, result_hash: str) -> None:
-    """Signal the worker that a result landed. Records a non-durable in-memory
-    hint and sets the wake event — no spool I/O — so the HTTP handler's
-    per-request work stays O(1). The publish that preceded this kick already
-    wrote the durable ``result_ready`` attempt; the hint only saves the worker
-    a wait."""
-    _pending_hints.add((plugin, result_hash))
+    """Signal the worker that a result landed. Sets the wake event — no spool
+    I/O — so the HTTP handler's per-request work stays O(1). The publish that
+    preceded this kick already wrote the durable ``result_ready`` attempt; the
+    kick only saves the worker a wait."""
     if _kick is not None:
         _kick.set()
 
@@ -343,7 +336,6 @@ async def _worker_pass() -> None:
     convert removal records into operator notes, then recompute the wake.
     Each nudge is isolated so one failure never strands the rest."""
     global _next_due
-    _pending_hints.clear()
     spool = _get_spool() if _get_spool is not None else None
     if spool is None:
         _next_due = None

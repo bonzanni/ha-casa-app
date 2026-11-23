@@ -245,8 +245,8 @@ async def test_the_conversation_has_the_specialists_surface_not_the_residents(wo
     The conversation adds only what a conversation carries: its resume and
     the read-evidence hooks."""
     conversation = await world.alex._build_options(
-        channel="telegram", channel_key=ALEX_KEY, is_fresh=True,
-        resume_sid="sid-x", user_text="hi")
+        channel="telegram", channel_key=ALEX_KEY,
+        resume_sid="sid-x")
     task = tools_mod._build_specialist_options(world.alex.config)
 
     assert _surface(conversation) == _surface(task)

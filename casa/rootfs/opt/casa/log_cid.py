@@ -61,28 +61,6 @@ def new_cid() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Filter — injects cid_var.get() onto every record
-# ---------------------------------------------------------------------------
-
-
-class CidFilter(logging.Filter):
-    """Inject ``record.cid`` from the current :data:`cid_var`.
-
-    Standalone utility. :func:`install_logging` does NOT attach this to
-    the root logger — it uses :func:`logging.setLogRecordFactory`
-    instead, which tags records at creation (before handlers or
-    filters run). ``CidFilter`` remains available for callers that
-    construct records manually and want to re-inject the current cid.
-    Always returns ``True`` — this filter only mutates, it never drops
-    records.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.cid = str(cid_var.get())
-        return True
-
-
-# ---------------------------------------------------------------------------
 # Formatters
 # ---------------------------------------------------------------------------
 

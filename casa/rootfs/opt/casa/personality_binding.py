@@ -236,8 +236,8 @@ def _raw_from_binding(record: BindingRecord) -> dict[str, object]:
 
 def verify_binding_record(raw: dict) -> BindingRecord:
     """The ONE shared verification path: recompute the digest from every OTHER
-    field and reject a mismatch. Both load_binding and InstanceDir's tuple loader
-    call this — a binding's on-disk integrity is checked in exactly one place.
+    field and reject a mismatch. InstanceDir's tuple loader
+    calls this — a binding's on-disk integrity is checked in exactly one place.
 
     Also schema-validates ``raw`` against binding.v1.json before field access.
     This is what turns a tampered/malformed nested binding (e.g. inside an
@@ -273,28 +273,6 @@ def verify_binding_record(raw: dict) -> BindingRecord:
     if record.binding_digest != expected:
         raise ValueError("binding_digest does not match canonical binding inputs")
     return record
-
-
-def load_binding(path: Path) -> BindingRecord:
-    """#205: the standalone binding reader. ``verify_binding_record`` already
-    schema-validates against binding.v1.json, so the second validate that used
-    to sit here was pure duplication — and it raised a bare
-    ``jsonschema.ValidationError`` with no file context, pre-empting the
-    path-qualified ``ValueError`` below. One validation, one error shape."""
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    try:
-        return verify_binding_record(raw)
-    except ValueError as exc:
-        raise ValueError(f"{path}: {exc}") from exc
-
-
-def atomic_write_binding(path: Path, record: BindingRecord) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    payload = yaml.safe_dump(_raw_from_binding(record), sort_keys=False)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(payload, encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
 
 
 @dataclass(frozen=True, slots=True)

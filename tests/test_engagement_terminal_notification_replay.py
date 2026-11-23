@@ -1097,7 +1097,7 @@ async def test_retention_ages_only_a_usable_time(tmp_path, value, extra, kept):
     await reg.load()
 
     # A best-effort write through a real mutator: it must not raise.
-    await reg.update_user_turn("anchor", time.time())
+    await reg.mark_idle("anchor")
 
     ids = [r["id"] for r in _rows(tombstone)]
     assert ids.count("anchor") == 1

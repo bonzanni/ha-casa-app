@@ -759,8 +759,8 @@ def classify_journal(path: Path) -> "tuple[str, str | None, dict | None]":
     """Classify one file in the ops directory as `(verdict, slug, payload)`.
 
     This is the single implementation of "what would boot do with this file":
-    `reconcile_boot` dispatches on the verdict, and `replayable_tuple_files`
-    reads the one verdict that restores anything. Keeping both on this
+    `reconcile_boot` dispatches on the verdict, and the persona reference scan
+    (persona_install) reads the one verdict that restores anything. Keeping both on this
     function is the point — an independent copy of the rule is what let the
     reference scan refuse removals for journals boot would only quarantine.
 
@@ -868,27 +868,6 @@ def recovery_debt(*, ops_dir: Path = OPS_DIR) -> "list[dict]":
         if verdict in DEBT_VERDICTS:
             rows.append({"slug": slug, "journal": path.name, "verdict": verdict})
     return rows
-
-
-def replayable_tuple_files(path: Path) -> "dict[str, Any] | None":
-    """#543: the captured tuple files this journal file would ACTUALLY have
-    restored, or None when it would restore nothing.
-
-    Only `JOURNAL_REPLAY` restores anything: a complete journal is pruned
-    without rollback, and an unparseable or invalid one is quarantined without
-    rollback (a quarantine that fails to persist retains the file for the next
-    boot to retry, still without restoring it).
-
-    The bytes returned are the CAPTURE. `BundleTxn.rollback_disk` re-runs the
-    #372 capture sanitizer before writing them, which can only strip or
-    tombstone a captured tuple, never introduce a persona reference that the
-    capture did not already carry — so for the reference scan this is exact or
-    over-inclusive, and over-inclusive means "refuses a removal", never
-    "permits one"."""
-    verdict, _slug, payload = classify_journal(path)
-    if verdict != JOURNAL_REPLAY:
-        return None
-    return dict(payload["before"]["tuple_files"])
 
 
 def _valid_payload(payload: Any, slug: str) -> bool:

@@ -109,10 +109,6 @@ class AgentRegistry:
         advertising / acting on an agent that is not actually callable."""
         return role in self._role_to_known
 
-    def all_known(self) -> list[KnownAgent]:
-        return list(self._role_to_known.values())
-
-
 def keeps_own_conversation(role: str) -> bool:
     """Whether the loaded specialist *role* keeps a conversation of its own:
     its committed component declares its own chat (``own_voice.declared``).

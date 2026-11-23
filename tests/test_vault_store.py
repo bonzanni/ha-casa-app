@@ -21,7 +21,6 @@ import vault_store
 from vault_store import (
     Ambiguous,
     Field,
-    FieldNotFound,
     Item,
     ItemNotFound,
     KeyProblem,
@@ -400,11 +399,9 @@ def test_a_tag_holding_a_separator_is_refused(store):
 
 
 def test_the_errors_are_one_family():
-    for error in (ItemNotFound("r"), FieldNotFound("Gmail", "nope"),
+    for error in (ItemNotFound("r"),
                   Ambiguous("r", ["a", "b"]), KeyProblem("k")):
         assert isinstance(error, StoreError)
-    missing = FieldNotFound("Gmail", "nope")
-    assert (missing.item_title, missing.label) == ("Gmail", "nope")
 
 
 # -- the file and its key ---------------------------------------------------

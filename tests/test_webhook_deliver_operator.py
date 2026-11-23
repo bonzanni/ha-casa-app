@@ -273,7 +273,7 @@ async def _ingress(deliver: str | None, payload: dict | None = None,
     handler = _make_webhook_handler(
         webhook_rate_limiter=RateLimiter(capacity=0, window_s=60.0),
         webhook_secret=GLOBAL_SECRET, trigger_registry=_registry_with(deliver),
-        default_role=ROLE, bus=bus, route_for=route_for)
+        bus=bus, route_for=route_for)
     app = web.Application()
     app.router.add_post("/webhook/{name}", handler)
     body = json.dumps(payload if payload is not None

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.382.1] - 2026-11-23
+
+### Removed
+
+- Internal code that nothing used any more: functions, parameters, constants and imports left behind by earlier removals, and old test fixtures and helper scripts. Nothing you can see or configure changes.
+
 ## [0.382.0] - 2026-11-23
 
 ### Added

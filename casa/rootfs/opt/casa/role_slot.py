@@ -56,14 +56,6 @@ class RoleSlot:
     checksum: str
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutorIdentity:
-    """Spec §2.3: an executor's identity is role-only — no persona, no binding."""
-    stable_agent_id: str
-    role_checksum: str
-    effective_config_digest: str
-
-
 def _ha_model_options(env: Mapping[str, str] = os.environ) -> Mapping[str, str]:
     def value(name: str, default: str) -> str:
         raw = env.get(name)
@@ -179,18 +171,4 @@ def materialize_role(*, source: RoleArtifactSource, options: Mapping[str, str]) 
         role_id=str(role["id"]), kind=str(role["kind"]), slot=str(role["slot"]),
         mission=str(role["mission"]), resolved_model=resolved,
         normalized=MappingProxyType(normalized), doctrine=doctrine, checksum=checksum,
-    )
-
-
-def compute_executor_identity(
-    *, role: RoleSlot, effective_config_digest: str,
-) -> ExecutorIdentity:
-    """Spec §2.3's role-only identity triple. Plan 1 executors carry no
-    operator-configurable non-secret settings, so callers pass this module's own
-    ``EMPTY_CONFIG_DIGEST`` (defined above) today — the seam is real (a future
-    executor config feature substitutes a real digest here without any interface
-    change), not a stub that must be revisited."""
-    return ExecutorIdentity(
-        stable_agent_id=role.role_id, role_checksum=role.checksum,
-        effective_config_digest=effective_config_digest,
     )

@@ -117,7 +117,6 @@ DELIVERY_DIR = "delivery"
 REMOVALS_DIR = ".removals"
 DIR_ID_NAME = ".dir-id"
 READY_NAME = "ready.json"
-INDEX_DIR = ".index"
 PART_PREFIX = ".part-"
 CORRUPT_PREFIX = ".corrupt-"
 REPLACE_TEMP_INFIX = ".tmp-"
@@ -562,8 +561,8 @@ def _strict_replace_at(name: str, dir_fd: int, data: bytes, *, parent_fd: int,
 
 
 def _replace_json(name: str, dir_fd: int, payload: dict, what: str) -> None:
-    """Best-effort replacing publish — for the advisory ``ready.json`` and
-    index entries only. Delivery-record upserts do NOT go through here
+    """Best-effort replacing publish — for the advisory ``ready.json``
+    only. Delivery-record upserts do NOT go through here
     (I3 fix): they use :meth:`EventSpool._write_delivery`'s strict-durable
     path instead, because OPEN's ``all_written`` gate and REPAIR's
     ``fan_out_complete`` check key on a delivery write's success meaning
@@ -736,7 +735,7 @@ class EventSpool:
                 out.append(name)
         return sorted(out)
 
-    # -- readiness marker + discovery index (mirror callback_spool) -----
+    # -- readiness marker (mirror callback_spool) -----
 
     def write_ready(self, emitter: str, payload: dict) -> None:
         with self._lock:
@@ -777,100 +776,6 @@ class EventSpool:
                 return _read_marker_at(READY_NAME, efd)
             finally:
                 os.close(efd)
-
-    def _index_fd(self, *, create: bool) -> int:
-        if create and self._mkdir(INDEX_DIR, self._root_fd):
-            _fsync(self._root_fd, str(self.root))
-        fd = _open_dir(INDEX_DIR, self._root_fd)
-        if create:
-            self._chmod_dir(fd, INDEX_DIR)
-        return fd
-
-    def write_index_entry(self, key: str, payload: dict) -> None:
-        # Minor-5: `key` is caller-supplied and interpolated directly into
-        # a path component below — validated exactly like every other
-        # identity this module builds a path from (mirrors
-        # callback_spool.py:1250's discipline, adapted to this module's
-        # opaque-caller-supplied-key shape rather than a hash it mints
-        # itself).
-        if not _safe_component(key):
-            raise ValueError(f"unsafe index key {key!r}")
-        with self._lock:
-            self._require_open()
-            ifd = self._index_fd(create=True)
-            try:
-                _replace_json(f"{key}.json", ifd, payload, INDEX_DIR)
-            finally:
-                os.close(ifd)
-
-    def read_index_marker(self, key: str) -> Marker:
-        with self._lock:
-            if self._closed or not _safe_component(key):
-                return Marker(MarkerState.ABSENT)
-            try:
-                ifd = _open_dir(INDEX_DIR, self._root_fd)
-            except FileNotFoundError:
-                return Marker(MarkerState.ABSENT)
-            except OSError:
-                return Marker(MarkerState.INVALID)
-            try:
-                return _read_marker_at(f"{key}.json", ifd)
-            finally:
-                os.close(ifd)
-
-    def delete_index_entry(self, key: str) -> bool:
-        if not _safe_component(key):
-            raise ValueError(f"unsafe index key {key!r}")
-        with self._lock:
-            self._require_open()
-            try:
-                ifd = self._index_fd(create=False)
-            except FileNotFoundError:
-                return True
-            except OSError:
-                return False
-            try:
-                gone = _retire_marker_entry(f"{key}.json", ifd)
-                _fsync(ifd, INDEX_DIR)
-                return gone
-            finally:
-                os.close(ifd)
-
-    def index_keys(self) -> list:
-        with self._lock:
-            if self._closed:
-                return []
-            try:
-                ifd = _open_dir(INDEX_DIR, self._root_fd)
-            except OSError:
-                return []
-            try:
-                out = []
-                for name in _listdir_quiet(ifd):
-                    if _is_replace_temp(name):
-                        continue
-                    if name.endswith(".json"):
-                        out.append(name[:-5])
-                return sorted(out)
-            finally:
-                os.close(ifd)
-
-    def published_emitters(self) -> list:
-        with self._lock:
-            if self._closed:
-                return []
-            out = []
-            for emitter in self._emitter_dirs():
-                try:
-                    efd = self._emitter_fd(emitter)
-                except (OSError, ValueError):
-                    continue
-                try:
-                    if _lstat_quiet(READY_NAME, efd) is not None:
-                        out.append(emitter)
-                finally:
-                    os.close(efd)
-            return out
 
     # -- generation-state I/O --------------------------------------------
 
@@ -1758,7 +1663,6 @@ class EventSpool:
                                        "failed", emitter, exc_info=True)
                 finally:
                     os.close(efd)
-            self._sweep_index_temps(now, report)
             self._drop_removed_subscribers(to_drop, deletable, now, report)
         return report
 
@@ -1779,7 +1683,6 @@ class EventSpool:
                 self._sweep_state_temps(efd, now, report)
             finally:
                 os.close(efd)
-        self._sweep_index_temps(now, report)
 
     def _sweep_replace_temps(self, fd: int, now: float,
                              report: SweepReport) -> bool:
@@ -1822,22 +1725,6 @@ class EventSpool:
                 _fsync(sfd, STATE_DIR)
         finally:
             os.close(sfd)
-
-    def _sweep_index_temps(self, now: float, report: SweepReport) -> None:
-        """Minor-4: ``write_index_entry`` stages in ``.index/`` — never
-        covered by any existing sweep phase. Once per whole pass (the
-        index is spool-root-level, not per-emitter); a safe no-op before
-        the directory is ever created (``.index/`` is created lazily on
-        first write, mirrors ``.removals/``)."""
-        try:
-            ifd = _open_dir(INDEX_DIR, self._root_fd)
-        except OSError:
-            return
-        try:
-            if self._sweep_replace_temps(ifd, now, report):
-                _fsync(ifd, INDEX_DIR)
-        finally:
-            os.close(ifd)
 
     def _sweep_part_temps(self, efd: int, now: float, report: SweepReport) -> None:
         try:

@@ -4,7 +4,6 @@ import unicodedata
 from typing import Mapping
 
 RENDERER_VERSION = "casa-persona-renderer/1.0.0"
-TOKEN_ESTIMATOR_ID = "casa-char4/1.0.0"
 
 AXES = (
     "warmth", "formality", "candor", "attunement",

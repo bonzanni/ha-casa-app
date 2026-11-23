@@ -6,18 +6,15 @@ Round 3's per-option ELISION LADDER (``_elide_one`` / ``_resolve_label_collision
 elision ladder entirely (garbled, inconsistent — the '1 · A —…MCP…MCPB' failure)").
 Labels are now MODEL-generated (the agent supplies an optional ``short`` per
 option) and resolved with WHOLE-SET semantics: either EVERY option has a usable
-short (non-blank after strip, pairwise-distinct, and whose final DECORATED
+short (non-blank after strip, pairwise-distinct, and whose final
 caption fits the 64-char product contract), in which case the whole set renders
 ``n · <short>`` verbatim — or the WHOLE set floors to ``Option 1``, ``Option 2``,
 … Never mixed (some real shorts + some derived/floored), never mutated, never a
 rejection.
 
 ``options`` items are either a bare ``str`` (full label, no short) or
-``{"label": str, "short": ...}``. The DECORATED caption the resolver validates
-is ``f"{i+1} · {short}"`` for a single-select ask, or ``f"☑ {i+1} · {short}"``
-for a multi ask (the toggle-many keyboard prepends the checkbox glyph to the
-stored caption) — so the SAME short can pass for single-select and fail for
-multi at the exact same length (Sol r3-5's decoration-budget-is-an-input point).
+``{"label": str, "short": ...}``. The caption the resolver validates
+is ``f"{i+1} · {short}"``.
 """
 
 from __future__ import annotations
@@ -39,21 +36,8 @@ def test_all_shorts_usable_returns_verbatim_captions() -> None:
         {"label": "Python MCP server via a venv install", "short": "Py-venv"},
         {"label": "A curl-based install skill", "short": "curl-skill"},
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "1 · Py-MCPB", "2 · Py-venv", "3 · curl-skill",
-    ]
-
-
-def test_all_shorts_usable_multi_also_verbatim_undecorated() -> None:
-    # The RETURNED caption is always the undecorated stored form (``n ·
-    # <short>``) even for a multi ask — the ☐/☑ glyph is a separate, mutable
-    # render-time concern (D2 item 3), never part of the persisted caption.
-    options = [
-        {"label": "Python MCP server, packaged as MCPB", "short": "Py-MCPB"},
-        {"label": "A curl-based install skill", "short": "curl-skill"},
-    ]
-    assert resolve_button_labels(options, multi=True) == [
-        "1 · Py-MCPB", "2 · curl-skill",
     ]
 
 
@@ -72,7 +56,7 @@ def test_non_blank_short_with_surrounding_whitespace_renders_verbatim() -> None:
         {"label": "Configure the server", "short": "  Setup  "},
         {"label": "Tear the server down", "short": "Teardown"},
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "1 ·   Setup  ", "2 · Teardown",
     ]
 
@@ -85,7 +69,7 @@ def test_distinctness_uses_raw_short_not_stripped() -> None:
         {"label": "First", "short": "Setup"},
         {"label": "Second", "short": " Setup "},
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "1 · Setup", "2 ·  Setup ",
     ]
 
@@ -96,7 +80,7 @@ def test_length_check_uses_raw_short_floors_when_padding_overflows() -> None:
     # stripped length check (60 → decorated 64) would have WRONGLY passed.
     short = "s" * 60 + "    "
     options = [{"label": "full label text, far too wide for one button", "short": short}]
-    assert resolve_button_labels(options, multi=False) == ["Option 1"]
+    assert resolve_button_labels(options) == ["Option 1"]
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +94,7 @@ def test_one_blank_short_floors_whole_set() -> None:
         {"label": "Python MCP server via a venv install", "short": "   "},
         {"label": "A curl-based install skill for the server", "short": "curl"},
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "Option 1", "Option 2", "Option 3",
     ]
 
@@ -126,7 +110,7 @@ def test_duplicate_shorts_floor_whole_set() -> None:
         {"label": "Python MCP server via a venv install", "short": "Setup"},
         {"label": "A curl-based install skill for the server", "short": "curl"},
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "Option 1", "Option 2", "Option 3",
     ]
 
@@ -137,7 +121,7 @@ def test_duplicate_shorts_case_insensitive_floor() -> None:
         {"label": "Python MCP server, packaged as MCPB", "short": "Setup"},
         {"label": "Python MCP server via a venv install", "short": "setup"},
     ]
-    assert resolve_button_labels(options, multi=False) == ["Option 1", "Option 2"]
+    assert resolve_button_labels(options) == ["Option 1", "Option 2"]
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +136,12 @@ def test_non_string_short_treated_as_absent_uses_own_label() -> None:
         {"label": "Python venv install", "short": "Py-venv"},
         {"label": "curl install skill", "short": 7},  # non-string — absent
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "1 · Py-MCPB", "2 · Py-venv", "3 · curl install skill",
     ]
     wide = [dict(o) for o in options]
     wide[2]["label"] = "A curl-based install skill for the server"
-    assert resolve_button_labels(wide, multi=False) == [
+    assert resolve_button_labels(wide) == [
         "Option 1", "Option 2", "Option 3",
     ]
 
@@ -169,20 +153,19 @@ def test_bare_str_option_has_no_short_uses_own_label() -> None:
         "Python MCP server",
         {"label": "Python venv install", "short": "Py-venv"},
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "1 · Python MCP server", "2 · Py-venv"]
 
 
 # ---------------------------------------------------------------------------
-# (e) 64-char decorated-caption boundary; the SAME short diverges
-#     single-select (passes) vs. multi (floors) at the identical length.
+# (e) 64-char caption boundary.
 # ---------------------------------------------------------------------------
 
 
 def test_single_select_caption_exactly_64_chars_passes() -> None:
     short = "s" * 60  # "1 · " (4) + 60 == 64
     options = [{"label": "full label text, far too wide for one button", "short": short}]
-    caption = resolve_button_labels(options, multi=False)[0]
+    caption = resolve_button_labels(options)[0]
     assert len(caption) == _ASK_BUTTON_CAPTION_CAP == 64
     assert caption == f"1 · {short}"
 
@@ -190,32 +173,7 @@ def test_single_select_caption_exactly_64_chars_passes() -> None:
 def test_single_select_caption_65_chars_floors() -> None:
     short = "s" * 61  # "1 · " (4) + 61 == 65 > 64
     options = [{"label": "full label text, far too wide for one button", "short": short}]
-    assert resolve_button_labels(options, multi=False) == ["Option 1"]
-
-
-def test_multi_decorated_caption_exactly_64_passes() -> None:
-    short = "s" * 58  # "☑ 1 · " (6) + 58 == 64
-    options = [{"label": "full label text, far too wide for one button", "short": short}]
-    caption = resolve_button_labels(options, multi=True)[0]
-    assert caption == f"1 · {short}"  # returned caption stays undecorated
-    assert len(f"☑ {caption}") == 64
-
-
-def test_same_short_passes_single_but_floors_multi() -> None:
-    # Length chosen so the SINGLE-select decorated caption sits exactly at the
-    # 64-char boundary (passes) while the MULTI decorated caption (2 extra
-    # chars for "☑ ") pushes past it (floors) — the divergence the decoration
-    # budget must catch (Sol r3-5).
-    short = "s" * 60
-    options = [{"label": "full label text, far too wide for one button", "short": short}]
-
-    single = resolve_button_labels(options, multi=False)
-    multi = resolve_button_labels(options, multi=True)
-
-    assert single == [f"1 · {short}"]
-    assert len(single[0]) == 64
-    assert multi == ["Option 1"]
-    assert len(f"☑ {single[0]}") == 66
+    assert resolve_button_labels(options) == ["Option 1"]
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +187,7 @@ def test_sol_live_case_no_shorts_floors_never_elides() -> None:
         "Option B — Python MCP server via venv",
         "Option C — curl-based install skill",
     ]
-    labels = resolve_button_labels(options, multi=False)
+    labels = resolve_button_labels(options)
     assert labels == ["Option 1", "Option 2", "Option 3"]
     for lab in labels:
         assert "MCP" not in lab
@@ -243,13 +201,13 @@ def test_sol_live_case_no_shorts_floors_never_elides() -> None:
 
 
 def test_never_raises_on_empty_options() -> None:
-    assert resolve_button_labels([], multi=False) == []
+    assert resolve_button_labels([]) == []
 
 
 def test_pure_no_mutation_of_input() -> None:
     options = [{"label": "A", "short": "a"}, {"label": "B", "short": "b"}]
     snapshot = [dict(o) for o in options]
-    resolve_button_labels(options, multi=False)
+    resolve_button_labels(options)
     assert options == snapshot
 
 
@@ -261,7 +219,7 @@ def test_pure_no_mutation_of_input() -> None:
 def test_1386_short_options_without_shorts_render_their_own_words() -> None:
     # The live case: the assistant's purge confirmation, bare options, no
     # shorts — the buttons read the options, not "Option 1" / "Option 2".
-    assert resolve_button_labels(["Delete", "Keep"], multi=False) == [
+    assert resolve_button_labels(["Delete", "Keep"]) == [
         "Delete", "Keep"]
     from channels.telegram import short_option_labels
     assert short_option_labels(["Delete", "Keep"]) == ["Delete", "Keep"]
@@ -271,8 +229,8 @@ def test_1386_own_words_fit_is_a_width_boundary() -> None:
     from channels.telegram import _ASK_BUTTON_WORDS_FIT
     fits = "w" * _ASK_BUTTON_WORDS_FIT
     wide = "w" * (_ASK_BUTTON_WORDS_FIT + 1)
-    assert resolve_button_labels([fits, "Keep"], multi=False) == [fits, "Keep"]
-    assert resolve_button_labels([wide, "Keep"], multi=False) == [
+    assert resolve_button_labels([fits, "Keep"]) == [fits, "Keep"]
+    assert resolve_button_labels([wide, "Keep"]) == [
         "Option 1", "Option 2"]
 
 
@@ -283,7 +241,7 @@ def test_1386_a_missing_short_borrows_the_options_own_label() -> None:
         "Personal Gmail",
         {"label": "Configure the enterprise SSO integration", "short": "SSO"},
     ]
-    assert resolve_button_labels(options, multi=False) == [
+    assert resolve_button_labels(options) == [
         "1 · Personal Gmail", "2 · SSO"]
 
 
@@ -292,12 +250,7 @@ def test_1386_failed_shorts_fall_back_to_fitting_labels() -> None:
         {"label": "Morning", "short": "Setup"},
         {"label": "Evening", "short": "setup"},
     ]
-    assert resolve_button_labels(options, multi=False) == ["Morning", "Evening"]
-
-
-def test_1386_multi_own_words_stay_undecorated_in_storage() -> None:
-    assert resolve_button_labels(["Lights", "Heating"], multi=True) == [
-        "Lights", "Heating"]
+    assert resolve_button_labels(options) == ["Morning", "Evening"]
 
 
 def test_ask_user_description_names_the_button_fit() -> None:

@@ -335,16 +335,6 @@ class UnadmittedText(RuntimeError):
     ``refused``, never "the channel was down"."""
 
 
-def current_turn_scope() -> "TurnScope | None":
-    """The scope of the running turn, off the origin snapshot — for code that
-    runs INSIDE a turn without a tool handler's own snapshot (hook callbacks,
-    the authz challenge post). ``None`` when no turn is bound."""
-    import agent as agent_mod
-    origin = agent_mod.origin_var.get(None) or {}
-    scope = origin.get("turn_scope")
-    return scope if isinstance(scope, TurnScope) else None
-
-
 def resolve_scope(origin: "dict | None" = None) -> "TurnScope | None":
     """The scope an emission commits under (design §3.4), for every caller —
     the tool handlers and the authorization challenge alike: a bound

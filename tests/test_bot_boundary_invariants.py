@@ -1939,7 +1939,7 @@ async def _d_born_webhook(env) -> BusMessage:
         webhook_rate_limiter=RateLimiter(capacity=0, window_s=60.0),
         webhook_secret=_D_WEBHOOK_SECRET,
         trigger_registry=NS(webhook_route=lambda name: dict(route)),
-        default_role="assistant", bus=bus,
+        bus=bus,
         secrets_dir=env.tmp / "webhook_secrets",
         route_for=env.transport.route_for)
     body = json.dumps({"door": "open"}).encode()

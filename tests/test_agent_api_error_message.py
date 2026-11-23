@@ -725,8 +725,8 @@ async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(
         return await real_fail_compat(did, failure, **kwargs)
 
     # Cluster S (#709): the sync exception arm persists the CLASSIFIED
-    # JobFailure through `fail_compat` — not `fail_delegation(id, exc)`,
-    # whose envelope records the exception class name.
+    # JobFailure through `fail_compat` — not the raw exception, whose
+    # envelope records the exception class name.
     monkeypatch.setattr(reg.job_registry, "fail_compat", _recording_fail_compat)
 
     result = await _with_origin(
@@ -762,7 +762,7 @@ async def test_async_delegation_completion_reports_an_api_error_as_failed(
 
     class _JobRegistry:
         # Cluster S (#709): the exception arm persists the CLASSIFIED
-        # JobFailure through `fail_compat` — `fail_delegation(id, exc)` would
+        # JobFailure through `fail_compat` — the raw exception would
         # durably record the exception class name instead of the kind the
         # caller was told.
         async def fail_compat(self, did, failure, *, announce_creator=False):

@@ -5,7 +5,7 @@ install/upgrade/rollback/uninstall + specialist-tier reload re-scan used to
 build a FRESH local index (inside ``specialist_materialize.
 current_specialist_roles_dir``, via ``reload.py``'s ``_specialist_roles_dir``
 helper) and never republish it — so ``live_installed_specialist_slugs()`` /
-``live_collision_slugs()`` / ``get_installed_instance()`` (admin/inspection,
+``get_installed_instance()`` (admin/inspection,
 Task-14 handlers) served BOOT-TIME state forever, never seeing a specialist
 installed/upgraded/rolled-back/uninstalled after boot.
 

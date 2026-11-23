@@ -110,7 +110,6 @@ def _init(monkeypatch, *, requires: RequiresConfig, resolution=None,
     reg.get.return_value = None
     reg.register_delegation = AsyncMock()
     reg.cancel_delegation = AsyncMock()
-    reg.fail_delegation = AsyncMock()
     reg.complete_delegation = AsyncMock()
 
     tm.init_tools(

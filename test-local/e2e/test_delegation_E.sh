@@ -119,7 +119,6 @@ class _FakeSpecialistRegistry:
     def get(self, name): return None
     async def register_delegation(self, record): pass
     async def complete_delegation(self, did): pass
-    async def fail_delegation(self, did, exc): pass
     async def cancel_delegation(self, did): pass
 
 class _FakeMcpRegistry:

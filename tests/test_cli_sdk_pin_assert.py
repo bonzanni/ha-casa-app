@@ -203,9 +203,7 @@ async def test_resident_specialist_and_executor_options_use_verified_cli(
     resident_options = await resident._build_options(
         channel="voice",
         channel_key="voice-test",
-        is_fresh=True,
         resume_sid=None,
-        user_text="hello",
     )
 
     specialist_cfg = SimpleNamespace(

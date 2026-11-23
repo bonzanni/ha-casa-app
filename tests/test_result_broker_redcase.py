@@ -125,8 +125,8 @@ async def _build(kind, tmp_path, hooks_cfg, monkeypatch):
     monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
     if kind == "resident":
         return await _resident(tmp_path, hooks_cfg)._build_options(
-            channel="telegram", channel_key="k", is_fresh=True,
-            resume_sid=None, user_text="hi")
+            channel="telegram", channel_key="k",
+            resume_sid=None)
     if kind == "delegated":
         return tools_mod._build_specialist_options(_spec_cfg(hooks_cfg))
     if kind == "engagement":

@@ -221,7 +221,6 @@ async def _continuation(key: str, slot: _Slot, continuation: str, approval, aske
         birth = tools_mod._task_birth(delegation_id, task_text, "configurator", origin)
         rec = DelegationRecord(id=delegation_id, agent="configurator", started_at=time.time(),
                                origin=dict(origin), **tools_mod._task_record_fields(birth))
-        rec.permit = permit
         await tools_mod._specialist_registry.register_delegation(rec)
         tools_mod._attach_completion_callback(asyncio.current_task(), rec, birth=birth)
         tools_mod._record_launch_safe("configurator")

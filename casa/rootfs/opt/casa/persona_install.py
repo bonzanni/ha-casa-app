@@ -708,7 +708,7 @@ def apply_persona_override(
             # to boot reconciliation, which runs candidate_validator itself and
             # retains the last-known-good on a failure. Matches the sibling
             # resident_persona_reset, which has always staged only.
-            # persona_pin_roots scans desired.yaml as well as active.yaml, so a
+            # persona_references scans desired.yaml as well as active.yaml, so a
             # staged-but-unpromoted override is still pinned against
             # persona_remove/prune (INV-PERS-006).
             instance_dir.stage_desired(staged)
@@ -1004,9 +1004,9 @@ def _journal_references(ops_dir: Path) -> "list[PersonaReference]":
     on the next boot. So a tuple that is not on disk right now can still be
     restored later: the visible files are not the whole reference universe.
 
-    Which journals those are is NOT decided here — ``replayable_tuple_files``
-    in the journal module is the authority, so this scan and boot cannot drift
-    apart (Terra diff r1: the duplicated predicate treated any non-complete
+    Which journals those are is NOT decided here — ``classify_journal``'s
+    ``JOURNAL_REPLAY`` verdict in the journal module is the authority, so this
+    scan and boot cannot drift apart (Terra diff r1: the duplicated predicate treated any non-complete
     journal as replayable, while boot quarantines an invalid one without ever
     restoring it, so removals were refused for a state nothing could replay).
 

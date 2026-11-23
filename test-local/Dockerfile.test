@@ -1,4 +1,4 @@
-# Test Dockerfile that layers the mock supervisor on top of the add-on image.
+# Test Dockerfile that layers test options on top of the add-on image.
 # Allows local testing without HA Supervisor.
 #
 # Build: docker build -f test-local/Dockerfile.test -t casa-test .
@@ -86,7 +86,7 @@ RUN find /etc/s6-overlay/s6-rc.d -name 'up' -o -name 'run' -o -name 'finish' \
     | xargs chmod +x \
     && chmod +x /opt/casa/scripts/*.sh
 
-# --- Test layer: mock supervisor + options ---
+# --- Test layer: options ---
 # Use the tracked example file, not the gitignored options.json. Local devs
 # who want real credentials mount options.json over /data/options.json at
 # `docker run -v ...` time; CI builds get the placeholder-populated example.

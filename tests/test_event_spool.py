@@ -1802,7 +1802,7 @@ def test_sweep_keeps_a_fresh_part_file(spool):
 
 
 # ---------------------------------------------------------------------------
-# replace-temp staging residue sweep — state/, .index/, emitter dir root
+# replace-temp staging residue sweep — state/, emitter dir root
 # (Minor-4, mirrors callback_spool.py:2906-2925)
 # ---------------------------------------------------------------------------
 
@@ -1835,27 +1835,11 @@ def test_sweep_removes_stale_replace_temp_in_state_dir(spool):
     assert report.deleted_temps == 1
 
 
-def test_sweep_removes_stale_replace_temp_in_index_dir(spool):
-    """write_index_entry stages in .index/ — never covered by any
-    existing sweep phase before this fix."""
-    spool.write_index_entry("k1", {"x": 1})       # creates .index/
-    index_dir = _edir(spool).parent / es.INDEX_DIR
-    stale = _stale_replace_temp(index_dir, "k1.json", 0.0)
-    report = spool.sweep({}, installed=set(), registry_valid=True,
-                         now=TEMP_TTL_S + 100)
-    assert not stale.exists()
-    assert report.deleted_temps == 1
-    assert spool.read_index_marker("k1").state == MarkerState.PRESENT  # untouched
-
-
 def test_sweep_keeps_fresh_replace_temps_everywhere(spool):
     root_temp = _stale_replace_temp(_edir(spool), "ready.json", 1000.0)
     state_temp = _stale_replace_temp(_state_dir(spool), f"{EV}.json", 1000.0)
-    spool.write_index_entry("k1", {"x": 1})
-    index_dir = _edir(spool).parent / es.INDEX_DIR
-    index_temp = _stale_replace_temp(index_dir, "k1.json", 1000.0)
     spool.sweep({}, installed=set(), registry_valid=True, now=1000.0 + 10)
-    assert root_temp.exists() and state_temp.exists() and index_temp.exists()
+    assert root_temp.exists() and state_temp.exists()
 
 
 def test_sweep_housekeeping_only_still_removes_stale_replace_temps(spool):
@@ -1864,15 +1848,11 @@ def test_sweep_housekeeping_only_still_removes_stale_replace_temps(spool):
     housekeeping, exactly like the pre-existing .part- sweep."""
     root_temp = _stale_replace_temp(_edir(spool), "ready.json", 0.0)
     state_temp = _stale_replace_temp(_state_dir(spool), f"{EV}.json", 0.0)
-    spool.write_index_entry("k1", {"x": 1})
-    index_dir = _edir(spool).parent / es.INDEX_DIR
-    index_temp = _stale_replace_temp(index_dir, "k1.json", 0.0)
 
     spool.sweep(ROUTING_UNAVAILABLE, installed=set(), registry_valid=True,
                now=TEMP_TTL_S + 100)
     assert not root_temp.exists()
     assert not state_temp.exists()
-    assert not index_temp.exists()
 
 
 def test_sweep_reaps_delivery_temp_residue_with_future_mtime_fail_closed(spool):
@@ -2236,50 +2216,6 @@ def test_delete_ready_removes_marker(spool):
 
 def test_delete_ready_of_missing_emitter_dir_is_true(spool):
     assert spool.delete_ready("nobody") is True
-
-
-def test_published_emitters_lists_only_ready_emitters(spool):
-    spool.ensure_emitter_dirs("other")
-    spool.write_ready(E, {})
-    assert spool.published_emitters() == [E]
-
-
-def test_index_entry_write_read_delete(spool):
-    key = "abc123"
-    spool.write_index_entry(key, {"x": 1})
-    m = spool.read_index_marker(key)
-    assert m.state == MarkerState.PRESENT and m.payload == {"x": 1}
-    assert key in spool.index_keys()
-    assert spool.delete_index_entry(key) is True
-    assert spool.read_index_marker(key).state == MarkerState.ABSENT
-    assert key not in spool.index_keys()
-
-
-def test_delete_index_entry_of_missing_key_is_true(spool):
-    assert spool.delete_index_entry("neverwritten") is True
-
-
-def test_write_index_entry_refuses_an_unsafe_key(spool):
-    """Minor-5 pin: `key` is caller-supplied and interpolated directly
-    into a path component — an unsafe one (a stray "/", "..", a null
-    byte) must be refused before it ever reaches the filesystem."""
-    for bad in ("../escape", "a/b", ".", "..", "a\0b"):
-        with pytest.raises(ValueError):
-            spool.write_index_entry(bad, {"x": 1})
-    assert spool.index_keys() == []
-
-
-def test_delete_index_entry_refuses_an_unsafe_key(spool):
-    for bad in ("../escape", "a/b", "."):
-        with pytest.raises(ValueError):
-            spool.delete_index_entry(bad)
-
-
-def test_read_index_marker_of_an_unsafe_key_is_absent_not_raise(spool):
-    """Read-only convenience: degrades to ABSENT rather than raising,
-    mirroring read_marker's own unsafe-name handling."""
-    for bad in ("../escape", "a/b", "."):
-        assert spool.read_index_marker(bad).state == MarkerState.ABSENT
 
 
 def test_list_emissions_reflects_current_files(spool):

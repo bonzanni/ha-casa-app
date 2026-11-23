@@ -1,7 +1,7 @@
 """Git-backed history for ``/config/``.
 
 Local-only repo: no remote, no push. The builder agent in Spec Y uses
-``commit_config`` on every write and ``restore_file`` to roll back.
+``commit_config`` on every write.
 Casa boot uses ``init_repo`` (idempotent) and ``snapshot_manual_edits``
 (records uncommitted human edits before the builder can trip over them).
 
@@ -374,31 +374,3 @@ def snapshot_manual_edits(config_dir: str) -> str | None:
         _run(config_dir, ["add", "-A"])
         _run(config_dir, ["commit", "-qm", "manual edit (boot-time snapshot)"])
         return _run(config_dir, ["rev-parse", "HEAD"])
-
-
-def restore_file(config_dir: str, sha: str, relpath: str) -> None:
-    """Restore *relpath* to its content at *sha* and commit the restore.
-
-    #351 (low): a path that did not exist at *sha* (a file ADDED after the
-    target commit) cannot be checked out from it — ``git checkout`` errors
-    and the rollback failed. Restoring to "absent" means removing the file,
-    so that case becomes ``git rm`` + commit. Sol r1-4: that branch is taken
-    only for a VERIFIED target commit — a malformed/unknown *sha* must
-    raise, not silently delete the live file.
-    """
-    with _COMMIT_LOCK:
-        _run(config_dir,
-             ["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"])
-        probe = subprocess.run(
-            ["git", "cat-file", "-e", f"{sha}:{relpath}"],
-            cwd=config_dir, capture_output=True, text=True,
-        )
-        if probe.returncode == 0:
-            _run(config_dir, ["checkout", sha, "--", relpath])
-            _run(config_dir, ["add", relpath])
-            _run(config_dir, ["commit", "-qm",
-                              f"restore {relpath} to {sha[:8]}"])
-        else:
-            _run(config_dir, ["rm", "-f", "--ignore-unmatch", "--", relpath])
-            _run(config_dir, ["commit", "-qm",
-                              f"remove {relpath} (absent at {sha[:8]})"])

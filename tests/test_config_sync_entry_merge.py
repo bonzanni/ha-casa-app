@@ -447,7 +447,7 @@ def _doc(top=None, **entries):
 
 
 def _merge(new, base, live):
-    return config_sync._merge_entries(new, base, live, "name")
+    return config_sync._merge_entries(new, base, live)
 
 
 def test_untouched_entry_tracks_the_image():

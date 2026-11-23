@@ -976,11 +976,6 @@ class InCasaDriver(DriverProtocol):
             else:
                 self._inbound_command_reservations[engagement_id] = c
 
-    def inbound_reservation_texts(self, engagement_id: str) -> list[str]:
-        """#691: always empty — a reservation is taken for text that does not
-        exist yet, so its disclosure stays a count."""
-        return []
-
     def inbound_reservations(self, engagement_id: str) -> int:
         """The gate read: a reservation refuses a successful completion
         exactly as an unread ticket does."""

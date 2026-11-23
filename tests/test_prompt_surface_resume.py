@@ -230,8 +230,8 @@ async def test_build_options_splices_the_armed_surface_without_re_rendering(
     agent_mod._render_prompt_surface = _counting
     try:
         opts = await agent._build_options(
-            channel="telegram", channel_key="k", is_fresh=True,
-            resume_sid=None, user_text="hi",
+            channel="telegram", channel_key="k",
+            resume_sid=None,
         )
     finally:
         agent_mod._render_prompt_surface = original

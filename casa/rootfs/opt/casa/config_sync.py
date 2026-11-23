@@ -279,8 +279,8 @@ class MergeOutcome:
         return self
 
 
-def _merge_entries(new: EntryDoc, base: EntryDoc, live: EntryDoc,
-                   identity_key: str) -> tuple[dict[str, dict], MergeOutcome]:
+def _merge_entries(new: EntryDoc, base: EntryDoc,
+                   live: EntryDoc) -> tuple[dict[str, dict], MergeOutcome]:
     """The three-way, per entry (spec §6.2).
 
     ``base`` mirrors the PREVIOUS image's defaults, so "in base" means exactly
@@ -413,7 +413,7 @@ def _merge_file(*, rel: str, defaults_dir: Path, baseline_dir: Path,
     if live is None or new is None or base is None:
         return None
 
-    merged, outcome = _merge_entries(new, base, live, identity_key)
+    merged, outcome = _merge_entries(new, base, live)
 
     # Compose under the LIVE top level first, then the default's. The two may
     # legitimately differ — the configurator writes a newer schema_version than

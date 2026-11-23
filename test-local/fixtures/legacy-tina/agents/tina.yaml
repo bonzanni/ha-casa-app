@@ -1,8 +1,0 @@
-name: "Tina"
-role: butler
-description: "Legacy butler config from pre-2.1"
-model: haiku
-personality: "You are Tina."
-memory:
-  peer_name: tina
-  token_budget: 2000

@@ -68,12 +68,11 @@ class FaultRegistry:
         self.now = now
         self._faults: dict[str, Fault] = {}
 
-    def mark(self, role: str, run: str, plugin: str, *, reason: str = "",
-             since: "float | None" = None) -> Fault:
+    def mark(self, role: str, run: str, plugin: str, *, reason: str = "") -> Fault:
         """Fault *role*: the run *run* of *plugin* could not be confirmed
         terminated. The fault stands until restart."""
         fault = Fault(run_id=str(run), plugin=str(plugin or ""),
-                      since=self.now() if since is None else float(since),
+                      since=self.now(),
                       reason=reason or f"run {run}: termination unconfirmed")
         self._faults[role] = fault
         return fault

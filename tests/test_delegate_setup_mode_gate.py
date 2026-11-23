@@ -49,7 +49,6 @@ def _wire(monkeypatch):
     reg.get.return_value = None
     reg.register_delegation = AsyncMock()
     reg.complete_delegation = AsyncMock()
-    reg.fail_delegation = AsyncMock()
     reg.cancel_delegation = AsyncMock()
     eng_reg = MagicMock()
     eng_reg.create = AsyncMock()

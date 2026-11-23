@@ -1370,7 +1370,7 @@ def test_uninstall_removes_the_instance_dir_and_operational_files(tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
-# cas_pin_roots / persona_pin_roots (Task N1d, spec §4.4)
+# cas_pin_roots (Task N1d, spec §4.4)
 # ---------------------------------------------------------------------------
 
 
@@ -1460,80 +1460,6 @@ def test_cas_pin_roots_pins_an_override_bound_specialists_component_root(tmp_pat
     )
     pinned = cas_pin_roots(specialists_dir)
     assert v1.root_digest in pinned  # the component blob is STILL pinned post-override
-
-
-def test_persona_pin_roots_always_includes_image_defaults(tmp_path: Path) -> None:
-    from specialist_install import persona_pin_roots
-    from personality_binding import IMAGE_DEFAULT_PERSONA_BY_SLOT
-
-    pinned = persona_pin_roots(
-        bindings_dir=tmp_path / "bindings", specialists_dir=tmp_path / "specialists")
-    for ref in IMAGE_DEFAULT_PERSONA_BY_SLOT.values():
-        assert ref in pinned
-
-
-def test_persona_pin_roots_includes_a_resident_override_binding(
-        tmp_path: Path, monkeypatch) -> None:
-    from persona_install import apply_persona_override
-    from persona_pack import load_persona_pack
-    from role_artifact import load_role_artifact
-    from role_slot import materialize_role
-    from specialist_install import persona_pin_roots
-    from test_persona_install import _write_persona_repo
-
-    role_dir = (
-        Path(__file__).resolve().parent.parent
-        / "casa/rootfs/opt/casa/defaults/roles/resident/assistant"
-    )
-    role = materialize_role(source=load_role_artifact(role_dir), options={})
-    # #543: apply_persona_override re-proves the persona is resolvable under
-    # the approved roots before staging, so install it where the loader looks.
-    from test_persona_install import install_persona_for_apply
-    persona = install_persona_for_apply(
-        tmp_path, monkeypatch, persona_id="casa/ellen", version="0.1.0")
-
-    bindings_dir = tmp_path / "bindings"
-    apply_persona_override(
-        target_role_id="resident:assistant", persona=persona, role=role,
-        instance_dir_root=bindings_dir / "resident-assistant",
-        candidate_validator=lambda persona, binding: None,
-    )
-
-    pinned = persona_pin_roots(bindings_dir=bindings_dir, specialists_dir=tmp_path / "specialists")
-    assert "casa/ellen@0.1.0" in pinned
-
-
-def test_persona_pin_roots_includes_an_override_bound_specialist(tmp_path: Path, monkeypatch) -> None:
-    from persona_install import apply_persona_override
-    from persona_pack import load_persona_pack
-    from personality_binding import InstanceDir
-    from role_artifact import load_role_artifact
-    from role_slot import materialize_role
-    from specialist_install import cas_store_dir, parse_component_root, persona_pin_roots
-    from test_persona_install import _write_persona_repo
-
-    specialists_dir, _agents_dir, _v1 = _installed_mtg(tmp_path)
-    active = InstanceDir(specialists_dir / "mtg").active()
-    _, _, checksum = parse_component_root(active.root)
-    cas_dir = cas_store_dir(checksum, store_root=specialists_dir / "store")
-    role = materialize_role(source=load_role_artifact(cas_dir / "role"), options={})
-
-    # persona_id/version must satisfy the mtg role's persona_requirements
-    # ("casa/judge@>=0.1.0 <1.0.0", from _write_component above).
-    # #543: see install_persona_for_apply — an override must name a persona
-    # the specialist loader can actually resolve at activation.
-    from test_persona_install import install_persona_for_apply
-    persona = install_persona_for_apply(
-        tmp_path, monkeypatch, persona_id="casa/judge", version="0.3.0")
-
-    apply_persona_override(
-        target_role_id="specialist:mtg", persona=persona, role=role,
-        instance_dir_root=specialists_dir / "mtg",
-        candidate_validator=lambda persona, binding: None,
-    )
-
-    pinned = persona_pin_roots(bindings_dir=tmp_path / "bindings", specialists_dir=specialists_dir)
-    assert "casa/judge@0.3.0" in pinned
 
 
 # ---------------------------------------------------------------------------

@@ -49,6 +49,15 @@ except ImportError:
 pytestmark = pytest.mark.asyncio
 
 
+def _live(reg, delegation_id):
+    """Whether the durable row is still accepted or running."""
+    from job_registry import ExecutionState
+    job = reg.job_registry.get(delegation_id)
+    return bool(job and job.execution_state in {
+        ExecutionState.ACCEPTED, ExecutionState.RUNNING,
+    })
+
+
 def _seed_specialist_dir(
     base: Path, role: str = "finance", *, enabled: bool = True,
 ) -> Path:
@@ -358,7 +367,7 @@ class TestSyncOk:
         assert payload["elapsed_s"] >= 0
         assert _FakeSpecialistClient.captured_options.output_format is None
         # Record was registered then cleaned up.
-        assert not reg.has_delegation(payload["delegation_id"])
+        assert not _live(reg, payload["delegation_id"])
 
 
 class TestSyncError:
@@ -390,7 +399,7 @@ class TestSyncError:
         assert "delegation_id" in payload
         assert "kind" in payload
         # Record was cleaned up.
-        assert not reg.has_delegation(payload["delegation_id"])
+        assert not _live(reg, payload["delegation_id"])
 
 
 # ---------------------------------------------------------------------------
@@ -1662,8 +1671,8 @@ class TestMcpRegistryWiring:
         from tools import _build_specialist_options, init_tools
 
         mcp = McpServerRegistry()
-        # Register a dummy SDK server so resolve() has something to return.
-        mcp.register_sdk("casa-framework", {"type": "stdio", "command": "x"})
+        # Register a dummy server so resolve() has something to return.
+        mcp.register_http("casa-framework", "http://x")
 
         reg = SpecialistRegistry(str(tmp_path / "ex"),
                                  tombstone_path=str(tmp_path / "del.json"))
@@ -1685,7 +1694,7 @@ class TestMcpRegistryWiring:
         from tools import _build_specialist_options, init_tools
 
         mcp = McpServerRegistry()
-        mcp.register_sdk("casa-framework", {"type": "stdio", "command": "x"})
+        mcp.register_http("casa-framework", "http://x")
 
         reg = SpecialistRegistry(str(tmp_path / "ex"),
                                  tombstone_path=str(tmp_path / "del.json"))

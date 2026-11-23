@@ -39,8 +39,6 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 OPERATOR_CALL_CAP_S = 3600.0
-ASK_MAX_OPTIONS = 6
-ASK_MAX_LABEL_CHARS = 32
 RUN_REF_MAX = 64
 CONTINUE_REASONS = ("operator_answer", "next_run", "sweep")
 # The internal app's body limit: a judgement carries a page's picture (2 MiB decoded, base64)

@@ -1194,7 +1194,6 @@ def _unavailable_rows(state=None) -> "list[dict]":
     """
     rows: list = []
     try:
-        import trigger_registry as _treg          # noqa: F401  (identity only)
         registry = _live_registry()
         if registry is not None and registry.callback_overlay_unavailable():
             rows.append(_health_row("callback_routing_unavailable"))

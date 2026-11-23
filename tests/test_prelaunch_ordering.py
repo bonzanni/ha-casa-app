@@ -50,7 +50,6 @@ class TestPrelaunchOrdering:
 
         reg.register_delegation = AsyncMock(side_effect=_register)
         reg.cancel_delegation = AsyncMock()
-        reg.fail_delegation = AsyncMock()
         reg.complete_delegation = AsyncMock()
         reg.job_registry.finish_voice_result = AsyncMock()
 

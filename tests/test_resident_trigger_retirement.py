@@ -308,7 +308,7 @@ async def _app(registry, secrets_dir: Path, *, bus=None, secret: str = ""):
     bus = bus or _bus()
     handler = _make_webhook_handler(
         webhook_rate_limiter=RateLimiter(capacity=0, window_s=60.0),
-        webhook_secret=secret, trigger_registry=registry, default_role=ROLE,
+        webhook_secret=secret, trigger_registry=registry,
         bus=bus, secrets_dir=str(secrets_dir))
     app = web.Application()
     app.router.add_post("/webhook/{name}", handler)

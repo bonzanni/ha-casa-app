@@ -734,7 +734,7 @@ async def test_which_turns_tell_their_scope_when_the_reply_is_out(
     seen: dict = {}
 
     async def _look():
-        scope = ob.current_turn_scope()
+        scope = agent_mod.origin_var.get(None)["turn_scope"]
         seen["out"] = scope.reply_out
         seen["set"] = scope.reply_out is not None and scope.reply_out.is_set()
         seen["chat"] = scope.reply_chat

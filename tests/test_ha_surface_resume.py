@@ -496,10 +496,6 @@ def test_the_registry_pairs_a_config_with_the_digest_it_was_published_with():
     assert registry.role_surfaces(["homeassistant"], role="assistant") == ()
     registry.register_role_sdk("homeassistant", "butler", second)
     assert registry.role_surfaces(["homeassistant"], role="butler") == ()
-    registry.register_role_sdk("homeassistant", "butler", second,
-                               surface_digest="sha256:two")
-    registry.unregister_role_sdk("homeassistant", "butler")
-    assert registry.role_surfaces(["homeassistant"], role="butler") == ()
 
 
 @pytest.mark.asyncio
@@ -521,15 +517,15 @@ async def test_a_publication_mid_turn_does_not_reach_that_turns_options(
             await facade.refresh()
             assert publications.count == 1
             options = await butler._build_options(
-                channel="ha_voice", channel_key="k", is_fresh=True,
-                resume_sid=None, user_text="turn on the kitchen",
+                channel="ha_voice", channel_key="k",
+                resume_sid=None,
             )
         assert options.mcp_servers["homeassistant"] is armed_config
         assert await _armed_digest(butler) != armed_digest
         async with butler._armed_prompt_surface():
             options = await butler._build_options(
-                channel="ha_voice", channel_key="k", is_fresh=True,
-                resume_sid=None, user_text="turn on the kitchen",
+                channel="ha_voice", channel_key="k",
+                resume_sid=None,
             )
         assert options.mcp_servers["homeassistant"] is facade.server_config
     finally:

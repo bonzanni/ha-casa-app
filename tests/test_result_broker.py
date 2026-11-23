@@ -799,7 +799,7 @@ def test_resident_and_specialist_builders_carry_one_of_each(tmp_path, monkeypatc
 
     async def run():
         return await _make_agent(tmp_path)._build_options(
-            channel="telegram", channel_key="k", is_fresh=True, resume_sid=None, user_text="hi")
+            channel="telegram", channel_key="k", resume_sid=None)
 
     for opts in (asyncio.run(run()), tools_mod._build_specialist_options(_spec_cfg("finance"))):
         hooks = _broker_hooks(opts)

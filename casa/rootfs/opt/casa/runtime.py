@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from session_registry import SessionRegistry
     from specialist_registry import SpecialistRegistry
     from trigger_registry import TriggerRegistry
-    from channels.voice.delivery import VoiceDeliveryCoordinator
     from channels.voice.routes import VoiceRouteRegistry
 
 
@@ -85,7 +84,6 @@ class CasaRuntime:
     # narrow test stand-ins; production always injects the boot-loaded owner.
     job_registry: "JobRegistry | None" = None
     voice_route_registry: "VoiceRouteRegistry | None" = None
-    voice_delivery_coordinator: "VoiceDeliveryCoordinator | None" = None
 
     # Personality Phase A, Task 8: read-only persona/binding registries derived
     # from the loaded resident configs at boot (and rebuilt by reloads). Keyed

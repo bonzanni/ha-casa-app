@@ -28,7 +28,6 @@ def _full_specialist_reg():
     reg.get.return_value = None
     reg.register_delegation = AsyncMock()
     reg.cancel_delegation = AsyncMock()
-    reg.fail_delegation = AsyncMock()
     reg.complete_delegation = AsyncMock()
     return reg
 

@@ -115,7 +115,6 @@ def wired(tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "_worker_task", None)
     monkeypatch.setattr(ce, "_kick", None)
     monkeypatch.setattr(ce, "_now", state.now)
-    ce._pending_hints.clear()
 
     async def dispatch(role, text, context):
         state.dispatches.append((role, text, context))
@@ -577,7 +576,6 @@ async def test_noted_survives_a_restart(wired):
     # Simulated crash-restart: the module's in-memory state is rebuilt from
     # scratch; `noted` lives in the durable attempt file, so no duplicate.
     wired.notes.clear()
-    ce._pending_hints.clear()
     wired.wire()
     wired.advance(100_000.0)
     await ce._worker_pass()
@@ -962,7 +960,6 @@ def test_kick_is_o1_and_touches_no_spool(wired, monkeypatch):
 
     monkeypatch.setattr(ce, "_get_spool", _boom)
     ce.kick(PLUGIN, HASH)
-    assert (PLUGIN, HASH) in ce._pending_hints
     assert ce._kick is not None and ce._kick.is_set()
 
 

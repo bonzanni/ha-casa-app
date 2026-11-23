@@ -489,7 +489,7 @@ def resolve_and_fetch(
     repo: str, ref: str, subdir: str, dest: Path, *, expected_revision: str | None = None,
 ) -> str:
     """Resolve *ref* to a commit sha (guarding against a moved tag exactly
-    like `plugin_add`'s `_resolve_and_guard`, tools.py) then fetch that
+    like `plugin_add`'s `_resolve_ref_and_guard`, tools.py) then fetch that
     EXACT commit's subtree — never a mutable branch fetch. Raises
     SpecialistInstallError on any resolve/fetch failure; never partially
     populates *dest* on failure (fetch_commit_tree extracts to a temp dir
@@ -2835,7 +2835,6 @@ def upgrade_specialist(
     import plugin_registry
     import specialist_bundle_journal
     from specialist_bundle_journal import BundleTxn
-    from specialist_lifecycle import SpecialistInstance  # noqa: F401 (typing)
     from specialist_install_consent import install_consent_identity
     from approval_records import values_digest
     import plugin_store
@@ -4359,7 +4358,7 @@ def _rollback_core(
     sidecar inside the same lock scope as the tuple commit, after it — the
     commit itself rotates the outgoing pair into the prior pair."""
     from personality_binding import (
-        InstanceDir, InstanceTuple, load_instance_tuple, make_instance_tuple,
+        InstanceDir, load_instance_tuple, make_instance_tuple,
     )
     from prompt_compiler import compile_prompt_bundle
     from role_slot import _ha_model_options, materialize_role
@@ -4765,7 +4764,7 @@ def _uninstall_core(
 
 
 # ---------------------------------------------------------------------------
-# CAS/persona pin-reference roots (Task N1d, spec §4.4)
+# CAS pin-reference roots (Task N1d, spec §4.4)
 # ---------------------------------------------------------------------------
 
 
@@ -4792,11 +4791,7 @@ def cas_pin_roots(specialists_dir: Path = Path("/config/specialists")) -> frozen
     This function only ever pins SPECIALIST COMPONENT blobs (CAS-addressed
     under `specialists_dir/store/`) — there is nothing image-bundled to pin
     here, since a specialist has no "image-default" binding mode (only
-    residents do; see `personality_binding.py`'s mode enum). Spec §4.4's
-    "current image defaults are pinned" requirement is closed on the
-    PERSONA side instead, by `persona_pin_roots` below, which every caller
-    of this function should call alongside it to get the complete pin-root
-    set."""
+    residents do; see `personality_binding.py`'s mode enum)."""
     from personality_binding import load_instance_tuple
 
     pinned: set[str] = set()
@@ -4817,58 +4812,4 @@ def cas_pin_roots(specialists_dir: Path = Path("/config/specialists")) -> frozen
             except ValueError:
                 continue
             pinned.add(checksum)
-    return frozenset(pinned)
-
-
-def persona_pin_roots(
-    *, bindings_dir: Path = Path("/config/bindings"),
-    specialists_dir: Path = Path("/config/specialists"),
-) -> frozenset[str]:
-    """Round-2 addition (finding #8): `cas_pin_roots` only ever pins
-    SPECIALIST COMPONENT blobs under `specialists_dir/store/`. Installed
-    persona overrides live in a COMPLETELY SEPARATE tree
-    (`/config/personas/<persona_id>/<persona_version>/`,
-    `persona_install.commit_persona_install`'s write target) with no
-    reference-root function of its own — a resident OR specialist actively
-    bound to an installed persona via `mode="override"` had no recorded pin
-    at all. Scans EVERY InstanceDir under both the resident bindings root
-    (`bindings_dir/resident-*`) and the specialist root
-    (`specialists_dir/<slug>`), for `active.yaml`/`desired.yaml`/
-    `active.prior.yaml`, and records `f"{persona_id}@{persona_version}"` for
-    every tuple whose `binding.mode == "override"` — the exact
-    `/config/personas/<persona_id>/<persona_version>/` directory that must
-    stay referenced.
-
-    Round-3 addition (finding #5): spec §4.4 also pins "the current image
-    defaults" — this is NOT limited to whatever a resident's tuple happens
-    to reference right now (an override-bound resident's tuple never has
-    `mode == "image-default"`, so the scan above alone would silently drop
-    the image default the moment EVERY resident is override-bound), and the
-    spec's own "offer to reset to the current default" language (§4.4's
-    "pinned digest unavailable" clause) requires that reset target to always
-    resolve. So every value of `personality_binding.
-    IMAGE_DEFAULT_PERSONA_BY_SLOT` (today: `"casa/ellen@0.1.0"`,
-    `"casa/tina@0.1.0"`, `"casa/gary@0.1.0"`) is added UNCONDITIONALLY,
-    independent of the tuple scan."""
-    from personality_binding import IMAGE_DEFAULT_PERSONA_BY_SLOT, load_instance_tuple
-
-    pinned: set[str] = set(IMAGE_DEFAULT_PERSONA_BY_SLOT.values())
-
-    def _scan(root: Path, *, skip_names: frozenset[str] = frozenset()) -> None:
-        if not root.is_dir():
-            return
-        for entry in sorted(root.iterdir()):
-            if not entry.is_dir() or entry.name in skip_names:
-                continue
-            for filename in ("active.yaml", "desired.yaml", "active.prior.yaml"):
-                path = entry / filename
-                if not path.is_file():
-                    continue
-                tup = load_instance_tuple(path)
-                if tup is None or tup.binding.mode != "override":
-                    continue
-                pinned.add(f"{tup.binding.persona_id}@{tup.binding.persona_version}")
-
-    _scan(bindings_dir)
-    _scan(specialists_dir, skip_names=frozenset({"store", ".staging", ".roles-overlay"}))
     return frozenset(pinned)

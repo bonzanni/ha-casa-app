@@ -54,11 +54,10 @@ import logging
 import os
 import re
 import subprocess
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 from urllib.parse import quote_plus
 
 from atomic_io import PRIVATE, atomic_write_json, fsync_directory

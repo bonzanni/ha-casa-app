@@ -41,7 +41,7 @@ The scenarios:
 (e) **meta + minted_ts echo** — the mint envelope's opaque ``meta`` and the
     pending's mtime reach both the attempt file and the result record (§4).
 (f) **casa restart between publish and collect** — a fresh module wiring
-    with no in-memory hint still re-nudges, from spool truth alone (§8).
+    with no in-memory state still re-nudges, from spool truth alone (§8).
 (g) **publish failure** — a ``done/publish_failed`` attempt exists and the
     browser still gets the one neutral 303 (§5, INV-CB-005).
 (h) **witness chain** — an explicit walk over every crash point of
@@ -171,7 +171,6 @@ class _Facility:
         in-memory trace of the previous life (hints, the computed wake) is
         dropped; only the spool survives, which is the point of scenario (f).
         """
-        ce._pending_hints.clear()
         ce._next_due = None
         ce._worker_task = None
         ce._kick = None
@@ -458,10 +457,8 @@ async def test_gmail_shape_end_to_end(facility):
     rec = facility.attempt(plugin, h)
     assert rec["status"] == "result_ready" and rec["outcome"] is None
 
-    # the delivery nudge was kicked with the handle: the HTTP handler recorded
-    # an in-memory hint; the worker turns it into a dispatched turn naming the
-    # exact handle (result still present)
-    assert (plugin, h) in ce._pending_hints
+    # the delivery nudge was kicked: the worker turns the result into a
+    # dispatched turn naming the exact handle (result still present)
     await facility.worker_pass()
     assert len(facility.dispatches) == 1
     role, instruction, context = facility.dispatches[0]
@@ -553,10 +550,9 @@ async def test_consumer_dead_recovery_reenqueues_the_nudge(facility):
         claim, {"v": 1, "plugin": plugin, "effective": eff},
     ) is callback_spool.PublishOutcome.PUBLISHED
     assert facility.dispatches == []     # no kick was delivered
-    assert ce._pending_hints == set()
 
     # the ledger is the backstop: the publish itself wrote a due `result_ready`
-    # attempt, so a recovery pass finds work no in-memory hint remembers
+    # attempt, so a recovery pass finds work no in-memory kick remembers
     await facility.casa_pass()
     rec = facility.attempt(plugin, h)
     assert rec["status"] == "result_ready"
@@ -668,8 +664,8 @@ async def test_meta_and_minted_ts_echo_end_to_end(facility):
 
 
 async def test_restart_between_publish_and_collect_renudges(facility):
-    """Spec §8: the schedule is DURABLE. A publish kicks an in-memory hint;
-    a restart before any collection destroys that hint and every other
+    """Spec §8: the schedule is DURABLE. A publish sets an in-memory wake;
+    a restart before any collection destroys that wake and every other
     in-process trace — and the flow must still be re-nudged, from spool truth
     alone, because ``next_nudge_ts`` lives in the attempt file."""
     plugin, declared = "gmail", "authorize"
@@ -681,12 +677,10 @@ async def test_restart_between_publish_and_collect_renudges(facility):
     facility.mint(plugin, state, meta={"kind": "initial"})
     r = await _browser_redirect(facility, eff, state)
     assert r.status == 303
-    assert (plugin, h) in ce._pending_hints     # the pre-restart hint
 
     # casa restarts: fresh module wiring, no worker task, no hints, no
     # computed wake. Only the spool survives.
     facility.boot()
-    assert ce._pending_hints == set()
     assert ce._next_due is None
     assert facility.dispatches == []
 

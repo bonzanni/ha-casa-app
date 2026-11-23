@@ -62,7 +62,6 @@ async def _build_app(
     clearances: dict[str, str] | None = None,
     policies: dict[str, dict] | None = None,
     secrets_dir=None,
-    default_role: str = "assistant",
     bus=None,
 ):
     from casa_core import _make_webhook_handler
@@ -76,7 +75,6 @@ async def _build_app(
         webhook_rate_limiter=limiter,
         webhook_secret=secret,
         trigger_registry=_make_registry(targets, clearances, policies),
-        default_role=default_role,
         bus=bus,
         secrets_dir=secrets_dir or "/data/webhook_secrets",
     )
@@ -120,7 +118,7 @@ class TestWebhookAllowlist:
         not to the hardcoded default."""
         secret = "s3cret"; body = b"{}"
         app, bus = await _build_app(
-            secret=secret, targets={"b1": "butler"}, default_role="assistant",
+            secret=secret, targets={"b1": "butler"},
         )
         async with TestClient(TestServer(app)) as client:
             r = await client.post(

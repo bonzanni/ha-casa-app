@@ -677,15 +677,6 @@ class PinnedRun(ProcessTree):
         self._start_close()
         return await self._confirm(loop.time() + self.EXIT_WAIT_S)
 
-    def abandon(self) -> None:
-        """A cancelled lane use: the detached close is started and the fds
-        are closed when it ends; nothing is waited for."""
-        self._start_close()
-        if self.close_task is not None:
-            self.close_task.add_done_callback(lambda _t: self.close_fds())
-        else:
-            self.close_fds()
-
     def _start_close(self) -> None:
         if self._client is not None and self.close_task is None:
             self.close_task = asyncio.create_task(self._client.__aexit__(None, None, None))

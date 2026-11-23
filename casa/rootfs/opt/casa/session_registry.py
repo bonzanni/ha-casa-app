@@ -101,28 +101,6 @@ def _build_key(*parts: str) -> str:
     return joined
 
 
-def build_session_key(channel: str, scope_id: str | int | None) -> str:
-    """Build a canonical channel key of the form ``{channel}-{scope_id}``.
-
-    Used internally by :class:`SessionRegistry` (JSON-on-disk dict
-    keyed by this string) AND as the channel-key prefix for session ids
-    (see :func:`_build_key`).
-
-    ``scope_id`` may be ``int`` (Telegram ``chat_id``) or ``str``
-    (voice ``scope_id``); coerced to ``str``. ``None`` or falsy values
-    map to ``"default"``.
-
-    Raises ``ValueError`` when ``channel`` is empty or when either
-    part contains characters outside ``[A-Za-z0-9_-]``. The ``:``
-    separator is forbidden in inputs to prevent silent regression to
-    invalid ids.
-    """
-    if not channel:
-        raise ValueError("channel is required")
-    sid = scope_id if scope_id else "default"
-    return _build_key(channel, str(sid))
-
-
 def build_scoped_session_key(channel: str, role: str, scope_id: str | int | None) -> str:
     """Collision-safe (channel, role, scope) identity, channel-FIRST so
     existing ``key.partition('-')[0]`` consumers still read the channel
@@ -468,7 +446,6 @@ class SessionRegistry:
 
     async def remove(
         self, channel_key: str, expected_sid: object = _UNCONDITIONAL,
-        *, expected_generation: object = _UNCONDITIONAL,
     ) -> None:
         """Remove an entry and persist.
 
@@ -478,12 +455,8 @@ class SessionRegistry:
         this call) is left intact instead of being silently deleted (#317,
         #353). ``expected_sid=None`` means the snapshotted entry had NO
         session id, so the removal declines once any real session registers.
-        ``expected_generation`` (#526) additionally declines when ANY
-        registration — same sid included — landed after the caller's
-        snapshot. Omitting either argument keeps that guard unconditional."""
+        Omitting the argument keeps that guard unconditional."""
         async with self._lock:
-            if self._generation_moved(channel_key, expected_generation):
-                return  # re-registered after the snapshot; leave it alone
             if expected_sid is not _UNCONDITIONAL:
                 entry = self._data.get(channel_key)
                 if entry is None or entry.get("sdk_session_id") != expected_sid:
