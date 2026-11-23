@@ -73,6 +73,32 @@ async def test_send_media_raises_when_app_none():
         await ch.send_media(b"B", "document", "f.pdf", {"chat_id": 5})
 
 
+# #1661: an agent writes its caption in Markdown, as everywhere else; the file
+# arrives with the formatting shown, not the asterisks and link syntax.
+async def test_send_media_renders_markdown_caption():
+    ch, bot = _mk_channel()
+    await ch.send_media(b"B", "document", "inv.pdf", {"chat_id": 5},
+                        caption=admitted("**March invoice** is attached"))
+    kwargs = bot.send_document.await_args.kwargs
+    assert kwargs["caption"] == "March invoice is attached"
+    [bold] = kwargs["caption_entities"]
+    assert (bold.type, bold.offset, bold.length) == ("bold", 0, len("March invoice"))
+
+
+async def test_send_media_caption_refused_entities_resends_plain():
+    from telegram.error import BadRequest
+
+    ch, bot = _mk_channel()
+    bot.send_document.side_effect = [BadRequest("Can't parse entities"),
+                                     MagicMock(message_id=8)]
+    await ch.send_media(b"B", "document", "inv.pdf", {"chat_id": 5},
+                        caption=admitted("**March invoice** is attached"))
+    assert bot.send_document.await_count == 2
+    kwargs = bot.send_document.await_args.kwargs
+    assert kwargs["caption"] == "March invoice is attached"
+    assert kwargs.get("caption_entities") is None
+
+
 async def test_base_channel_send_media_not_implemented():
     from channels import Channel
 

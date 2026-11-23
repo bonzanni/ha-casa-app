@@ -5373,11 +5373,26 @@ class TelegramChannel(Channel):
         if self._app is None:
             raise RuntimeError("Telegram channel not started; cannot send media")
         method = getattr(self._app.bot, MEDIA_POLICIES[kind].ptb_method)
-        sent = await method(
-            target_chat,
-            InputFile(BytesIO(content), filename=filename),
-            caption=caption,
-        )
+        # #1661: agents write Markdown, so the caption is rendered with entities
+        # as every other caption is; when Telegram refuses the entities, the
+        # caption's display text goes out without them.
+        display, entities = render(caption) if caption is not None else (None, None)
+        try:
+            sent = await method(
+                target_chat,
+                InputFile(BytesIO(content), filename=filename),
+                caption=display, caption_entities=entities,
+            )
+        except BadRequest as exc:
+            if entities is None:
+                raise
+            logger.warning("send_media caption fell back to plain (chat=%s): %s",
+                           target_chat, exc)
+            sent = await method(
+                target_chat,
+                InputFile(BytesIO(content), filename=filename),
+                caption=display,
+            )
         self._record_post(target_chat, sent, post)
 
     # ------------------------------------------------------------------
