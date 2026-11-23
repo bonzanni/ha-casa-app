@@ -304,14 +304,15 @@ callback it wires a delivery into a role. Both blocks are per-plugin all-or-noth
 malformed entry darkens the whole block.
 
 **A single-subscription off-switch** is the `event_ack_revoke` tool: it unroutes one
-`(subscriber, emitter, event)` pair — or every subscription a plugin holds, when
-`emitter`/`event` are omitted — from the published map before deleting its ack record,
-under the same dispatch-admission lock the pre-send gate uses, so no dispatch can be
-admitted for it once the call returns. A later re-approval re-consents; the consent DM
-re-prompts on the next reconcile, or on demand via the `consent_reprompt` tool — the
-prompt-only re-issue shared by all three consent kinds (its contract is in
-[`plugin-mutation-tools.md`](plugin-mutation-tools.md)), which skips subscriptions the
-operator explicitly denied.
+`(subscriber, emitter, event)` pair (all of a plugin's, without `emitter`/`event`) from the
+published map before deleting its ack record, under the pre-send gate's
+dispatch-admission lock, so no dispatch is admitted once the call returns, and
+records the revoke as a Deny in `consent_denials` (a removal or update records none). A
+denied or revoked subscription is off on its own (unrouted, no `event_pending_ack` row),
+and a Deny tap reconciles at once, so the plugin's other subscriptions keep routing; an
+unanswered one holds back the set. A plugin mutation or reload re-asks it;
+`consent_reprompt` ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) skips it. The
+registry is in memory: after a restart the subscription reads as unanswered.
 
 **Explicitly out of scope** (future hardening, not present today): casa-brokered emission
 (nothing yet lets casa compose or filter an emission on its way through), per-plugin

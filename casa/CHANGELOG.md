@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.381.5] - 2026-11-23
+
+### Fixed
+
+- Turning off one of a plugin's event subscriptions, by asking for it to be revoked or by tapping Deny on its card, no longer stops the plugin's other approved subscriptions. After a Deny they are routed straight away. One limit for now: after Casa restarts, a subscription you turned off asks for your answer again, and until you give it the plugin's other subscriptions wait (#1656, #1666).
+- An installed specialist can still be upgraded, rolled back, or finish its configuration after you add a plugin that uses one of the same environment variable names. The name check now runs only when a specialist is first installed (#1641).
+
 ## [0.381.4] - 2026-11-23
 
 ### Fixed

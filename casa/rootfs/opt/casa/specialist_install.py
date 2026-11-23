@@ -625,7 +625,8 @@ def validate_resume_inputs(
 
 
 def resolve_dependency_closure(
-    component: SpecialistComponent, component_dir: Path,
+    component: SpecialistComponent, component_dir: Path, *,
+    check_env_collisions: bool = False,
 ) -> tuple[DependencyResolution, ...]:
     """Resolve every typed dependency's AVAILABILITY (spec §2.4). Convention
     (this plan, "Component repository layout"): `persona` and `corpus/data`
@@ -634,7 +635,15 @@ def resolve_dependency_closure(
     image already having a matching blob; `plugin/implementation`
     dependencies reference an ALREADY plugin_add-installed plugin (a
     component never bundles plugin code, only pins which published artifact
-    digest it was validated against)."""
+    digest it was validated against).
+
+    `check_env_collisions` (#1641) is set only by a fresh install inspect: the
+    cross-plugin env-name collision check can prevent a clash only there.
+    Every other caller re-verifies a specialist that is already installed or
+    already inspected (upgrade inspect, commit, the resume of a
+    pending-configuration install, rollback), and `plugin_add` may since have
+    added an ordinary plugin sharing a name — that must not make the
+    specialist's own plugin unavailable."""
     import plugin_registry
     from persona_pack import PersonaPackError, load_persona_pack
     from plugin_store import content_checksum
@@ -767,7 +776,8 @@ def resolve_dependency_closure(
                             detail="bundled plugin path escapes the component"))
                         continue
                 detail, surfaces = _validate_sourced_plugin_tree(
-                    tree, slug=component.slug, identifier=dep.identifier)
+                    tree, slug=component.slug, identifier=dep.identifier,
+                    check_env_collisions=check_env_collisions)
                 if detail:
                     out.append(DependencyResolution(
                         kind=dep.kind, identifier=dep.identifier, digest=dep.digest,
@@ -1107,7 +1117,7 @@ def _mcp_server_summary(name: str, cfg: "Mapping") -> str:
 
 
 def _validate_sourced_plugin_tree(
-    tree: Path, *, slug: str, identifier: str,
+    tree: Path, *, slug: str, identifier: str, check_env_collisions: bool = False,
 ) -> "tuple[str, _PluginSurfaces]":
     """Full validation of a sourced (bundled/github) plugin dependency's
     staged tree (spec §1/§3.2.1, brief Step 2). Returns `("", surfaces)` when
@@ -1153,7 +1163,8 @@ def _validate_sourced_plugin_tree(
        (`plugin_store.reserved_env_violations` / `mcp_command_verdicts`).
     7. Env-name collision (`_env_name_conflicts`) against every OTHER
        installed plugin's required env names, excluding this slug's own
-       (prior) owned set.
+       (prior) owned set — only when `check_env_collisions` (a fresh install
+       inspect; #1641).
     """
     import plugin_env_extractor
     import plugin_registry
@@ -1260,7 +1271,8 @@ def _validate_sourced_plugin_tree(
     # owns by writing ``${VAR:-}``.
     tree_env_names = plugin_env_extractor.extract_referenced_env_vars(
         mcp_json_path)
-    conflicts = _env_name_conflicts(tree_env_names, exclude_owner=slug)
+    conflicts = (_env_name_conflicts(tree_env_names, exclude_owner=slug)
+                 if check_env_collisions else [])
     if conflicts:
         return f"{ENV_NAME_COLLISION}: colliding env name(s): " + ", ".join(conflicts), _EMPTY_SURFACES
 
@@ -1533,7 +1545,10 @@ def inspect_specialist_repo(
                 f"manifest name(s) {sorted(set(manifest_name_collisions))!r} — a sourced "
                 "plugin dependency must not collide with it")
 
-        dependencies = resolve_dependency_closure(component, component_dir)
+        # #1641: only a fresh install checks env names against other installed
+        # plugins; an upgrade's slug already owns its names.
+        dependencies = resolve_dependency_closure(
+            component, component_dir, check_env_collisions=(mode == "install"))
         unavailable = [d for d in dependencies if not d.available]
         if unavailable:
             # Task 8: a prohibition (sysreqs/triggers/env-collision) aborts with

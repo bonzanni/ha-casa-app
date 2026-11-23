@@ -198,7 +198,8 @@ class TestEventAckRevokeTool:
         assert payload["revoked"] == 1
         assert payload["pairs"] == [[EMITTER, EVENT]]
 
-        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, "", "")
+        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, "", "",
+                                            operator_denied=True)
         reconcile_mock.assert_awaited()
         assert reconcile_mock.await_args.kwargs.get("prompt") is False
         # pending keyboard cancelled before AND after the reconcile.
@@ -221,7 +222,8 @@ class TestEventAckRevokeTool:
 
         await tools.event_ack_revoke.handler(
             {"subscriber": SUBSCRIBER_A, "emitter": EMITTER, "event": EVENT})
-        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, EMITTER, EVENT)
+        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, EMITTER, EVENT,
+                                            operator_denied=True)
 
     async def test_unroutes_even_if_reconcile_fails(self, monkeypatch):
         import agent as agent_mod
@@ -258,10 +260,13 @@ class TestEventAckRevokeTool:
         stopping this test from exercising the ACTUAL lock
         ``revoke_and_unroute`` and the worker's pre-send gate share."""
         import agent as agent_mod
+        import consent_denials
         import event_episodes
         import event_reconcile
         import tools
 
+        # the real revoke records a Deny; keep it out of later tests
+        monkeypatch.setattr(consent_denials, "_denied", set())
         acks = EventAckStore(path=tmp_path / "acks.json")
         digest = subscribe_declaration_digest({"plugin": EMITTER, "event": EVENT})
         acks.record(SUBSCRIBER_A, "art-1", EMITTER, EVENT, digest,

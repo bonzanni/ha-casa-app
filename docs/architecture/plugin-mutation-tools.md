@@ -277,7 +277,8 @@ reconcile lock, re-reads the ack store per row (a concurrent Approve earns no fr
 keyboard), threads the sealed setup-round member's nonce back in read-only, and reports
 delivery from each keyboard's actual settled post outcome, never from pending rows: when
 keyboards were needed and none could be delivered, the result is a typed
-`delivery_failed`, not success. Consents the operator explicitly *denied* on a keyboard are
+`delivery_failed`, not success. Consents the operator explicitly *denied* on a keyboard (or,
+for an event subscription, revoked with `event_ack_revoke`) are
 skipped and reported `denied` rather than re-asked — the in-process `consent_denials`
 registry records the latest decision in the same synchronous commit step that persists the
 ack (Approve clears, Deny records, expiry writes nothing), so agent-driven re-issue can

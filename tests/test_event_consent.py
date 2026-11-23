@@ -51,9 +51,13 @@ class _FakeChannel:
 
 
 def _fresh_env(monkeypatch, tmp_path):
+    import consent_denials
     import verdict_broker
     broker = verdict_broker.VerdictBroker()
     monkeypatch.setattr(verdict_broker, "BROKER", broker)
+    # a Deny tap is recorded process-wide and now steers routing; keep it
+    # inside the test that made it
+    monkeypatch.setattr(consent_denials, "_denied", set())
     coord = ChallengeCoordinator()
     channel = _FakeChannel()
     acks = EventAckStore(path=tmp_path / "event_acks.json")
@@ -256,8 +260,26 @@ async def test_deny_leaves_it_undelivered(monkeypatch, tmp_path):
     _tap(broker, coord, key, 1)
     await _settle()
     assert acks.get(IDENTITY) is None
-    assert fired == []
+    # #1656: the Deny reconciles, so the subscriber's other approved
+    # subscriptions route at once
+    assert fired == [True]
     assert any("❌" in e[2] for e in channel.edits)
+    assert "⚠️" not in channel.edits[-1][2]
+
+
+async def test_reconcile_failure_after_a_deny_says_so(monkeypatch, tmp_path):
+    broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+
+    async def _boom():
+        raise RuntimeError("reconcile failed")
+
+    handle = _prompt(coord, channel, acks, reconcile_cb=_boom)
+    await handle.settled_post()
+    _tap(broker, coord, next(iter(coord._entries)), 1)
+    await _settle()
+    assert acks.get(IDENTITY) is None
+    last = channel.edits[-1][2]
+    assert last.startswith("❌ Denied") and "⚠️" in last
 
 
 async def test_expiry_leaves_it_undelivered(monkeypatch, tmp_path):

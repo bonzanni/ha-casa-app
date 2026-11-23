@@ -12,8 +12,11 @@ are mirrored here) and, on the identity side, of :mod:`trigger_consent`:
 * Approve → record the ack in :mod:`event_acks` (the SYNCHRONOUS commit
   step, before any await) and fire a reconcile so delivery starts — never
   an agent-continuation dispatch.
-* Deny / expiry → the subscription stays undelivered (``event_pending_ack``);
-  the next lifecycle reconcile may re-prompt.
+* Deny / expiry → the subscription stays undelivered; the next lifecycle
+  reconcile may re-prompt. After a Deny it is off on its own, and the Deny
+  fires the same reconcile an Approve does, so the subscriber's other
+  approved subscriptions route at once; after an expiry it is still
+  ``event_pending_ack`` and holds back the subscriber's others.
 
 **Deliberately standalone from the plugin-setup round ledger** (Critical-2,
 review round 1): unlike the trigger/callback consent flavors, event consent
@@ -133,7 +136,8 @@ def prompt_event_consent(
 
     Returns the coordinator's ``ChallengeHandle``. ``acks`` is the
     :class:`event_acks.EventAckStore`; ``reconcile_cb`` re-runs the event
-    reconciler after an approve so delivery starts immediately. Standalone
+    reconciler after an approve so delivery starts immediately, and after a
+    deny so the subscriber's other approved subscriptions route. Standalone
     from any plugin-setup round — see the module docstring.
     """
     identity = ack_identity(subscriber, artifact_id, emitter, event, digest,
@@ -223,6 +227,25 @@ def prompt_event_consent(
                     f"from '{emitter}'",
                     literal=True,
                 )
+                # A denied subscription no longer holds back the subscriber's
+                # other approved ones (#1656): reconcile now so they route at
+                # once instead of on some later pass. The callback reconciles
+                # without prompting, so this card is not re-asked.
+                if reconcile_cb is not None:
+                    try:
+                        await reconcile_cb()
+                    except Exception:  # noqa: BLE001 — surface, never raise
+                        logger.exception(
+                            "post-deny event reconcile failed "
+                            "(subscriber=%s emitter=%s event=%s)",
+                            subscriber, emitter, event)
+                        await channel.edit_dm_message(
+                            chat_id, message_id,
+                            f"❌ Denied — '{subscriber}' will not receive "
+                            f"'{event}' from '{emitter}'. ⚠️ Updating its "
+                            "other subscriptions failed — run plugin_verify",
+                            literal=True,
+                        )
 
         return _finish
 

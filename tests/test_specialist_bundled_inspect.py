@@ -169,6 +169,32 @@ def test_env_name_collision_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert exc.value.kind == "env_name_collision"
 
 
+def test_fresh_install_refuses_an_env_name_an_installed_plugin_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1641: the collision check still runs where it can prevent a clash — a
+    fresh install inspect, against a real installed plugin's `.mcp.json`."""
+    from types import SimpleNamespace
+
+    import plugin_registry
+
+    other = tmp_path / "other-plugin"
+    other.mkdir()
+    (other / ".mcp.json").write_text(json.dumps({"mcpServers": {"o": {
+        "command": "node", "env": {"T": "${SHARED_TOKEN}"}}}}), encoding="utf-8")
+    monkeypatch.setattr(plugin_registry, "resolve_all", lambda: SimpleNamespace(
+        plugins=[SimpleNamespace(name="other", path=str(other), manifest={})]))
+
+    component_dir, manifest_path = write_minimal_component(tmp_path, slug="mtg-test")
+    digest = write_bundled_plugin(component_dir, "mtg", env_names=["SHARED_TOKEN"])
+    _add_dependency_row(manifest_path, _bundled_dep_row("mtg", digest, "plugins/mtg"))
+
+    with pytest.raises(SpecialistInstallError) as exc:
+        _inspect(tmp_path, component_dir, monkeypatch=monkeypatch)
+    assert exc.value.kind == "env_name_collision"
+    assert "SHARED_TOKEN" in str(exc.value)
+
+
 def test_sibling_env_name_collision_detected():
     # Whole-branch E: two sourced plugins in the SAME bundle each requiring the
     # same env name collide, even though neither collides with an installed one.

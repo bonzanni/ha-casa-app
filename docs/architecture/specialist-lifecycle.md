@@ -261,11 +261,14 @@ written to at all. The bundle commit's own door follows the component's verifica
 precedes its journal (INV-SPEC-020, `architecture/specialist-bundle-recovery.md`): an
 already-active slug refuses `active_present` — an installed specialist changes version through
 the upgrade — and a capture it could not record without losing a saved setting refuses too.
-Sourced plugin dependencies are additionally refused categorically when they
+Sourced plugin dependencies are also refused categorically when they
 declare system requirements or triggers of their own, or when an environment name they
 reference — in either expansion form — collides with another installed plugin's —
 otherwise-valid bundles fail with dedicated error kinds the dependency model alone would
-not predict. A sourced dependency *may*,
+not predict. The name check runs only at a fresh install's inspect: upgrade inspect,
+commit, resume of a pending-configuration install and rollback skip it, and `plugin_add`
+checks no names, so a later plugin sharing one never blocks an installed specialist
+(#1641). Bundle siblings are checked against each other at every inspect. A sourced dependency *may*,
 however, declare `casa.callbacks` — a callback grants no turn or memory access — and it
 may likewise declare `casa.emits`/`casa.subscribes`: an emit is inert without an
 operator-consented subscriber, and a subscribe, though it *does* wake the plugin's agent,
@@ -276,7 +279,7 @@ the same inspect-time gate: the owned entry routes under the scoped registry nam
 effective name that would overflow the length cap under its *scoped* spelling is refused
 (`callback_name_too_long` / `event_name_too_long`) before it can reach the registry (see
 `architecture/callbacks.md`). A rejected inspection deletes
-its fetched staging tree; a successful one retains it for the commit to consume.
+its fetched staging tree; a successful one keeps it for the commit.
 
 **A component declares system requirements.** Each installs by its declared strategy —
 verified tarball, virtualenv or npm, processed in declaration order; OS packages are
