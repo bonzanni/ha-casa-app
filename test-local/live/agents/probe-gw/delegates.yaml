@@ -1,8 +1,0 @@
-schema_version: 1
-delegates:
-  - agent: __SPEC_ROLE__
-    purpose: "probe specialist for the WS-A live harness"
-    when: "any RAWCALL instruction targeting __SPEC_ROLE__"
-  - agent: __GHOST_ROLE__
-    purpose: "declared-but-absent target (unknown_agent probe S.1e)"
-    when: "never — this agent does not exist by design"

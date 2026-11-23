@@ -1,7 +1,0 @@
-schema_version: 1
-max_sentences_confirmation: 2
-max_sentences_status: 3
-register: spoken
-format: plain
-rules:
-  - "Reply with raw tool results verbatim. No preamble, no filler."

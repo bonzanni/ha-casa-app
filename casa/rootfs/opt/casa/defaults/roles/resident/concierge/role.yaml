@@ -10,7 +10,7 @@ model:
   default: haiku
   allowed: [opus, sonnet, haiku]
 tools:
-  allowed: [WebSearch, mcp__casa-framework__delegate_to_agent]
+  allowed: [WebSearch, mcp__casa-framework__delegate_to_agent, mcp__casa-framework__voice_job_status, mcp__casa-framework__cancel_voice_job, mcp__casa-framework__continue_voice_job]
   disallowed: [Bash, Write, Edit, Read, Glob, Grep, WebFetch, NotebookEdit, Agent, Task]
   permission_mode: dontAsk
   max_turns: 6

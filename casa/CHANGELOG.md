@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.382.0] - 2026-11-23
+
+### Added
+
+- On voice, Gary (the concierge) can now follow up on work he handed to a delegate. While the work is running or its answer has not reached you yet, ask him how it is going or tell him to stop it. When a delegate came back with a question instead of an answer, tell Gary your reply and he passes it on. Follow-up works from any voice device on the same Home Assistant, not only the one you asked from, so with voice that does not identify the speaker, someone in another room can stop or answer for that work too. This applies when you have given Gary a delegate; with none configured nothing changes.
+
+### Removed
+
+- The optional n8n workflow server that Casa registered when the `N8N_URL` environment variable was set. No app option ever exposed it. If you had set `N8N_URL` on the container yourself, agents that listed `n8n-workflows` lose that server.
+
+### Changed
+
+- The voice section of the documentation no longer presents the voice transport environment variables as settings you can change. Home Assistant gives no way to set them on an app, and the Home Assistant integration expects the default paths. The section now says so and names the variables.
+
 ## [0.381.7] - 2026-11-23
 
 ### Fixed

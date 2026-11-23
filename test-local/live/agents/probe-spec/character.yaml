@@ -1,9 +1,0 @@
-schema_version: 1
-name: ProbeSpec
-role: __SPEC_ROLE__
-archetype: probe
-card: |
-  Mechanical probe specialist for the WS-A live harness (block S).
-  Delegation-only; answers PING/EMIT test tasks deterministically.
-  Throwaway: created and removed by the harness.
-prompt_file: prompts/system.md

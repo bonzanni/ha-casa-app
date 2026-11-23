@@ -829,15 +829,15 @@ settings. Voice request rate limits are isolated by agent role and scope, so
 activity through one resident cannot consume another resident's allowance even
 when both requests use the same scope identifier.
 
-Toggle the transports via environment variables on the app:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `VOICE_SSE_ENABLED` | `true` | Enable `POST /api/converse` |
-| `VOICE_WS_ENABLED`  | `true` | Enable `/api/converse/ws` |
-| `VOICE_SSE_PATH`    | `/api/converse` | Override SSE path |
-| `VOICE_WS_PATH`     | `/api/converse/ws` | Override WS path |
-| `VOICE_IDLE_TIMEOUT_SECONDS` | (butler.session.idle_timeout, 300) | Session pool eviction timeout |
+As shipped both transports are on, at `POST /api/converse` and
+`/api/converse/ws`, and the Home Assistant integration expects exactly these
+paths. No app option turns a transport off or moves it. Casa does read
+environment variables for this (`VOICE_SSE_ENABLED`, `VOICE_WS_ENABLED`,
+`VOICE_SSE_PATH`, `VOICE_WS_PATH`, and `VOICE_IDLE_TIMEOUT_SECONDS` for the
+session pool's idle timeout), but Home Assistant gives no way to set them on an
+app, so they matter only where the container is started some other way. Left
+unset, an idle voice session is dropped from the pool after the butler's
+`session.idle_timeout` (300 seconds as shipped).
 
 A synchronous specialist delegation started mid-voice-turn (`delegate_to_agent`
 from the voice butler) is bounded by a fixed 27-second turn budget, derived

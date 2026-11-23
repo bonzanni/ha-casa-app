@@ -10,6 +10,13 @@ tools:
   allowed:
     - WebSearch
     - mcp__casa-framework__delegate_to_agent
+    # The follow-up to a delegate's work: how it is going, stop it, answer
+    # the question it came back with. Each one answers for work started
+    # over the same Home Assistant connection by the same user id; the
+    # asking device does not have to be the one that started it.
+    - mcp__casa-framework__voice_job_status
+    - mcp__casa-framework__cancel_voice_job
+    - mcp__casa-framework__continue_voice_job
     # #419 — a headless event wake cannot ask for approval; without this
     # every nudge would stall to budget exhaustion since ack_event could
     # never actually run (any resident role may be an operator-assigned

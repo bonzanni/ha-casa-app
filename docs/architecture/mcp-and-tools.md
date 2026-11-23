@@ -46,11 +46,6 @@ a group runs on options built apart (`tools._build_guest_options`): `mcp_servers
 no Casa tool exists there, and the only tools offered are the specialist's plugin tools its
 author marked for guests ([`guest-summons.md`](guest-summons.md), INV-GUEST-002).
 
-**One optional MCP server rides on the environment.** Setting `N8N_URL` registers an n8n
-workflow server (bearer-authenticated when `N8N_API_KEY` is set), read by
-`casa_core._maybe_register_n8n`; unset, nothing is registered. No manifest option exposes
-it — these variables are its only switch.
-
 ## Contracts & invariants
 
 **INV-MCP-002**: The internal endpoint is reachable only from inside the container, over a Unix socket with restricted permissions.
@@ -182,13 +177,11 @@ is "nothing may do this", the tool is the place.
 - `casa/rootfs/opt/casa/tools.py::init_tools`
 - `casa/rootfs/opt/casa/tools.py::create_casa_tools`
 - `casa/rootfs/opt/casa/tools.py::select_casa_tools`
-- `casa/rootfs/opt/casa/casa_core.py::_maybe_register_n8n`
 
 **Tests**
 - `tests/test_role_scoped_mcp.py`
 - `tests/test_specialist_tool_ceiling.py`
 - `tests/test_cross_session_tools.py`
-- `tests/test_n8n_registration.py`
 - `tests/test_specialist_casa_server_attach.py`
 
 **Related**

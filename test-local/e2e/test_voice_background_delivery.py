@@ -70,6 +70,8 @@ from custom_components.casa.delivery import (  # noqa: E402
 )
 
 import tools  # noqa: E402
+import voice_phrases  # noqa: E402
+from role_artifact_stub import STUB_ROLE_ARTIFACT  # noqa: E402
 from agent import Agent  # noqa: E402
 from bus import BusMessage, MessageBus, MessageType  # noqa: E402
 from channels import ChannelManager  # noqa: E402
@@ -96,6 +98,32 @@ async def _eventually(predicate, *, timeout: float = 3.5) -> None:
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.01)
+
+
+def _answers(announces: list[dict]) -> list[str]:
+    """The answer inside each announcement, with its attribution checked.
+
+    An answer is spoken long after its question, so Casa leads it with who
+    it came from (``voice_phrases``); the wording varies by job. This strips
+    that lead-in and fails on a message that carries none.
+    """
+    out: list[str] = []
+    for call in announces:
+        message = call["message"]
+        for template in voice_phrases._ANNOUNCE:
+            for specialist in ("Judge", "Health"):
+                lead = template.format(s=specialist, a="")
+                # A lead-in that does not name the specialist attributes
+                # nothing, so it does not count as one.
+                if specialist in lead and message.startswith(lead):
+                    out.append(message[len(lead):])
+                    break
+            else:
+                continue
+            break
+        else:
+            pytest.fail(f"announcement carries no attribution: {message!r}")
+    return out
 
 
 def _tool_payload(envelope: dict) -> dict:
@@ -338,6 +366,7 @@ async def stack(tmp_path, monkeypatch):
         str(tmp_path / "specialists"), job_registry=result.registry,
     )
     caller = AgentConfig(
+        role_artifact=STUB_ROLE_ARTIFACT,
         role="concierge",
         channels=["ha_voice"],
         model="claude-sonnet-4-6",
@@ -357,11 +386,13 @@ async def stack(tmp_path, monkeypatch):
         DelegateEntry(agent="health", purpose="health", when="health question"),
     ]
     judge = AgentConfig(
+        role_artifact=STUB_ROLE_ARTIFACT,
         role="judge",
         character=CharacterConfig(name="Judge"),
         model="claude-sonnet-4-6",
     )
     health = AgentConfig(
+        role_artifact=STUB_ROLE_ARTIFACT,
         role="health",
         character=CharacterConfig(name="Health"),
         model="claude-sonnet-4-6",
@@ -436,8 +467,14 @@ async def stack(tmp_path, monkeypatch):
     port = site._server.sockets[0].getsockname()[1]
 
     result.session = aiohttp.ClientSession()
+    # Production resolves the offer per utterance from Home Assistant's
+    # registries; here both devices are announce-capable satellites, so each
+    # one offers a spoken answer confirmed when playback completes.
     result.api = CasaApiClient(
         result.session, "127.0.0.1", port, "e2e-secret",
+        delivery_resolver=lambda device_id: {
+            "modality": "audio", "receipt": "playback_complete",
+        },
     )
     directory = SatelliteDirectory()
     directory.add("dev-k", "assist_satellite.kitchen")
@@ -499,8 +536,11 @@ async def test_busy_completion_waits_then_announces_without_reentering_gary(stac
     )
     await stack.coordinator.sweep_once()
     await _eventually(lambda: stack.manager.attempt_count_for_test == 1)
-    assert stack.registry.get(pending["job_id"]).delivery_state is (
-        DeliveryState.CLAIMED
+    # The integration counts its attempt when it sends the claim; Casa may
+    # still be reading that frame. The device is busy, so CLAIMED then holds.
+    await _eventually(
+        lambda: stack.registry.get(pending["job_id"]).delivery_state
+        is DeliveryState.CLAIMED,
     )
     assert stack.announces == []
 
@@ -514,7 +554,7 @@ async def test_busy_completion_waits_then_announces_without_reentering_gary(stac
         ),
     )
 
-    assert [call["message"] for call in stack.announces] == ["The ruling is no."]
+    assert _answers(stack.announces) == ["The ruling is no."]
     assert stack.gary_snapshot() == before_completion
     assert not any(
         message.type is MessageType.NOTIFICATION
@@ -535,7 +575,7 @@ async def test_immediate_idle_completion_announces_without_extra_transition(stac
         lambda: stack.registry.get(pending["job_id"]).delivery_state
         is DeliveryState.DELIVERED,
     )
-    assert [call["message"] for call in stack.announces] == ["Immediate answer."]
+    assert _answers(stack.announces) == ["Immediate answer."]
 
 
 async def test_delivered_waits_for_blocking_announce_to_return(stack):
@@ -563,7 +603,7 @@ async def test_delivered_waits_for_blocking_announce_to_return(stack):
         lambda: stack.registry.get(pending["job_id"]).delivery_state
         is DeliveryState.DELIVERED,
     )
-    assert [call["message"] for call in stack.announces] == ["Blocking answer."]
+    assert _answers(stack.announces) == ["Blocking answer."]
 
 
 async def test_cancel_running_never_announces(stack):
@@ -633,7 +673,7 @@ async def test_ws_reconnect_preserves_background_delivery(stack):
         lambda: stack.registry.get(pending["job_id"]).delivery_state
         is DeliveryState.DELIVERED,
     )
-    assert [call["message"] for call in stack.announces] == ["After reconnect."]
+    assert _answers(stack.announces) == ["After reconnect."]
 
 
 async def test_lost_delivered_ack_reoffers_without_replay_or_mapping(stack):
@@ -660,10 +700,13 @@ async def test_lost_delivered_ack_reoffers_without_replay_or_mapping(stack):
     await _eventually(
         lambda: pending["job_id"] in stack.manager.delivered_ids_for_test,
     )
-    assert stack.registry.get(pending["job_id"]).delivery_state is (
-        DeliveryState.PLAYING
+    # The integration marks the job delivered as soon as the announce returns;
+    # Casa may still be reading the playback-started frame sent just before.
+    await _eventually(
+        lambda: stack.registry.get(pending["job_id"]).delivery_state
+        is DeliveryState.PLAYING,
     )
-    assert [call["message"] for call in stack.announces] == [
+    assert _answers(stack.announces) == [
         "Exactly once audio.",
     ]
 
@@ -690,7 +733,7 @@ async def test_lost_delivered_ack_reoffers_without_replay_or_mapping(stack):
         "job_claimed",
         "job_delivered",
     ]
-    assert [call["message"] for call in stack.announces] == [
+    assert _answers(stack.announces) == [
         "Exactly once audio.",
     ]
 
@@ -718,6 +761,7 @@ async def test_private_result_canaries_never_reach_wire_or_logs(stack, caplog):
             is DeliveryState.DELIVERED,
         )
 
+    # A private result is announced by a fixed line that names nobody.
     assert [call["message"] for call in stack.announces] == [
         "Your result is ready; ask me for the details.",
     ]
@@ -875,7 +919,11 @@ async def test_real_reader_writer_interleave_keeps_devices_and_frames_isolated(
 
     assert frames_one == ["block", "done"]
     assert frames_two == ["block", "done"]
-    assert [call["message"] for call in stack.announces] == ["Office answer."]
+    assert _answers(stack.announces) == ["Office answer."]
+    # ... and it played in the office, not on the kitchen satellite.
+    assert [call["entity_id"] for call in stack.announces] == [
+        "assist_satellite.office",
+    ]
     assert send_activity["client_max"] == 1
     assert send_activity["server_max"] == 1
 
@@ -1003,7 +1051,7 @@ async def test_disconnect_completion_reconnect_preserves_fifo_and_accounting(
         for payload in (first, second, other)
     ))
 
-    assert [call["message"] for call in stack.announces] == [
+    assert _answers(stack.announces) == [
         "Office answer.",
         "First kitchen answer.",
         "Second kitchen answer.",
