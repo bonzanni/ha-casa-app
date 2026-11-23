@@ -959,9 +959,13 @@ class TestVoiceTurnGuardWiring:
                 await agent._process(_msg(channel, "guard-scope"))
 
     @pytest.mark.parametrize("pool_mode", ["on", "off"])
-    async def test_voice_guard_is_fresh_for_each_retry_attempt(
+    async def test_voice_turn_is_not_rerun_after_a_tool_call(
         self, tmp_path, monkeypatch, pool_mode,
     ):
+        """#1654: a voice turn whose tool already ran is not run again on a
+        transient fault. The fault surfaces after ONE attempt, so the guard
+        never meets a second attempt's tool results (this test used to pin
+        that the retry got a fresh guard; that retry no longer exists)."""
         monkeypatch.setenv("SDK_CLIENT_POOL", pool_mode)
         agent = _make_agent(tmp_path, role="butler")
         agent.config.tools.voice_guard = "ha_direct"
@@ -980,28 +984,21 @@ class TestVoiceTurnGuardWiring:
                 RetryableError("upstream reset"),
             ],
             [
-                _mk_tool_use(
-                    "attempt-2-tool",
-                    "mcp__homeassistant__HassTurnOff",
-                    {"name": "office lamp"},
-                ),
-                _mk_tool_result(
-                    "attempt-2-tool", is_error=True,
-                    text="invalid tool input",
-                ),
-                _mk_assistant("Recovered cleanly."),
+                _mk_assistant("A second attempt ran."),
                 _mk_result("retry-guard-sid"),
             ],
         )
 
         with patch(
             "sdk_client_pool._default_make_client", ScriptedToolClient,
-        ), patch_retry_sleep():
-            text = await agent._process(_msg(
-                "voice", f"retry-guard-{pool_mode}",
-            ))
+        ), patch_retry_sleep() as sleep:
+            with pytest.raises(RetryableError):
+                await agent._process(_msg(
+                    "voice", f"retry-guard-{pool_mode}",
+                ))
 
-        assert text == "Recovered cleanly."
+        assert len(ScriptedToolClient.instances) == 1
+        sleep.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -2607,9 +2604,36 @@ class TestSetupOutcomeReport:
         assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
 
     async def test_evidence_aggregates_across_sdk_attempts(self, tmp_path):
-        # Terra design r1 S2: the tool can run in an attempt that then
-        # fails retryably; the successful later attempt has no evidence.
-        # Aggregation across attempts must keep the used_ok fact.
+        # Terra design r1 S2: evidence is the union over every attempt of
+        # the turn. #1654: an attempt that ran a tool is never followed by
+        # another, so the facts that span attempts are the tool surface an
+        # earlier, failed attempt listed and the tool a later one ran.
+        agent = _make_agent(tmp_path)
+        boom = type("CLIConnectionError", (RuntimeError,), {})
+        ScriptedToolClient.reset(
+            [
+                _mk_init("sid-g", [_SETUP_NS]),
+                boom("stream died"),
+            ],
+            [
+                _mk_tool_use("t1", _SETUP_NS),
+                _mk_tool_result("t1", is_error=False, text="wired"),
+                _mk_assistant("(retried) done"),
+                _mk_result("sid-g2"),
+            ],
+        )
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient), patch_retry_sleep(), \
+                _capture_reports() as calls:
+            await agent._process(_setup_msg("op-8"))
+        assert len(ScriptedToolClient.instances) == 2
+        assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
+        assert calls[0][1]["available_tools"] == {_SETUP_NS}
+
+    async def test_a_setup_turn_that_fails_after_its_tool_ran_reports_it(
+            self, tmp_path):
+        # #1654: the setup tool ran, then the stream died. The turn is not
+        # run again; it fails, and its report still says the tool ran.
         agent = _make_agent(tmp_path)
         boom = type("CLIConnectionError", (RuntimeError,), {})
         ScriptedToolClient.reset(
@@ -2627,7 +2651,9 @@ class TestSetupOutcomeReport:
         with patch("sdk_client_pool._default_make_client",
                    ScriptedToolClient), patch_retry_sleep(), \
                 _capture_reports() as calls:
-            await agent._process(_setup_msg("op-8"))
+            with pytest.raises(boom):
+                await agent._process(_setup_msg("op-9"))
+        assert len(ScriptedToolClient.instances) == 1
         assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
         assert calls[0][1]["available_tools"] == {_SETUP_NS}
 

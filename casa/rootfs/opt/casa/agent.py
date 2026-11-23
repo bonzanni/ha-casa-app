@@ -87,7 +87,7 @@ from sdk_client_pool import (
     PoolUnavailable,
     SdkClientPool,
 )
-from retry import _env_int, retry_sdk_call
+from retry import RETRY_KINDS, _env_int, retry_sdk_call
 from tokens import (
     BudgetTracker,
     estimate_tokens,
@@ -2688,6 +2688,19 @@ class Agent:
                     and self.config.tools.voice_guard == "ha_direct"
                     else None
                 )
+                # Published before the decision and the options build, as the
+                # pooled attempt does: a failure anywhere in this attempt is
+                # then read against this attempt's state, never an earlier
+                # attempt's.
+                on_message, state = self._make_on_message(
+                    on_token, turn_guard,
+                    settle_evidence=(
+                        msg.context.get("synthetic") != "plugin_setup"),
+                    scope=scope, capture=capture_message,
+                    observe=capture_observe,
+                )
+                turn_state["state"] = state
+                turn_state.setdefault("states", []).append(state)
                 existing = self._session_registry.get(channel_key)
                 # #526: same no-await block as the entry snapshot (see the
                 # pooled path's on_decision). #290: the retirement check
@@ -2736,15 +2749,6 @@ class Agent:
                     options, origin_ctxvar=origin_var,
                     cid_ctxvar=cid_var, engagement_ctxvar=self._engagement_var,
                 )
-                on_message, state = self._make_on_message(
-                    on_token, turn_guard,
-                    settle_evidence=(
-                        msg.context.get("synthetic") != "plugin_setup"),
-                    scope=scope, capture=capture_message,
-                    observe=capture_observe,
-                )
-                turn_state["state"] = state
-                turn_state.setdefault("states", []).append(state)
                 try:
                     await client.open()
                     async with client.lock:
@@ -2756,6 +2760,18 @@ class Agent:
                     await client.aclose()
                 return (state["text"], sid, state["usage"], resume_sid, False,
                         tuple(state["messages"]))
+
+            def _failed_attempt() -> dict[str, Any]:
+                # The state of the attempt that just failed: every attempt
+                # publishes its own before anything of it can raise.
+                return turn_state.get("state") or {}
+
+            def _may_rerun(_exc: Exception) -> bool:
+                # #1654: an attempt that has seen a tool call is not run
+                # again. A rerun starts from the prompt, on a session whose
+                # transcript does not show that the tool ran (or, resuming,
+                # into a half-finished turn), and the model runs it twice.
+                return not _failed_attempt().get("tool_names_by_id")
 
             # Retry transient faults (spec 5.2 §3). The pooled path may raise
             # PoolUnavailable (pool closing / entry unstable) — fall to the
@@ -2773,6 +2789,7 @@ class Agent:
                 try:
                     return await retry_sdk_call(
                         attempt_fn, on_retry=_record_retry,
+                        may_retry=_may_rerun,
                     )
                 except ApiErrorTurn as exc:
                     # #568: dropping the pool entry unbinds the CLIENT, not the
@@ -2798,7 +2815,13 @@ class Agent:
                         )
                     raise
                 except ProcessError as exc:
-                    if last_resume["sid"] is None:
+                    # A stale resume is refused at connect, before any
+                    # message of the turn. Once a message arrived (#1654) the
+                    # exit is a fault of a turn that was running: the stored
+                    # session is not cleared and the turn is not run again
+                    # from blank.
+                    if (last_resume["sid"] is None
+                            or _failed_attempt().get("received")):
                         raise
                     # Phase 4b Bug 5: structured retry telemetry. exc.stderr
                     # is populated by Bug 4's stderr callback; truncate to a
@@ -2834,7 +2857,26 @@ class Agent:
                     )
                     return await retry_sdk_call(
                         attempt_fn, on_retry=_record_retry,
+                        may_retry=_may_rerun,
                     )
+
+            async def _register_session(sid: str) -> None:
+                # Record *sid* as the conversation's session, for resume and
+                # save. Called inside the session gate.
+                if turn_capture is not None:
+                    await turn_capture.name(sid)
+                await self._session_registry.register(
+                    channel_key=channel_key,
+                    agent=self.config.role_id,
+                    sdk_session_id=sid,
+                    scope_class=(
+                        "webhook_oneshot" if is_webhook_oneshot else None),
+                    binding_digest=self.config.binding_digest,
+                    prompt_surface_digest=_armed_surface_digest() or "",
+                    speaker_provenance=speaker_provenance_for_role(self.config),
+                    user_provenance=user_provenance,
+                    scheduled=turn_scheduled,
+                )
 
             attempt = _attempt_pooled_turn if use_pool else _attempt_bypass_turn
             # #573/#579: EVERY turn runs under the per-session write gate, and
@@ -2926,13 +2968,41 @@ class Agent:
                 except asyncio.CancelledError:
                     raise  # a cancelled turn is not health evidence
                 except Exception as exc:
+                    terminal_kind = _classify_error(exc)
+                    # #1654: the attempt that failed ran a tool, so its
+                    # session is kept for the conversation: the next turn
+                    # resumes it and the model's transcript shows what
+                    # already ran. Registered exactly as a successful turn's
+                    # session is, under the same still-held gate, with the
+                    # view the attempt served bound to it (a memory role
+                    # resumes only a session its view record names). Only
+                    # for a transient fault or a CLI exit; a refused turn's
+                    # session is not one to continue. Best-effort: the
+                    # original error surfaces whatever happens here.
+                    kept_sid: str | None = None
+                    failed = _failed_attempt()
+                    if (failed.get("tool_names_by_id")
+                            and failed.get("session_id")
+                            and (terminal_kind in RETRY_KINDS
+                                 or isinstance(exc, ProcessError))):
+                        kept_sid = failed["session_id"]
+                        try:
+                            await _register_session(kept_sid)
+                            await self._settle_memory_session(
+                                channel=msg.channel, channel_key=channel_key,
+                                sdk_session_id=kept_sid)
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "failed turn: session %s not kept for %s",
+                                kept_sid, channel_key, exc_info=True)
                     # #650: a terminal fault on a resumed trusted turn is
                     # noted UNDER the still-held session write gate — the gate
                     # is what turn-orders health notes against the decisions
                     # that read them (seam r1) — then re-raised unchanged.
                     await self._note_resume_health(
                         msg, channel_key, last_resume["sid"], report,
-                        terminal_kind=_classify_error(exc), final_text=None,
+                        terminal_kind=terminal_kind, final_text=None,
+                        current_sid=kept_sid,
                     )
                     raise
 
@@ -2967,20 +3037,7 @@ class Agent:
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
                 if sdk_session_id and not session_published:
-                    if turn_capture is not None:
-                        await turn_capture.name(sdk_session_id)
-                    await self._session_registry.register(
-                        channel_key=channel_key,
-                        agent=self.config.role_id,
-                        sdk_session_id=sdk_session_id,
-                        scope_class=(
-                            "webhook_oneshot" if is_webhook_oneshot else None),
-                        binding_digest=self.config.binding_digest,
-                        prompt_surface_digest=_armed_surface_digest() or "",
-                        speaker_provenance=speaker_provenance_for_role(self.config),
-                        user_provenance=user_provenance,
-                        scheduled=turn_scheduled,
-                    )
+                    await _register_session(sdk_session_id)
                 # The view this turn served belongs to the session the turn
                 # published, pooled or not, and that session is kept only on
                 # a record bound to it; inside the same gate.
@@ -3969,6 +4026,9 @@ class Agent:
         on_token, usage extraction into state["usage"]) — MINUS session-id
         capture, which the warm client / pool now owns (spec Q7). A fresh state
         per call resets the streaming accumulator per attempt (spec §3.2).
+        ``state["session_id"]`` is not that capture: the pool hands a session
+        id out only for a turn that succeeded, and this is the session a
+        FAILED attempt's messages named, read by the turn's failure handling.
 
         Partial-message streaming (voice and Telegram turns; AR-A/AR-B/AR-E):
         ``state["partial"]`` accumulates the in-flight message's text deltas
@@ -3982,7 +4042,14 @@ class Agent:
         emission already carry the joiner.
         ``state["last_emitted"]`` dedupes: on_token only fires when the
         computed cumulative actually changed (AR-A/AR-B)."""
+        from memory.transcript_runs import session_of
         state: dict[str, Any] = {
+            # Whether any message of this attempt arrived, and the SDK
+            # session its messages name. A fault's handling reads both: an
+            # attempt that received nothing never started its turn, and one
+            # that ran a tool has a session worth keeping.
+            "received": False,
+            "session_id": None,
             "text": "",
             # #1075: the same fold, one entry per text-bearing message — the
             # only place message boundaries exist. ``text`` is their join.
@@ -4082,6 +4149,8 @@ class Agent:
             state["last_emitted"] = emitted
 
         async def on_message(sdk_msg: Any) -> None:
+            state["received"] = True
+            state["session_id"] = session_of(sdk_msg) or state["session_id"]
             if observe is not None:
                 await observe(sdk_msg)
             # Partial streaming — handled EARLY so a StreamEvent never

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-13
+last_reviewed: 2026-11-23
 ---
 
 # The turn loop
@@ -64,7 +64,7 @@ loop are [`turn-notes.md`](turn-notes.md).
 branches off in `_process` once the origin snapshot and scope exist, before the turn's
 identity, the session gate, the memory view, the correction note, chat notes, capture or the
 pool, into `Agent._guest_turn`: one bounded run on a client of its own, built by
-`tools._build_guest_options`, retried like any turn and cut at its timeout
+`tools._build_guest_options`, retried whole and cut at its timeout
 ([`guest-summons.md`](guest-summons.md), INV-GUEST-002, INV-GUEST-003).
 
 ## Contracts & invariants
@@ -76,10 +76,23 @@ is flattened to omission at this point — observable in logs, not in the prompt
 memory view and the correction note fail independently, so either may be present beside the
 other's absence.
 
-**INV-TURN-005**: Cancellation is never retried and is re-raised after a bounded interrupt-and-drain cleanup; retry covers exactly the three classified transient kinds — timeout, rate limit, and SDK error — with exponential backoff, honouring a server-supplied retry hint when present.
+**INV-TURN-005**: Cancellation is never retried and is re-raised after a bounded interrupt-and-drain cleanup; retry covers exactly the three classified transient kinds — timeout, rate limit, and SDK error — and only while the failed attempt has seen no tool call, with exponential backoff, honouring a server-supplied retry hint when present.
 
 "Generic model errors" are *not* a retried category: a failure that classifies to none of the
 three kinds is raised immediately.
+
+**INV-TURN-017**: Once an attempt of a turn has seen a tool call, a retryable fault or a CLI exit ends the turn as its classified error with no further attempt, and that attempt's session is registered for the conversation under the session gate; a CLI exit clears the stored session and reruns the turn fresh only when it was raised before any message of the turn arrived.
+
+A rerun starts from the prompt, on a session that does not show the tool ran, so the model
+runs it again: a delegation launched twice, a message sent twice (#1654). The failed
+attempt's own session holds the call and its result, so it is registered as a successful
+turn's is, its memory view bound to it ([`memory-serving.md`](memory-serving.md)), and the
+next message resumes it.
+
+What it does not cover: any other fault keeps no session, and a refusal still clears one
+(INV-TURN-007); a CLI exit after a message but before any tool call fails the turn with no
+rerun and no registration; a kept session the CLI cannot resume is cleared at the next
+connect; and nothing reruns an unattended turn.
 
 **INV-TURN-007**: An API-level fault the CLI reports as an assistant message never becomes agent text; it ends the turn as a classified error, and a safety refusal is not retried.
 
@@ -103,7 +116,7 @@ resumed, so the next turn on that key would resume the very conversation that wa
 with the declined message still in it. The refusal therefore clears that registration —
 under the same guards as the stale-resume recovery, so a concurrent turn's newer session
 survives, and for a refusal only, since a transient fault is no reason to discard a
-conversation the next turn could continue.
+conversation the next turn could continue (INV-TURN-017).
 
 What it does not cover: a fault scoped to a sub-agent rather than the main loop is suppressed
 without ending the turn, because the resident may still answer; the result message's stop
@@ -133,19 +146,11 @@ author — not humanity: a signed `/invoke` automation is in scope, while heartb
 wakes, scheduled work and setup dispatches stay doctrinally silent through any upstream
 congestion window.
 
-Two things happen inside that gate that the rest of the loop never sees. A Casa-dispatched
-plugin-setup turn re-checks its obligation the moment it holds the gate, before any client
-or prompt, and returns without running when the obligation was settled meanwhile; and the
-message handler hands every non-error plugin-tool result of an ordinary turn to the setup
-store as it is observed, while the gate and the client lock are still held, so a setup turn
-queued behind that turn finds the row settled rather than asking for the setup again. When
-that handover clears a failed obligation, the handler also regenerates the plugin-health
-report before it reads the next message, so the reply's health notice reads the new report.
-These are [`plugin-setup-turn.md`](plugin-setup-turn.md)'s (INV-PLUG-023,
-INV-PLUG-030); the loop only orders them. A third is an ordering fact: the setup-outcome
-report the loop makes in its `finally` runs before the message handler admits, suppresses
-or delivers the reply, so it carries the turn's tool evidence and never what the operator
-received (INV-PLUG-012, INV-PLUG-024).
+Three things the loop only orders are [`plugin-setup-turn.md`](plugin-setup-turn.md)'s: a
+dispatched setup turn's re-check of its obligation under the session gate, the handover of
+an ordinary turn's plugin-tool results to the setup store (INV-PLUG-023, INV-PLUG-030), and
+the setup-outcome report its `finally` makes before the reply is admitted or delivered
+(INV-PLUG-012, INV-PLUG-024).
 
 The streak half guards against a poisoned resume: each trusted turn that resumed its
 conversation commits a health note — while still holding the per-key session write gate,
@@ -269,20 +274,20 @@ refuses an unconverted SDK client or query.
 ## Failure behavior
 
 **The model call fails transiently.** Retried with exponential backoff up to a small attempt
-limit. A retry hint from the server overrides the computed delay.
+limit, unless the failed attempt saw a tool call (INV-TURN-017). A retry hint from the server
+overrides the computed delay.
 
 **Retries are consumed and the turn still ends silent.** On a trusted-ingress turn this is
 surfaced as the mapped error, never as silence, and — when the turn was resuming — counted
-against the conversation's fault streak; at the bound the next ask starts fresh with the
-old session retained (INV-TURN-008).
+against the conversation's fault streak (INV-TURN-008).
 
-**The session id is stale.** The stored session is cleared — but only while the registry
-entry still carries the id that failed *and* no registration has landed since this
-attempt's snapshot: each registration stamps a process-local generation the decision
-captures, so even a concurrent turn that successfully re-resumed the *same* id keeps its
-registration (and its save-time retention). The retry resumes whatever survives — and the
-turn re-enters the normal fresh retry policy — up to the standard attempt limit, not a
-single extra try.
+**The session id is stale.** The CLI exits before any message of the turn (INV-TURN-017),
+and the stored session is cleared — but only while the registry entry still carries the id
+that failed *and* no registration has landed since this attempt's snapshot: each
+registration stamps a process-local generation the decision captures, so even a concurrent
+turn that successfully re-resumed the *same* id keeps its registration (and its save-time
+retention). The retry resumes whatever survives — and the turn re-enters the normal fresh
+retry policy — up to the standard attempt limit, not a single extra try.
 
 **The pool cannot serve the turn.** It raises, and the turn creates its own client for this
 turn only. The two failures compose: a stale session id hit on that per-turn fallback
@@ -293,10 +298,8 @@ path and exact pinned version, and a mismatch is *fatal at startup* — replacin
 upgrading the CLI without moving the pin prevents Casa from starting rather than merely
 degrading turns.
 
-**Memory is unavailable.** The turn proceeds without it, with a warning. An unavailable
-memory is not an empty memory — but at this point the distinction lives only in the logs.
-The model and the turn's caller see the same thing either way: no memory view and no
-correction note (see INV-TURN-004).
+**Memory is unavailable.** The turn proceeds without it, with a warning; only the logs tell
+an unavailable memory from an empty one (INV-TURN-004).
 
 What the loop does *not* do: it does not save long-term memory per turn. Saving happens at
 session granularity, in the background, elsewhere.

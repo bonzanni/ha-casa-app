@@ -259,6 +259,33 @@ async def test_a_run_past_the_timeout_fails_the_reply_and_closes_the_client(
     assert closes[0].state == "closed"
 
 
+async def test_a_guest_run_is_retried_whole_after_a_tool_call(tmp_path, client):
+    """A guest run keeps no session to continue (INV-GUEST-003) and its tools
+    are the guest-flagged ones, so a transient fault reruns it from the
+    start even after a tool ran — unlike a turn of a conversation."""
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+    from test_agent_process import patch_retry_sleep
+    CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
+    runs: list[int] = []
+
+    class _FaultsOnce(_Client):
+        async def receive_response(self):
+            runs.append(len(runs) + 1)
+            if runs[-1] == 1:
+                yield AssistantMessage(content=[ToolUseBlock(
+                    id="t1", name=LOOKUP, input={})], model="m")
+                raise CLIConnectionError("upstream reset")
+            yield _mk_assistant("pong")
+            yield _mk_result("sdk-sid-2")
+
+    agent = _agent(tmp_path)
+    with patch("sdk_client_pool._default_make_client", _FaultsOnce), \
+            patch_retry_sleep() as sleep:
+        assert await agent._process(_guest_msg()) == "pong"
+    assert runs == [1, 2]
+    assert sleep.await_count == 1
+
+
 async def test_a_legacy_prompt_specialist_still_runs_locked_down(tmp_path, client):
     agent = _agent(tmp_path, bundle=None)
     assert await agent._process(_guest_msg()) == "pong"
