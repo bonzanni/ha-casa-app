@@ -246,3 +246,24 @@ async def test_two_sources_coexist(opened: ContactsStore) -> None:
     with opened.transaction() as conn:
         assert cstore.count(conn, "icloud") == 2
         assert cstore.count(conn, "file") == 1
+
+
+async def test_duplicate_uid_keeps_the_last_card_and_its_group_priority(
+    opened: ContactsStore,
+) -> None:
+    first = _card("U1", "Marco Old", "+39 333 0000001", note="old")
+    last = _card("U1", "Marco Example", "+39 333 0000003", note="new")
+    result = await sync.run(
+        opened, FakeSource("icloud", [first, NORA, PRIORITY, last]),
+        default_region="NL")
+
+    assert result.ok and result.added == 2
+    with opened.transaction() as conn:
+        (p,) = cstore.by_number(conn, "+393330000003")
+        assert (p.name, p.note, p.groups) == ("Marco Example", "new",
+                                              ("Priority",))
+        assert cstore.by_number(conn, "+393330000001") == []
+        assert cstore.marks_for(conn, "icloud", "U1").priority
+        assert conn.execute(
+            "SELECT count(*) FROM marks WHERE origin = 'group'"
+        ).fetchone()[0] == 1

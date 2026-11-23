@@ -164,3 +164,17 @@ async def test_partly_failed_report_is_a_source_error() -> None:
     source = _source(_fixture("report_partial.xml"))
     with pytest.raises(SourceError, match=INCOMPLETE):
         await source.fetch()
+
+
+async def test_failed_propstat_with_a_readable_card_is_a_source_error() -> None:
+    good = "BEGIN:VCARD\r\nFN:Zoe Example\r\nUID:U1\r\nEND:VCARD\r\n"
+    failed = (
+        "<response><href>/1234567/carddav/card/U2.vcf</href><propstat><prop>"
+        '<address-data xmlns="urn:ietf:params:xml:ns:carddav">'
+        "BEGIN:VCARD\r\nFN:Adam Sample\r\nUID:U2\r\nEND:VCARD\r\n"
+        "</address-data></prop><status>HTTP/1.1 404 Not Found</status>"
+        "</propstat></response>")
+    report = _report({"U1.vcf": good}).replace(
+        "</multistatus>", failed + "</multistatus>")
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await _source(report).fetch()

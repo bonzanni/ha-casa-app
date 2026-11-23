@@ -9,6 +9,11 @@ sources are untouched.
 Priority from the address book comes only from membership of the group named
 :data:`PRIORITY_GROUP`; it is written as ``group``-origin marks, which never
 override the operator's own.
+
+After a successful write, the notes that changed are read by a model
+(:mod:`contacts.notes`) into ``note``-origin relation and language marks. The
+model is called outside any transaction, and note reading never fails the
+sync.
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Protocol
 
+from contacts import notes
 from contacts import numbers as phone_numbers
 from contacts import store as cstore
 from contacts.store import ContactsStore, Person
@@ -69,8 +75,9 @@ def _failed(error: str, tell_operator: bool) -> Result:
 
 def _people(source: str, cards: list[Card],
             default_region: str) -> tuple[list[Person], int]:
-    """Person cards as :class:`Person` rows, with group names on members;
-    returns them and the count of numbers that could not be read."""
+    """Person cards as :class:`Person` rows, with group names on members,
+    one per uid (the last card wins, as in the store); returns them and the
+    count of numbers that could not be read."""
     groups: dict[str, list[str]] = {}
     for card in cards:
         if card.is_group:
@@ -78,7 +85,7 @@ def _people(source: str, cards: list[Card],
                 names = groups.setdefault(member, [])
                 if card.name not in names:
                     names.append(card.name)
-    people: list[Person] = []
+    people: dict[str, Person] = {}
     skipped = 0
     for card in cards:
         if card.is_group:
@@ -90,12 +97,12 @@ def _people(source: str, cards: list[Card],
                 skipped += 1
             elif e164 not in numbers:
                 numbers.append(e164)
-        people.append(Person(
+        people[card.uid] = Person(
             source=source, uid=card.uid, name=card.name,
             first_name=card.first_name, org=card.org, note=card.note,
             numbers=tuple(numbers), groups=tuple(groups.get(card.uid, ())),
-            related=card.related))
-    return people, skipped
+            related=card.related)
+    return list(people.values()), skipped
 
 
 def _record_failure(store: ContactsStore, source: str, error: str) -> bool:
@@ -134,10 +141,59 @@ def _apply(store: ContactsStore, source: str,
         return changed, False
 
 
+def _apply_notes(store: ContactsStore, source: str, emptied: list[str],
+                 readings: dict[str, notes.Reading],
+                 read_notes: dict[str, str]) -> None:
+    """Delete the ``note``-origin marks of *emptied*, and rewrite those of
+    each read uid whose note is still the one that was read (a later sync
+    may have changed or removed it meanwhile)."""
+    with store.transaction(write=True) as conn:
+        for uid in emptied:
+            for field in ("relation", "language"):
+                cstore.clear_mark(conn, source, uid, field, "note")
+        for uid, reading in readings.items():
+            row = conn.execute(
+                "SELECT note FROM people WHERE source = ? AND uid = ?",
+                (source, uid)).fetchone()
+            if row is None or row[0] != read_notes[uid]:
+                continue
+            for field, value in (("relation", reading.relation),
+                                 ("language", reading.language)):
+                if value:
+                    cstore.set_mark(conn, source, uid, field, value, "note")
+                else:
+                    cstore.clear_mark(conn, source, uid, field, "note")
+
+
+async def _read_notes(store: ContactsStore, source: str,
+                      people: list[Person], note_changed: list[str],
+                      model: notes.Model | None) -> None:
+    """Bring ``note``-origin marks in line with the notes that changed: an
+    emptied note loses them without a model call; a non-empty one is read
+    when a model is given. Never raises."""
+    try:
+        by_uid = {p.uid: p for p in people}
+        changed = [by_uid[uid] for uid in note_changed]
+        emptied = [p.uid for p in changed if not p.note.strip()]
+        to_read = [p for p in changed if p.note.strip()]
+        readings: dict[str, notes.Reading] = {}
+        if model is not None and to_read:
+            readings = await notes.read(model, to_read)
+        if emptied or readings:
+            await asyncio.to_thread(
+                _apply_notes, store, source, emptied, readings,
+                {p.uid: p.note for p in to_read})
+    except Exception:  # noqa: BLE001 — notes never fail the sync
+        logger.exception("contact notes from %s not applied", source)
+
+
 async def run(store: ContactsStore, source: Source, *,
-              default_region: str) -> Result:
-    """Fetch *source* and mirror it into *store*. A failed or empty fetch
-    leaves the store's people, numbers and marks as they were."""
+              default_region: str,
+              model: notes.Model | None = None) -> Result:
+    """Fetch *source* and mirror it into *store*, then read the changed
+    notes with *model* (none: note marks stay as they are). A failed or
+    empty fetch leaves the store's people, numbers and marks as they
+    were."""
     try:
         cards = await source.fetch()
     except SourceError as exc:
@@ -159,6 +215,8 @@ async def run(store: ContactsStore, source: Source, *,
         "contacts sync from %s: %d added, %d removed, %d kept, "
         "%d numbers skipped", source.name, changed["added"],
         changed["removed"], changed["kept"], skipped)
+    await _read_notes(store, source.name, people, changed["note_changed"],
+                      model)
     return Result(ok=True, added=changed["added"], removed=changed["removed"],
                   kept=changed["kept"], skipped_numbers=skipped,
                   note_changed=tuple(changed["note_changed"]), error="",
