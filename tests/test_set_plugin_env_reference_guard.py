@@ -47,3 +47,26 @@ async def test_the_tool_wrapper_returns_the_refusal(calls, monkeypatch):
     assert payload["ok"] is False
     assert "onepassword_service_account_token" in payload["error"]
     assert calls == []
+
+
+@pytest.mark.parametrize("value", [
+    "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+    "first\rsecond",
+    "ok\r\nGMAIL_OTHER=x",
+    "a\vb", "a\fb", "a\x1cb", "a\x1db", "a\x1eb", "a\x85b",
+    "a\u2028b", "a\u2029b", "trailing\n",
+])
+def test_a_multi_line_value_is_refused_not_truncated(calls, value):
+    got = tools_mod._tool_set_plugin_env_reference(
+        plugin="gmail", var_name="SA_KEY", op_ref_or_value=value)
+    assert got["ok"] is False
+    assert "one line" in got["error"]
+    assert "vault" in got["error"]
+    assert calls == []
+
+
+def test_an_empty_value_is_still_written(calls):
+    got = tools_mod._tool_set_plugin_env_reference(
+        plugin="gmail", var_name="SA_KEY", op_ref_or_value="")
+    assert got == {"ok": True}
+    assert calls == [(("SA_KEY", ""), {})]

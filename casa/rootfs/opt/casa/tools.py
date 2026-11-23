@@ -19638,6 +19638,14 @@ def _tool_set_plugin_env_reference(
         return {"ok": False,
                 "error": f"{var_name} is set by the app option '{option}'; "
                          "change it in the app's configuration"}
+    # The file holds one entry per line and is read back with splitlines(), so
+    # any separator it recognizes would cut the value short (or start a second
+    # entry) while the write reports success.
+    if op_ref_or_value and op_ref_or_value.splitlines() != [op_ref_or_value]:
+        return {"ok": False,
+                "error": f"the value for {var_name} must be one line; keep a "
+                         "multi-line secret in the vault and wire it by "
+                         "reference"}
     from plugin_env_conf import set_entry as _set_env_entry_local
     _set_env_entry_local(var_name, op_ref_or_value)
     return {"ok": True}

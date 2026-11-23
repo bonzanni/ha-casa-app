@@ -232,8 +232,9 @@ the same rule (INV-SPEC-018, [`architecture/specialist-lifecycle.md`](specialist
 **`set_plugin_env_reference` refuses the two names Casa sets itself.** For
 `OP_SERVICE_ACCOUNT_TOKEN` and `ONEPASSWORD_DEFAULT_VAULT` (`plugin_store.CASA_OWNED_ENV_OPTIONS`)
 it writes nothing and returns `ok: false` naming the app option to change instead: an entry
-would override, for every plugin, the value Casa chose from its options at start. Any other
-name is written as before.
+would override, for every plugin, the value Casa chose from its options at start. It also
+refuses a value containing a line break (the file holds one entry per line); a multi-line
+secret belongs in the vault, wired by reference. Any other value is written as before.
 
 ## Failure behavior
 
