@@ -376,7 +376,7 @@ def test_load_never_raises_on_adversarial_ts(tmp_path):
             "targets": ["resident:assistant"], "ts": bad, "gen": "g1",
         })
         store = EventAckStore(path=path)      # construction calls _load
-        assert isinstance(store._load(), dict)   # explicit: no exception
+        assert isinstance(store._load(), tuple)  # explicit: no exception
 
 
 def test_deeply_nested_json_does_not_crash_load(tmp_path):
@@ -385,7 +385,7 @@ def test_deeply_nested_json_does_not_crash_load(tmp_path):
 
     store = EventAckStore(path=path)               # must not raise
     assert store.get(_identity()) is None
-    assert store._load() == {}
+    assert store._load() == ({}, {})
 
 
 def test_oversized_store_yields_zero_acks(tmp_path):
@@ -404,7 +404,7 @@ def test_oversized_store_yields_zero_acks(tmp_path):
 
     store = EventAckStore(path=path)
     assert store.get(identity) is None
-    assert store._load() == {}
+    assert store._load() == ({}, {})
 
 
 def test_corrupt_store_then_record_persists_a_valid_store(tmp_path):
@@ -444,7 +444,7 @@ def test_load_is_total_on_adversarial_content(tmp_path):
     ]
     for blob in cases:
         path.write_text(blob, encoding="utf-8")
-        assert isinstance(EventAckStore(path=path)._load(), dict)
+        assert isinstance(EventAckStore(path=path)._load(), tuple)
 
 
 def test_revoke_subscriber_returns_count_and_persists(tmp_path):
@@ -578,3 +578,179 @@ def test_prune_stale_drops_only_identities_outside_valid_set(tmp_path):
     assert store.get(stale_identity) is None
     assert store.get(keep_identity) is not None
     assert store.get(other_identity) is not None
+
+
+# ---------------------------------------------------------------------------
+# #1666 — denials are kept in the same file, apart from the acks
+# ---------------------------------------------------------------------------
+
+_SUB = ("finance", "art-1", "gmail", "new-mail", "digest-1",
+        ["resident:assistant"])
+_DENIAL = {"subscriber": "finance", "artifact_id": "art-1", "emitter": "gmail",
+           "event": "new-mail", "digest": "digest-1",
+           "targets": ["resident:assistant"], "ts": 1}
+
+
+def _store_with_sections(path, *, acks, denied) -> None:
+    path.write_text(json.dumps({
+        "schema_version": 1, "acks": acks, "denied": denied,
+    }), encoding="utf-8")
+
+
+def test_restart_load_sees_prior_denial(tmp_path):
+    path = tmp_path / "acks.json"
+    EventAckStore(path=path).deny(*_SUB, 1000.0)
+
+    reloaded = EventAckStore(path=path)
+
+    assert reloaded.is_denied(_identity()) is True
+    assert reloaded.get(_identity()) is None
+
+
+def test_a_store_without_a_denied_section_loads_its_acks(tmp_path):
+    """A store written before denials were kept has no such section."""
+    path = tmp_path / "acks.json"
+    identity = _store_with_record(path, dict(_DENIAL, gen="g1"))
+
+    store = EventAckStore(path=path)
+
+    assert store.get(identity) is not None
+    assert store.is_denied(identity) is False
+
+
+def test_a_denial_is_never_an_ack(tmp_path):
+    path = tmp_path / "acks.json"
+    store = EventAckStore(path=path)
+    store.record(*_SUB, 1000.0)
+    store.deny(*_SUB, 1001.0)
+    assert store.get(_identity()) is None          # the Deny replaced the ack
+
+    # a file holding nothing but the denial
+    _store_with_sections(path, acks={}, denied={_identity(): _DENIAL})
+    only_denied = EventAckStore(path=path)
+    assert only_denied.is_denied(_identity()) is True
+    assert only_denied.get(_identity()) is None
+
+
+def test_approving_clears_the_denial(tmp_path):
+    path = tmp_path / "acks.json"
+    store = EventAckStore(path=path)
+    store.deny(*_SUB, 1000.0)
+    store.record(*_SUB, 1001.0)
+
+    for s in (store, EventAckStore(path=path)):
+        assert s.get(_identity()) is not None
+        assert s.is_denied(_identity()) is False
+
+
+@pytest.mark.parametrize("denied", [
+    {_identity(): {k: v for k, v in _DENIAL.items() if k != "digest"}},
+    {_identity(): dict(_DENIAL, gen="g1")},            # an ack-shaped record
+    {"not-the-real-identity": _DENIAL},
+    {_identity(): dict(_DENIAL, ts="soon")},
+    [],
+    None,
+])
+def test_malformed_denial_yields_zero_acks_whole_store(tmp_path, denied):
+    path = tmp_path / "acks.json"
+    good_identity, good_rec = _good_record()
+    _store_with_sections(path, acks={good_identity: good_rec}, denied=denied)
+
+    store = EventAckStore(path=path)
+
+    assert store.get(good_identity) is None
+    assert store.is_denied(_identity()) is False
+
+
+def test_identity_both_acked_and_denied_yields_zero_acks_whole_store(tmp_path):
+    path = tmp_path / "acks.json"
+    good_identity, good_rec = _good_record()
+    _store_with_sections(
+        path,
+        acks={good_identity: good_rec, _identity(): dict(_DENIAL, gen="g1")},
+        denied={_identity(): _DENIAL})
+
+    store = EventAckStore(path=path)
+
+    assert store.get(_identity()) is None
+    assert store.get(good_identity) is None
+    assert store.is_denied(_identity()) is False
+
+
+def test_deny_publishes_only_after_durable_write(tmp_path, monkeypatch):
+    store = EventAckStore(path=tmp_path / "acks.json")
+    store.record(*_SUB, 1000.0)
+
+    def _boom(path, text, **kwargs):
+        raise OSError("disk full")
+
+    import atomic_io
+    monkeypatch.setattr(atomic_io, "atomic_write_text", _boom)
+
+    with pytest.raises(OSError):
+        store.deny(*_SUB, 1001.0)
+
+    # memory unchanged: not denied, and the ack it would have replaced stands
+    assert store.is_denied(_identity()) is False
+    assert store.get(_identity()) is not None
+
+
+def test_an_operator_revoke_turns_the_acks_into_denials(tmp_path):
+    path = tmp_path / "acks.json"
+    store = EventAckStore(path=path)
+    store.record(*_SUB, 1000.0)
+    never_approved = {"subscriber": "finance", "artifact_id": "art-1",
+                      "emitter": "gmail", "event": "invoice",
+                      "digest": "digest-2", "targets": ["resident:assistant"]}
+
+    removed = store.revoke_subscriber("finance", deny_ts=2000.0,
+                                      deny=[never_approved])
+
+    assert [r["event"] for r in removed] == ["new-mail"]
+    invoice = _identity(event="invoice", digest="digest-2")
+    for s in (store, EventAckStore(path=path)):
+        assert s.get(_identity()) is None
+        assert s.is_denied(_identity()) is True
+        assert s.is_denied(invoice) is True       # denied without ever
+        assert s.get(invoice) is None             # having been approved
+
+
+def test_a_removal_revoke_forgets_the_denials_too(tmp_path):
+    path = tmp_path / "acks.json"
+    store = EventAckStore(path=path)
+    store.deny(*_SUB, 1000.0)
+    store.deny("other-plugin", "art-1", "gmail", "new-mail", "digest-3",
+               ["resident:assistant"], 1000.0)
+
+    assert store.revoke_subscriber("finance") == []     # it held no ack
+
+    other = _identity(subscriber="other-plugin", digest="digest-3")
+    for s in (store, EventAckStore(path=path)):
+        assert s.is_denied(_identity()) is False
+        assert s.is_denied(other) is True
+
+
+def test_prune_stale_drops_a_stale_denial(tmp_path):
+    path = tmp_path / "acks.json"
+    store = EventAckStore(path=path)
+    store.deny(*_SUB, 1000.0)
+    store.deny("finance", "art-1", "outlook", "new-mail", "digest-2",
+               ["resident:assistant"], 1000.0)
+    stale = _identity(emitter="outlook", digest="digest-2")
+
+    store.prune_stale({_identity()})
+
+    for s in (store, EventAckStore(path=path)):
+        assert s.is_denied(_identity()) is True
+        assert s.is_denied(stale) is False
+
+
+def test_subscribers_on_counts_a_subscriber_holding_only_a_denial(tmp_path):
+    store = EventAckStore(path=tmp_path / "acks.json")
+    store.deny(*_SUB, 1000.0)
+    store.record("other-plugin", "art-2", "gmail", "new-mail", "digest-3",
+                 ["resident:assistant"], 1000.0)
+
+    assert store.subscribers_on(["art-1"]) == {"finance"}
+    assert store.subscribers_on(["art-1", "art-2"]) == {"finance",
+                                                        "other-plugin"}

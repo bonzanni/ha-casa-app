@@ -489,7 +489,8 @@ _SLUG = "mtg"
 _OWNED = f"{_SLUG}.sub"
 
 
-def _bundle_world(monkeypatch, tmp_path):
+def _bundle_world(monkeypatch, tmp_path, events=("mail_arrived",)):
+    """The owned plugin subscribes to each of gmail's *events*."""
     import asyncio as _asyncio
 
     import agent as agent_mod
@@ -523,9 +524,10 @@ def _bundle_world(monkeypatch, tmp_path):
             manifest={"name": name, "casa": casa}, owned=owned,
             targets=[f"specialist:{_SLUG}"] if owned else ["resident:assistant"])
 
-    gmail = plugin("gmail", "v1", emits=["mail_arrived"])
-    sub_v1 = plugin(_OWNED, "v1", subs=[("gmail", "mail_arrived")], owned=True)
-    sub_v2 = plugin(_OWNED, "v2", subs=[("gmail", "mail_arrived")], owned=True)
+    subs = [("gmail", ev) for ev in events]
+    gmail = plugin("gmail", "v1", emits=list(events))
+    sub_v1 = plugin(_OWNED, "v1", subs=subs, owned=True)
+    sub_v2 = plugin(_OWNED, "v2", subs=subs, owned=True)
     standing = plugin_registry.PluginIssue(
         name="weather", target="executor:browser", stage="registry",
         reason_code=plugin_registry.IGNORED_EXECUTOR_TARGET, artifact_id=None)
@@ -553,15 +555,30 @@ def _bundle_world(monkeypatch, tmp_path):
         channel_manager=None, agents={}, agents_dir=None)
     monkeypatch.setattr(agent_mod, "active_runtime", runtime, raising=False)
 
+    # The store is read off the module at call time: a restart replaces it.
     async def reconcile():
         await event_reconcile.reconcile_plugin_events(
-            runtime, acks=store, resolver=resolver, entries=entries,
+            runtime, acks=event_acks.ACKS, resolver=resolver, entries=entries,
             prompt=False)
 
     def desired():
         return event_reconcile.compute_desired(
-            role_configs=runtime.role_configs, acks=store,
+            role_configs=runtime.role_configs, acks=event_acks.ACKS,
             resolver=resolver, entries=entries)
+
+    def restart():
+        """Casa restarts: the consent store is read again from its file and
+        the in-process denial registry is empty."""
+        import consent_denials
+        monkeypatch.setattr(event_acks, "ACKS", event_acks.EventAckStore(
+            tmp_path / "event_acks.json"))
+        monkeypatch.setattr(consent_denials, "_denied", set())
+
+    async def turn_off(event):
+        """The operator's ``event_ack_revoke`` for one subscription."""
+        await event_reconcile.revoke_and_unroute(
+            _OWNED, "gmail", event, operator_denied=True, resolver=resolver,
+            entries=entries)
 
     # The agent/agents reload scopes run the event reconcile.
     async def dispatch(scope, *, runtime, role=None):
@@ -636,7 +653,8 @@ def _bundle_world(monkeypatch, tmp_path):
                      {"plugin": "gmail", "event": "mail_arrived"}),
                  [f"specialist:{_SLUG}"], 1.0)
     return SimpleNamespace(tools=tools_mod, er=event_reconcile, sub_v1=sub_v1,
-                           reconcile=reconcile, desired=desired)
+                           reconcile=reconcile, desired=desired,
+                           restart=restart, turn_off=turn_off)
 
 
 def _staged_bundle(monkeypatch, tmp_path) -> dict:
@@ -686,6 +704,38 @@ class TestLeavingASpecialistBundleRevokesItsEventConsent:
         pending = w.desired().consent_needed
         assert [(p["subscriber"], p["artifact_id"]) for p in pending] == [
             (_OWNED, w.sub_v1.artifact_id)]
+
+    # #1666: a subscription the operator turned off is remembered in the same
+    # store, and leaves with the artifact the same way — also when the
+    # subscriber holds nothing but denials there.
+    @pytest.mark.parametrize("turned_off", [
+        ["mail_read"], ["mail_read", "mail_arrived"]])
+    async def test_a_reinstall_after_uninstall_asks_again_for_one_turned_off(
+            self, monkeypatch, tmp_path, turned_off):
+        from test_tools_specialist_install import _approved_call, _payload
+        args = _staged_bundle(monkeypatch, tmp_path)
+        w = _bundle_world(monkeypatch, tmp_path,
+                          events=("mail_arrived", "mail_read"))
+        for event in turned_off:
+            await w.turn_off(event)
+        await w.reconcile()
+        # off by the operator's answer: nothing is waiting for approval
+        assert w.desired().issues == []
+        assert _owned_routed(w.er) is ("mail_arrived" not in turned_off)
+        assert w.desired().prunable is False       # the prune never runs here
+
+        res = _payload(await w.tools.specialist_uninstall.handler(
+            {"slug": _SLUG}))
+        assert res["ok"] is True, res
+        w.restart()
+        res = _payload(await _approved_call(
+            w.tools.specialist_install_commit, args))  # the same revision
+        assert res["ok"] is True, res
+
+        # both are unanswered again: neither approved nor turned off
+        assert w.er.get_routed() == {}
+        assert [(i["name"], i["reason_code"]) for i in w.desired().issues] == [
+            (_OWNED, "event_pending_ack"), (_OWNED, "event_pending_ack")]
 
     async def test_a_rollback_after_upgrade_asks_again(
             self, monkeypatch, tmp_path):

@@ -13,10 +13,12 @@ are mirrored here) and, on the identity side, of :mod:`trigger_consent`:
   step, before any await) and fire a reconcile so delivery starts — never
   an agent-continuation dispatch.
 * Deny / expiry → the subscription stays undelivered; the next lifecycle
-  reconcile may re-prompt. After a Deny it is off on its own, and the Deny
-  fires the same reconcile an Approve does, so the subscriber's other
-  approved subscriptions route at once; after an expiry it is still
-  ``event_pending_ack`` and holds back the subscriber's others.
+  reconcile may re-prompt. A Deny is stored as a denial in :mod:`event_acks`
+  (the same synchronous commit step), so it is off on its own, also after a
+  restart, and the Deny fires the same reconcile an Approve does, so the
+  subscriber's other approved subscriptions route at once; after an expiry
+  nothing is stored: it is still ``event_pending_ack`` and holds back the
+  subscriber's others.
 
 **Deliberately standalone from the plugin-setup round ledger** (Critical-2,
 review round 1): unlike the trigger/callback consent flavors, event consent
@@ -151,18 +153,20 @@ def prompt_event_consent(
 
     def _on_commit_sync(idx: int, meta: dict) -> None:
         # Telegram callback, IMMEDIATELY after a successful commit (no await
-        # between): idx 0 -> persist the ack atomically; idx 1 -> no-op. An
-        # exception here is swallowed+logged by the callback; ``acked`` stays
-        # absent and the finish hook edits the internal-error text — a
-        # consent that failed to persist must never start delivery.
-        import consent_denials
+        # between): idx 0 -> persist the ack atomically; idx 1 -> persist
+        # the denial. An exception here is swallowed+logged by the callback;
+        # ``acked`` stays absent and the finish hook edits the internal-error
+        # text — a consent that failed to persist must never start delivery.
         if idx != 0:
-            # #494: latest decision is a Deny — commit-ordered record so the
-            # on-demand re-prompt path never nags past it (expiry records
-            # nothing; the finish hook owns that path).
-            consent_denials.record(consent_denials.key("event", identity))
+            # The latest decision is a Deny, stored beside the acks so the
+            # subscription stays off across a restart (#1666) and the
+            # on-demand re-prompt path never nags past it (#494). Expiry
+            # stores nothing; the finish hook owns that path. A Deny that
+            # could not be written leaves the subscription unanswered.
+            acks.deny(subscriber, artifact_id, emitter, event, digest,
+                      targets, time.time())
             return
-        consent_denials.clear(consent_denials.key("event", identity))
+        # ``record`` clears an earlier denial of this identity in its write.
         acks.record(subscriber, artifact_id, emitter, event, digest, targets,
                    time.time())
         meta["acked"] = True

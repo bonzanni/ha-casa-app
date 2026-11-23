@@ -14127,10 +14127,11 @@ async def _bundle_reload_and_verify(
         _invalidate_lifecycle(artifact_id=aid)
     _invalidate_lifecycle(roles=[f"specialist:{slug}", *targets_removed])
     # #1671: an owned plugin whose artifact left loses the event consents it
-    # held as a subscriber, as with plugin_remove/plugin_update (#1657). The
-    # ack identity carries the artifact id, so a reinstall or a rollback to
-    # that revision would otherwise be routed again with no consent card.
-    # Before the reload below, so its event reconcile no longer sees the ack.
+    # held as a subscriber, approvals and denials alike, as with
+    # plugin_remove/plugin_update (#1657). The ack identity carries the
+    # artifact id, so a reinstall or a rollback to that revision would
+    # otherwise be routed again with no consent card. Before the reload
+    # below, so its event reconcile no longer sees the ack.
     import event_acks
     for name in sorted(event_acks.ACKS.subscribers_on(removed_artifact_ids)):
         await _settle_through_cancellation(
@@ -18589,11 +18590,11 @@ async def _remove_and_settle(name: str) -> dict:
 
 async def _revoke_event_consents(name: str, tool: str) -> None:
     """Unroute *name* as an event subscriber and drop every event consent it
-    holds, so returning to an artifact it left asks the operator again.
-    Best-effort, like the callback teardown: a failure never fails the
-    mutation. Takes the event reconcile and dispatch-admission locks, which
-    nest inside the plugin-tools lock the caller holds (the same order
-    ``event_ack_revoke`` uses)."""
+    holds — approvals and denials alike — so returning to an artifact it left
+    asks the operator again. Best-effort, like the callback teardown: a
+    failure never fails the mutation. Takes the event reconcile and
+    dispatch-admission locks, which nest inside the plugin-tools lock the
+    caller holds (the same order ``event_ack_revoke`` uses)."""
     try:
         import event_reconcile
         removed = await event_reconcile.revoke_and_unroute(name)
@@ -18790,12 +18791,11 @@ async def callback_ack_revoke(args: dict) -> dict:
     "ONE subscription when both emitter and event are given, otherwise "
     "every subscription the plugin holds — and unroute it IMMEDIATELY (no "
     "further delivery nudges are admitted once this returns). The revoke "
-    "counts as the operator's Deny: the plugin's other subscriptions keep "
-    "delivering, and consent_reprompt does not re-ask it; the consent DM "
-    "re-asks on the next plugin mutation or reload, and an Approve there "
-    "re-consents. A Casa restart forgets the Deny: the revoked subscription "
-    "then waits for an answer again and holds the plugin's other "
-    "subscriptions back until it gets one.",
+    "counts as the operator's Deny, also for a subscription not yet "
+    "approved, and is kept across a Casa restart: the plugin's other "
+    "subscriptions keep delivering, and consent_reprompt does not re-ask "
+    "it; the consent DM re-asks on the next plugin mutation or reload, and "
+    "an Approve there re-consents.",
     {"type": "object",
      "properties": {"subscriber": {"type": "string"},
                     "emitter": {"type": "string"}, "event": {"type": "string"}},

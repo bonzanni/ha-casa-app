@@ -6,7 +6,8 @@ which accepts the tap, acks ✔, and commits NOTHING. These tests pin the
 recovery mechanism shipped for that incident:
 
 * ``consent_denials`` — commit-ordered latest-decision registry (Approve
-  clears, Deny records, expiry writes nothing);
+  clears, Deny records, expiry writes nothing) for trigger and callback
+  consents; an event consent's denial is stored with its acks instead;
 * per-kind ``reprompt_pending`` — PROMPT-ONLY (no reconcile, no setup-round
   sealing/re-arming: the round-2 design wedge is pinned as a red case);
 * ``plugin_setup_episodes.open_member_nonce`` — read-only nonce reuse;
@@ -188,13 +189,9 @@ def test_callback_commit_hooks_write_the_registry(tmp_path, episodes_store):
     assert acks.get(identity) is not None
 
 
-def test_trigger_and_event_commit_hooks_write_the_registry(tmp_path,
-                                                           episodes_store):
-    import event_consent
+def test_trigger_commit_hooks_write_the_registry(tmp_path, episodes_store):
     import trigger_consent
-    from event_acks import EventAckStore
     from trigger_acks import TriggerAckStore
-    import plugin_events
     import plugin_triggers
 
     coord = _CaptureCoordinator()
@@ -214,19 +211,54 @@ def test_trigger_and_event_commit_hooks_write_the_registry(tmp_path,
     hook(0, {})
     assert not consent_denials.denied(consent_denials.key("trigger", t_ident))
 
-    e_acks = EventAckStore(path=tmp_path / "e.json")
+
+async def test_a_denied_event_consent_still_reads_denied_after_a_restart(
+        tmp_path):
+    """An event consent's Deny is stored with its acks, so the on-demand
+    re-issue still skips it once Casa has restarted; an Approve clears it."""
+    import event_consent
+    import event_reconcile
+    import plugin_events
+    from event_acks import EventAckStore
+
+    gmail = SimpleNamespace(
+        name="gmail", artifact_id="art-g", manifest_name="gmail",
+        manifest={"name": "gmail", "casa": {"emits": [{"name": "mail"}]}})
+    fin = SimpleNamespace(
+        name="fin", artifact_id="art-1", manifest_name="fin",
+        manifest={"name": "fin", "casa": {"subscribes": [
+            {"plugin": "gmail", "event": "mail"}]}})
+    digest = plugin_events.subscribe_declaration_digest(
+        {"plugin": "gmail", "event": "mail"})
+    path = tmp_path / "e.json"
+    coord = _CaptureCoordinator()
     event_consent.prompt_event_consent(
         coordinator=coord, channel=_FakeTelegram(), chat_id=100,
         operator_id=100, subscriber="fin", artifact_id="art-1",
-        emitter="gmail", event="mail", digest="d1",
-        targets=["resident:assistant"], acks=e_acks)
-    e_ident = plugin_events.ack_identity(
-        "fin", "art-1", "gmail", "mail", "d1", ["resident:assistant"])
-    hook = _commit_hook_for_callback([coord.calls[1]])
-    hook(1, {})
-    assert consent_denials.denied(consent_denials.key("event", e_ident))
-    hook(0, {})
-    assert not consent_denials.denied(consent_denials.key("event", e_ident))
+        emitter="gmail", event="mail", digest=digest,
+        targets=["resident:assistant"], acks=EventAckStore(path=path))
+    hook = _commit_hook_for_callback(coord.calls)
+
+    async def reprompt():
+        """A reprompt by a Casa that has just started: the store is read
+        again from its file and the in-process denial registry is empty."""
+        consent_denials._denied.clear()
+        telegram, report = _FakeTelegram(), []
+        await event_reconcile.reprompt_pending(
+            _runtime(telegram), report=report, acks=EventAckStore(path=path),
+            resolver=_resolver([gmail, fin]), entries=_entries(gmail, fin))
+        await _drain()
+        return telegram.posts, report
+
+    hook(1, {})                                    # Deny
+    posts, report = await reprompt()
+    assert posts == []
+    assert report == [{"kind": "event", "plugin": "fin",
+                       "name": "gmail:mail", "status": "denied"}]
+
+    hook(0, {})                                    # Approve — latest wins
+    posts, report = await reprompt()
+    assert posts == [] and report == []            # approved: nothing pending
 
 
 # ---------------------------------------------------------------------------

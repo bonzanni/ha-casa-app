@@ -280,10 +280,12 @@ delivery from each keyboard's actual settled post outcome, never from pending ro
 keyboards were needed and none could be delivered, the result is a typed
 `delivery_failed`, not success. Consents the operator explicitly *denied* on a keyboard (or,
 for an event subscription, revoked with `event_ack_revoke`) are
-skipped and reported `denied` rather than re-asked — the in-process `consent_denials`
-registry records the latest decision in the same synchronous commit step that persists the
-ack (Approve clears, Deny records, expiry writes nothing), so agent-driven re-issue can
-never nag past a Deny while mutations and reloads re-ask as they always did. Any other
+skipped and reported `denied` rather than re-asked — the latest decision is recorded in the
+same synchronous commit step that persists the ack (Approve clears, Deny records, expiry
+writes nothing), so agent-driven re-issue can never nag past a Deny while mutations and
+reloads re-ask as they always did. Trigger and callback denials live in the in-process
+`consent_denials` registry, which a restart empties; an event subscription's denial is
+stored with its acks in `/data/event_acks.json` and survives one. Any other
 challenge the `ChallengeCoordinator` holds open for the operator DM — a specialist or
 persona install consent, an erase-data question, an authorization request, or a plugin
 consent no row already shows — is read from `ChallengeCoordinator.live_kinds` (an unsettled

@@ -51,13 +51,9 @@ class _FakeChannel:
 
 
 def _fresh_env(monkeypatch, tmp_path):
-    import consent_denials
     import verdict_broker
     broker = verdict_broker.VerdictBroker()
     monkeypatch.setattr(verdict_broker, "BROKER", broker)
-    # a Deny tap is recorded process-wide and now steers routing; keep it
-    # inside the test that made it
-    monkeypatch.setattr(consent_denials, "_denied", set())
     coord = ChallengeCoordinator()
     channel = _FakeChannel()
     acks = EventAckStore(path=tmp_path / "event_acks.json")
@@ -265,6 +261,34 @@ async def test_deny_leaves_it_undelivered(monkeypatch, tmp_path):
     assert fired == [True]
     assert any("❌" in e[2] for e in channel.edits)
     assert "⚠️" not in channel.edits[-1][2]
+    # #1666: the Deny is on disk, and it is not an approval
+    reloaded = EventAckStore(path=tmp_path / "event_acks.json")
+    assert reloaded.is_denied(IDENTITY) is True
+    assert reloaded.get(IDENTITY) is None
+
+
+async def test_a_deny_that_could_not_be_written_leaves_it_unanswered(
+        monkeypatch, tmp_path):
+    broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+    handle = _prompt(coord, channel, acks)
+    await handle.settled_post()
+
+    def _boom(path, text, **kwargs):
+        raise OSError("disk full")
+
+    import atomic_io
+    monkeypatch.setattr(atomic_io, "atomic_write_text", _boom)
+    ch = coord._entries[next(iter(coord._entries))]
+    claim = broker.claim(namespace="resident_ask", scope=ch.scope,
+                         request_id=ch.rid, option_index=1, actor_id=100)
+    assert broker.commit(claim) is True
+    with pytest.raises(OSError):
+        ch.req.meta["on_commit_sync"](1)      # the telegram handler swallows
+    await _settle()
+
+    assert acks.is_denied(IDENTITY) is False
+    assert acks.get(IDENTITY) is None
+    assert channel.edits[-1][2].startswith("❌ Denied")
 
 
 async def test_reconcile_failure_after_a_deny_says_so(monkeypatch, tmp_path):
@@ -290,6 +314,7 @@ async def test_expiry_leaves_it_undelivered(monkeypatch, tmp_path):
     await asyncio.sleep(0.1)
     await _settle()
     assert acks.get(IDENTITY) is None
+    assert acks.is_denied(IDENTITY) is False     # an expiry is not an answer
     assert any("⌛" in e[2] for e in channel.edits)
 
 
