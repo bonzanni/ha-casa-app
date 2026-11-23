@@ -9756,6 +9756,11 @@ def _inbox_for_executing_agent():
     return agent_inbox.get_inbox(role) if role else None
 
 
+def _inbound_kind(ext: str) -> str:
+    """What to call an inbound file that has no display name of its own."""
+    return "photo" if ext in (".png", ".jpg", ".jpeg") else "file"
+
+
 @tool(
     "list_inbound_files",
     "List the files the operator has sent you in Telegram, newest first: the "
@@ -9787,7 +9792,7 @@ async def list_inbound_files(args: dict) -> dict:
     lines = ["Files the operator sent you, newest first. Listing a file is not "
              "reading it: open one with the Read tool before describing it."]
     for i, f in enumerate(files, 1):
-        shown = f'"{f.display_name}"' if f.display_name != f.name else "a photo"
+        shown = f'"{f.display_name}"' if f.display_name != f.name else f"a {_inbound_kind(f.ext)}"
         size = (f"{f.size / (1024 * 1024):.1f} MB" if f.size >= 1024 * 1024
                 else f"{max(1, f.size // 1024)} KB")
         lines.append(f"{i}. {shown} — {f.ext.lstrip('.').upper()}, {size}, "
@@ -9834,8 +9839,7 @@ async def share_inbound_file(args: dict) -> dict:
                             "cannot be shared with a plugin.")
     # No display name (a photo has none; a document's may have been lost —
     # its meta is best-effort): name it by its kind, never by Casa's name.
-    kind = "photo" if match.ext in (".png", ".jpg", ".jpeg") else "file"
-    fallback = kind + match.ext
+    fallback = _inbound_kind(match.ext) + match.ext
     name = fallback if match.display_name == match.name else match.display_name
     try:
         out = await asyncio.to_thread(
