@@ -2572,6 +2572,16 @@ async def main() -> None:
     from memory.model_port import SdkModelPort
     memory_writer.configure(memory_store, SdkModelPort())
 
+    # 2a'. The contacts store. A failure leaves contacts unavailable; Casa
+    # boots either way. The service is configured once Telegram exists (12').
+    from contacts import notes as contacts_notes
+    from contacts import service as contacts_service
+    from contacts.store import ContactsStore
+    contacts_store = ContactsStore()
+    if not await asyncio.to_thread(contacts_store.open):
+        logger.warning("contacts unavailable: %s",
+                       contacts_store.unavailable_reason)
+
     def _agent_home_dir(role: str) -> str:
         """Resident transcript cwd (encoded-cwd dir for delete_session). Matches agent.py's agent_home WHEN ``config.cwd`` is
         unset — the prod default (all shipped configs have ``cwd: ""``). If a
@@ -3713,6 +3723,12 @@ async def main() -> None:
     memory_maintenance.configure(
         notify=telegram_channel.notify_operator
         if telegram_channel is not None else None)
+    contacts_service.configure(
+        store=contacts_store,
+        notify=telegram_channel.notify_operator
+        if telegram_channel is not None else None,
+        model=contacts_notes.NoteModel(),
+        read_secret=contacts_service.read_icloud_secret)
     if _maintenance_intent is not None:
         await memory_maintenance.request_restart(
             kind=_maintenance_intent.get("kind"))
@@ -4094,6 +4110,32 @@ async def main() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
+
+    # Contacts: the daily iCloud refresh, and one shortly after boot while
+    # the mirror is still empty (a first install).
+    scheduler.add_job(
+        contacts_service.run_daily,
+        trigger="cron",
+        id="contacts_daily_sync",
+        hour=4, minute=10,
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    try:
+        _contacts_empty = await asyncio.to_thread(contacts_service.mirror_empty)
+    except Exception:  # noqa: BLE001 — a check must not stop the boot
+        logger.warning("contacts mirror not checked", exc_info=True)
+        _contacts_empty = False
+    if _contacts_empty:
+        from datetime import timedelta as _td
+        scheduler.add_job(
+            contacts_service.run_daily,
+            trigger="date",
+            id="contacts_boot_sync",
+            run_date=_dt.now(_tz.utc) + _td(seconds=60),
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
 
     scheduler.start()
 

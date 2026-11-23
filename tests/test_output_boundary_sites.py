@@ -89,6 +89,7 @@ CASA_TEXT_SITES = {
     ("tools.py", "_post"): "wipe_memory's confirmation keyboard, Casa template",
     ("own_voice_lifecycle.py", "post_card"): "an own-chat card in the resident's chat (offer, bound, released), Casa template",
     ("own_voice_lifecycle.py", "_post"): "the own-chat question naming a new bot, Casa template",
+    ("contacts/service.py", "run_daily"): "the contacts refresh failure line, Casa template; the error is a source's own fixed text",
 }
 
 EDIT_DM_MESSAGE_CALLERS = {
