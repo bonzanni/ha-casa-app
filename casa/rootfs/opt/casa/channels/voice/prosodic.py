@@ -22,7 +22,10 @@ from dataclasses import dataclass
 
 _SENTENCE_MARKS = ".!?…"
 _CLAUSE_MARKS = ",;—"
-_OPEN = {"[": "]", "(": ")", "{": "}", "<": ">"}
+# No "<": canonical voice tags use square brackets, and a bare "<" in
+# speech ("below < 19") has no closer, so treating it as an opener held
+# every later sentence back to the safety cap (#1646).
+_OPEN = {"[": "]", "(": ")", "{": "}"}
 _CHAR_CAP = 200
 _TIME_CAP = 1.5  # seconds since last flush
 
