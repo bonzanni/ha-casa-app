@@ -22,14 +22,17 @@ def new_store(tmp_path: Path) -> MemoryStore:
 def seed(store: MemoryStore, text: str, *, speaker: str = "operator",
          session: str | None = "s1", tier_status: str = "provisional",
          tier: str = "private", origin_tier: str | None = None) -> int:
-    """Store one event through capture's own append; returns its seq."""
+    """Store one event with capture's own insert; returns its seq. It waits
+    for the write lock with the store's default timeout, not the turn path's
+    short bound, so a write still running in a worker thread cannot make it
+    spool."""
     item = capture.event(role="assistant", channel="telegram",
                          speaker_kind=speaker, origin_kind="operator",
                          text=text, eligibility="write_trusted_turn",
                          origin_tier=origin_tier, session_id=session,
                          tier=tier, tier_status=tier_status)
-    receipt = capture.append(store, item)
-    assert receipt is not None and receipt.outcome == capture.STORED
+    with store.transaction(write=True) as conn:
+        capture._insert(conn, item)
     return rows(store, "SELECT seq FROM events WHERE source_key = ?",
                 item.source_key)[0]["seq"]
 
