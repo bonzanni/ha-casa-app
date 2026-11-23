@@ -12,8 +12,9 @@ Ordering is commit-ordered by construction: entries are written ONLY from the
 consent keyboards' synchronous commit steps (``_on_commit_sync``, the same
 yield-free step that persists the ack), Approve → :func:`clear`, Deny →
 :func:`record` — and from ``event_reconcile.revoke_and_unroute``, which
-records each event consent it drops, under the reconcile lock: a revoke is the
-operator's Deny. Expiry writes NOTHING — an expired keyboard is exactly the
+records each event consent an operator's ``event_ack_revoke`` drops, under the
+reconcile lock: that revoke is the operator's Deny (a plugin removal or update
+records nothing). Expiry writes NOTHING — an expired keyboard is exactly the
 state the re-prompt exists to recover. Process-lifetime, in-memory: a restart
 empties it, so the on-demand path may re-ask again and a denied event
 subscription reads as unanswered again.

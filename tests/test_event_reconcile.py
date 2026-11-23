@@ -722,7 +722,7 @@ async def test_revoking_one_subscription_keeps_the_other_delivering(
         event_spool.emit(spool.root / "calendar", "changed")
 
         removed = await er.revoke_and_unroute("finance", "gmail", "mail_in",
-                                              acks=w.acks)
+                                              acks=w.acks, operator_denied=True)
         assert [(r["emitter"], r["event"]) for r in removed] == [
             ("gmail", "mail_in")]
         await reconcile()
@@ -771,7 +771,8 @@ async def test_re_approving_a_revoked_subscription_routes_it_again(
     monkeypatch.setattr(agent_mod, "active_runtime", runtime)
     _fixed_consent_target(monkeypatch, telegram)
 
-    await er.revoke_and_unroute("finance", "gmail", "mail_in", acks=w.acks)
+    await er.revoke_and_unroute("finance", "gmail", "mail_in", acks=w.acks,
+                                operator_denied=True)
     await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
                                      entries=w.entries, prompt=True)
     routed = er.get_routed()
@@ -810,12 +811,40 @@ async def test_denying_one_of_two_on_first_prompt_routes_the_approved_one(
     # still waiting for the first answer: the whole set is held back
     assert _subs(er.get_routed(), ("calendar", "changed")) == set()
 
+    async def _no_health_regen():
+        return None
+    monkeypatch.setattr(er, "_regen_health_safe", _no_health_regen)
+
+    # The tap alone: no reconcile is run here; the card's Deny must do it.
     await _answer_only_card(broker, coord, 1)          # Deny
-    await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
-                                     entries=w.entries, prompt=False)
+    for _ in range(300):
+        if _subs(er.get_routed(), ("calendar", "changed")):
+            break
+        await asyncio.sleep(0.01)
     routed = er.get_routed()
     assert _subs(routed, ("calendar", "changed")) == {"finance"}
     assert _subs(routed, ("gmail", "mail_in")) == set()
+    # the Deny's reconcile does not re-ask the subscription just denied
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert len(telegram.posts) == 1
+    assert list(coord._entries) == []
+
+
+async def test_a_removal_style_revoke_is_not_an_operator_deny(
+        tmp_path, fake_event_episodes):
+    """plugin_remove / plugin_update drop the consents without operator
+    intent: a reinstall of the same revision must ask afresh, with every
+    subscription waiting for its first answer, not read as denied."""
+    w = _two_subscription_world(tmp_path)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    await er.revoke_and_unroute("finance", acks=w.acks)
+    desired = er.compute_desired(role_configs=w.role_configs, acks=w.acks,
+                                 resolver=w.resolver, entries=w.entries)
+    assert desired.routed == {}
+    assert [i["reason_code"] for i in desired.issues] == [
+        "event_pending_ack", "event_pending_ack"]
 
 
 def test_a_subscription_never_answered_still_holds_back_the_whole_set(tmp_path):

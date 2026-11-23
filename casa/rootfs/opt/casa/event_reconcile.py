@@ -407,6 +407,7 @@ def _unroute_locked(subscriber: str, emitter: str = "", event: str = "") -> None
 
 async def revoke_and_unroute(subscriber: str, emitter: str = "",
                              event: str = "", *, acks: Any = None,
+                             operator_denied: bool = False,
                              ) -> "list[dict]":
     """Unroute *subscriber* from the published map, THEN drop its
     :class:`event_acks.EventAckStore` record(s).
@@ -435,7 +436,12 @@ async def revoke_and_unroute(subscriber: str, emitter: str = "",
     Drops every ack for *subscriber* when ``emitter``/``event`` are both
     empty, else exactly the one ``(subscriber, emitter, event)``
     subscription. Returns the removed ack records
-    (:class:`event_acks.EventAckStore`'s own list[dict] shape)."""
+    (:class:`event_acks.EventAckStore`'s own list[dict] shape).
+
+    ``operator_denied`` (the ``event_ack_revoke`` tool) also records each
+    dropped consent as the operator's Deny. A plugin removal or update leaves
+    it False: the plugin's own lifecycle is not the operator's answer to a
+    subscription, so a reinstall's first prompt stays an unanswered one."""
     acks = acks if acks is not None else _default_acks()
     import consent_denials
     import event_episodes
@@ -450,11 +456,11 @@ async def revoke_and_unroute(subscriber: str, emitter: str = "",
             else:
                 removed = await asyncio.to_thread(
                     acks.revoke_subscriber, subscriber)
-            # The revoke is the operator's answer, recorded as a Deny of each
-            # dropped consent before any reconcile can run, so the next one
-            # leaves the subscriber's other subscriptions routed (#1656).
+            # The operator's revoke is their answer, recorded as a Deny of
+            # each dropped consent before any reconcile can run, so the next
+            # one leaves the subscriber's other subscriptions routed (#1656).
             # An Approve on a later card clears it.
-            for rec in removed:
+            for rec in (removed if operator_denied else ()):
                 consent_denials.record(consent_denials.key("event", ack_identity(
                     rec["subscriber"], rec["artifact_id"], rec["emitter"],
                     rec["event"], rec["digest"], rec["targets"])))

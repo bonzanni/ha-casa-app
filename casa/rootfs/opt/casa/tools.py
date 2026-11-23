@@ -18765,7 +18765,7 @@ async def event_ack_revoke(args: dict) -> dict:
         # stale Approve cannot re-ack past the revoke (mirrors the siblings).
         CHALLENGES.cancel_matching(plugin=subscriber)
         removed = await event_reconcile.revoke_and_unroute(
-            subscriber, emitter, event)
+            subscriber, emitter, event, operator_denied=True)
         runtime = getattr(agent_mod, "active_runtime", None)
         try:
             await event_reconcile.reconcile_plugin_events(

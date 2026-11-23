@@ -198,7 +198,8 @@ class TestEventAckRevokeTool:
         assert payload["revoked"] == 1
         assert payload["pairs"] == [[EMITTER, EVENT]]
 
-        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, "", "")
+        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, "", "",
+                                            operator_denied=True)
         reconcile_mock.assert_awaited()
         assert reconcile_mock.await_args.kwargs.get("prompt") is False
         # pending keyboard cancelled before AND after the reconcile.
@@ -221,7 +222,8 @@ class TestEventAckRevokeTool:
 
         await tools.event_ack_revoke.handler(
             {"subscriber": SUBSCRIBER_A, "emitter": EMITTER, "event": EVENT})
-        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, EMITTER, EVENT)
+        revoke_mock.assert_awaited_once_with(SUBSCRIBER_A, EMITTER, EVENT,
+                                            operator_denied=True)
 
     async def test_unroutes_even_if_reconcile_fails(self, monkeypatch):
         import agent as agent_mod
