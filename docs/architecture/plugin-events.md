@@ -180,7 +180,7 @@ full sweeping resume in full the instant a later
 compute succeeds, and every reconcile call — successful or fail-closed — kicks the worker
 so it re-evaluates promptly.
 
-**The ack store is missing, unreadable, or malformed.** Treated as zero acks store-wide;
+**The ack store is missing, unreadable, or malformed.** Treated as zero acks and zero denials store-wide (a malformed `denied` section, or an identity in both sections, fails the whole store the same way);
 every subscription stays `event_pending_ack` until a fresh operator approval rewrites a
 valid store. It never raises into the reconciler.
 
@@ -206,13 +206,11 @@ malformed entry darkens the whole block.
 **A single-subscription off-switch** is the `event_ack_revoke` tool: it unroutes one
 `(subscriber, emitter, event)` pair (all of a plugin's, without `emitter`/`event`) from the
 published map before deleting its ack record, under the pre-send gate's
-dispatch-admission lock, so no dispatch is admitted once the call returns, and
-records the revoke as a Deny in `consent_denials` (a removal or update records none). A
+dispatch-admission lock, so no dispatch is admitted once the call returns, and stores the revoke as a denial beside the acks in the same write, also for a subscription never approved (a removal or update stores none and drops the subscriber's denials with its acks). A
 denied or revoked subscription is off on its own (unrouted, no `event_pending_ack` row),
 and a Deny tap reconciles at once, so the plugin's other subscriptions keep routing; an
 unanswered one holds back the set. A plugin mutation or reload re-asks it;
-`consent_reprompt` ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) skips it. The
-registry is in memory: after a restart the subscription reads as unanswered.
+`consent_reprompt` ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) skips it. The denial is kept in `/data/event_acks.json` and holds across a restart; it is read only where a subscription has no ack and never routes one.
 
 **Explicitly out of scope** (future hardening, not present today): casa-brokered emission
 (nothing yet lets casa compose or filter an emission on its way through), per-plugin

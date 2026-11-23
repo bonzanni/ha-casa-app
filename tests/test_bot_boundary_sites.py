@@ -388,7 +388,7 @@ IDENTITY_SITE_HITS = {
     },
     "callback_owner.py": {"note_link": 1},
     "canonical_bytes.py": {"assert_json_safe": 6, "deep_freeze": 7},
-    "casa_core.py": {"main": 2},
+    "casa_core.py": {"main": 1},
     "configurator_continue.py": {"_continuation": 1},
     "channels/telegram.py": {
         "TelegramChannel.__init__": 3, "TelegramChannel._ack_react": 2,
