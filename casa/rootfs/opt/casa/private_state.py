@@ -162,6 +162,9 @@ DIRS: tuple[Entry, ...] = (
     Entry("/data/memory", 0o700, PRIVATE,
           "The memory store: every captured conversation turn verbatim, the "
           "ledgers written from them, and their exports."),
+    Entry("/data/contacts", 0o700, PRIVATE,
+          "The contacts store: a copy of the operator's address book "
+          "(names, numbers, notes) and the marks Casa keeps about people."),
     Entry("/config/cc-home", 0o700, PRIVATE,
           "The resident agent's Claude home, including its transcripts."),
     Entry("/config/.git", 0o700, PRIVATE,
