@@ -218,7 +218,8 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _note_hash(note: str) -> str:
+def note_hash(note: str) -> str:
+    """The hash a note is stored and settled under."""
     return hashlib.sha256(note.encode("utf-8")).hexdigest()
 
 
@@ -227,7 +228,8 @@ def replace_source(conn: sqlite3.Connection, source: str,
     """Rewrite *source*'s people and numbers to exactly *people*.
 
     Other sources are untouched. A person no longer present loses its
-    ``group``- and ``note``-origin marks; ``operator``-origin marks are never
+    ``group``- and ``note``-origin marks and its ``note_reads`` row;
+    ``operator``-origin marks are never
     deleted here, so they apply again if the same uid returns. A uid given
     twice keeps its last occurrence. ``note_changed`` lists the uids that are
     new or whose note differs, in the order given."""
@@ -241,13 +243,13 @@ def replace_source(conn: sqlite3.Connection, source: str,
     conn.execute("DELETE FROM people WHERE source = ?", (source,))
     note_changed: list[str] = []
     for uid, p in incoming.items():
-        note_hash = _note_hash(p.note)
-        if before.get(uid) != note_hash:
+        digest = note_hash(p.note)
+        if before.get(uid) != digest:
             note_changed.append(uid)
         conn.execute(
             "INSERT INTO people (source, uid, name, first_name, org, note, "
             "note_hash, groups, related) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (source, uid, p.name, p.first_name, p.org, p.note, note_hash,
+            (source, uid, p.name, p.first_name, p.org, p.note, digest,
              json.dumps(list(p.groups)), json.dumps(list(p.related))))
         conn.executemany(
             "INSERT OR IGNORE INTO numbers (e164, source, uid) "
@@ -262,6 +264,11 @@ def replace_source(conn: sqlite3.Connection, source: str,
         "DELETE FROM marks WHERE source = ? AND uid = ? "
         "AND origin != 'operator'",
         [(source, uid) for uid in marked if uid not in incoming])
+    settled = [r[0] for r in conn.execute(
+        "SELECT uid FROM note_reads WHERE source = ?", (source,))]
+    conn.executemany(
+        "DELETE FROM note_reads WHERE source = ? AND uid = ?",
+        [(source, uid) for uid in settled if uid not in incoming])
     return {"added": sum(1 for uid in incoming if uid not in before),
             "removed": len(gone),
             "kept": sum(1 for uid in incoming if uid in before),
@@ -274,6 +281,31 @@ def count(conn: sqlite3.Connection, source: str | None = None) -> int:
         return conn.execute("SELECT count(*) FROM people").fetchone()[0]
     return conn.execute("SELECT count(*) FROM people WHERE source = ?",
                         (source,)).fetchone()[0]
+
+
+def notes_to_settle(conn: sqlite3.Connection, source: str) -> list[Person]:
+    """*source*'s people whose note differs from the one last settled (no
+    ``note_reads`` row counts as different), by uid. A blank note with no
+    row and no ``note``-origin mark is left out: there is nothing to do."""
+    rows = conn.execute(
+        f"SELECT {_PEOPLE_COLUMNS_P}, r.note_hash IS NOT NULL, EXISTS ("
+        "SELECT 1 FROM marks AS m WHERE m.source = p.source "
+        "AND m.uid = p.uid AND m.origin = 'note') "
+        "FROM people AS p LEFT JOIN note_reads AS r "
+        "ON r.source = p.source AND r.uid = p.uid "
+        "WHERE p.source = ? AND r.note_hash IS NOT p.note_hash "
+        "ORDER BY p.uid", (source,)).fetchall()
+    return [_person(conn, row[:-2]) for row in rows
+            if row[5].strip() or row[-2] or row[-1]]
+
+
+def settle_note(conn: sqlite3.Connection, source: str, uid: str,
+                note_hash: str) -> None:
+    """Record *note_hash* as the note settled into *uid*'s note marks."""
+    conn.execute(
+        "INSERT INTO note_reads (source, uid, note_hash) VALUES (?, ?, ?) "
+        "ON CONFLICT (source, uid) DO UPDATE SET "
+        "note_hash = excluded.note_hash", (source, uid, note_hash))
 
 
 # --- marks ------------------------------------------------------------------

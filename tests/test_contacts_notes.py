@@ -46,9 +46,10 @@ class FakeModel:
     def __init__(self, reply: str | Exception) -> None:
         self.reply = reply
         self.prompts: list[str] = []
+        self.systems: list[str] = []
 
     async def complete(self, *, system: str, prompt: str) -> str:
-        assert system == notes.system_prompt()
+        self.systems.append(system)
         self.prompts.append(prompt)
         if isinstance(self.reply, Exception):
             raise self.reply
@@ -77,6 +78,12 @@ def _marks(store: ContactsStore, uid: str) -> cstore.Marks:
         return cstore.marks_for(conn, "icloud", uid)
 
 
+def _note_reads(store: ContactsStore) -> list[str]:
+    with store.transaction() as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT uid FROM note_reads ORDER BY uid")]
+
+
 def _note_rows(store: ContactsStore) -> list[tuple]:
     with store.transaction() as conn:
         return list(conn.execute(
@@ -95,6 +102,7 @@ async def test_only_changed_nonempty_notes_are_sent(
     await _sync(opened, cards, model)
     await _sync(opened, cards, model)
     assert model.sent_uids() == [{"U1", "U3"}]
+    assert model.systems == [notes.system_prompt()]
 
     cards[2] = _card("U3", "Carl Invented", "Former colleague")
     await _sync(opened, cards, model)
@@ -198,3 +206,63 @@ def test_note_model_uses_the_small_model_and_no_tools() -> None:
     assert opts.model == resolve_model("haiku")
     assert opts.tools == [] and opts.allowed_tools == []
     assert opts.system_prompt == "x"
+
+
+@pytest.mark.parametrize("failure", [
+    RuntimeError("model backend down"), "this is not JSON"],
+    ids=["model-error", "garbage"])
+async def test_unread_note_is_retried_on_the_next_sync(
+    opened: ContactsStore, failure: str | Exception,
+) -> None:
+    cards = [_card("U1", "Marco Example", "My brother, speaks Italian")]
+    await _sync(opened, cards, FakeModel(failure))
+    assert _note_rows(opened) == [] and _note_reads(opened) == []
+
+    model = FakeModel(_reply(U1=("brother", "it")))
+    await _sync(opened, cards, model)
+
+    assert model.sent_uids() == [{"U1"}]
+    assert _note_rows(opened) == [("U1", "language", "it"),
+                                  ("U1", "relation", "brother")]
+    assert _note_reads(opened) == ["U1"]
+
+
+async def test_sync_without_model_leaves_notes_for_a_later_sync(
+    opened: ContactsStore,
+) -> None:
+    cards = [_card("U1", "Marco Example", "My brother, speaks Italian")]
+    await _sync(opened, cards, None)
+    assert _note_rows(opened) == [] and _note_reads(opened) == []
+
+    model = FakeModel(_reply(U1=("brother", "it")))
+    await _sync(opened, cards, model)
+
+    assert model.sent_uids() == [{"U1"}]
+    assert _marks(opened, "U1").relation == "brother"
+
+
+@pytest.mark.parametrize("reading", [("brother", "it"), ("", "")],
+                         ids=["reading", "empty-reading"])
+async def test_settled_note_is_not_sent_again(
+    opened: ContactsStore, reading: tuple[str, str],
+) -> None:
+    cards = [_card("U1", "Marco Example", "My brother, speaks Italian")]
+    await _sync(opened, cards, FakeModel(_reply(U1=reading)))
+    assert _note_reads(opened) == ["U1"]
+
+    model = FakeModel(_reply(U1=reading))
+    await _sync(opened, cards, model)
+    await _sync(opened, cards, model)
+
+    assert model.prompts == []
+
+
+async def test_person_without_note_never_reaches_the_model_or_note_reads(
+    opened: ContactsStore,
+) -> None:
+    model = FakeModel(_reply(U1=("brother", "it")))
+    await _sync(opened, [_card("U1", "Marco Example", "")], model)
+    await _sync(opened, [_card("U1", "Marco Example", "")], model)
+
+    assert model.prompts == []
+    assert _note_reads(opened) == [] and _note_rows(opened) == []

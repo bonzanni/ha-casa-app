@@ -179,3 +179,30 @@ def test_open_refuses_newer_version(tmp_path: Path) -> None:
     with pytest.raises(ContactsUnavailable):
         with again.transaction():
             pass
+
+
+def test_notes_to_settle_follows_note_reads(opened: ContactsStore) -> None:
+    blank = _person("U4", "Dan Madeup", "+31201110004")
+    with opened.transaction(write=True) as conn:
+        cstore.replace_source(conn, "icloud", [U1, U2, blank])
+        # A blank note with nothing to clear is never work.
+        assert [p.uid for p in cstore.notes_to_settle(conn, "icloud")] == [
+            "U1", "U2"]
+        cstore.settle_note(conn, "icloud", "U1",
+                           hashlib.sha256(b"likes tea").hexdigest())
+        # A blank note with a note mark still has to be cleared.
+        cstore.set_mark(conn, "icloud", "U4", "language", "it", "note")
+        assert [p.uid for p in cstore.notes_to_settle(conn, "icloud")] == [
+            "U2", "U4"]
+
+        # A changed note is work again; a person gone loses its row.
+        changed = _person("U1", "Zoe Example", note="likes coffee")
+        cstore.replace_source(conn, "icloud", [changed])
+        assert [p.uid for p in cstore.notes_to_settle(conn, "icloud")] == [
+            "U1"]
+        cstore.settle_note(conn, "icloud", "U1",
+                           hashlib.sha256(b"likes coffee").hexdigest())
+        assert cstore.notes_to_settle(conn, "icloud") == []
+        cstore.replace_source(conn, "icloud", [U2])
+        assert conn.execute(
+            "SELECT uid FROM note_reads").fetchall() == []

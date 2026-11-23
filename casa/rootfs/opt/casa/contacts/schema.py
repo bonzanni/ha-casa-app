@@ -9,7 +9,10 @@ change that existing stores must follow appends a new version.
 source's name, and are rewritten by every sync of that source. ``marks`` is
 what Casa itself holds about a person (priority, relation, language), one row
 per origin; it does not reference ``people``, so a mark can outlive its
-person's absence from a sync. ``sync_state`` is per source.
+person's absence from a sync. ``note_reads`` holds, per person, the hash of
+the note last settled into ``note``-origin marks (read by a model, or emptied
+and cleared), so a note that was not read is tried again. ``sync_state`` is
+per source.
 
 Tables are ``STRICT``. JSON-valued columns hold arrays as text. Times are
 ISO-8601 text.
@@ -50,6 +53,14 @@ V1: tuple[str, ...] = (
         value TEXT NOT NULL,
         set_at TEXT NOT NULL,
         PRIMARY KEY (source, uid, field, origin)
+    ) STRICT
+    """,
+    """
+    CREATE TABLE note_reads (
+        source TEXT NOT NULL,
+        uid TEXT NOT NULL,
+        note_hash TEXT NOT NULL,
+        PRIMARY KEY (source, uid)
     ) STRICT
     """,
     """
