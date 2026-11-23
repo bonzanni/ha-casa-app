@@ -70,3 +70,5 @@ markdown-it-py==4.0.0
 pykeepass==4.2.0
 # The ciphers pykeepass encrypts that file with; pinned exactly so they change only by a deliberate bump here.
 pycryptodomex==3.24.2
+# Reads phone numbers into E.164 for the contacts store (contacts/numbers.py). Apache-2.0.
+phonenumbers==9.0.44

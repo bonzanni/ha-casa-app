@@ -1,0 +1,13 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iOS//EN
+N:Rossi;Marco;;;
+FN:Marco Rossi
+ORG:Acme;
+item1.TEL;type=CELL;type=VOICE;type=pref:+39 333 1234567
+TEL;type=WORK;type=VOICE:02 1234 5678
+item2.X-ABRELATEDNAMES;type=pref:Anna Rossi
+item2.X-ABLabel:_$!<Spouse>!$_
+NOTE:Old friend\, speaks Italian.\nMet in Milan\, 2010
+UID:AAAA-1111
+END:VCARD
