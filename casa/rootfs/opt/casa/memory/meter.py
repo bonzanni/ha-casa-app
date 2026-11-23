@@ -5,7 +5,8 @@ writes the result to ``meta`` under ``meter`` after every writer commit and
 failure, for the status surfaces to read. Per maintained ledger it counts the
 current entries and their tokens, the objects left unreachable (which must be
 0), each role's view of it (whole or index, its size, and whether even the
-coarsest index level overflows the role's budget), the twenty largest entries
+coarsest index level overflows the role's budget) for each role that reads
+it, the twenty largest entries
 (ids and sizes only) and the week's growth,
 and from the one pending view the pending events (count and the oldest), the
 pending corrections and the failed jobs. Across the store it counts the
@@ -33,27 +34,52 @@ TOP = 20
 #: The served-view budget (``memory.token_budget``) of every role that is
 #: served a view, set by Casa at boot; the meter reports each role's mode
 #: and whether its view overflows, and the nightly pass regroups a ledger
-#: that overflows any of them.
+#: that overflows any of the roles that read it.
 _role_budgets: dict[str, int] = {}
+#: The read clearances of each role (``sensitivity.clearances_served``),
+#: set with the budgets.
+_role_clearances: dict[str, tuple[str, ...]] = {}
 
 
-def configure(role_budgets: dict[str, int]) -> None:
-    """Record the served-view budget of every role (those above 0 count)."""
+def configure(role_budgets: dict[str, int],
+              role_clearances: dict | None = None) -> None:
+    """Record the served-view budget of every role (those above 0 count)
+    and, when given, the clearances each role reads at."""
     _role_budgets.clear()
     _role_budgets.update({role: int(b) for role, b in role_budgets.items()
                           if isinstance(b, int) and b > 0})
+    _role_clearances.clear()
+    _role_clearances.update({role: tuple(c) for role, c in
+                             (role_clearances or {}).items()})
 
 
 def role_budgets() -> dict[str, int]:
     return dict(_role_budgets)
 
 
+def reader_budgets(ledger: str,
+                   budgets: dict[str, int] | None = None) -> dict[str, int]:
+    """The budgets (from *budgets*, default the configured ones) of the
+    roles that read *ledger*: a role reads the ledger its clearance is
+    served (:func:`memory.view.ledger_for`), so a ledger is never held to
+    the budget of a role that never sees it (#1659). A role whose
+    clearances were not given counts as a reader of every ledger."""
+    budgets = _role_budgets if budgets is None else budgets
+    out = {}
+    for role, budget in budgets.items():
+        clearances = _role_clearances.get(role)
+        if clearances is None or any(
+                view.ledger_for(c) == ledger for c in clearances):
+            out[role] = budget
+    return out
+
+
 def views(conn, ledger: str) -> dict[str, dict]:
-    """Per role, the mode its view of *ledger* is in now, its size, and
-    whether even the coarsest level overflows its budget."""
+    """Per role reading *ledger*, the mode its view is in now, its size,
+    and whether even the coarsest level overflows its budget."""
     objs = view.objects_as_of(conn, ledger, pending.current_commit_no(conn))
     out = {}
-    for role, budget in sorted(_role_budgets.items()):
+    for role, budget in sorted(reader_budgets(ledger).items()):
         comp = view.compose(objs, budget)
         out[role] = {"budget": budget, "mode": comp.mode,
                      "tokens": comp.chars // 4, "overflow": comp.overflow}

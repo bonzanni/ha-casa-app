@@ -209,6 +209,28 @@ async def test_the_meter_counts_what_memory_owes(tmp_path, monkeypatch):
     assert meter.read(store) == got
 
 
+async def test_a_ledger_is_held_only_to_the_budgets_of_its_readers(
+        tmp_path, monkeypatch):
+    """#1659: the private ledger fits its reader (the assistant) whole; a
+    small budget held by a role that reads only ``friends`` (the butler on
+    voice) neither regroups it nor marks it overflowing."""
+    from memory import ledgers
+    monkeypatch.setattr(ledgers, "_served", frozenset({"friends"}))
+    monkeypatch.setattr(meter, "_role_budgets", {})
+    monkeypatch.setattr(meter, "_role_clearances", {})
+    meter.configure({"assistant": 50_000, "butler": 5},
+                    {"assistant": ["private"], "butler": ["friends"]})
+    store = new_store(tmp_path)
+    seed(store, "one")
+    seed(store, "two")
+    await run_new(new_writer(store, ScriptedPort(add_each)))
+    assert nightly.enqueue_nightly(store)["regroup"] == []
+    led = meter.measure(store)["ledgers"]["private"]
+    assert {r: (v["mode"], v["overflow"]) for r, v in led["roles"].items()} \
+        == {"assistant": ("whole", False)}
+    assert led["overflow"] is False
+
+
 # --- the store failing under the worker --------------------------------------
 
 def _outage(store) -> None:
