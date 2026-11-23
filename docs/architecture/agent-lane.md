@@ -21,8 +21,8 @@ configurator run takes after its lane, is [`configurator.md`](configurator.md).
 
 **An agent's plugin work runs one use at a time.** A specialist and the configurator each
 have a lane (`agent_lane.has_lane`); a resident has none. A stored-call tap, a plugin
-continuation, a delegation to the agent and a run Casa carries on after an approval are each
-one use of it. The lane is a lock with a short queue in front of it: a use reserves its place
+continuation, a delegation or a hand-off to the agent and a run Casa carries on after an
+approval are each one use of it. The lane is a lock with a short queue in front of it: a use reserves its place
 before any task exists, waits until it is at the head of the queue, then takes the lock. The
 place is released once, on admission or on any earlier exit, so a use reserved earlier is
 never overtaken by one that reached the lane sooner. At most three uses wait; a fourth is

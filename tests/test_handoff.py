@@ -307,6 +307,184 @@ async def test_handoff_busy_when_the_target_already_runs_for_this_chat(wired):
     assert out["kind"] == "busy" and calls == []
 
 
+# -- a hand-off is one use of the target's lane (#1639) -----------------------
+
+def _lane_is_free(role: str) -> bool:
+    import agent_lane
+    lane = agent_lane.LANES.get(role)
+    return not lane.lock.locked() and lane.waiting == 0
+
+
+def _assert_the_run_holds_the_lane(role: str) -> None:
+    """Called from inside the target's run: the run is the lane's one holder
+    and its queue place is already given back."""
+    import agent_lane
+    lane = agent_lane.LANES.get(role)
+    assert lane.lock.locked() and lane.waiting == 0
+
+
+@pytest.mark.asyncio
+async def test_handoff_to_a_faulted_agent_says_it_is_out_of_service(wired):
+    import agent_lane
+    _, limiter, calls = wired
+    agent_lane.FAULTS.mark("browser", "run-1", "probe")
+    out = await _call({"agent": "browser", "task": "t"}, _specialist_origin())
+    assert out["status"] == "error" and out["kind"] == "agent_faulted"
+    assert out["message"] == "Fido is out of service until Casa restarts."
+    assert calls == []                                        # no run of the target
+    assert "7:browser" not in limiter._active_scopes
+    assert _lane_is_free("browser")
+
+
+@pytest.mark.asyncio
+async def test_handoff_waits_while_another_use_holds_the_targets_lane(wired):
+    import agent_lane
+    _, _, calls = wired
+    lane = agent_lane.LANES.get("browser")
+    await lane.lock.acquire()                                 # a tap of Fido is running
+    pending = asyncio.create_task(
+        _call({"agent": "browser", "task": "t"}, _specialist_origin()))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert calls == [] and lane.waiting == 1                  # queued, not run
+    lane.lock.release()
+    out = await pending
+    assert out["status"] == "ok" and len(calls) == 1
+    assert _lane_is_free("browser")
+
+
+@pytest.mark.asyncio
+async def test_handoff_queued_before_a_fault_does_not_run(wired):
+    import agent_lane
+    _, _, calls = wired
+    lane = agent_lane.LANES.get("browser")
+    await lane.lock.acquire()
+    pending = asyncio.create_task(
+        _call({"agent": "browser", "task": "t"}, _specialist_origin()))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    agent_lane.FAULTS.mark("browser", "run-1", "probe")       # the running use faulted Fido
+    lane.lock.release()
+    out = await pending
+    assert out["kind"] == "agent_faulted" and calls == []
+    assert out["message"] == "Fido is out of service until Casa restarts."
+    assert _lane_is_free("browser")
+
+
+@pytest.mark.asyncio
+async def test_handoff_is_busy_when_the_targets_queue_is_full(wired):
+    import agent_lane
+    _, limiter, calls = wired
+    agent_lane.LANES.get("browser").waiting = agent_lane.QUEUE_MAX
+    out = await _call({"agent": "browser", "task": "t"}, _specialist_origin())
+    assert out["kind"] == "busy" and calls == []
+    assert "7:browser" not in limiter._active_scopes
+
+
+@pytest.mark.asyncio
+async def test_handoff_frees_the_lane_after_the_target_run_fails(wired, monkeypatch):
+    _, limiter, _ = wired
+
+    async def _failing(cfg, task_text, context_text, resolution=None, output_format=None):
+        _assert_the_run_holds_the_lane("browser")
+        raise RuntimeError("the run broke")
+
+    monkeypatch.setattr(tools, "_run_delegated_agent_bounded", _failing)
+    out = await _call({"agent": "browser", "task": "t"}, _specialist_origin())
+    assert out["status"] == "error" and "the run broke" in out["message"]
+    assert _lane_is_free("browser")
+    assert "7:browser" not in limiter._active_scopes
+
+
+@pytest.mark.asyncio
+async def test_handoff_frees_the_lane_when_cancelled(wired, monkeypatch):
+    import agent_lane
+    _, limiter, _ = wired
+    started, never = asyncio.Event(), asyncio.Event()
+
+    async def _slow(cfg, task_text, context_text, resolution=None, output_format=None):
+        started.set()
+        await never.wait()
+
+    monkeypatch.setattr(tools, "_run_delegated_agent_bounded", _slow)
+    running = asyncio.create_task(
+        _call({"agent": "browser", "task": "t"}, _specialist_origin()))
+    await started.wait()
+    assert agent_lane.LANES.get("browser").lock.locked()      # the run holds the lane
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert _lane_is_free("browser")
+    assert "7:browser" not in limiter._active_scopes
+
+
+@pytest.mark.asyncio
+async def test_handoff_cancelled_while_queued_gives_its_place_back(wired):
+    import agent_lane
+    _, _, calls = wired
+    lane = agent_lane.LANES.get("browser")
+    await lane.lock.acquire()
+    queued = asyncio.create_task(
+        _call({"agent": "browser", "task": "t"}, _specialist_origin()))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert lane.waiting == 1
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert lane.waiting == 0 and calls == []
+    lane.lock.release()
+    assert _lane_is_free("browser")
+
+
+@pytest.mark.asyncio
+async def test_crossing_handoffs_both_end_busy_and_free_both_lanes(wired, monkeypatch):
+    """Alex's run hands off to Fido while Fido's run hands off to Alex, each
+    run holding its own lane: neither waits for ever."""
+    import agent_lane
+    _, _, calls = wired
+    monkeypatch.setattr(tools, "_SYNC_WAIT_TIMEOUT_S", 0.05)  # the admission bound
+    both_in = asyncio.Barrier(2)
+
+    async def _run_handing_off(role: str, to: str, chat: str) -> dict:
+        lane = agent_lane.LANES.get(role)
+        async with lane.use(lane.reserve()):                  # its own run holds its lane
+            await both_in.wait()
+            return await _call({"agent": to, "task": "t"}, _specialist_origin(
+                execution_role=role, chat_id=chat, _handoff_chain=("assistant", role)))
+
+    alex, fido = await asyncio.wait_for(asyncio.gather(
+        _run_handing_off("finance", "browser", "7"),
+        _run_handing_off("browser", "finance", "8")), timeout=5)
+    for out, name in ((alex, "Fido"), (fido, "Alex")):
+        assert out["status"] == "error" and out["kind"] == "busy"
+        assert out["message"] == f"{name} is busy with other work — try again later."
+    assert calls == []
+    assert _lane_is_free("finance") and _lane_is_free("browser")
+
+
+@pytest.mark.asyncio
+async def test_handoff_admission_bound_does_not_cut_a_run_that_holds_the_lane(
+        wired, monkeypatch):
+    _, _, calls = wired
+    monkeypatch.setattr(tools, "_SYNC_WAIT_TIMEOUT_S", 0.01)
+
+    async def _slow(cfg, task_text, context_text, resolution=None, output_format=None):
+        _assert_the_run_holds_the_lane("browser")
+        await asyncio.sleep(0.1)                              # longer than the bound
+        _assert_the_run_holds_the_lane("browser")
+        return DelegatedOutput(text="done after the bound")
+
+    monkeypatch.setattr(tools, "_run_delegated_agent_bounded", _slow)
+    out = await _call({"agent": "browser", "task": "t"}, _specialist_origin())
+    assert out["status"] == "ok" and out["text"] == "done after the bound"
+    assert _lane_is_free("browser")
+
+
 @pytest.mark.asyncio
 async def test_handoff_to_a_resident_is_unknown(wired):
     _, _, calls = wired

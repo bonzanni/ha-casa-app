@@ -9065,27 +9065,35 @@ async def delegate_to_agent(args: dict) -> dict:
 
 async def _delegation_in_lane(lane: Any, reservation: Any, cfg: Any, task_text: str,
                               context_text: str, *, resolution: Any = None,
-                              output_format: Any = None) -> "DelegatedOutput":
+                              output_format: Any = None,
+                              admission_deadline: "float | None" = None) -> "DelegatedOutput":
     """One delegation as one use of its agent's lane: the lock first (the
     queue place released on admission, or on any earlier exit), the fault
     re-read under it (a delegation queued before the fault must not run),
     the run, and — before the lock is released — a run still unwinding past
     the bounded runner's teardown holds the lane until it ends. A
-    configurator delegation's whole wait, lane then lease, is one bound."""
+    configurator delegation's whole wait, lane then lease, is one bound.
+    *admission_deadline* (a ``time.monotonic`` instant) bounds only the wait
+    to be admitted, never the run: past it the use raises ``LaneBusy``."""
     import agent_lane
     import configurator_run
-    deadline = configurator_run.wait_deadline() if configurator_run.is_configurator(cfg) else None
+    is_configurator = configurator_run.is_configurator(cfg)
+    deadline = configurator_run.wait_deadline() if is_configurator else admission_deadline
     try:
         async with lane.use(reservation, deadline) as admitted:
             if not admitted:
-                raise configurator_run.busy_error()
+                if is_configurator:
+                    raise configurator_run.busy_error()
+                raise agent_lane.LaneBusy(
+                    f"{_display_name_for_role(cfg.role)} is busy with other work "
+                    "— try again later.")
             if lane.faulted:
                 raise agent_lane.LaneFaulted(
                     agent_lane.faulted_line(_display_name_for_role(cfg.role)))
             runs: list = []
             sink_tok = _lane_run_sink.set(runs)
             try:
-                with (configurator_run.waiting_until(deadline) if deadline is not None
+                with (configurator_run.waiting_until(deadline) if is_configurator
                       else nullcontext()):
                     return await _run_delegated_agent_bounded(
                         cfg, task_text, context_text, resolution=resolution,
@@ -9168,7 +9176,8 @@ async def hand_off(args: dict) -> dict:
     does not run while it waits (``_bounded_wait``). Inside a delegated chain
     it holds only its per-scope permit (the chain's root delegation holds the
     global slot); from the specialist's own chat no delegation holds one, so
-    the hand-off is the chain's root and takes the full permit."""
+    the hand-off is the chain's root and takes the full permit. Like a
+    delegation, it is one use of the target's lane (``agent_lane``)."""
     from handoff import handoff_chain, handoff_refusal
 
     origin = _snapshot_origin()
@@ -9230,7 +9239,24 @@ async def hand_off(args: dict) -> dict:
                             "working on something for this chat — try again "
                             "shortly."),
             })
+    _lane_reservation = None  # the lane queue place, until transferred
     try:
+        # A hand-off is one use of the target's lane, as every delegation to
+        # it is (#1639): an agent out of service refuses it at once, and its
+        # place on the lane's queue is reserved before any task exists.
+        import agent_lane
+        _lane = agent_lane.LANES.get(target)
+        if _lane.faulted:
+            return _result({
+                "status": "error", "kind": "agent_faulted", "agent": target,
+                "message": agent_lane.faulted_line(_display_name_for_role(target)),
+            })
+        _lane_reservation = _lane.reserve()
+        if _lane_reservation is None:
+            return _result({
+                "status": "error", "kind": "busy", "agent": target,
+                "message": f"Agent {target!r} has a full queue — try again shortly.",
+            })
         if expected:
             context_text = (
                 f"{context_text}\n\n" if context_text else ""
@@ -9251,11 +9277,20 @@ async def hand_off(args: dict) -> dict:
         _qk_tok = _delegation_quota_key.set(handoff_id)
         _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
-            task = asyncio.create_task(_run_delegated_agent_bounded(
-                cfg, task_text, context_text, resolution=resolution))
+            # The wait to be admitted is bounded as a sync delegation's wait
+            # is: the requester holds its own lane meanwhile, so two runs
+            # handing off to each other would otherwise wait on each other
+            # for ever. Once admitted, the run has its own ceiling.
+            task = asyncio.create_task(_delegation_in_lane(
+                _lane, _lane_reservation, cfg, task_text, context_text,
+                resolution=resolution,
+                admission_deadline=time.monotonic() + _SYNC_WAIT_TIMEOUT_S))
         finally:
             _agent_mod.origin_var.reset(_ov_tok)
             _delegation_quota_key.reset(_qk_tok)
+        # a task cancelled before its coroutine starts has no finally
+        task.add_done_callback(_lane_reservation.release)
+        _lane_reservation = None
         if permit is not None:
             # released when the run ACTUALLY ends, as the sync arm's is
             task.add_done_callback(_permit_release_callback(permit))
@@ -9272,7 +9307,8 @@ async def hand_off(args: dict) -> dict:
             task.cancel()
             raise
         except Exception as exc:  # noqa: BLE001 — typed to the caller
-            kind = _classify_error(exc).value
+            # a fault found under the lane's lock is ``agent_faulted``
+            kind = _delegation_failure_kind(exc)
             logger.info("Hand-off %s → %s failed: %s", handoff_id[:8],
                         _known_role(target), kind)
             return _result(_with_post_echo_payload({
@@ -9297,6 +9333,8 @@ async def hand_off(args: dict) -> dict:
     finally:
         if permit is not None:
             permit.release()
+        if _lane_reservation is not None:   # no task was created
+            _lane_reservation.release()
 
 
 # ---------------------------------------------------------------------------
