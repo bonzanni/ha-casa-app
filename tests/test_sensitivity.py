@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from sensitivity import (
-    TIERS, DEFAULT_TIER, readable_tiers, apply_ceiling, clearance_for_channel,
+    TIERS, DEFAULT_TIER, readable_tiers, clearance_for_channel,
     CLEARANCE_BY_CHANNEL,
 )
 from voice_job_result import voice_identity_clearance
@@ -23,12 +23,6 @@ def test_readable_tiers_is_clearance_and_below():
     assert set(readable_tiers("family")) == {"family", "friends", "public"}
     assert set(readable_tiers("friends")) == {"friends", "public"}
     assert set(readable_tiers("public")) == {"public"}
-
-
-def test_apply_ceiling_caps_at_most_sensitive_allowed():
-    assert apply_ceiling("private", "friends") == "friends"   # capped down
-    assert apply_ceiling("public", "friends") == "public"     # already below ceiling
-    assert apply_ceiling("family", "private") == "family"     # ceiling permissive → unchanged
 
 
 def test_voice_channel_clearance_is_friends():

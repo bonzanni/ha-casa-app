@@ -15,7 +15,7 @@ teardown wait, mirroring the voice path) and then FAILS with a
 `_classify_error` → typed kind "timeout") — deliberately an exception, not
 a bare cancel: `_attach_completion_callback`'s cancelled-branch posts NO
 notification, while the exception branch runs the exact fail path the live
-kill-subprocess probe proved correct (fail_delegation + DelegationComplete
+kill-subprocess probe proved correct (_fail_delegation_durably + DelegationComplete
 error notify to the engager + permit release via the task done-callback).
 """
 

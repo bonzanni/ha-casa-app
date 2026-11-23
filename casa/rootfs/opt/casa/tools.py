@@ -11,7 +11,6 @@ import logging
 import math
 import os
 import re
-import shutil
 import subprocess
 import time
 import uuid
@@ -26,7 +25,6 @@ if TYPE_CHECKING:
     from drivers.turn_progress import TurnProgressLine
     from trigger_registry import TriggerRegistry
 
-from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use
 from system_requirements.orchestrator import install_requirements, OrchestrationError
 from system_requirements.manifest import (
     add_plugin_entry as add_manifest, remove_plugin_entry as remove_manifest,
@@ -45,7 +43,7 @@ from plugin_grants import (
     make_fail_closed_can_use_tool, mcp_json_malformed,
     profile_plan, protected_map,
     required_env_vars_for_resolved, result_contract_map,
-    sanitized_env_for_paths, sanitized_env_for_resolution,
+    sanitized_env_for_resolution,
     withhold_env_unresolved,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
@@ -78,7 +76,7 @@ from provenance import (
     carry_route, drop_guest_markers, route_context, task_delivery_marker,
 )
 from output_boundary import (
-    Admitted, ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
+    ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
     UnadmittedText, casa_text, resolve_scope,
 )
 from config import current_resident_model, effort_for, resolve_model
@@ -97,7 +95,7 @@ import plugin_outbox
 import scratchpad
 import specialist_session
 from error_kinds import (
-    ApiErrorTurn, ErrorKind, _USER_MESSAGES, _classify_error, api_error_kind,
+    ApiErrorTurn, ErrorKind, _classify_error, api_error_kind,
     result_api_error_kind,
 )
 from mcp_registry import McpServerRegistry
@@ -3923,26 +3921,17 @@ def build_engagement_resume_options(
             # Sol round-3 H7b / round-4: a resumed specialist rebuilds from its
             # RECORDED artifacts (§3.8) — never re-resolving
             # current assignments. An EMPTY record ([]) is AUTHORITATIVE (started
-            # with no plugins → resume with none); only a pre-v0.71.0 record
-            # (field absent → None) falls back to a fresh resolve.
+            # with no plugins → resume with none).
             job = (getattr(engagement, "origin", None) or {}).get("job")
             grants = SPECIALIST_CASA_GRANTS + (background_jobs.JOB_CASA_GRANTS if job else ())
-            recorded = getattr(engagement, "plugin_artifacts", None)
-            if recorded is not None:
-                opts = _build_specialist_options(
-                    cfg,
-                    resolution=_resolution_from_recorded(recorded),
-                    extra_casa_tools=grants,
-                    plan_out=_applied_plans,
-                    task_id=getattr(engagement, "id", None),
-                )
-            else:
-                opts = _build_specialist_options(
-                    cfg,
-                    extra_casa_tools=grants,
-                    plan_out=_applied_plans,
-                    task_id=getattr(engagement, "id", None),
-                )
+            opts = _build_specialist_options(
+                cfg,
+                resolution=_resolution_from_recorded(
+                    getattr(engagement, "plugin_artifacts", None)),
+                extra_casa_tools=grants,
+                plan_out=_applied_plans,
+                task_id=getattr(engagement, "id", None),
+            )
             if job:
                 opts = background_jobs.job_session_options(opts, engagement)
     if opts is None:
@@ -4102,7 +4091,7 @@ _MALFORMED_EVIDENCE = "<malformed>"
 def _terminal_str(value: object) -> str | None:
     """``None`` iff absent (the legacy/completed direction), ``str`` verbatim,
     anything else the ``_MALFORMED_EVIDENCE`` sentinel — never coerced, so no
-    foreign ``__str__`` is ever executed (the `_str_or_none` discipline)."""
+    foreign ``__str__`` is ever executed (the ``_known_token`` discipline)."""
     if value is None:
         return None
     return value if isinstance(value, str) else _MALFORMED_EVIDENCE
@@ -4365,15 +4354,6 @@ def _known_token(value: object, allowed: Any) -> str:
     if not isinstance(value, str):
         return _OTHER_TOKEN
     return value if value in allowed else _OTHER_TOKEN
-
-
-def _str_or_none(value: object) -> str | None:
-    """``value`` iff it is genuinely a ``str``, else ``None``.
-
-    TOTAL by construction, like ``_known_token``: a non-``str`` is rejected
-    rather than coerced, so no foreign ``__str__`` is ever executed.
-    """
-    return value if isinstance(value, str) else None
 
 
 def _int_or_none(value: object) -> int | None:
@@ -5565,8 +5545,8 @@ async def _fail_delegation_durably(
     the caller's answerable state.
 
     The explicit ``JobFailure`` goes through ``fail_compat`` — the route the
-    voice arms already use — because ``fail_delegation(id, exc)`` persists the
-    exception CLASS NAME as the durable kind (``_failure_envelope``), so the
+    voice arms already use — because a bare exception (``fail_compat(id, exc)``)
+    persists the exception CLASS NAME as the durable kind (``_failure_envelope``), so the
     ledger would say ``ApiErrorTurn`` while the caller was told
     ``rate_limit`` (Sol, seam round 1). A failed terminal write retries only
     through failure reconciliation, CARRYING THE ORIGINAL typed failure — an
@@ -6934,7 +6914,7 @@ class DelegationCeilingExceeded(asyncio.TimeoutError):
     Subclasses ``asyncio.TimeoutError`` so ``_classify_error`` yields the
     typed kind ``"timeout"`` — the task then FAILS (rather than ending
     cancelled), which routes ``_attach_completion_callback`` into its
-    exception branch: ``fail_delegation`` + a ``DelegationComplete`` error
+    exception branch: ``_fail_delegation_durably`` + a ``DelegationComplete`` error
     NOTIFICATION to the engager — the exact path the live kill-subprocess
     probe proved releases the permit and notifies correctly. A bare
     ``task.cancel()`` would instead hit the cancelled-branch, which posts
@@ -8418,9 +8398,6 @@ async def delegate_to_agent(args: dict) -> dict:
     before any gate; a specialist's background job still runs as an
     engagement, through ``start_job``.
     """
-    # Import lazily — matches the `agent.py` origin_var ContextVar.
-    import agent as agent_mod
-
     # TOTAL over arbitrary JSON, exactly as the `mode` coercion below is and
     # for the same reason: `args` can carry any type on the paths that don't
     # run the schema validator first. A non-string target must reach the
@@ -8643,14 +8620,12 @@ async def delegate_to_agent(args: dict) -> dict:
             id=delegation_id, agent=agent_name, started_at=started_at,
             origin=_rec_origin, **_task_record_fields(_birth),
         )
-        # Task 6 (spec §4.6): stash the permit on the record for
-        # observability only. The SOLE release for this legacy path is the
+        # Task 6 (spec §4.6): the SOLE release for this legacy path is the
         # `_permit_release_callback` done-callback attached to the task below
         # (robust even if the task is cancelled before its coroutine starts);
         # `SpecialistRegistry` terminal transitions deliberately do NOT
         # release (that would race the voice teardown's `cancel_delegation`
         # against a still-unwinding task).
-        record.permit = permit
         await _specialist_registry.register_delegation(record)
 
         voice_wait_s: float | None = None
@@ -8842,7 +8817,7 @@ async def delegate_to_agent(args: dict) -> dict:
                 }, delegation_id))
 
             # The typed kind the caller is told below is also what the ledger
-            # records — `fail_delegation(id, exc)` would persist the exception
+            # records — a bare `fail_compat(id, exc)` would persist the exception
             # CLASS NAME instead (#709); a failed write retries through
             # failure reconciliation carrying this same typed failure.
             await _fail_delegation_durably(
@@ -11025,19 +11000,6 @@ terminal write did not persist. NOT a terminal outcome: the record is live
 and resumable; the consumer narrates it as such."""
 
 
-def _register_launch_task_safe(engagement_id: str, task: Any) -> Any:
-    """§2.A: enrol a specific task (the launch owner) with the ledger; the
-    sibling of ``_register_launch_safe``, which enrols the current task."""
-    if _engagement_registry is None:
-        return None
-    try:
-        return _engagement_registry.register_launch(engagement_id, task)
-    except Exception:  # noqa: BLE001 — enrolment is never worth a launch
-        logger.warning("register_launch(%s) failed", engagement_id[:8],
-                       exc_info=True)
-        return None
-
-
 def _schedule_terminal_ack(engagement_id: str) -> None:
     """§2.A (Astra R4/T4): an inline named abort armed the obligation; the
     launcher is about to return its envelope, which IS the telling. The
@@ -11838,7 +11800,6 @@ async def _finalize_engagement_tail(
         else:
             text = text + "\n\n" + job_owner_turn.FOLLOW_UP_FAILED_LINE
     if tell:
-        target_role = frozen["origin"].get("role") or "assistant"
         # S3 §6: a specialist's or job's proven posts, as body-free Casa
         # lines after the terminal text — the one announcement the creator
         # is owed (INV-JOB-010) carries them.
@@ -12123,7 +12084,7 @@ async def ask_operator(args: dict) -> dict:
                         "message": "the question could not be recorded; ask again"})
     import result_broker
     from channels.telegram import render_ask_body, resolve_button_labels
-    captions = resolve_button_labels(list(options), multi=False)
+    captions = resolve_button_labels(list(options))
     # credited to the agent except in its own chat, where the chat is the agent
     body = result_broker.compose_operator_message(
         render_ask_body(None, question, list(options), captions),
@@ -14644,15 +14605,6 @@ def _install_plugin_sysreqs(name: str, manifest: dict) -> dict | None:
     for outcome in outcomes:
         add_manifest(outcome.manifest_entry(name))
     return None
-
-
-def _resolve_and_guard(*, repo: str, ref: str,
-                       expected_revision: str | None) -> "str | dict":
-    """C.2 steps 1-2 (v0.74.0): resolve ref -> sha, then the
-    expected_revision guard. Returns the 40-hex commit on success, else a
-    failure envelope dict. See ``_resolve_ref_and_guard`` for the pair."""
-    got = _resolve_ref_and_guard(repo=repo, ref=ref, expected_revision=expected_revision)
-    return got if isinstance(got, dict) else got[1]
 
 
 def _resolve_ref_and_guard(*, repo: str, ref: str,
@@ -19259,7 +19211,6 @@ def _tool_verify_plugin_state(
     them.
     """
     import agent as agent_mod
-    import cc_tool_pattern
     from plugin_env_conf import read_entries
     from plugin_registry import ResolvedPlugin, STORE_ROOT, load_registry
     from system_requirements.manifest import read_manifest

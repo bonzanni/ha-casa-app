@@ -119,14 +119,8 @@ async def test_ordinary_turn_after_narration_records_its_own_text(
 async def test_narration_turn_still_sees_the_whole_notice(tmp_path):
     agent = _make_agent_with_memory(tmp_path, role="assistant")
     _CapturingClient.reset()
-    built = []
     synthesized = []
-    real_build = agent._build_options
     real_synth = agent._synthesize_delegation_turn
-
-    async def _build(**kwargs):
-        built.append(kwargs["user_text"])
-        return await real_build(**kwargs)
 
     def _synth(msg):
         out = real_synth(msg)
@@ -134,7 +128,6 @@ async def test_narration_turn_still_sees_the_whole_notice(tmp_path):
         return out
 
     with patch("sdk_client_pool._default_make_client", _CapturingClient), \
-            patch.object(agent, "_build_options", _build), \
             patch.object(agent, "_synthesize_delegation_turn", _synth):
         await agent.handle_message(_notice("RESULT_CANARY_FULL"))
 
@@ -142,7 +135,6 @@ async def test_narration_turn_still_sees_the_whole_notice(tmp_path):
     assert "RESULT_CANARY_FULL" in body and f"was: {R}\n" in body
     assert len(_CapturingClient.prompts) == 1
     assert _CapturingClient.prompts[0].endswith(body)
-    assert built == [body]
 
 
 _SHARED_SIG_SEED = "invoke-1160-seed"

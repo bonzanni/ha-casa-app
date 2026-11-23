@@ -1,7 +1,7 @@
-"""Strict codec tests for the immutable speaker-provenance contract.
+"""Tests for the immutable speaker-provenance contract.
 
-Covers the reserved `casa-source-v1.` tag codec (canonical RFC 8785 JSON,
-base64url unpadded), the frozen `SpeakerProvenance` snapshot type, and the
+Covers the provenance mapping round trip and its validation, the frozen
+`SpeakerProvenance` snapshot type, and the
 `UserProvenance.from_origin` factory contract: an anonymous voice speaker
 never acquires a name, and an authenticated transport
 identity is the ONLY name source (no caller-supplied display name can be
@@ -10,8 +10,6 @@ injected through the factory).
 
 from __future__ import annotations
 
-import base64
-import codecs
 import inspect
 import json
 from dataclasses import FrozenInstanceError
@@ -19,21 +17,14 @@ from pathlib import Path
 
 import jsonschema
 import pytest
-import rfc8785
 
 from speaker_provenance import (
-    MAX_CANONICAL_PROVENANCE_BYTES,
-    MAX_ENCODED_PROVENANCE_TAG_BYTES,
-    RESERVED_SOURCE_PREFIX,
     UserProvenance,
     _FIELD_LIMITS,
-    decode_provenance_from_tags,
-    decode_provenance_tag,
-    encode_provenance_tag,
+    provenance_from_mapping,
     provenance_mapping,
     validate_speaker_provenance,
 )
-from canonical_bytes import canonical_json_bytes
 from personality_types import (
     AuthenticatedUser,
     SpeakerProvenance,
@@ -49,8 +40,8 @@ _SCHEMA_PATH = (
 
 def _raw_mapping(**overrides: object) -> dict[str, object]:
     """A schema-shaped v1 payload dict with every field defaulted to None,
-    overridden by kwargs. Used to build malformed canonical tags directly
-    (bypassing `encode_provenance_tag`, which validates)."""
+    overridden by kwargs. Used to build malformed mappings directly
+    (bypassing `provenance_mapping`, which validates)."""
     base: dict[str, object] = {
         "speaker_kind": "user",
         "role_id": None,
@@ -63,17 +54,6 @@ def _raw_mapping(**overrides: object) -> dict[str, object]:
     }
     base.update(overrides)
     return base
-
-
-def _tag_from_wire(wire: bytes) -> str:
-    payload = base64.urlsafe_b64encode(wire).decode("ascii").rstrip("=")
-    return RESERVED_SOURCE_PREFIX + payload
-
-
-def _tag_from_raw_mapping(raw: dict[str, object]) -> str:
-    """Build a canonical (RFC 8785), correctly-base64'd tag directly from a
-    raw dict via `rfc8785.dumps` — never through `encode_provenance_tag`."""
-    return _tag_from_wire(rfc8785.dumps(raw))
 
 
 def resident() -> SpeakerProvenance:
@@ -118,30 +98,8 @@ def system() -> SpeakerProvenance:
 
 
 # ---------------------------------------------------------------------------
-# Step 1 skeleton (verbatim from the brief)
+# Frozen snapshot
 # ---------------------------------------------------------------------------
-
-
-def test_reserved_tag_round_trip_is_canonical_and_unpadded() -> None:
-    tag = encode_provenance_tag(resident())
-    assert tag.startswith(RESERVED_SOURCE_PREFIX)
-    assert "=" not in tag
-    assert decode_provenance_tag(tag) == resident()
-
-
-@pytest.mark.parametrize(
-    "tags",
-    [
-        (),
-        ("casa-source-v1.bad!",),
-        (encode_provenance_tag(resident()), encode_provenance_tag(resident())),
-        (encode_provenance_tag(resident()), "casa-source-v2.invalid"),
-    ],
-)
-def test_missing_malformed_duplicate_or_conflicting_tags_are_unknown(tags) -> None:
-    provenance, reason = decode_provenance_from_tags(tags)
-    assert provenance is None
-    assert reason != "ok"
 
 
 def test_snapshot_is_frozen() -> None:
@@ -151,7 +109,7 @@ def test_snapshot_is_frozen() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Additional codec coverage: all speaker kinds round-trip, ASCII, tag shape
+# All speaker kinds round-trip through the mapping
 # ---------------------------------------------------------------------------
 
 
@@ -161,11 +119,7 @@ def test_snapshot_is_frozen() -> None:
     ids=["resident", "specialist", "executor", "user", "system"],
 )
 def test_all_speaker_kinds_round_trip(value: SpeakerProvenance) -> None:
-    tag = encode_provenance_tag(value)
-    assert tag.isascii()
-    assert tag.startswith(RESERVED_SOURCE_PREFIX)
-    assert "=" not in tag
-    assert decode_provenance_tag(tag) == value
+    assert provenance_from_mapping(provenance_mapping(value)) == value
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +150,7 @@ def test_max_length_user_round_trip() -> None:
         user_id=_fill(scalar_id, byte_id),
     )
     validate_speaker_provenance(value)
-    tag = encode_provenance_tag(value)
-    assert decode_provenance_tag(tag) == value
+    assert provenance_from_mapping(provenance_mapping(value)) == value
 
 
 def test_max_length_agent_round_trip() -> None:
@@ -223,8 +176,7 @@ def test_max_length_agent_round_trip() -> None:
         binding_digest="sha256:" + "5" * 64,
     )
     validate_speaker_provenance(value)
-    tag = encode_provenance_tag(value)
-    assert decode_provenance_tag(tag) == value
+    assert provenance_from_mapping(provenance_mapping(value)) == value
 
 
 def test_worst_case_four_byte_unicode_user_round_trip() -> None:
@@ -234,8 +186,7 @@ def test_worst_case_four_byte_unicode_user_round_trip() -> None:
         user_peer=_fill(scalar, byte, _POO),
     )
     validate_speaker_provenance(value)
-    tag = encode_provenance_tag(value)
-    assert decode_provenance_tag(tag) == value
+    assert provenance_from_mapping(provenance_mapping(value)) == value
 
 
 def test_worst_case_four_byte_unicode_agent_display_name_round_trip() -> None:
@@ -250,8 +201,7 @@ def test_worst_case_four_byte_unicode_agent_display_name_round_trip() -> None:
         binding_digest="sha256:" + "5" * 64,
     )
     validate_speaker_provenance(value)
-    tag = encode_provenance_tag(value)
-    assert decode_provenance_tag(tag) == value
+    assert provenance_from_mapping(provenance_mapping(value)) == value
 
 
 # ---------------------------------------------------------------------------
@@ -403,147 +353,6 @@ def test_user_id_one_byte_over_byte_limit_but_under_scalar_limit_fails() -> None
 
 
 # ---------------------------------------------------------------------------
-# Exact boundary tests: 2048-byte canonical payload, 2746-byte final tag
-# ---------------------------------------------------------------------------
-
-
-# NOTE on how these tests are constructed: the per-field `_FIELD_LIMITS`
-# ceilings cap the maximum canonical JSON payload reachable by ANY value
-# that also passes `validate_speaker_provenance` well below 2048 bytes (the
-# richest case, a "user" record with both `user_peer` and `user_id` maxed
-# out using 2-byte UTF-8 filler, tops out at roughly 1.1 KB). That means
-# `encode_provenance_tag`'s own 2048-byte size check can never actually
-# fire for a legitimately field-validated `SpeakerProvenance` today — it is
-# pure defense-in-depth headroom (protects against a future field addition
-# or a validator bug), not a reachable path. The exact 2048/2746 byte
-# ceilings ARE independently exercisable, though: `decode_provenance_tag`
-# checks encoded/decoded SIZE strictly before it calls
-# `provenance_from_mapping` (which is what applies the tighter per-field
-# limits). So these tests build a raw, schema-shaped dict directly (not
-# going through `SpeakerProvenance`/`validate_speaker_provenance`), base64
-# it by hand into a tag, and confirm the SIZE ceiling in
-# `decode_provenance_tag` accepts exactly-2048/2746-byte input and rejects
-# one byte more — independent of what the (separate, tighter) per-field
-# check does afterward.
-
-
-def _wire_bytes_for_user_peer(user_peer: str) -> bytes:
-    return canonical_json_bytes(
-        {
-            "speaker_kind": "user",
-            "role_id": None,
-            "persona_id": None,
-            "persona_version": None,
-            "display_name": None,
-            "binding_digest": None,
-            "user_peer": user_peer,
-            "user_id": None,
-        }
-    )
-
-
-def _max_user_peer_for_payload_ceiling(overshoot: int = 0) -> str:
-    """The `user_peer` value (ASCII, so 1 char == 1 byte) whose canonical
-    JSON payload lands at exactly MAX_CANONICAL_PROVENANCE_BYTES + overshoot.
-    Deliberately exceeds the real `_FIELD_LIMITS["user_peer"]` ceiling — this
-    builds a raw dict for the SIZE-ceiling tests below, never a validated
-    `SpeakerProvenance`."""
-    base_len = len(_wire_bytes_for_user_peer("p"))
-    pad_needed = MAX_CANONICAL_PROVENANCE_BYTES - base_len + overshoot
-    return "p" + "a" * pad_needed
-
-
-def _tag_from_raw_wire(wire: bytes) -> str:
-    payload = base64.urlsafe_b64encode(wire).decode("ascii").rstrip("=")
-    return RESERVED_SOURCE_PREFIX + payload
-
-
-def test_exact_2048_byte_canonical_payload_passes_size_ceiling() -> None:
-    """A raw payload of exactly 2048 canonical bytes must clear
-    `decode_provenance_tag`'s size ceiling: it is rejected afterwards for
-    exceeding the (tighter, independent) `user_peer` field limit — proving
-    the rejection is NOT the size ceiling, i.e. the size ceiling itself
-    passed a value at its exact boundary."""
-    user_peer = _max_user_peer_for_payload_ceiling()
-    wire = _wire_bytes_for_user_peer(user_peer)
-    assert len(wire) == MAX_CANONICAL_PROVENANCE_BYTES
-    tag = _tag_from_raw_wire(wire)
-    with pytest.raises(ValueError, match="length limit") as excinfo:
-        decode_provenance_tag(tag)
-    assert "2048 bytes" not in str(excinfo.value)
-    assert "2746 bytes" not in str(excinfo.value)
-
-
-def test_canonical_payload_one_byte_over_2048_rejected_by_size_ceiling() -> None:
-    """One byte past the ceiling must be rejected by a SIZE check (either
-    the outer tag-length check or the payload-length pre-check — both fire
-    before content validation ever runs), never by field-level content
-    validation."""
-    user_peer = _max_user_peer_for_payload_ceiling(overshoot=1)
-    wire = _wire_bytes_for_user_peer(user_peer)
-    assert len(wire) == MAX_CANONICAL_PROVENANCE_BYTES + 1
-    tag = _tag_from_raw_wire(wire)
-    with pytest.raises(ValueError, match=r"2048 bytes|2746 bytes") as excinfo:
-        decode_provenance_tag(tag)
-    assert "length limit" not in str(excinfo.value)
-
-
-def test_exact_2746_byte_final_tag_passes_length_precheck() -> None:
-    """The tag produced from an exactly-2048-byte payload must land at
-    exactly MAX_ENCODED_PROVENANCE_TAG_BYTES: 15-byte ASCII prefix +
-    unpadded base64url of 2048 bytes (ceil(2048*4/3) = 2731 chars) = 2746.
-    `decode_provenance_tag` must accept that exact length and reject it only
-    for the (independent, tighter) per-field content ceiling."""
-    assert len(RESERVED_SOURCE_PREFIX.encode("ascii")) == 15
-    user_peer = _max_user_peer_for_payload_ceiling()
-    wire = _wire_bytes_for_user_peer(user_peer)
-    tag = _tag_from_raw_wire(wire)
-    assert len(tag.encode("ascii")) == MAX_ENCODED_PROVENANCE_TAG_BYTES
-    with pytest.raises(ValueError, match="length limit") as excinfo:
-        decode_provenance_tag(tag)
-    assert "2746 bytes" not in str(excinfo.value)
-
-
-def test_tag_one_byte_over_2746_rejected_before_decoding() -> None:
-    """A tag exactly one byte past MAX_ENCODED_PROVENANCE_TAG_BYTES must be
-    rejected by the length pre-check, before any base64/JSON decoding is
-    attempted (garbage payload content that would blow up a real decoder,
-    proving decode never got that far)."""
-    overlong_payload = "a" * (MAX_ENCODED_PROVENANCE_TAG_BYTES - len(RESERVED_SOURCE_PREFIX) + 1)
-    tag = RESERVED_SOURCE_PREFIX + overlong_payload
-    assert len(tag.encode("ascii")) == MAX_ENCODED_PROVENANCE_TAG_BYTES + 1
-    with pytest.raises(ValueError, match="2746 bytes"):
-        decode_provenance_tag(tag)
-
-
-# ---------------------------------------------------------------------------
-# Oversized encoded-INPUT rejection before base64/JSON decoding
-# ---------------------------------------------------------------------------
-
-
-def test_oversized_encoded_tag_input_rejected_before_decoding() -> None:
-    # Construct a tag string far larger than MAX_ENCODED_PROVENANCE_TAG_BYTES
-    # whose payload segment is deliberately NOT valid base64url and NOT valid
-    # JSON once decoded — if the length pre-check didn't run first, this
-    # would raise from inside base64/json decoding instead of the length
-    # guard, and the exercise below verifies decode never gets that far by
-    # using a payload guaranteed to blow up if fed to a real decoder.
-    huge_payload = "%" * (MAX_ENCODED_PROVENANCE_TAG_BYTES * 3)
-    tag = RESERVED_SOURCE_PREFIX + huge_payload
-    with pytest.raises(ValueError, match="2746 bytes"):
-        decode_provenance_tag(tag)
-
-
-def test_oversized_but_validly_shaped_encoded_input_rejected_before_decoding() -> None:
-    # Even a well-formed unpadded-base64url alphabet payload that merely
-    # exceeds the tag byte ceiling must be rejected by the length pre-check.
-    overlong_payload = "a" * (MAX_ENCODED_PROVENANCE_TAG_BYTES * 2)
-    tag = RESERVED_SOURCE_PREFIX + overlong_payload
-    with pytest.raises(ValueError, match="2746 bytes"):
-        decode_provenance_tag(tag)
-
-
-# ---------------------------------------------------------------------------
 # UserProvenance.from_origin factory contract
 # ---------------------------------------------------------------------------
 
@@ -660,258 +469,28 @@ def test_from_origin_route_mismatch_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CRITICAL: type-confused fields in an otherwise canonical, correctly-
-# base64'd tag must be rejected as malformed, never raise TypeError/
-# AttributeError out of validate_speaker_provenance.
+# CRITICAL: type-confused fields in an otherwise schema-shaped mapping
+# must be rejected as malformed, never raise TypeError/AttributeError out
+# of validate_speaker_provenance.
 # ---------------------------------------------------------------------------
 
 
 def test_type_confused_display_name_on_user_is_malformed_not_a_crash() -> None:
-    tag = _tag_from_raw_mapping(
-        _raw_mapping(speaker_kind="user", user_peer="telegram_123", display_name=123)
-    )
-    provenance, reason = decode_provenance_from_tags((tag,))
-    assert provenance is None
-    assert reason != "ok"
+    raw = _raw_mapping(speaker_kind="user", user_peer="telegram_123", display_name=123)
     with pytest.raises(ValueError):
-        decode_provenance_tag(tag)
+        provenance_from_mapping(raw)
 
 
 def test_type_confused_role_id_on_resident_is_malformed_not_a_crash() -> None:
-    tag = _tag_from_raw_mapping(
-        _raw_mapping(
-            speaker_kind="resident",
-            role_id=123,
-            persona_id="casa.personas/tina",
-            persona_version="1.0.0",
-            binding_digest="sha256:" + "5" * 64,
-        )
+    raw = _raw_mapping(
+        speaker_kind="resident",
+        role_id=123,
+        persona_id="casa.personas/tina",
+        persona_version="1.0.0",
+        binding_digest="sha256:" + "5" * 64,
     )
-    provenance, reason = decode_provenance_from_tags((tag,))
-    assert provenance is None
-    assert reason != "ok"
     with pytest.raises(ValueError):
-        decode_provenance_tag(tag)
-
-
-# ---------------------------------------------------------------------------
-# decode_provenance_tag rejection categories (brief-mandated)
-# ---------------------------------------------------------------------------
-
-
-def test_non_ascii_tag_rejected() -> None:
-    tag = RESERVED_SOURCE_PREFIX + "é"
-    with pytest.raises(ValueError):
-        decode_provenance_tag(tag)
-
-
-def test_padded_base64_tag_rejected() -> None:
-    valid_tag = encode_provenance_tag(user())
-    padded_tag = valid_tag + "="
-    with pytest.raises(ValueError, match="unpadded base64url"):
-        decode_provenance_tag(padded_tag)
-
-
-def test_valid_but_non_canonical_json_payload_rejected() -> None:
-    """Valid base64 of valid JSON that decodes to a schema-shaped dict, but
-    whose wire bytes are NOT RFC 8785 canonical (here: standard json.dumps
-    key order + whitespace, rather than rfc8785's sorted/compact form)."""
-    raw = _raw_mapping(speaker_kind="user", user_peer="telegram_123")
-    non_canonical_wire = json.dumps(raw).encode("utf-8")
-    assert non_canonical_wire != canonical_json_bytes(raw)
-    tag = _tag_from_wire(non_canonical_wire)
-    with pytest.raises(ValueError, match="not canonical RFC 8785 JSON"):
-        decode_provenance_tag(tag)
-
-
-def test_sole_unsupported_version_tag_rejected() -> None:
-    """A single reserved-namespace tag with an unsupported version prefix
-    must be rejected by both entry points. (Not paired with a v1 tag here —
-    that would short-circuit to the "multiple" path without ever calling
-    the decoder.)"""
-    tag = "casa-source-v2.x"
-    provenance, reason = decode_provenance_from_tags((tag,))
-    assert provenance is None
-    assert reason != "ok"
-    with pytest.raises(ValueError, match="unsupported provenance tag"):
-        decode_provenance_tag(tag)
-
-
-# ---------------------------------------------------------------------------
-# FIX 1 (foundation review, P0): a deeply-nested-array payload must never
-# escape decode_provenance_tag/decode_provenance_from_tags as a raw
-# RecursionError — it must fail closed as the same malformed-provenance
-# ValueError, both via an explicit depth bound checked BEFORE json.loads
-# and (defense in depth) a broadened except clause.
-# ---------------------------------------------------------------------------
-
-
-def _nested_array_wire(depth: int) -> bytes:
-    return b"[" * depth + b"0" + b"]" * depth
-
-
-def test_hostile_deeply_nested_payload_is_malformed_not_a_crash() -> None:
-    wire = _nested_array_wire(1000)
-    assert len(wire) < MAX_CANONICAL_PROVENANCE_BYTES
-    tag = _tag_from_wire(wire)
-
-    provenance, reason = decode_provenance_from_tags((tag,))
-    assert provenance is None
-    assert reason == "malformed"
-
-    with pytest.raises(ValueError) as exc_info:
-        decode_provenance_tag(tag)
-    assert not isinstance(exc_info.value, RecursionError)
-
-
-def test_nesting_depth_at_limit_is_not_rejected_by_depth_guard() -> None:
-    """Depth exactly at the bound must clear the depth guard — json.loads
-    then runs and the payload is rejected for a DIFFERENT reason (it's an
-    array, not a provenance object), proving the depth check itself did
-    not trip."""
-    from speaker_provenance import MAX_PROVENANCE_JSON_DEPTH
-
-    tag = _tag_from_wire(_nested_array_wire(MAX_PROVENANCE_JSON_DEPTH))
-    with pytest.raises(ValueError, match="provenance must be an object"):
-        decode_provenance_tag(tag)
-
-
-def test_nesting_depth_over_limit_is_rejected_by_depth_guard() -> None:
-    from speaker_provenance import MAX_PROVENANCE_JSON_DEPTH
-
-    tag = _tag_from_wire(_nested_array_wire(MAX_PROVENANCE_JSON_DEPTH + 1))
-    with pytest.raises(ValueError, match="invalid provenance payload"):
-        decode_provenance_tag(tag)
-
-
-# ---------------------------------------------------------------------------
-# R2 (foundation review r2): _reject_excessive_json_nesting byte-scans
-# `wire` assuming UTF-8 (one structural byte per character), but
-# json.loads(bytes) auto-detects UTF-16/UTF-32 per RFC 4627. A UTF-16LE
-# wire encodes every ASCII character as two bytes (low byte + 0x00 high
-# byte). Terra's reproducer: a JSON string containing an escaped quote
-# (`\"`), immediately followed by real deep array nesting. In UTF-16LE,
-# the escaped-quote sequence's own 0x00 high bytes desync the scanner's
-# in_string tracking (it mistakes the escaped quote's low byte for an
-# unescaped string terminator, and the real closing quote's low byte for
-# a NEW string open) — so the scanner ends up believing the following
-# ~480 levels of genuine array nesting sit inside a string, and never
-# counts them at all. Fixed by requiring `wire` be valid UTF-8 BEFORE the
-# depth scan runs.
-# ---------------------------------------------------------------------------
-
-
-def _utf16le_bom_wire_with_desyncing_escaped_quote(nesting_depth: int) -> bytes:
-    """A UTF-16LE-BOM-encoded JSON wire: a top-level array whose first
-    element is the (JSON-escaped) string `"` and whose second element is
-    *nesting_depth* levels of real nested arrays. Byte-scanning this
-    assuming UTF-8 (the pre-fix behavior) desyncs on the escaped-quote
-    bytes and never counts the following real nesting at all."""
-    quoted_quote = json.dumps('"')  # -> the 4-character text: "\""
-    logical_text = "[" + quoted_quote + "," + "[" * nesting_depth + "0" + "]" * nesting_depth + "]"
-    json.loads(logical_text)  # sanity: this really is valid, deeply nested JSON
-    return codecs.BOM_UTF16_LE + logical_text.encode("utf-16-le")
-
-
-def test_old_byte_level_depth_scan_would_have_missed_the_utf16_nesting() -> None:
-    """Characterizes the vulnerability itself (independent of the fix):
-    replaying the pre-fix byte-scan algorithm against this wire proves it
-    never sees depth exceed 1, even though the wire's real (UTF-16-
-    decoded) nesting is far beyond MAX_PROVENANCE_JSON_DEPTH."""
-    from speaker_provenance import MAX_PROVENANCE_JSON_DEPTH
-
-    wire = _utf16le_bom_wire_with_desyncing_escaped_quote(480)
-
-    depth = 0
-    max_seen = 0
-    in_string = False
-    escaped = False
-    for byte in wire:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif byte == 0x5C:
-                escaped = True
-            elif byte == 0x22:
-                in_string = False
-            continue
-        if byte == 0x22:
-            in_string = True
-        elif byte in (0x7B, 0x5B):
-            depth += 1
-            max_seen = max(max_seen, depth)
-        elif byte in (0x7D, 0x5D):
-            depth -= 1
-    assert max_seen < MAX_PROVENANCE_JSON_DEPTH
-
-
-def test_utf16_wire_is_rejected_before_reaching_json_loads(monkeypatch) -> None:
-    wire = _utf16le_bom_wire_with_desyncing_escaped_quote(480)
-    tag = _tag_from_wire(wire)
-
-    called = False
-    real_loads = json.loads
-
-    def _spy_loads(*args, **kwargs):
-        nonlocal called
-        called = True
-        return real_loads(*args, **kwargs)
-
-    monkeypatch.setattr("speaker_provenance.json.loads", _spy_loads)
-
-    provenance, reason = decode_provenance_from_tags((tag,))
-    assert provenance is None
-    assert reason == "malformed"
-    with pytest.raises(ValueError, match="invalid provenance payload"):
-        decode_provenance_tag(tag)
-    assert not called, (
-        "UTF-16 wire reached json.loads instead of being rejected by the "
-        "UTF-8 pre-check ahead of the depth scan"
-    )
-
-
-def test_non_utf8_wire_without_deep_nesting_is_still_rejected() -> None:
-    """A plain non-UTF-8 wire (no nesting-desync trick at all) must also
-    be rejected — the UTF-8 requirement is unconditional, not just a
-    patch for the specific desync reproducer above."""
-    wire = codecs.BOM_UTF16_LE + json.dumps({"speaker_kind": "user"}).encode(
-        "utf-16-le"
-    )
-    tag = _tag_from_wire(wire)
-    provenance, reason = decode_provenance_from_tags((tag,))
-    assert provenance is None
-    assert reason == "malformed"
-
-
-# ---------------------------------------------------------------------------
-# FIX 2 (foundation review, P1): base64url decoding must be canonical —
-# non-alphabet characters spliced into an otherwise-valid payload (silently
-# ignored by base64.urlsafe_b64decode, so they decode to the SAME bytes)
-# must be rejected rather than accepted as an alternate spelling of a valid
-# tag.
-# ---------------------------------------------------------------------------
-
-
-def test_non_canonical_base64_spelling_is_rejected() -> None:
-    valid_tag = encode_provenance_tag(user())
-    payload = valid_tag[len(RESERVED_SOURCE_PREFIX):]
-    assert len(payload) % 4 != 1  # inserting 4 chars preserves this
-    mid = len(payload) // 2
-    spliced_payload = payload[:mid] + "!!!!" + payload[mid:]
-    spliced_tag = RESERVED_SOURCE_PREFIX + spliced_payload
-
-    # Sanity: the splice really does decode to the same bytes (confirms the
-    # vulnerability this test guards against, independent of our fix).
-    padding = "=" * (-len(spliced_payload) % 4)
-    assert base64.urlsafe_b64decode(spliced_payload + padding) == base64.urlsafe_b64decode(
-        payload + "=" * (-len(payload) % 4)
-    )
-
-    provenance, reason = decode_provenance_from_tags((spliced_tag,))
-    assert provenance is None
-    assert reason == "malformed"
-    with pytest.raises(ValueError):
-        decode_provenance_tag(spliced_tag)
+        provenance_from_mapping(raw)
 
 
 # ---------------------------------------------------------------------------

@@ -43,7 +43,7 @@ from plugin_grants import (
     sanitized_env_for_resolution,
 )
 
-from bus import BusMessage, MessageBus, MessageType
+from bus import BusMessage, MessageType
 from channels import ChannelManager, DeliveryOutcome
 from channels.tg_rich import FORMAT_GUIDE
 from claude_runtime import (
@@ -2630,8 +2630,7 @@ class Agent:
                     last_resume["sid"] = resume_sid
                     return await self._build_options(
                         channel=msg.channel, channel_key=channel_key,
-                        is_fresh=is_fresh, resume_sid=resume_sid,
-                        user_text=user_text,
+                        resume_sid=resume_sid,
                     )
 
                 async def _publish(sid):
@@ -2734,8 +2733,7 @@ class Agent:
                     await self._session_registry.touch(channel_key)
                 options = await self._build_options(
                     channel=msg.channel, channel_key=channel_key,
-                    is_fresh=resume_sid is None, resume_sid=resume_sid,
-                    user_text=user_text,
+                    resume_sid=resume_sid,
                 )
                 # A turn that never takes a pooled client (a scheduled fire,
                 # a webhook one-shot) and whose session has been quiet for
@@ -3584,15 +3582,13 @@ class Agent:
             _prompt_surface_var.reset(token)
 
     async def _build_options(
-        self, *, channel: str, channel_key: str, is_fresh: bool,
-        resume_sid: str | None, user_text: str,
+        self, *, channel: str, channel_key: str,
+        resume_sid: str | None,
     ) -> ClaudeAgentOptions:
         """Assemble the connect-time ClaudeAgentOptions for one conversation
         (spec §4.3 steps 2b–6). Extracted verbatim from _process so BOTH the
         pooled path (via the pool's build_options callback) and the bypass path
-        build identical options. Keys the channel-aware memory load on the
-        ``is_fresh`` PARAMETER (the pool decides it under the entry lock — AR-3),
-        not a locally-recomputed value. Returns the stderr-wrapped options."""
+        build identical options. Returns the stderr-wrapped options."""
         # #349: drop any budget stash a FAILED earlier attempt of this same
         # logical turn left behind — cleared at entry (not at the stash site
         # below) because the untrusted-webhook branch returns early and would

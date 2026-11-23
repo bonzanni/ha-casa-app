@@ -13,7 +13,7 @@ ask or racing a lost HTTP response.
 
 Two-phase claim/commit lets a callback persist its side effect BETWEEN
 reserving the winning tap and resolving the awaiting handler's future — see
-`claim`/`commit`/`abort_claim` docstrings for the exact ordering guarantees.
+`claim`/`commit` for the exact ordering guarantees.
 
 Valid namespaces: "resident_ask", "proposal".
 """
@@ -75,7 +75,7 @@ class _RetiredEntry:
 
 
 class _Claim:
-    """Opaque token returned by `claim()`; passed to `commit()`/`abort_claim()`."""
+    """Opaque token returned by `claim()`; passed to `commit()`."""
 
     __slots__ = ("req", "token", "option_index", "actor_id")
 
@@ -319,19 +319,6 @@ class VerdictBroker:
         }
         self._finish(key, outcome)
         return True
-
-    def abort_claim(self, claim: "_Claim") -> None:
-        req = claim.req
-        if req._claimed is not claim.token or req._future.done():
-            return
-        req._claimed = None
-        loop = asyncio.get_running_loop()
-        remaining = req._deadline - loop.time()
-        key = req.key
-        if remaining <= 0:
-            self._finish(key, {"outcome": "no_answer"})
-            return
-        req._timer = loop.call_later(remaining, self._on_timeout, key)
 
     def is_live_unclaimed(
         self, *, namespace: str, scope: str, request_id: str,

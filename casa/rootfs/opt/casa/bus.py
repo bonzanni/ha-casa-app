@@ -22,7 +22,6 @@ class MessageType(Enum):
     RESPONSE = "response"
     NOTIFICATION = "notification"
     CHANNEL_IN = "channel_in"
-    CHANNEL_OUT = "channel_out"
     SCHEDULED = "scheduled"
 
 

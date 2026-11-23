@@ -276,9 +276,7 @@ async def test_resident_options_resolve_mcp_with_role_grants_and_skill_policy(
     options = await agent._build_options(
         channel="voice",
         channel_key="voice-butler-house",
-        is_fresh=True,
         resume_sid=None,
-        user_text="what is next?",
     )
 
     server = options.mcp_servers["casa-framework"]
@@ -2270,7 +2268,7 @@ async def test_untrusted_webhook_trigger_gets_restricted_runtime(tmp_path):
     try:
         options = await agent._build_options(
             channel="webhook", channel_key="webhook-assistant-uuid",
-            is_fresh=True, resume_sid=None, user_text="voicemail from a caller",
+            resume_sid=None,
         )
     finally:
         origin_var.reset(token)
@@ -2295,7 +2293,7 @@ async def test_webhook_missing_route_is_restricted_fail_closed(tmp_path):
     try:
         options = await agent._build_options(
             channel="webhook", channel_key="webhook-assistant-x",
-            is_fresh=True, resume_sid=None, user_text="x",
+            resume_sid=None,
         )
     finally:
         origin_var.reset(token)

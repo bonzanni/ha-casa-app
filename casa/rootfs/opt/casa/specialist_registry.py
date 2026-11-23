@@ -36,9 +36,7 @@ from task_model import Requester
 
 if TYPE_CHECKING:
     from channels.tg_address import TgAddress
-# Forward re-export for future Plan 2 / Task 14 callers (module-level-accessor
-# precedent this file already follows, e.g. _active_index below).
-from specialist_lifecycle import InstanceState, SpecialistInstance, check_slug_uniqueness  # noqa: F401
+from specialist_lifecycle import InstanceState, SpecialistInstance
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +99,6 @@ class DelegationRecord:
     # origin carries the channel/chat_id/cid/role/user_text of the
     # delegating resident's turn so the late-completion NOTIFICATION
     # can be delivered back to the right user via the right channel.
-    # Task 6 (spec §4.6): the legacy delegate task still owns this Permit via
-    # its done callback. It is never copied into the durable job snapshot.
-    permit: Any = None
     # The delegation as a task (``task_model``), set by its launcher at its
     # birth and copied onto the durable job: the agent that runs it (empty
     # means ``agent``), who receives its result, and where its posts go
@@ -364,12 +359,6 @@ class SpecialistRegistry:
     def job_registry(self) -> JobRegistry:
         return self._job_registry
 
-    def has_delegation(self, delegation_id: str) -> bool:
-        job = self._job_registry.get(delegation_id)
-        return bool(job and job.execution_state in {
-            ExecutionState.ACCEPTED, ExecutionState.RUNNING,
-        })
-
     async def register_delegation(self, record: DelegationRecord) -> None:
         await self._job_registry.load()
         origin = dict(record.origin)
@@ -473,35 +462,9 @@ class SpecialistRegistry:
             delegation_id, result, announce_creator=announce_creator,
             closing_message=closing_message)
 
-    async def fail_delegation(
-        self, delegation_id: str, exc: Exception,
-    ) -> None:
-        await self._job_registry.load()
-        await self._job_registry.fail_compat(delegation_id, exc)
-
     async def cancel_delegation(self, delegation_id: str) -> None:
         await self._job_registry.load()
         await self._job_registry.cancel(delegation_id)
-
-    def orphans_from_disk(self) -> list[DelegationRecord]:
-        """Compatibility view of already-loaded orphaned durable jobs.
-
-        This method deliberately performs no file I/O.  Boot migration and
-        restart recovery are owned by :class:`JobRegistry`.
-        """
-        return [
-            DelegationRecord(
-                id=job.id,
-                agent=job.specialist_role,
-                started_at=job.started_at or job.created_at,
-                origin=origin_from_job(job),
-                executor=job.executor,
-                requester=job.requester,
-                delivery=job.delivery,
-            )
-            for job in self._job_registry.all()
-            if job.execution_state is ExecutionState.ORPHANED
-        ]
 
     @staticmethod
     def _optional_str(value: Any) -> str | None:
@@ -545,12 +508,6 @@ def _discover_image_role_slots(roles_dir: str | None = None) -> frozenset[str]:
     return frozenset(slots)
 
 
-# Computed once at import — the image's OWN role tree is static content, never
-# mutated at runtime (an INSTALLED specialist lives in a separate tree,
-# /config/specialists/, layered on top by InstalledSpecialistIndex below).
-_IMAGE_ROLE_SLOTS = _discover_image_role_slots()
-
-
 class InstalledSpecialistIndex:
     """Tracks 0..N INSTALLED specialist components under /config/specialists/<slug>/ —
     a DIFFERENT tree from SpecialistRegistry._dir's legacy bundled
@@ -564,9 +521,6 @@ class InstalledSpecialistIndex:
 
     def installed_slugs(self) -> frozenset[str]:
         return frozenset(self._instances)
-
-    def all_collision_slugs(self) -> frozenset[str]:
-        return _IMAGE_ROLE_SLOTS | self.installed_slugs()
 
     def get_instance(self, slug: str) -> SpecialistInstance | None:
         return self._instances.get(slug)
@@ -712,12 +666,6 @@ def set_active_installed_index(index: "InstalledSpecialistIndex") -> None:
 
 def live_installed_specialist_slugs() -> frozenset[str]:
     return _active_index.installed_slugs() if _active_index is not None else frozenset()
-
-
-def live_collision_slugs() -> frozenset[str]:
-    if _active_index is None:
-        return _IMAGE_ROLE_SLOTS
-    return _active_index.all_collision_slugs()
 
 
 def live_specialists_dir() -> "Path | None":

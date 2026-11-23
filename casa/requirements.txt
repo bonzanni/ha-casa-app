@@ -57,10 +57,9 @@ pydantic>=2,<3
 httpx>=0.27,<1
 # The MCP client ha_mcp_facade.py uses to reach Home Assistant's MCP server.
 mcp>=1.28.1,<2
-# Personality Phase A (Task 2): RFC 8785 (JSON Canonicalization Scheme)
-# canonical bytes for the immutable speaker-provenance codec — the
-# `casa-source-v1.` reserved provenance tag must encode a byte-stable
-# canonical JSON payload so encode/decode round trips are deterministic.
+# RFC 8785 (JSON Canonicalization Scheme): the byte-stable canonical JSON
+# that canonical_bytes.py hashes, so a digest of the same value is the same
+# on every run.
 rfc8785==0.1.4
 # Personality Phase A (Task 3): ACCEPTED-CommonMark validation for the
 # strict persona-pack loader's persona.md parsing (markdown_sections.py) —

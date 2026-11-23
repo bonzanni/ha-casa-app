@@ -687,8 +687,8 @@ async def test_a_warm_clients_second_turn_is_cut_on_its_own_scope(tmp_path):
 
 from claude_agent_sdk import CLIConnectionError  # noqa: E402
 
+import agent as agent_mod  # noqa: E402
 from agent import _delegation_id_of  # noqa: E402
-from output_boundary import current_turn_scope  # noqa: E402
 
 
 def _x0t(content):
@@ -745,7 +745,7 @@ class _Seen:
 
     def step(self) -> _Hook:
         async def _look():
-            scope = current_turn_scope()
+            scope = agent_mod.origin_var.get(None)["turn_scope"]
             self.scopes.append(scope)
             self.records.append(dict(scope.delegated_approvals))
         return _Hook(_look)

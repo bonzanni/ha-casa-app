@@ -501,8 +501,8 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
                 agent_loader.load_configurator())
             agent = _make_agent(tmp_path, role="assistant")
             res_opts = await agent._build_options(
-                channel="telegram", channel_key="k", is_fresh=True,
-                resume_sid=None, user_text="hi")
+                channel="telegram", channel_key="k",
+                resume_sid=None)
 
             monkeypatch.setattr(
                 tools_mod, "_agent_registry",
@@ -607,8 +607,8 @@ class TestTheFileIsReadButNotServed:
                 token = origin_var.set({"_origin_route": route})
                 try:
                     opts = await agent._build_options(
-                        channel=channel, channel_key="k", is_fresh=True,
-                        resume_sid=None, user_text="hi")
+                        channel=channel, channel_key="k",
+                        resume_sid=None)
                 finally:
                     origin_var.reset(token)
                 total += (opts.system_prompt or "").count(marker)

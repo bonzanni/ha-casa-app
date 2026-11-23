@@ -53,11 +53,6 @@ def readable_tiers(clearance: str) -> list[str]:
     return [t for t in TIERS if _rank(t) <= ceiling]
 
 
-def apply_ceiling(tier: str, ceiling: str) -> str:
-    """Cap ``tier`` so it is no more sensitive than ``ceiling`` (the channel ceiling)."""
-    return tier if _rank(tier) <= _rank(ceiling) else ceiling
-
-
 def clearance_for_channel(channel: str) -> str:
     """Clearance for a channel. FAIL-CLOSED: an unmapped channel reads at the
     LEAST-sensitive tier (public) — see _DEFAULT_CLEARANCE (X2, 2026-07-10)."""

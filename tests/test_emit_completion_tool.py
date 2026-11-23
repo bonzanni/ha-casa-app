@@ -304,17 +304,14 @@ class _FakeInboundDriver:
     G4 completion gate and the terminal disclosure.
 
     `_texts`/`_depth` are the UNREAD population (admitted, not yet taken up
-    by the session). Reservation texts are
-    always empty on the in_casa driver, but the renderers still read the
-    accessor, so it stays settable here to pin that rendering.
+    by the session).
     """
     def __init__(self, depth=0, reservations=0, texts=(),
-                 command_reservations=0, reservation_texts=()):
+                 command_reservations=0):
         self._depth = depth
         self._resv = reservations
         self._cmd_resv = command_reservations
         self._texts = list(texts)
-        self._reservation_texts = list(reservation_texts)
 
     def inbound_unread_depth(self, eng_id):
         return self._depth
@@ -326,8 +323,6 @@ class _FakeInboundDriver:
         return max(0, self._resv - self._cmd_resv)
     def inbound_unread_texts(self, eng_id):
         return list(self._texts)
-    def inbound_reservation_texts(self, eng_id):
-        return list(self._reservation_texts)
 
 
 def _arrive_before_the_flip(monkeypatch, reg, drv, *, depth, texts):
@@ -795,7 +790,7 @@ class _AccessorProbe:
 
     _ACCESSORS = (
         "inbound_unread_texts", "inbound_unread_depth", "inbound_reservations",
-        "inbound_message_reservations", "inbound_reservation_texts",
+        "inbound_message_reservations",
     )
     # Class-level defaults so `__getattr__` can consult them before `__init__`
     # has bound the instance ones (otherwise the lookup recurses).
@@ -804,7 +799,7 @@ class _AccessorProbe:
     _values: dict = {}
 
     def __init__(self, *, broken=(), absent=(), texts=(), depth=0,
-                 reservations=0, message_reservations=0, reservation_texts=()):
+                 reservations=0, message_reservations=0):
         self._broken = frozenset(
             [broken] if isinstance(broken, str) else broken)
         self._absent = frozenset(
@@ -814,7 +809,6 @@ class _AccessorProbe:
             "inbound_unread_depth": depth,
             "inbound_reservations": reservations,
             "inbound_message_reservations": message_reservations,
-            "inbound_reservation_texts": list(reservation_texts),
         }
         unknown = (self._broken | self._absent) - set(self._ACCESSORS)
         assert not unknown, f"not an inbound accessor: {sorted(unknown)}"
@@ -951,8 +945,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
     # armed: no single failure lets a gated completion through.
 
     _FULL = dict(depth=1, reservations=1,
-                 message_reservations=1, texts=["q-text"],
-                 reservation_texts=["r-text"])
+                 message_reservations=1, texts=["q-text"])
 
     _MATRIX = (None,) + _AccessorProbe._ACCESSORS
 

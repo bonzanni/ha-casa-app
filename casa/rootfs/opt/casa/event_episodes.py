@@ -114,12 +114,6 @@ _kick: "asyncio.Event | None" = None
 #: durable schedule is in the ledger, and every pass recomputes this.
 _next_due: "float | None" = None
 
-# In-memory, non-durable request-path hints: kick() appends here (O(1)) and
-# the worker drains it on the next pass. Correctness never depends on it —
-# the delivery ledger is the backstop, so a hint lost to a crash converges
-# on the next pass regardless.
-_pending_hints: "set[tuple[str, str]]" = set()
-
 # #532 (design r1-r3): sent-but-mark-failed keys. A notice whose SEND was
 # confirmed but whose durable ``noted`` mark then failed must never be sent
 # again — later scans retry ONLY the mark. A key clears ONLY on a confirmed
@@ -167,16 +161,6 @@ def configure(*, dispatch, resolve_registry_entry, get_routed, get_installed,
 # ---------------------------------------------------------------------------
 # kick — O(1), non-durable, no file I/O on the request path
 # ---------------------------------------------------------------------------
-
-
-def kick(emitter: str, event: str) -> None:
-    """Signal the worker that one ``(emitter, event)`` pair may have new
-    work (a fold just ran, a consent just landed). No spool I/O — the fold
-    that preceded this already wrote whatever is durable; the hint only
-    saves the worker a wait."""
-    _pending_hints.add((emitter, event))
-    if _kick is not None:
-        _kick.set()
 
 
 def kick_all() -> None:
@@ -450,7 +434,6 @@ async def _worker_pass() -> None:
     no destructive action of any kind runs against an unauthoritative
     routed view."""
     global _next_due
-    _pending_hints.clear()
     spool = _get_spool() if _get_spool is not None else None
     if spool is None:
         _next_due = None

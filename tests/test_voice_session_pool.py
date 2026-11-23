@@ -1,4 +1,4 @@
-"""Spec §4 — VoiceSessionPool: create/touch/evict/dedup-prewarm.
+"""Spec §4 — VoiceSessionPool: create/touch/evict.
 
 Keyed on (role, scope_id) since v0.80.0 (spec A2) — role is a required
 keyword on every lookup so two residents sharing one device/scope can never
@@ -67,57 +67,6 @@ class TestIdleSweep:
         assert evicted == ["user-xyz"]
         assert pool.get("user-xyz", role="butler") is None
 
-    async def test_cancels_prewarm_on_eviction(self, monkeypatch):
-        clock = [100.0]
-        monkeypatch.setattr(
-            "channels.voice.session.time.monotonic", lambda: clock[0],
-        )
-        pool = VoiceSessionPool(idle_timeout=10)
-        sess = pool.ensure("user-xyz", role="butler")
-
-        async def slow():
-            await asyncio.sleep(60)
-        task = asyncio.create_task(slow())
-        sess.prewarm_task = task
-        clock[0] = 200.0
-        pool.sweep()
-        await asyncio.sleep(0)  # let cancellation propagate
-        assert task.cancelled()
-
-
-@pytest.mark.asyncio
-class TestPrewarmDedup:
-    async def test_set_prewarm_task_when_absent(self):
-        pool = VoiceSessionPool(idle_timeout=300)
-        sess = pool.ensure("user-xyz", role="butler")
-        called = 0
-
-        async def warm():
-            nonlocal called
-            called += 1
-
-        first = pool.schedule_prewarm("user-xyz", warm, role="butler")
-        # Second schedule is a no-op while the first is alive.
-        second = pool.schedule_prewarm("user-xyz", warm, role="butler")
-        assert first is not None
-        assert second is None
-        await first
-        assert called == 1
-
-    async def test_reschedule_after_prewarm_done(self):
-        pool = VoiceSessionPool(idle_timeout=300)
-        pool.ensure("user-xyz", role="butler")
-
-        async def warm():
-            return None
-
-        first = pool.schedule_prewarm("user-xyz", warm, role="butler")
-        assert first is not None
-        await first
-        second = pool.schedule_prewarm("user-xyz", warm, role="butler")
-        assert second is not None  # no longer live
-        await second
-
 
 @pytest.mark.asyncio
 class TestGate:
@@ -133,20 +82,6 @@ class TestGate:
 
 @pytest.mark.asyncio
 class TestSweeperHygiene:
-    async def test_sweep_does_not_recancel_completed_prewarm(self):
-        """A completed prewarm task should not have .cancel() called on eviction."""
-        pool = VoiceSessionPool(idle_timeout=-1)  # immediate eviction (any elapsed > -1)
-        sess = pool.ensure("s", role="butler")
-
-        async def instant():
-            return None
-        sess.prewarm_task = asyncio.create_task(instant())
-        await sess.prewarm_task  # make it done
-        # sweep() must not raise; .cancel() on a done task is a no-op but
-        # we shouldn't be calling it in the first place.
-        evicted = pool.sweep()
-        assert evicted == ["s"]
-
     async def test_run_sweeper_cancels_cleanly(self):
         pool = VoiceSessionPool(idle_timeout=300)
         task = asyncio.create_task(pool.run_sweeper(interval=0.01))

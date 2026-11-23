@@ -137,30 +137,6 @@ class TestSnapshotManualEdits:
         assert snapshot_manual_edits(str(tmp_path)) is None
 
 
-class TestRestoreFile:
-    def test_restores_prior_content(self, tmp_path):
-        from config_git import init_repo, commit_config, restore_file
-
-        _seed(tmp_path)
-        init_repo(str(tmp_path))
-        original_sha = subprocess.check_output(
-            ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
-        ).decode().strip()
-
-        # Modify + commit so there's a new HEAD.
-        (tmp_path / "agents" / "marker.txt").write_text(
-            "modified", encoding="utf-8",
-        )
-        commit_config(str(tmp_path), "modify marker")
-
-        # Restore original.
-        restore_file(str(tmp_path), original_sha, "agents/marker.txt")
-
-        # The file should again contain "x", and the restore itself is
-        # committed.
-        assert (tmp_path / "agents" / "marker.txt").read_text() == "x"
-
-
 class TestPluginsWhitelist:
     """Unified plugin architecture (v0.71.0): the plugin registry is config
     (tracked + versioned for an audit trail); the content-addressed store +
@@ -250,38 +226,6 @@ class TestPluginsWhitelist:
         m = re.search(r"cat > \.gitignore <<'EOF'\n(.*?)EOF\n", sh, re.S)
         assert m, "setup-configs.sh .gitignore heredoc not found"
         assert m.group(1) == _GITIGNORE_CONTENT
-
-
-class TestRestoreFileAddedAfterTarget:
-    def test_rolls_back_a_file_added_since_the_target_commit(self, tmp_path):
-        """#351 (low): restore_file always ran `git checkout <sha> -- path`,
-        which ERRORS when the path did not exist at the target commit — so a
-        newly added role config could never be rolled back. The added file
-        must be removed (worktree + index) and the removal committed."""
-        from config_git import commit_config, init_repo, restore_file
-
-        _seed(tmp_path)
-        init_repo(str(tmp_path))
-        original_sha = subprocess.check_output(
-            ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
-        ).decode().strip()
-
-        added = tmp_path / "agents" / "newrole.txt"
-        added.write_text("new role config", encoding="utf-8")
-        commit_config(str(tmp_path), "add newrole")
-
-        restore_file(str(tmp_path), original_sha, "agents/newrole.txt")
-
-        assert not added.exists()
-        tracked = subprocess.check_output(
-            ["git", "-C", str(tmp_path), "ls-files"],
-        ).decode().splitlines()
-        assert "agents/newrole.txt" not in tracked
-        # The removal is itself a commit (clean tree afterwards).
-        status = subprocess.check_output(
-            ["git", "-C", str(tmp_path), "status", "--porcelain"],
-        ).decode().strip()
-        assert status == ""
 
 
 class TestCommitConfigChecked:
@@ -456,20 +400,6 @@ class TestCommitConfigCheckedPreservesStaging:
 
 
 class TestRestoreFileBadSha:
-    def test_malformed_sha_raises_instead_of_deleting(self, tmp_path):
-        """Sol r1-4: a bogus target sha must raise — pre-fix the failed
-        cat-file probe was read as 'path absent at target' and the LIVE file
-        was deleted and the deletion committed."""
-        from config_git import init_repo, restore_file
-
-        _seed(tmp_path)
-        init_repo(str(tmp_path))
-        target = tmp_path / "agents" / "marker.txt"
-        assert target.exists()
-        with pytest.raises(subprocess.CalledProcessError):
-            restore_file(str(tmp_path), "not-a-sha", "agents/marker.txt")
-        assert target.exists()
-
     def test_head_moved_mid_gate_refuses_instead_of_orphaning(self, tmp_path):
         """The ref update is compare-and-swap: an external commit landing
         while the gate validates must make the gate FAIL (caller retries on

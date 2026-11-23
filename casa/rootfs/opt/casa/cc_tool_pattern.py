@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from typing import Iterable
 
 # A pattern is either ``ToolName`` (no parens) or ``ToolName(spec)``.
 _SPEC_RE = re.compile(r"^([A-Za-z0-9_]+(?:__[A-Za-z0-9_-]+)*)(?:\((.*)\))?$")
@@ -45,13 +44,6 @@ def matches(pattern: str, tool_name: str, tool_input: dict) -> bool:
     if target is None:
         return False
     return fnmatch.fnmatchcase(target, pat_spec)
-
-
-def matches_any(
-    patterns: Iterable[str], tool_name: str, tool_input: dict,
-) -> bool:
-    """True if any of ``patterns`` matches."""
-    return any(matches(p, tool_name, tool_input) for p in patterns)
 
 
 def _identifying_field(tool_name: str, tool_input: dict) -> str | None:

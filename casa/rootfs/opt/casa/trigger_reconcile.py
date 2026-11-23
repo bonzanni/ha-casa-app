@@ -353,7 +353,6 @@ def verify_minted_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
     the callback half needed a fix to acquire it (see
     ``callback_reconcile._reconcile_markers_pre_swap``).
     """
-    import webhook_auth
     from plugin_registry import PluginIssue
 
     unbacked: set[str] = set()
@@ -1184,7 +1183,6 @@ def _unavailable_rows(state=None) -> "list[dict]":
     """
     rows: list = []
     try:
-        import trigger_registry as _treg          # noqa: F401  (identity only)
         registry = _live_registry()
         if registry is not None and registry.plugin_overlay_unavailable():
             rows.append(_health_row("trigger_routing_unavailable"))

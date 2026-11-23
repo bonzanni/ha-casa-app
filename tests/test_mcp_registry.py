@@ -16,14 +16,6 @@ class TestMcpServerRegistry:
         assert result["ha"]["url"] == "http://localhost:8123/mcp"
         assert result["ha"]["headers"] == {"X-Key": "abc"}
 
-    def test_register_sdk(self):
-        reg = McpServerRegistry()
-        cfg = {"type": "stdio", "command": "node", "args": ["server.js"]}
-        reg.register_sdk("custom", cfg)
-
-        result = reg.resolve(["custom"])
-        assert result["custom"] == cfg
-
     def test_resolve_multiple(self):
         reg = McpServerRegistry()
         reg.register_http("a", "http://a")

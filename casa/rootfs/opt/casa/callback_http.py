@@ -93,19 +93,17 @@ DEFAULT_RATE_PER_MIN = 60
 #: is attacker-controlled and must never reach a log line.
 UNKNOWN_SENTINEL = "<unknown>"
 
-#: Outcome vocabulary. ``expired`` and ``result_exists`` are part of the
-#: facility's vocabulary but are NOT reachable from this handler:
-#: ``CallbackSpool.claim`` refuses expired, replayed and never-minted states
-#: identically by design, so the handler sees one refusal and logs
-#: ``no_pending`` (the sweep/recovery passes own the ``expired`` case); and
-#: the EEXIST anomaly inside ``publish_result`` — a result already existing
-#: for a claimed state — cleans up and reports ``PUBLISHED``, so it logs
-#: ``ok``. Publish failures log ``write_failed`` on every arm (recorded,
-#: unrecorded, and raised alike).
-REASONS = frozenset({
-    "ok", "unknown_name", "bad_state", "no_pending", "expired",
-    "result_exists", "write_failed",
-})
+# Outcome vocabulary: ``ok``, ``unknown_name``, ``bad_state``, ``no_pending``,
+# ``expired``, ``result_exists``, ``write_failed``. ``expired`` and
+# ``result_exists`` are part of the facility's vocabulary but are NOT
+# reachable from this handler:
+# ``CallbackSpool.claim`` refuses expired, replayed and never-minted states
+# identically by design, so the handler sees one refusal and logs
+# ``no_pending`` (the sweep/recovery passes own the ``expired`` case); and
+# the EEXIST anomaly inside ``publish_result`` — a result already existing
+# for a claimed state — cleans up and reports ``PUBLISHED``, so it logs
+# ``ok``. Publish failures log ``write_failed`` on every arm (recorded,
+# unrecorded, and raised alike).
 
 #: State grammar — checked against the RAW value, so a
 #: percent-escape is a rejection rather than a decode.
@@ -443,8 +441,7 @@ def _nudge(plugin: str, result_hash: str) -> None:
     construction site, and so tests can observe the kick.
 
     Stays **non-durable and O(1) on the request path**:
-    :func:`callback_episodes.kick` records an in-memory hint and sets the
-    worker's wake event — no ``_load``/``_save`` — because the episode ledger
+    :func:`callback_episodes.kick` only sets the worker's wake event — no ``_load``/``_save`` — because the episode ledger
     is a load-scan-rewrite JSON store and writing it here would make request
     work grow with ledger size. Durability comes from the recovery invariant
     instead — any result without a settled episode is re-enqueued by the boot

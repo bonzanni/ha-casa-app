@@ -96,11 +96,10 @@ class TestInterval:
 
     async def test_interval_chat_id_is_honcho_compliant(self):
         """Spec §3.1: scheduled trigger chat_id must satisfy Honcho's
-        `[A-Za-z0-9_-]+` regex so build_session_key + honcho_session_id
+        `[A-Za-z0-9_-]+` regex so session keys built from it
         do not raise. Producer-validator drift was the v0.17.1
         regression — protect with a roundtrip assertion."""
         from trigger_registry import TriggerRegistry
-        from session_registry import build_session_key
 
         sched = _make_scheduler()
         app = web.Application()
@@ -118,11 +117,6 @@ class TestInterval:
 
         msg = bus.send.call_args.args[0]
         assert msg.context["chat_id"] == "interval-heartbeat"
-
-        # Roundtrip: must not raise. This is the load-bearing check —
-        # producer hyphen must match honcho_session_id's regex.
-        key = build_session_key(msg.channel, msg.context["chat_id"])
-        assert key == "telegram-interval-heartbeat"
 
 
 # ---------------------------------------------------------------------------

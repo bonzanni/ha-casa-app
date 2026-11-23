@@ -37,7 +37,6 @@ from claude_runtime import (
     CLAUDE_CLI_VERSION,
     verify_effective_cli,
 )
-from config import AgentConfig
 from config_git import commit_config, init_repo, snapshot_manual_edits
 from ingress_identity import (
     IngressIdentityError,
@@ -579,7 +578,6 @@ def _make_webhook_handler(
     webhook_rate_limiter: Any,
     webhook_secret: str,
     trigger_registry: Any,
-    default_role: str,
     bus: Any,
     secrets_dir: str | Path = "/data/webhook_secrets",
     route_for: Callable[[str], Any] | None = None,
@@ -1760,7 +1758,6 @@ async def notify_plugin_health(
     marked the fingerprints notified and the alert was lost forever even
     once Telegram was configured later.
     """
-    import plugin_health
     async with _OPERATOR_NOTICE_LOCK:
         await _notify_plugin_health_locked(channel_manager, path)
 
@@ -2690,7 +2687,7 @@ async def main() -> None:
     # (/config/specialists/<slug>/) and a SEPARATE object from the legacy
     # SpecialistRegistry below (bundled /config/agents/specialists/). Wired
     # here, before any channel/bus loop starts, so the module-level accessor
-    # (specialist_registry.live_collision_slugs/live_installed_specialist_slugs)
+    # (specialist_registry.live_installed_specialist_slugs)
     # is populated for the rest of boot — same ordering guarantee Task 8
     # established for the four compiled-personality registries.
     #
@@ -3318,8 +3315,6 @@ async def main() -> None:
         voice_delivery = VoiceDeliveryCoordinator(job_registry, voice_routes)
         voice_handoff = VoiceHandoffCoordinator(job_registry, voice_routes)
         runtime.voice_route_registry = voice_routes
-        runtime.voice_delivery_coordinator = voice_delivery
-        runtime.voice_handoff_coordinator = voice_handoff
 
         voice_channel = VoiceChannel(
             bus=bus,
@@ -3352,7 +3347,6 @@ async def main() -> None:
         webhook_rate_limiter=webhook_rate_limiter,
         webhook_secret=webhook_secret,
         trigger_registry=trigger_registry,
-        default_role=assistant_role,
         bus=bus,
         route_for=tg_transport.route_for if tg_transport is not None else None,
     )

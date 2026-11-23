@@ -57,26 +57,11 @@ def effective_name(plugin: str, event: str) -> str:
     return f"plg-{plugin}--{event}"
 
 
-def emit_declaration_digest(entry: dict[str, Any]) -> str:
-    """sha256 hex over the canonical JSON of an emit's normalized declaration.
-
-    Bound only to the declared name — matches
-    ``plugin_callbacks.declaration_digest``'s canonicalization exactly (same
-    key, same sort/separator policy): a routine plugin upgrade that leaves
-    the declared name unchanged produces the same digest.
-    """
-    body = json.dumps(
-        {"name": entry["declared"]},
-        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-    )
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()
-
-
 def subscribe_declaration_digest(entry: dict[str, Any]) -> str:
     """sha256 hex over the canonical JSON of a subscribe's normalized
     declaration: the referenced emitter plugin and event name.
 
-    Same canonicalization policy as ``emit_declaration_digest`` /
+    Same canonicalization policy as
     ``plugin_callbacks.declaration_digest`` (sorted keys, compact
     separators). One input to ``ack_identity``.
     """

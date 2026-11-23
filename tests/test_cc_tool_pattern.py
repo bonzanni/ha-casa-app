@@ -107,31 +107,6 @@ class TestFilePathSpec:
 
 
 class TestMatchesAny:
-    def test_empty_list(self):
-        from cc_tool_pattern import matches_any
-        assert matches_any([], "Read", {}) is False
-
-    def test_short_circuit_first_hit(self):
-        from cc_tool_pattern import matches_any
-        assert matches_any(
-            ["Bash(npm*)", "Bash(git*)", "Read"], "Bash",
-            {"command": "git status"},
-        ) is True
-
-    def test_no_match(self):
-        from cc_tool_pattern import matches_any
-        assert matches_any(
-            ["Bash(npm*)", "Bash(git*)"], "Bash",
-            {"command": "curl x"},
-        ) is False
-
-    def test_malformed_pattern_ignored(self):
-        from cc_tool_pattern import matches_any
-        assert matches_any(
-            ["", "Bash((", "Bash(npm*)"], "Bash",
-            {"command": "npm install"},
-        ) is True
-
     def test_unsupported_tool_with_spec(self):
         """Bare match still works for unsupported-spec tools; spec returns False."""
         from cc_tool_pattern import matches

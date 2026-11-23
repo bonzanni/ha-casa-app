@@ -450,16 +450,5 @@ class TestOriginFromJob:
                                             route={}))
         assert "_tg_bot" not in origin
 
-    async def test_orphans_from_disk_use_it(self, tmp_path):
-        from specialist_registry import SpecialistRegistry
-        await _jobs(tmp_path, _voice_job(route={"_tg_bot": FINANCE_BOT}))
-        # A restart orphans the still-running row.
-        jobs = await _jobs_reloaded(tmp_path)
-        await jobs.recover_after_restart()
-        reg = SpecialistRegistry(str(tmp_path / "specialists"),
-                                 job_registry=jobs)
-        [orphan] = reg.orphans_from_disk()
-        assert orphan.origin["_tg_bot"] == FINANCE_BOT
-
 
 from two_endpoints import two_endpoints  # noqa: E402,F401  (fixture)

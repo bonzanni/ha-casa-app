@@ -650,7 +650,6 @@ class TestConcurrencyWiring:
 
         rec = DelegationRecord(
             id="d1", agent="finance", started_at=0.0, origin={})
-        rec.permit = permit
         await reg.register_delegation(rec)
         await reg.cancel_delegation("d1")
 
@@ -661,30 +660,21 @@ class TestConcurrencyWiring:
         )
         permit.release()  # cleanup (simulates the real done-callback firing)
 
-    async def test_complete_and_fail_delegation_do_not_release_permit(
+    async def test_complete_delegation_does_not_release_permit(
         self, tmp_path,
     ):
-        """complete/fail_delegation are likewise not the release point (the
-        done-callback is) — they must leave the slot held."""
+        """complete_delegation is likewise not the release point (the
+        done-callback is) — it must leave the slot held."""
         limiter = SpecialistLimiter(max_global=2)
         reg = SpecialistRegistry(
             str(tmp_path / "specs"), tombstone_path=str(tmp_path / "d.json"))
 
         p1 = limiter.try_acquire("a:finance")
         r1 = DelegationRecord(id="d1", agent="finance", started_at=0.0, origin={})
-        r1.permit = p1
         await reg.register_delegation(r1)
         await reg.complete_delegation("d1")
         assert limiter.try_acquire("a:finance") is None
         p1.release()
-
-        p2 = limiter.try_acquire("b:finance")
-        r2 = DelegationRecord(id="d2", agent="finance", started_at=0.0, origin={})
-        r2.permit = p2
-        await reg.register_delegation(r2)
-        await reg.fail_delegation("d2", RuntimeError("x"))
-        assert limiter.try_acquire("b:finance") is None
-        p2.release()
 
     async def test_telemetry_raise_does_not_release_live_permit(
         self, tmp_path, monkeypatch,

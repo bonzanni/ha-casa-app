@@ -883,8 +883,8 @@ class TestWiring:
 
         async def run():
             return await a._build_options(
-                channel="telegram", channel_key="k", is_fresh=True,
-                resume_sid=None, user_text="hi")
+                channel="telegram", channel_key="k",
+                resume_sid=None)
 
         opts = asyncio.run(run())
         found = _authz_matcher(opts)
@@ -993,8 +993,8 @@ class TestDisplayNameFactoryWiring:
 
         async def run():
             return await a._build_options(
-                channel="telegram", channel_key="k", is_fresh=True,
-                resume_sid=None, user_text="hi")
+                channel="telegram", channel_key="k",
+                resume_sid=None)
 
         hook = _authz_hook(asyncio.run(run()))
         assert hook is not None

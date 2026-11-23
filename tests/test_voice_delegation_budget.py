@@ -81,7 +81,6 @@ def _init_tools_for_voice():
     reg.get.return_value = None
     reg.register_delegation = AsyncMock()
     reg.cancel_delegation = AsyncMock()
-    reg.fail_delegation = AsyncMock()
     reg.complete_delegation = AsyncMock()
     reg.job_registry.finish_voice_result = AsyncMock()
     tm.init_tools(

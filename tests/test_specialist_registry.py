@@ -10,7 +10,6 @@ import pytest
 
 from config import MODEL_MAP
 import yaml
-from channels.tg_address import TgAddress
 from task_model import Requester
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
@@ -19,6 +18,15 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 # ---------------------------------------------------------------------------
 # Fixture helper — seed a per-concern specialist directory under *base*.
 # ---------------------------------------------------------------------------
+
+
+def _live(reg, delegation_id):
+    """Whether the durable row is still accepted or running."""
+    from job_registry import ExecutionState
+    job = reg.job_registry.get(delegation_id)
+    return bool(job and job.execution_state in {
+        ExecutionState.ACCEPTED, ExecutionState.RUNNING,
+    })
 
 
 def _seed_specialist_dir(
@@ -277,52 +285,15 @@ class TestDurableJobFacade:
         assert not hasattr(reg, "_delegations")
         assert reg.job_registry is jobs
         assert jobs.get("d-1").execution_state is ExecutionState.RUNNING
-        assert reg.has_delegation("d-1")
+        assert _live(reg, "d-1")
 
         await reg.complete_delegation("d-1")
         assert jobs.get("d-1").execution_state is ExecutionState.SUCCEEDED
-        assert not reg.has_delegation("d-1")
+        assert not _live(reg, "d-1")
 
         reloaded = JobRegistry(tmp_path / "jobs.json")
         await reloaded.load()
         assert reloaded.get("d-1").execution_state is ExecutionState.SUCCEEDED
-
-    async def test_orphan_compatibility_view_reads_durable_jobs_only(
-        self, tmp_path,
-    ):
-        from job_registry import JobRegistry
-        from specialist_registry import (
-            DelegationRecord, SpecialistRegistry,
-        )
-
-        seeded = JobRegistry(tmp_path / "jobs.json")
-        await seeded.load()
-        seeded_reg = SpecialistRegistry(
-            str(tmp_path / "specialists"), job_registry=seeded,
-        )
-        await seeded_reg.register_delegation(DelegationRecord(
-            id="orphan-1", agent="finance", started_at=100.0,
-            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
-                    "chat_id": "chat-1", "cid": "route-1"},
-            requester=Requester("assistant", {"_tg_bot": 111}),
-            delivery=TgAddress(222, 100),
-        ))
-
-        # A restart orphans the still-running row; the facade view reads it
-        # from the durable snapshot alone.
-        jobs = JobRegistry(tmp_path / "jobs.json")
-        await jobs.load()
-        await jobs.recover_after_restart()
-        reg = SpecialistRegistry(
-            str(tmp_path / "specialists"), job_registry=jobs,
-        )
-
-        [orphan] = reg.orphans_from_disk()
-        assert orphan.id == "orphan-1"
-        # the task's birth-time facts come back from the row as they were
-        assert orphan.executor == "finance"
-        assert orphan.requester == Requester("assistant", {"_tg_bot": 111})
-        assert orphan.delivery == TgAddress(222, 100)
 
     async def test_a_telegram_delegation_without_its_task_fields_is_refused_at_load(
         self, tmp_path,
@@ -359,22 +330,9 @@ class TestDelegationLifecycle:
                     "chat_id": "x", "cid": "c1", "user_text": "hi"},
         )
         await reg.register_delegation(rec)
-        assert reg.has_delegation("d-1")
+        assert _live(reg, "d-1")
         await reg.complete_delegation("d-1")
-        assert not reg.has_delegation("d-1")
-
-    async def test_fail_delegation_removes_record(self, tmp_path):
-        from specialist_registry import DelegationRecord
-
-        reg = self._make_registry(tmp_path)
-        rec = DelegationRecord(
-            id="d-2", agent="finance", started_at=1.0,
-            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
-                    "chat_id": "x", "cid": "c1", "user_text": "hi"},
-        )
-        await reg.register_delegation(rec)
-        await reg.fail_delegation("d-2", RuntimeError("boom"))
-        assert not reg.has_delegation("d-2")
+        assert not _live(reg, "d-1")
 
     async def test_cancel_delegation_removes_record(self, tmp_path):
         from specialist_registry import DelegationRecord
@@ -387,13 +345,12 @@ class TestDelegationLifecycle:
         )
         await reg.register_delegation(rec)
         await reg.cancel_delegation("d-3")
-        assert not reg.has_delegation("d-3")
+        assert not _live(reg, "d-3")
 
     async def test_terminal_calls_are_idempotent(self, tmp_path):
-        """complete/fail/cancel on a non-existent id must not raise."""
+        """complete/cancel on a non-existent id must not raise."""
         reg = self._make_registry(tmp_path)
         await reg.complete_delegation("missing")
-        await reg.fail_delegation("missing", RuntimeError("x"))
         await reg.cancel_delegation("missing")
 
     async def test_repeated_terminal_calls_are_idempotent(self, tmp_path):
@@ -405,7 +362,6 @@ class TestDelegationLifecycle:
         ))
         await reg.complete_delegation("d-repeat")
         await reg.complete_delegation("d-repeat")
-        await reg.fail_delegation("d-repeat", RuntimeError("late callback"))
         await reg.cancel_delegation("d-repeat")
 
     async def test_competing_terminal_facade_calls_are_registry_atomic(
@@ -427,7 +383,7 @@ class TestDelegationLifecycle:
         await jobs._lock.acquire()
         complete = asyncio.create_task(reg.complete_delegation("d-race"))
         fail = asyncio.create_task(
-            reg.fail_delegation("d-race", RuntimeError("late failure")),
+            jobs.fail_compat("d-race", RuntimeError("late failure")),
         )
         try:
             await asyncio.sleep(0)
@@ -436,15 +392,15 @@ class TestDelegationLifecycle:
             jobs._lock.release()
 
         # #701: complete_delegation returns the durable row (the announcing
-        # caller has to ask it whether the creator cancelled meanwhile);
-        # fail_delegation still returns nothing. Neither raises, and exactly
-        # one terminal is written.
+        # caller has to ask it whether the creator cancelled meanwhile), and
+        # so does fail_compat. Neither raises, and exactly one terminal is
+        # written.
         outcomes = await asyncio.gather(complete, fail, return_exceptions=True)
         assert [isinstance(o, BaseException) for o in outcomes] == [False, False]
-        assert outcomes[1] is None
         terminal = jobs.get("d-race")
-        if outcomes[0] is not None:
-            assert outcomes[0].id == "d-race"
+        for outcome in outcomes:
+            if outcome is not None:
+                assert outcome.id == "d-race"
         assert terminal.execution_state in {
             ExecutionState.SUCCEEDED, ExecutionState.FAILED,
         }
@@ -753,32 +709,7 @@ class TestInstalledSpecialistIndexCollisionSet:
     """Task 13: the slug-collision authority is EVERY image role's bare slot,
     across ALL THREE kinds (resident, executor, AND specialist) — a prior
     draft's hard-coded resident+executor-only set silently omitted the
-    bundled specialist:finance, which this regression-gated permanently.
-
-    Task N2's no-gap cutover removed finance (the only bundled specialist)
-    from the image, so `all_collision_slugs` can no longer be proven against
-    a REAL specialist-kind image slot — this test now monkeypatches the
-    frozen `_IMAGE_ROLE_SLOTS` module global (computed once at import from
-    the real image tree) to a synthetic set that still includes a
-    specialist-kind slug, preserving the exact invariant under test:
-    `all_collision_slugs` unions the FULL image role-slot set (whichever
-    kinds it spans) with the installed-specialist set, never a hand-picked
-    per-kind subset."""
-
-    async def test_all_collision_slugs_includes_every_image_role_kind(self, monkeypatch) -> None:
-        from specialist_registry import InstalledSpecialistIndex
-
-        monkeypatch.setattr(
-            "specialist_registry._IMAGE_ROLE_SLOTS",
-            frozenset({"assistant", "butler", "concierge", "configurator",
-                       "plugin-developer", "testspecialist"}),
-        )
-        index = InstalledSpecialistIndex(specialists_dir="/nonexistent")
-        index.load()  # zero installed specialists — this still asserts the IMAGE role set
-        collisions = index.all_collision_slugs()
-        assert "testspecialist" in collisions  # a specialist-kind image slot — the bug this fixes
-        assert {"assistant", "butler", "concierge", "configurator",
-                "plugin-developer", "testspecialist"} <= collisions
+    bundled specialist:finance, which this regression-gated permanently."""
 
     async def test_discover_image_role_slots_scans_every_kind_directory(self, tmp_path) -> None:
         """Unit-level proof the discovery walks resident/executor/specialist alike —
@@ -828,7 +759,7 @@ async def test_one_malformed_installed_tuple_does_not_abort_the_index_load(tmp_p
     assert damaged.active is None and damaged.desired is None
     assert damaged.last_activation_error
     # The slug stays reserved: a fresh install cannot silently overwrite it.
-    assert "damaged" in index.all_collision_slugs()
+    assert "damaged" in index.installed_slugs()
 
 
 async def test_a_rejected_desired_does_not_take_down_a_healthy_active(tmp_path):
@@ -893,7 +824,7 @@ async def test_a_rejected_active_still_isolates_the_slug_as_error(tmp_path):
     assert instance is not None
     assert instance.state == "error"
     assert "secret-digest guard" in (instance.last_activation_error or "")
-    assert "legacy" in index.all_collision_slugs()
+    assert "legacy" in index.installed_slugs()
 
 
 # ---------------------------------------------------------------------------

@@ -1071,7 +1071,6 @@ def ingress(world, tmp_path, monkeypatch):
     monkeypatch.setattr(ce, "_worker_task", None)
     monkeypatch.setattr(ce, "_kick", None)
     monkeypatch.setattr(ce, "_now", lambda: clock["t"])
-    ce._pending_hints.clear()
     ce.configure(dispatch=dispatch,
                  resolve_registry_entry=lambda plugin: {
                      "targets": ["resident:assistant", "specialist:finance"]},

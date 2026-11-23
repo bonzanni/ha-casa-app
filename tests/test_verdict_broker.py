@@ -327,34 +327,6 @@ async def test_claim_stops_timer_and_commit_false_after_teardown(monkeypatch):
     assert (await b.await_result(req))["outcome"] == "cancelled"
 
 
-async def test_abort_claim_rearm_preserves_absolute_deadline():
-    """r8-B1: abort_claim re-arms only the REMAINING time to the original
-    deadline — never a fresh full timeout_s — and finishes no_answer
-    immediately if the deadline already passed during the claim window."""
-    b = VerdictBroker()
-    req, _ = b.register(namespace="resident_ask", scope="e1",
-                        request_id="r1", timeout_s=0.2, meta={"operator_id": 7})
-    claim = b.claim(namespace="resident_ask", scope="e1", request_id="r1",
-                    option_index=0, actor_id=7)
-    await asyncio.sleep(0.1)                           # burn half the budget claimed
-    b.abort_claim(claim)                               # re-arm ~0.1s, NOT 0.2s
-    await asyncio.sleep(0.15)                          # past the ORIGINAL deadline
-    # r9-B3: assert done() BEFORE awaiting — a buggy full-timeout re-arm would
-    # still be pending here (its fresh 0.2s hasn't elapsed) and merely delay the
-    # await below into a false green.
-    assert req._future.done()
-    assert (await b.await_result(req))["outcome"] == "no_answer"
-    # near-deadline: claim, hold past the deadline, abort → IMMEDIATE no_answer
-    req2, _ = b.register(namespace="resident_ask", scope="e2",
-                         request_id="r2", timeout_s=0.05, meta={"operator_id": 7})
-    claim2 = b.claim(namespace="resident_ask", scope="e2", request_id="r2",
-                     option_index=0, actor_id=7)
-    await asyncio.sleep(0.1)                           # deadline passed while claimed
-    b.abort_claim(claim2)
-    assert req2._future.done()                         # finished no_answer at once
-    assert (await b.await_result(req2))["outcome"] == "no_answer"
-
-
 async def test_drain_awaits_setup_tasks_then_hooks():
     """r9-B1: cancel_scope completes a request while its keyboard post is still
     BLOCKED in the setup task → drain_hooks must first await the setup task

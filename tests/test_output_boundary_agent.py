@@ -151,8 +151,8 @@ async def test_streamed_cumulatives_carry_the_line_while_undischarged(tmp_path):
 
 async def test_the_read_evidence_matchers_are_in_the_resident_hook_bundle(tmp_path):
     a = _make_agent(tmp_path, role="assistant")
-    opts = await a._build_options(channel="telegram", channel_key="k", is_fresh=True,
-                                  resume_sid=None, user_text="hi")
+    opts = await a._build_options(channel="telegram", channel_key="k",
+                                  resume_sid=None)
     for event in ("PostToolUse", "PostToolUseFailure"):
         assert any(m.matcher == "Read" for m in opts.hooks.get(event, [])), event
 

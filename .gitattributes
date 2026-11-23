@@ -12,6 +12,3 @@ casa_browser/apparmor.txt text eol=lf
 casa_browser/config.yaml text eol=lf
 casa_browser/requirements.txt text eol=lf
 casa_browser/requirements-test.txt text eol=lf
-
-# Preserve CRLF for legacy-crlf fixture (migration test fixture)
-test-local/fixtures/legacy-crlf/** -text

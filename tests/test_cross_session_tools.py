@@ -186,8 +186,8 @@ async def test_resident_options(tmp_path, monkeypatch):
     )
     for channel in ("telegram", "voice"):
         opts = await resident._build_options(
-            channel=channel, channel_key=f"{channel}-k", is_fresh=True,
-            resume_sid=None, user_text="hello")
+            channel=channel, channel_key=f"{channel}-k",
+            resume_sid=None)
         _assert_locked(opts)
         _assert_no_user_source(opts)
         # Named, never the CLI's default set: the file tools, Skill (the

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from persona_install import PersonaInstallAckStore, persona_install_consent_identity
-from specialist_install_consent import approval_card_hooks, supersede_card  # noqa: F401 — supersede_card re-exported for persona callers
+from specialist_install_consent import approval_card_hooks
 
 logger = logging.getLogger(__name__)
 

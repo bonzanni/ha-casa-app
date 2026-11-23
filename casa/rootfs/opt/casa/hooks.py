@@ -30,8 +30,6 @@ _logger = logging.getLogger(__name__)
 # and newlines), shlex'es each piece into argv tokens, and inspects
 # argv[0] + argv[1:]. It also recurses into `bash -c <str>` / `sh -c <str>`
 # so that wrapper shells don't bypass the check.
-# FORBIDDEN_PATTERNS is kept as a deprecated alias of the legacy regex list
-# so existing imports don't break; the live matcher is _command_is_dangerous.
 #
 # SCOPE & ACCEPTED RESIDUALS (v0.50.0 security review):
 # block_dangerous_commands and casa_config_guard are DEFENSE-IN-DEPTH argv
@@ -94,20 +92,6 @@ _SHLEX_PUNCT = frozenset("();<>|&")
 
 # Env-var assignment prefix (FOO=bar cmd) — skipped when locating argv[0].
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-# Kept for back-compat with any external code that imported the old name.
-# Not used by block_dangerous_commands — the argv matcher is authoritative.
-FORBIDDEN_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"\brm\s+-rf\b"),
-    re.compile(r"\bshutdown\b"),
-    re.compile(r"\breboot\b"),
-    re.compile(r"\bdd\s+if="),
-    re.compile(r"\bcurl\b.*-X\s*POST\b"),
-    re.compile(r"\bcurl\b.*--data\b"),
-    re.compile(r"\bssh\b"),
-    re.compile(r"\bscp\b"),
-]
-
 
 def _split_pipeline_fallback(command: str) -> list[list[str]]:
     """Legacy quote-blind split; used only when the whole command has
@@ -1805,26 +1789,6 @@ def make_managed_component_guard() -> HookCallback:
     return _hook
 
 
-def managed_component_guard_matcher():
-    """A ``HookMatcher`` wrapping :func:`make_managed_component_guard`,
-    injected CODE-SIDE into every executor session (round-4 Terra P0) the
-    same way :func:`agent_home_settings_guard_matcher` is (I-2, v0.69.8).
-
-    Rationale: definition.yaml editing is a legitimate configurator recipe
-    (executor/enable|disable|edit-definition), and definition.yaml's
-    ``hooks_file:`` key is a config-editable POINTER to the hook-policy
-    file. hooks.yaml itself is guard-protected, but repointing ``hooks_file``
-    at a hollow yaml would shed every yaml-declared policy on the next
-    session. Code-side injection makes the yaml additive-only: no
-    definition/hooks-file manipulation can remove this guard."""
-    from claude_agent_sdk import HookMatcher
-    policy = HOOK_POLICIES["managed_component_guard"]
-    return HookMatcher(
-        matcher=policy["matcher"],
-        hooks=[policy["factory"]()],
-    )
-
-
 # ---------------------------------------------------------------------------
 # trigger_file_write_guard (#403) — agents/<role>/triggers.yaml has TWO writers
 # ---------------------------------------------------------------------------
@@ -2426,8 +2390,7 @@ def _trigger_file_write_guard_factory(**kwargs: Any) -> HookCallback:
 def trigger_file_write_guard_matcher():
     """A ``HookMatcher`` wrapping :func:`make_trigger_file_write_guard`,
     injected CODE-SIDE into every executor session (``tools``) AND every
-    resident's (``agent``) for the same reason
-    :func:`managed_component_guard_matcher` is: ``hooks_file:`` is a
+    resident's (``agent``): ``hooks_file:`` is a
     config-editable pointer, so a yaml-only policy can be shed by an edit the
     configurator is otherwise entitled to make. Residents are included because
     the shipped assistant carries broad shell access and its own reminder tools

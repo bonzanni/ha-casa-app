@@ -192,7 +192,8 @@ def test_an_in_progress_bundle_journal_holds_a_reference(tree, tmp_path) -> None
     path = _write_journal(tree, tmp_path)
     # The premise, asserted against the authority rather than assumed: boot
     # really would replay this journal's captured tuples.
-    assert specialist_bundle_journal.replayable_tuple_files(path) is not None
+    assert (specialist_bundle_journal.classify_journal(path)[0]
+            == specialist_bundle_journal.JOURNAL_REPLAY)
 
     with pytest.raises(SpecialistInstallError) as raised:
         _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")
@@ -208,7 +209,8 @@ def test_a_complete_journal_holds_no_reference(tree, tmp_path) -> None:
 
     _install_persona(tree["personas"], tmp_path, persona_id="casa/newton", version="0.1.0")
     path = _write_journal(tree, tmp_path, state="complete")
-    assert specialist_bundle_journal.replayable_tuple_files(path) is None
+    assert (specialist_bundle_journal.classify_journal(path)[0]
+            != specialist_bundle_journal.JOURNAL_REPLAY)
 
     assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
 
@@ -232,7 +234,8 @@ def test_a_journal_boot_would_never_replay_holds_no_reference(
         path = _write_journal(tree, tmp_path, slug="not-the-filename-slug")
     else:
         path = _write_journal(tree, tmp_path, name="not-a-journal-name.json")
-    assert specialist_bundle_journal.replayable_tuple_files(path) is None
+    assert (specialist_bundle_journal.classify_journal(path)[0]
+            != specialist_bundle_journal.JOURNAL_REPLAY)
 
     assert _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0")["ok"] is True
 

@@ -96,9 +96,7 @@ import logging
 import os
 import secrets
 import threading
-from datetime import datetime, timedelta
-
-import yaml
+from datetime import datetime
 
 import trigger_write_lock
 from atomic_io import atomic_write_text
@@ -1221,7 +1219,6 @@ def _reconcile_registrations(runtime, registry, role: str, path: str,
     """
     if registry is None:
         return
-    from config import TriggerSpec
 
     channels = list(getattr(
         getattr(runtime, "role_configs", {}).get(role), "channels", []) or [])

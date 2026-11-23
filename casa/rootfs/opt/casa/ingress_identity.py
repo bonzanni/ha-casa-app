@@ -70,15 +70,6 @@ from personality_types import (
     TrustedUserOriginInput,
 )
 
-# The external transports a turn can arrive on. Finer-grained than the
-# ``channel`` string: voice has two transports, and /invoke and /webhook share
-# ``channel="webhook"`` while being different origins with different trust
-# semantics (operator-signed call vs. untrusted third-party content).
-IngressRoute = Literal[
-    "telegram", "telegram_guest", "voice_sse", "voice_ws", "invoke",
-    "webhook_trigger",
-]
-
 PeerStrategy = Literal["fixed", "telegram_sender", "webhook_name"]
 
 _CLEARANCES = frozenset({"public", "friends", "family", "private"})

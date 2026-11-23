@@ -410,8 +410,8 @@ async def _restricted_max_turns(agent, route: str | None) -> int:
     token = agent_mod.origin_var.set(origin)
     try:
         opts = await agent._build_options(
-            channel="webhook", channel_key="k", is_fresh=True,
-            resume_sid=None, user_text="x")
+            channel="webhook", channel_key="k",
+            resume_sid=None)
     finally:
         agent_mod.origin_var.reset(token)
     return opts.max_turns

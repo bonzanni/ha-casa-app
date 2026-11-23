@@ -1,6 +1,6 @@
 PY := venv_test/bin/python
 
-.PHONY: help setup test-casa test-unit test-unit-serial test-browser test-browser-integration test-browser-viewer-engines test-docker test-image lint
+.PHONY: help setup test-casa test-unit test-unit-serial test-browser test-browser-integration test-browser-viewer-engines test-docker test-image
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -165,6 +165,3 @@ DOCKER_PULL ?= --pull
 
 test-image: ## Build the e2e test image (mirrors CI tier1/baseline; DOCKER_PULL= to build from cache)
 	docker build $(DOCKER_PULL) -f test-local/Dockerfile.test -t casa-test .
-
-lint: ## (no linter configured yet)
-	@echo "No linter configured. CI gate is pytest tier2 (see make test-unit)."

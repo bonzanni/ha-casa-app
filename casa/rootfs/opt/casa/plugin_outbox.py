@@ -33,7 +33,6 @@ from media_policies import MEDIA_POLICIES
 
 logger = logging.getLogger(__name__)
 
-OUTBOX_ENV = "CASA_PLUGIN_OUTBOX_DIR"
 CLAIMS_SUBDIR = ".claims"
 # Terra r6 (#330): reap-ownership entries live in their own sweep-owned
 # subdirectory — a marker in the outbox ROOT could collide with a legal

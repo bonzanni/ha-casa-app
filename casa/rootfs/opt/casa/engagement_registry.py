@@ -31,7 +31,6 @@ from typing import Any, Callable
 from atomic_io import atomic_write_json
 from channels.tg_address import AddressError, TgAddress, is_route
 from job_registry import CASA_SHUTDOWN_REASON
-from sensitivity import TIERS
 from task_model import Requester
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SESSION_SUSPEND_IDLE_S = 86400
-_IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # D-4 (v0.69.0): terminal tombstones stay on disk this long, then age out of
 # the snapshot on the next write — bounds the file while keeping post-mortems
 # working across restarts.
@@ -547,7 +545,7 @@ class EngagementRegistry:
             # a live driver, but no driver survives a restart — the process
             # that ran it died with the old container. Idle is the truthful
             # state: dormant, resumable on the next message for it
-            # (update_user_turn flips it back), and visible to the reap sweep.
+            # (begin_turn_delivery flips it back), and visible to the reap sweep.
             if rec.status == "active":
                 rec.status = "idle"
                 reconciled_any = True
@@ -1640,8 +1638,7 @@ class EngagementRegistry:
 
         Timestamps are deliberately untouched. A redelivery is not a new user
         turn; re-stamping ``last_user_turn_ts`` on every restart would postpone
-        the idle suspension indefinitely. That is why ``update_user_turn`` is not
-        reused here.
+        the idle suspension indefinitely.
 
         An UNKNOWN record delivers rather than refusing: records leave
         ``_records`` only on a ``create()`` rollback, so this is unreachable for
@@ -1700,16 +1697,6 @@ class EngagementRegistry:
             return
         rec.last_user_turn_ts = max(rec.last_user_turn_ts, ts)
         self._schedule_tombstone_persist()
-
-    async def update_user_turn(self, engagement_id: str, ts: float) -> None:
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            rec.last_user_turn_ts = ts
-            if rec.status == "idle":
-                rec.status = "active"
-            await self._write_tombstone_locked()
 
     async def update_plugin_profiles(self, engagement_id: str,
                                      profiles: dict) -> None:

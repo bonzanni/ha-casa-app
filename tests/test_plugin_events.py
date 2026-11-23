@@ -10,7 +10,6 @@ from plugin_events import (
     MAX_SUBSCRIBES,
     ack_identity,
     effective_name,
-    emit_declaration_digest,
     parse_and_validate_emits,
     parse_and_validate_subscribes,
     subscribe_declaration_digest,
@@ -173,37 +172,6 @@ def test_emit_all_or_nothing():
         "p", _emits([{"name": "ok"}, {"name": "bad name"}]))
     assert errs
     assert entries == []
-
-
-# ---------------------------------------------------------------------------
-# emit_declaration_digest
-# ---------------------------------------------------------------------------
-
-
-def test_emit_declaration_digest_deterministic():
-    entry = {"declared": "invoice-created", "effective": "plg-finance--invoice-created"}
-    d1 = emit_declaration_digest(entry)
-    d2 = emit_declaration_digest(dict(entry))
-    assert d1 == d2
-    assert len(d1) == 64
-
-
-def test_emit_declaration_digest_changes_with_name():
-    d1 = emit_declaration_digest({"declared": "a"})
-    d2 = emit_declaration_digest({"declared": "b"})
-    assert d1 != d2
-
-
-def test_emit_declaration_digest_golden():
-    # Matches plugin_callbacks.declaration_digest's canonicalization exactly:
-    # sha256 of {"name": <declared>} with sorted keys, compact separators.
-    import hashlib
-    import json
-    expected = hashlib.sha256(
-        json.dumps({"name": "invoice-created"}, sort_keys=True,
-                   separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
-    assert emit_declaration_digest({"declared": "invoice-created"}) == expected
 
 
 # ---------------------------------------------------------------------------

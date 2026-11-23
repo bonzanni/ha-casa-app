@@ -133,8 +133,8 @@ async def test_resident_builder_enforces_the_live_profile(tmp_path, profiled):
         mcp_registry=McpServerRegistry(), channel_manager=ChannelManager(),
     )
     opts = await resident._build_options(
-        channel="telegram", channel_key="telegram-k", is_fresh=True,
-        resume_sid=None, user_text="hello")
+        channel="telegram", channel_key="telegram-k",
+        resume_sid=None)
     (_assert_profiled if profiled else _assert_unprofiled)(opts)
 
 

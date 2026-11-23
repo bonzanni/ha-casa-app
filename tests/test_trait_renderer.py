@@ -7,7 +7,6 @@ from trait_renderer import (
     AXES,
     POSTURE_CLAUSE_V1,
     RENDERER_VERSION,
-    TOKEN_ESTIMATOR_ID,
     estimate_tokens_v1,
     render_v1,
 )
@@ -18,7 +17,6 @@ FIXTURE = Path(__file__).parent / "fixtures" / "trait_renderer_v1.json"
 def test_fixture_versions_match_runtime_constants() -> None:
     data = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assert data["renderer"] == RENDERER_VERSION
-    assert data["estimator"] == TOKEN_ESTIMATOR_ID
 
 
 @pytest.mark.parametrize("cardinality", range(9))

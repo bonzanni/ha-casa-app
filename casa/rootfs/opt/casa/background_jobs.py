@@ -403,13 +403,6 @@ def jobs_for_target(scope: str) -> dict[str, tuple[JobDecl, Any]]:
         return {}
 
 
-def jobs_for_specialist(role: str) -> dict[str, JobDecl]:
-    """The jobs declared by the plugins a specialist's session loads, keyed by
-    qualified name. Any error resolving plugins yields an empty dict."""
-    return {name: decl for name, (decl, _plugin) in
-            jobs_for_target(f"specialist:{role}").items()}
-
-
 def startable_jobs(caller_role: str, delegate_roles: Iterable[str]) -> list[JobHost]:
     """Every job a caller can start, with own plugins before delegates.
 

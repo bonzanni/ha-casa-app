@@ -292,8 +292,8 @@ async def test_per_role_reload_refreshes_a_live_agents_delegates_block(
 
     # Pre-condition: both sides say "Alex".
     opts = await assistant._build_options(
-        channel="telegram", channel_key="k", is_fresh=True,
-        resume_sid=None, user_text="hi")
+        channel="telegram", channel_key="k",
+        resume_sid=None)
     assert "finance (Alex)" in opts.system_prompt
 
     # --- rename on disk, reload ONLY finance ---------------------------
@@ -318,8 +318,8 @@ async def test_per_role_reload_refreshes_a_live_agents_delegates_block(
 
     # --- the assertion -------------------------------------------------
     opts = await assistant._build_options(
-        channel="telegram", channel_key="k", is_fresh=True,
-        resume_sid=None, user_text="hi")
+        channel="telegram", channel_key="k",
+        resume_sid=None)
     assert "finance (Lex)" in opts.system_prompt
     assert "Alex" not in opts.system_prompt
 

@@ -142,7 +142,6 @@ async def retry_sdk_call(
     counting as an attempt; a retry loop must not swallow caller
     cancellation (spec 5.2 §3.2 — voice barge-in).
     """
-    last_exc: BaseException | None = None
     for attempt in range(MAX_ATTEMPTS):
         try:
             return await fn()
@@ -152,7 +151,6 @@ async def retry_sdk_call(
             kind = _classify_error(exc)
             if kind not in RETRY_KINDS:
                 raise
-            last_exc = exc
             is_last = attempt == MAX_ATTEMPTS - 1
             if is_last:
                 raise

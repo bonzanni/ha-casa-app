@@ -360,7 +360,7 @@ IDENTITY_SITE_HITS = {
     "callback_episodes.py": {
         "<module>": 1, "_exhaustion_text": 1, "_is_nudgeable": 1, "_message": 2,
         "_process_unnoted_exhaustions": 2, "_removal_text": 1, "_run_nudge": 2,
-        "_select_nudgeable": 1, "_select_unnoted_exhaustions": 1, "kick": 1,
+        "_select_nudgeable": 1, "_select_unnoted_exhaustions": 1,
     },
     "callback_http.py": {"_nudge": 1, "make_callback_handler._process": 3},
     "callback_reconcile.py": {
@@ -428,7 +428,7 @@ IDENTITY_SITE_HITS = {
     "channels/tg_address.py": {"TgAddress": 1, "TgAddress.__post_init__": 1, "scope": 1},
     "chat_notes.py": {"_key": 1},
     "channels/voice/routes.py": {"BoundVoiceRoute": 1, "_RouteMetadata": 1},
-    "channels/voice/session.py": {"VoiceSession": 1, "VoiceSessionPool.schedule_prewarm": 1},
+    "channels/voice/session.py": {"VoiceSession": 1},
     "config.py": {"AgentConfig": 1},
     "delivery_keys.py": {
         "<module>": 1, "DeliveryKeys.__init__": 1, "DeliveryKeys._prune": 5,

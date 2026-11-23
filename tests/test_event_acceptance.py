@@ -161,7 +161,6 @@ class _Facility:
     def boot(self) -> None:
         """(Re)wire ``event_episodes`` from scratch. Every in-memory trace
         of a previous life drops; only the spool + acks survive."""
-        ee._pending_hints.clear()
         ee._next_due = None
         ee._worker_task = None
         ee._kick = None

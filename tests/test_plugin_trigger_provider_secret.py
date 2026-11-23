@@ -97,7 +97,7 @@ def _client(registry, tmp_path):
     handler = _make_webhook_handler(
         webhook_rate_limiter=RateLimiter(capacity=0, window_s=60.0),
         webhook_secret="", trigger_registry=registry,
-        default_role="assistant", bus=bus,
+        bus=bus,
         secrets_dir=tmp_path / "webhook_secrets")
     app = web.Application()
     app.router.add_post("/webhook/{name}", handler)

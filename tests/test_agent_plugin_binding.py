@@ -73,8 +73,8 @@ def test_resident_options_use_resolver_and_record_binding(tmp_path):
 
     async def run():
         opts = await a._build_options(
-            channel="telegram", channel_key="k", is_fresh=True,
-            resume_sid=None, user_text="hi")
+            channel="telegram", channel_key="k",
+            resume_sid=None)
         assert opts.plugins == [{"type": "local", "path": str(art)}]
         assert "mcp__plugin_probe_probe" in opts.allowed_tools
         assert a.active_plugin_binding == {"probe": e["artifact_id"]}
@@ -99,8 +99,8 @@ def test_env_unresolved_plugin_withheld_from_options(tmp_path, monkeypatch):
 
     async def run():
         opts = await a._build_options(
-            channel="telegram", channel_key="k", is_fresh=True,
-            resume_sid=None, user_text="hi")
+            channel="telegram", channel_key="k",
+            resume_sid=None)
         assert opts.plugins == []
         assert "mcp__plugin_probe_probe" not in opts.allowed_tools
         assert a.active_plugin_binding == {}
@@ -123,8 +123,8 @@ def test_env_resolved_plugin_loads_normally(tmp_path, monkeypatch):
 
     async def run():
         opts = await a._build_options(
-            channel="telegram", channel_key="k", is_fresh=True,
-            resume_sid=None, user_text="hi")
+            channel="telegram", channel_key="k",
+            resume_sid=None)
         assert opts.plugins == [{"type": "local", "path": str(art)}]
         assert "mcp__plugin_probe_probe" in opts.allowed_tools
         assert a.active_plugin_binding == {"probe": e["artifact_id"]}
@@ -642,8 +642,8 @@ def test_resident_options_load_and_pin_the_declared_vars(tmp_path, monkeypatch):
 
     async def run():
         opts = await a._build_options(
-            channel="telegram", channel_key="k", is_fresh=True,
-            resume_sid=None, user_text="hi")
+            channel="telegram", channel_key="k",
+            resume_sid=None)
         assert opts.plugins == [{"type": "local", "path": str(art)}]
         assert _plugin_env(opts) == {"CASA_PLUGIN_BANKFEED_PRIVATE_KEY": ""}
         # In the published binding, so _setup_execution_ready can pass.

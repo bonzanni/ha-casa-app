@@ -417,15 +417,6 @@ class TestRegistrationGeneration:
             "telegram-g2", expected_sid="sid-B", expected_generation=None)
         assert r2.get("telegram-g2")["sdk_session_id"] == "sid-B"
 
-    async def test_remove_declines_after_same_sid_reregistration(self, tmp_path):
-        reg = SessionRegistry(str(tmp_path / "s.json"))
-        await self._register(reg, "telegram-g1", "sid-A")
-        g1 = reg.generation("telegram-g1")
-        await self._register(reg, "telegram-g1", "sid-A")
-        await reg.remove(
-            "telegram-g1", expected_sid="sid-A", expected_generation=g1)
-        assert reg.get("telegram-g1") is not None
-
     async def test_generation_dropped_on_entry_deletion(self, tmp_path):
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await self._register(reg, "telegram-g1", "sid-A")

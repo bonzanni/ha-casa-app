@@ -25,9 +25,6 @@ from claude_runtime import (
     ephemeral_setting_sources,
     with_cross_session_tools_denied,
 )
-# Re-export the canonical sensitivity-tier set (single source of truth is
-# sensitivity.py:TIERS) so consumers gate on ``from tier_classifier import
-# TIERS, classify_tier`` — classify_tier only ever returns a member of it.
 from sensitivity import (
     DEFAULT_TIER,
     SENSITIVITY_PROMPT,
@@ -38,7 +35,7 @@ from sensitivity import (
     tier_evidence,
 )
 
-__all__ = ["FallbackTier", "classify_tier", "TIERS"]
+__all__ = ["FallbackTier", "classify_tier"]
 
 logger = logging.getLogger(__name__)
 

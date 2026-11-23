@@ -2289,8 +2289,8 @@ class TestReloadUpdatesDisplayName:
 
         async def build():
             return await a._build_options(
-                channel="telegram", channel_key="k", is_fresh=True,
-                resume_sid=None, user_text="hi")
+                channel="telegram", channel_key="k",
+                resume_sid=None)
 
         a.config.character.name = "Ellen"
         deps1 = _authz_hook(await build())._casa_authz_deps_factory()

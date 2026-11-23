@@ -556,22 +556,6 @@ def _parse_receipt(raw: bytes) -> dict | None:
     return rec
 
 
-def _read_receipt(name: str, secrets_dir: Path) -> dict | None:
-    """The parsed receipt, or ``None`` for every anomaly.
-
-    Unlike :func:`_read_state`, a malformed receipt is reported and **NEVER
-    deleted**. Speculative deletion in this directory is the whole hazard;
-    an unreadable receipt already fails closed as `unproven`.
-    """
-    try:
-        raw = _read_raw(f"{name}{MINT_RECEIPT_SUFFIX}", secrets_dir)
-    except OSError:
-        return None
-    if raw is None:
-        return None
-    return _parse_receipt(raw)
-
-
 # The three answers a certifying read can give. `UNAVAILABLE` is an artifact
 # that exists but could not be read NOW (an OSError other than ENOENT);
 # `UNCERTIFIED` is every evidential failure — absent, malformed, v1, stale
@@ -688,14 +672,6 @@ def resident_secret_provenance(name: str, *, secrets_dir: Path) -> str:
     except OSError:
         return "unproven"
     return "unproven"
-
-
-def resident_secret_minted_for(name: str, *, secrets_dir: Path) -> str | None:
-    """The role the slot's receipt names — iff the receipt certifies the live
-    bytes (the same value binding as :func:`resident_secret_provenance`); else
-    ``None``. Total, owner-agnostic."""
-    got = _certified_read(name, Path(secrets_dir))
-    return got.role if isinstance(got, Certified) else None
 
 
 def read_certified_secret(name: str, *, role: str, secrets_dir: Path) -> bytes | None:

@@ -17,7 +17,8 @@ from approval_records import values_digest
 from authz_grants import ChallengeCoordinator
 from channels.tg_address import TgAddress
 from persona_install import PersonaInstallAckStore, persona_install_consent_identity
-from persona_install_consent import prompt_persona_install_consent, supersede_card
+from persona_install_consent import prompt_persona_install_consent
+from specialist_install_consent import supersede_card
 
 KEY = "judge"
 SCOPE = "authz:111:100"

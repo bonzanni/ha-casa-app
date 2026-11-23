@@ -1,9 +1,0 @@
-name: "Tina"
-role: butler
-description: "Pre-2.2a butler with single-line exclude_tags."
-model: haiku
-personality: "You are Tina."
-memory:
-  peer_name: butler
-  token_budget: 2000
-  exclude_tags: [private, financial]

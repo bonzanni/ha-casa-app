@@ -11,7 +11,6 @@ from io import StringIO
 import pytest
 
 from log_cid import (
-    CidFilter,
     HumanFormatter,
     JsonFormatter,
     cid_var,
@@ -61,38 +60,11 @@ class TestNewCid:
         assert len(cids) == 200
 
 
-# ---------------------------------------------------------------------------
-# CidFilter
-# ---------------------------------------------------------------------------
-
-
 def _make_record(msg: str = "hi") -> logging.LogRecord:
     return logging.LogRecord(
         name="test", level=logging.INFO, pathname=__file__,
         lineno=1, msg=msg, args=(), exc_info=None,
     )
-
-
-class TestCidFilter:
-    def test_injects_current_cid(self):
-        token = cid_var.set("deadbeef")
-        try:
-            rec = _make_record()
-            f = CidFilter()
-            assert f.filter(rec) is True
-            assert rec.cid == "deadbeef"
-        finally:
-            cid_var.reset(token)
-
-    def test_injects_dash_when_unset(self):
-        rec = _make_record()
-        f = CidFilter()
-        f.filter(rec)
-        assert rec.cid == "-"
-
-    def test_filter_returns_true(self):
-        # Filters that return False drop records; ours must always pass.
-        assert CidFilter().filter(_make_record()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +132,7 @@ class TestJsonFormatter:
         assert "exc" not in payload
 
     def test_missing_cid_attr_defaults_to_dash(self):
-        # If a record slips through without CidFilter, formatter must
+        # If a record slips through without a cid, formatter must
         # still produce a valid line (defensive — spec §7.2 fallback).
         fmt = JsonFormatter()
         rec = _make_record("no-cid-attr")

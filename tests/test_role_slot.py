@@ -6,7 +6,6 @@ from role_slot import (
     FIXED_RESIDENT_SLOTS,
     ResolvedModel,
     RoleValidationError,
-    compute_executor_identity,
     compute_role_checksum,
     materialize_role,
     normalize_role_for_checksum,
@@ -171,30 +170,6 @@ def test_checksum_matches_manual_length_prefixed_framing() -> None:
     doctrine_bytes = canonical_text("Doctrine.\n").encode("utf-8")
     expected = checksum_bytes(len(role_bytes).to_bytes(8, "big") + role_bytes + doctrine_bytes)
     assert compute_role_checksum(normalized_role=normalized, doctrine="Doctrine.\n") == expected
-
-
-# --- Executor role-only identity: defect #3 regression coverage -------------
-
-
-def test_executor_identity_carries_the_normative_triple() -> None:
-    role = _role(
-        id="executor:configurator", kind="executor", slot="configurator",
-        channels=[], session={"strategy": "ephemeral", "idle_timeout_seconds": 0},
-        persona={"policy": "forbidden"}, delegates=[], executors=[], triggers=[],
-    )
-    resolved = resolve_role_model(role["model"], {"voice_agent_model": "haiku"})
-    checksum = compute_role_checksum(
-        normalized_role=normalize_role_for_checksum(role, resolved), doctrine="Doctrine.\n",
-    )
-    identity = compute_executor_identity(
-        role=type("R", (), {  # minimal stand-in avoiding a full RoleSlot construction here
-            "role_id": "executor:configurator", "checksum": checksum,
-        })(),
-        effective_config_digest="sha256:" + "0" * 64,
-    )
-    assert identity.stable_agent_id == "executor:configurator"
-    assert identity.role_checksum == checksum
-    assert identity.effective_config_digest == "sha256:" + "0" * 64
 
 
 # --- Foundation-hardening regression: materialize_role over a REAL,

@@ -22,21 +22,6 @@ def test_cidbox_str_and_default():
     assert str(box) == "abc123"
 
 
-async def test_cid_filter_coerces_box_to_str():
-    from log_cid import CidFilter, cid_var
-    from sdk_client_pool import _CidBox
-    box = _CidBox()
-    box.value = "turn-2-cid"
-    token = cid_var.set(box)  # type: ignore[arg-type]
-    try:
-        rec = logging.LogRecord("t", logging.INFO, __file__, 1, "m", (), None)
-        CidFilter().filter(rec)
-        assert rec.cid == "turn-2-cid"
-        assert isinstance(rec.cid, str)
-    finally:
-        cid_var.reset(token)
-
-
 # Contextvars for testing
 test_origin: ContextVar = ContextVar("test_origin", default=None)
 test_cid: ContextVar = ContextVar("test_cid", default="-")
