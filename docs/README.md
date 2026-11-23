@@ -48,7 +48,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a tap's next card, the in_place answer, the edit that replaces the tapped card, a keep_card button, a Close button, or a card's pages | [`architecture/stored-call-next-card.md`](architecture/stored-call-next-card.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
-| adding a tool, changing tool dispatch, anything about tool authorization, or the N8N_URL / N8N_API_KEY switch | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
+| adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
 | adding an agent or a tier, the required file set, or role resolution | [`architecture/agent-taxonomy.md`](architecture/agent-taxonomy.md) |
 | adding an evaluator, or before assuming behaviour is evaluated somewhere | [`architecture/eval-framework.md`](architecture/eval-framework.md) |
 | adding durable state, changing a corrupt-file policy, or anything about what survives | [`architecture/persistent-state.md`](architecture/persistent-state.md) |

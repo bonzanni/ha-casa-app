@@ -13,7 +13,7 @@ ROOT  := $(shell git rev-parse --show-toplevel)
 # DOCKER_PULL=` builds from cache, offline, exactly as before.
 DOCKER_PULL ?= --pull
 
-.PHONY: build test test-smoke test-runtime test-voice \
+.PHONY: build test test-smoke test-runtime test-voice test-voice-delivery \
         test-tier1 test-tier2 test-tier3 test-all clean help
 
 help:
@@ -30,6 +30,12 @@ help:
 	@echo "  test-runtime    /invoke session isolation + concurrency"
 	@echo "  test-voice      Voice pipeline SSE + WS smoke scenarios"
 	@echo "  clean           Remove dangling test containers"
+	@echo ""
+	@echo "Cross-repository (run by hand, no image build):"
+	@echo "  test-voice-delivery  Background voice answers against the real Home"
+	@echo "                       Assistant integration code. Needs a checkout of"
+	@echo "                       ha-casa-integration beside this repository, or"
+	@echo "                       CASA_HA_INTEGRATION_PATH pointing at one."
 	@echo ""
 	@echo "Every build refreshes the floating base (#942). Offline, or during a"
 	@echo "registry outage, build from the local store with DOCKER_PULL= :"
@@ -48,6 +54,19 @@ test-runtime: build
 test-voice: build
 	cd $(ROOT) && bash test-local/e2e/test_voice_sse.sh
 	cd $(ROOT) && bash test-local/e2e/test_voice_ws.sh
+
+# Casa's voice channel and job tools against the integration's real client and
+# delivery manager, in one process: hand-off, spoken answer, cancel, continue,
+# reconnect. Not part of any tier, because CI has no integration checkout.
+# The memory cap is applied where a user systemd scope is available.
+VOICE_DELIVERY_PY ?= venv_test/bin/python
+VOICE_DELIVERY_CAGE := $(shell systemd-run --user --scope -q true 2>/dev/null \
+	&& echo "systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=2G")
+
+test-voice-delivery:
+	cd $(ROOT) && PYTHONPATH=casa/rootfs/opt/casa:test-local/e2e:tests \
+		$(VOICE_DELIVERY_CAGE) $(VOICE_DELIVERY_PY) -m pytest \
+		test-local/e2e/test_voice_background_delivery.py -q -p no:cacheprovider
 
 test: test-smoke test-runtime test-voice
 

@@ -61,9 +61,6 @@ MSYS_NO_PATHCONV=1 docker exec "$NAME" test ! -e /config/agents/specialists/fina
 # ERE \[\] portability gap and the docker-logs stdout lag on CI.
 assert_log_contains "$NAME" "Specialists: enabled=[] disabled=[] failed=[]"
 
-# n8n not registered (no N8N_URL).
-assert_log_not_contains "$NAME" "Registered n8n-workflows MCP server"
-
 stop_container "$NAME"
 pass "D-1 zero-specialists baseline"
 

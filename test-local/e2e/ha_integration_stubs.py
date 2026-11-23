@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import sys
 import types
+import uuid
+from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
 
@@ -16,8 +18,11 @@ HA_STUB_EXPORTS = frozenset({
     "homeassistant.core:callback", "homeassistant.core:HomeAssistant",
     "homeassistant.core:Event", "homeassistant.core:EventStateChangedData",
     "homeassistant.config_entries:ConfigFlow",
+    "homeassistant.config_entries:ConfigSubentryFlow",
     "homeassistant.config_entries:OptionsFlow",
     "homeassistant.config_entries:ConfigEntry",
+    "homeassistant.config_entries:ConfigSubentry",
+    "homeassistant.config_entries:ConfigSubentryData",
     "homeassistant.config_entries:ConfigFlowResult",
     "homeassistant.const:Platform", "homeassistant.const:MATCH_ALL",
     "homeassistant.const:EVENT_STATE_CHANGED",
@@ -29,6 +34,7 @@ HA_STUB_EXPORTS = frozenset({
     "homeassistant.helpers.event:async_track_state_change_filtered",
     "homeassistant.helpers.entity_registry:EVENT_ENTITY_REGISTRY_UPDATED",
     "homeassistant.helpers.entity_registry:async_get",
+    "homeassistant.helpers.entity_registry:async_entries_for_device",
     "homeassistant.helpers.service_info.hassio:HassioServiceInfo",
     "homeassistant.helpers.device_registry:DeviceInfo",
     "homeassistant.helpers.device_registry:DeviceEntryType",
@@ -130,6 +136,21 @@ def install() -> frozenset[str]:
     config_entries.ConfigFlow = ConfigFlow
     config_entries.OptionsFlow = OptionsFlow
     config_entries.ConfigEntry = MagicMock
+
+    @dataclass(frozen=True)
+    class ConfigSubentry:
+        data: dict
+        subentry_type: str
+        title: str
+        unique_id: str | None = None
+        subentry_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    class ConfigSubentryFlow:
+        """Present so the integration imports; no flow runs in this test."""
+
+    config_entries.ConfigSubentry = ConfigSubentry
+    config_entries.ConfigSubentryData = dict
+    config_entries.ConfigSubentryFlow = ConfigSubentryFlow
     config_entries.ConfigFlowResult = ConfigFlowResult
 
     const = _module("homeassistant.const")
@@ -158,6 +179,7 @@ def install() -> frozenset[str]:
     entity_registry = _module("homeassistant.helpers.entity_registry")
     entity_registry.EVENT_ENTITY_REGISTRY_UPDATED = "entity_registry_updated"
     entity_registry.async_get = MagicMock(return_value=MagicMock())
+    entity_registry.async_entries_for_device = lambda *a, **kw: []
     service_info = _module("homeassistant.helpers.service_info")
     service_info_hassio = _module("homeassistant.helpers.service_info.hassio")
 

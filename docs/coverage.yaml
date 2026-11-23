@@ -859,8 +859,4 @@
   doc: architecture/http-surface.md
 - item: env:WEBHOOK_SESSION_TTL_DAYS
   doc: architecture/persistent-state.md
-- item: env:N8N_API_KEY
-  doc: architecture/mcp-and-tools.md
-- item: env:N8N_URL
-  doc: architecture/mcp-and-tools.md
 

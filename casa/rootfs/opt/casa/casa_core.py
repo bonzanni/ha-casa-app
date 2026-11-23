@@ -463,36 +463,6 @@ def _env_float_or(name: str, default: float, *, min_value: float = 0.0,
     return value
 
 
-def _maybe_register_n8n(
-    mcp_registry: "McpServerRegistry",
-    env: dict[str, str] | None = None,
-) -> dict[str, object] | None:
-    """Register the ``n8n-workflows`` HTTP MCP server if ``N8N_URL`` is set.
-
-    Generic shared infrastructure — any agent (resident or specialist) that
-    declares ``n8n-workflows`` in ``mcp_server_names`` can reach it; the
-    per-agent ``tools.allowed`` list governs which workflows each agent
-    may invoke. Matches the shape of the ``homeassistant`` env-gated
-    block in ``main()``.
-
-    Returns the registered server config dict, or ``None`` when
-    ``N8N_URL`` is unset or whitespace-only.
-    """
-    env = env if env is not None else os.environ
-    url = (env.get("N8N_URL") or "").strip()
-    if not url:
-        return None
-    api_key = (env.get("N8N_API_KEY") or "").strip()
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-    mcp_registry.register_http(
-        name="n8n-workflows",
-        url=url,
-        headers=headers,
-    )
-    logger.info("Registered n8n-workflows MCP server")
-    return mcp_registry.resolve(["n8n-workflows"]).get("n8n-workflows")
-
-
 async def wire_butler_ha_facade(
     mcp_registry: "McpServerRegistry",
     facade: Any,
@@ -2674,8 +2644,6 @@ async def main() -> None:
             headers={"Authorization": f"Bearer {supervisor_token}"},
         )
         logger.info("Registered Home Assistant MCP server (url=%s)", ha_mcp_url)
-
-    _maybe_register_n8n(mcp_registry)
 
     # 5b. Config git repo — initialise (idempotent) and snapshot any
     # manual edits that landed between boots. #337 (Sol r2): scrub legacy

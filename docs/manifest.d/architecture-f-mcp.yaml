@@ -74,18 +74,16 @@
     INV-JOB-011: [tests/test_graceful_shutdown_engagement_launch.py::test_a_graceful_stop_settles_a_verdict_that_landed_before_it, tests/test_graceful_shutdown_engagement_launch.py::test_a_graceful_stop_settles_a_verdict_born_while_it_was_already_draining, tests/test_graceful_shutdown_engagement_launch.py::test_a_graceful_stop_settles_a_run_whose_callback_is_still_queued]
 
 - doc: architecture/mcp-and-tools.md
-  summary: How tools reach an agent through its in-process casa-framework server, where authorization for a tool call actually happens, and the optional n8n MCP server.
-  when_changing: adding a tool, changing tool dispatch, anything about tool authorization, or the N8N_URL / N8N_API_KEY switch
+  summary: How tools reach an agent through its in-process casa-framework server, and where authorization for a tool call actually happens.
+  when_changing: adding a tool, changing tool dispatch, or anything about tool authorization
   covers:
     - casa/rootfs/opt/casa/tools.py::init_tools
     - casa/rootfs/opt/casa/tools.py::create_casa_tools
     - casa/rootfs/opt/casa/tools.py::select_casa_tools
-    - casa/rootfs/opt/casa/casa_core.py::_maybe_register_n8n
   tests:
     - tests/test_role_scoped_mcp.py
     - tests/test_specialist_tool_ceiling.py
     - tests/test_cross_session_tools.py
-    - tests/test_n8n_registration.py
     - tests/test_specialist_casa_server_attach.py
   related: [architecture/plugins.md, architecture/hook-resolution.md, architecture/http-surface.md]
   defines_invariants: [INV-MCP-002, INV-MCP-003, INV-MCP-009, INV-MCP-013, INV-MCP-014, INV-MCP-015]
