@@ -3849,11 +3849,36 @@ class TelegramChannel(Channel):
         def compose(q: str) -> str:
             lines = (f"> {line}" if line.strip() else ">" for line in q.split("\n"))
             return f"**{who}** asked:\n" + "\n".join(lines)
-        markdown = compose(quote)
-        if len(tg_rich.prepare(markdown).encode("utf-8")) <= tg_rich.RICH_BUDGET_BYTES:
-            return markdown
-        room = tg_rich.RICH_BUDGET_BYTES - len(tg_rich.prepare(compose("…")).encode("utf-8"))
-        return compose(tg_rich.split(quote, room)[0].rstrip() + "…")
+        budget = tg_rich.RICH_BUDGET_BYTES
+
+        def fits(markdown: str) -> bool:
+            return len(tg_rich.prepare(markdown).encode("utf-8")) <= budget
+
+        # A speed guard only: every composed line costs at least two bytes, and
+        # four budgets of raw text are far past what preparation could shrink
+        # into one; a request beyond either limit cannot fit whole, so it is
+        # cut down to them before anything is composed. Any other request is
+        # first tried whole.
+        lines = quote.split("\n")
+        raw = quote.encode("utf-8")
+        if len(lines) > budget // 2 or len(raw) > 4 * budget:
+            quote = "\n".join(lines[:budget // 2]).encode("utf-8")[:4 * budget].decode(
+                "utf-8", "ignore")
+        else:
+            markdown = compose(quote)
+            if fits(markdown):
+                return markdown
+        # #1662: the quote prefix every kept line gains, and what preparing the
+        # quoted text adds, are not counted by a cut of the raw quote; so cut,
+        # measure the composed post, and halve the room until it fits. A
+        # clipped post is a preview: a shorter cut than the best is fine.
+        room = budget - len(tg_rich.prepare(compose("…")).encode("utf-8"))
+        while room >= 256:
+            clipped = compose(tg_rich.split(quote, room)[0].rstrip() + "…")
+            if fits(clipped):
+                return clipped
+            room //= 2
+        return compose("…")
 
     def _job_request_post(self, rec) -> "TgAddress | None":
         """The operator's message that asked for the job (its origin's

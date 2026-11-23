@@ -140,6 +140,80 @@ async def test_a_task_too_long_for_one_message_is_clipped_to_fit():
     assert markdown.count("\n") == 1                # one quoted line, clipped
 
 
+async def test_a_task_of_many_lines_is_clipped_to_one_message():
+    """#1662: every kept line gains its quote prefix, so the clip must fit the
+    quoted form — a request of 800 short lines still arrives as ONE post."""
+    from channels.tg_rich import RICH_BUDGET_BYTES, prepare
+    ch, bot = _mk_channel_with_fake_bot()
+    task = "\n".join(f"{i:04d} " + "x" * 45 for i in range(800))
+    await ch.post_task_start(42, "Ellen", admitted(task), post=None)
+    (kw,) = _rich_calls(bot)
+    markdown = kw["rich_message"]["markdown"]
+    assert len(prepare(markdown).encode()) <= RICH_BUDGET_BYTES
+    assert markdown.startswith("**Ellen** asked:\n> 0000 x")
+    assert markdown.endswith("…")
+
+
+@pytest.mark.parametrize("task", [
+    "\n" * 20_000 + "x",                 # mostly blank lines: the room runs out
+    "\n".join("y" * 40_000),             # 40,000 one-character lines
+    "\n".join("y" * 200_000),            # 200,000 one-character lines
+], ids=["blank-lines", "one-char-lines", "200k-one-char-lines"])
+async def test_a_degenerate_long_task_is_clipped_to_one_message_promptly(task):
+    """#1662: a request whose quote prefixes outweigh its text still yields one
+    post, and quickly — the clip runs on the event loop, so it must neither
+    hang nor take seconds. Run in a thread so a hang fails instead of stalling."""
+    import threading
+    from channels.telegram import TelegramChannel
+    from channels.tg_rich import RICH_BUDGET_BYTES, prepare
+    out = []
+    worker = threading.Thread(target=lambda: out.append(
+        TelegramChannel._task_start_markdown("Ellen", task)), daemon=True)
+    worker.start()
+    worker.join(timeout=15)
+    assert out, "clipping the start post did not finish within 15 s"
+    (markdown,) = out
+    assert len(prepare(markdown).encode()) <= RICH_BUDGET_BYTES
+    assert markdown.startswith("**Ellen** asked:\n>")
+    assert markdown.endswith("…")
+
+
+@pytest.mark.parametrize("task", [
+    # whitespace-only lines shrink to ">" when quoted
+    ("x" * 80 + "\n" + " " * 80 + "\n") * 200 + "END OF REQUEST",
+    # CRLF line ends shrink in preparation
+    "```\r\n" + ("x" * 60 + "\r\n") * 503 + "```\r\nEND OF REQUEST",
+    # time links contract in preparation
+    "\n".join(["[x](time:2026-11-16T09:00:00.123456+01:00)"] * 720),
+], ids=["whitespace-lines", "crlf-fence", "time-links"])
+async def test_a_long_request_that_fits_once_prepared_is_sent_whole(task):
+    """#1662: clipping must never bite a request whose post fits: one whose raw
+    size looks too big but shrinks when prepared is quoted whole, unclipped."""
+    from channels.telegram import TelegramChannel
+    from channels.tg_rich import RICH_BUDGET_BYTES, prepare
+    markdown = TelegramChannel._task_start_markdown("Ellen", task)
+    whole = "**Ellen** asked:\n" + "\n".join(
+        f"> {line}" if line.strip() else ">" for line in task.split("\n"))
+    same = markdown == whole               # no pytest diff of 30 kB strings
+    assert same, f"clipped to {len(markdown)} of {len(whole)} characters"
+    assert len(prepare(markdown).encode()) <= RICH_BUDGET_BYTES
+
+
+async def test_a_long_task_whose_quoted_form_grows_still_shows_a_real_quote():
+    """#1662: tab-indented lines of underscores grow when quoted and prepared;
+    the clipped post is still one message, and with ample room it quotes a
+    substantial part of the request, not the ellipsis alone."""
+    from channels.tg_rich import RICH_BUDGET_BYTES
+    ch, bot = _mk_channel_with_fake_bot()
+    task = ("\t" + "_" * 80 + "\n") * 500
+    await ch.post_task_start(42, "Ellen", admitted(task), post=None)
+    (kw,) = _rich_calls(bot)
+    markdown = kw["rich_message"]["markdown"]
+    assert len(markdown.encode()) <= RICH_BUDGET_BYTES   # sent as prepared
+    assert markdown.count("\n> \t") >= 20               # quoted request lines
+    assert markdown.endswith("…")
+
+
 async def test_a_task_start_post_that_fails_returns_none():
     ch, bot = _mk_channel_with_fake_bot()
     bot.do_api_request.side_effect = RuntimeError("telegram down")
