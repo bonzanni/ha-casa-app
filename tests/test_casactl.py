@@ -59,3 +59,35 @@ def test_casactl_scope_choices_cover_all_registered_handlers():
         assert scope in result.stdout, (
             f"casactl --scope choices missing registered scope {scope!r}"
         )
+
+
+def _load_casactl():
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("casactl_under_test", str(CASACTL))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def test_casactl_reload_with_failures_reports_them_and_exits_nonzero(capsys):
+    """#1650: an ok envelope that lists units which failed to load must not
+    read as a clean success: each failure is printed and the exit code is 1."""
+    import argparse
+
+    mod = _load_casactl()
+    envelope = {
+        "status": "ok", "ms": 41,
+        "actions": ["rebuild_agent_registry", "refresh_role_map"],
+        "failures": [{"unit": "resident:copy", "detail": "role does not match directory"}],
+    }
+    mod._post_via_unix_socket = lambda path, body: (200, envelope)
+    args = argparse.Namespace(scope="agents", role=None, include_env=False, json=False)
+
+    rc = mod._cmd_reload(args)
+
+    err = capsys.readouterr().err
+    assert "resident:copy: role does not match directory" in err
+    assert rc == 1
