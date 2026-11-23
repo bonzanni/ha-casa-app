@@ -199,7 +199,7 @@ The configurator's trigger edits now come through the same module, by a second p
 doors bounded the opposite way: they refuse an entry marked agent-owned, in the submitted
 entry *and* in the entry they would replace. That is not a convenience — the configurator
 runs in a separate process, and its hand edit of this file discarded reminders silently
-(INV-TRIG-011 in [`architecture/triggers.md`](triggers.md)).
+(INV-TRIG-011 in [`architecture/trigger-file-writers.md`](trigger-file-writers.md)).
 
 An update is a WHOLE-ENTRY replacement, so a field the caller does not send is a field that
 disappears. For most keys that is fine: the operator reads the diff and can put it back. A

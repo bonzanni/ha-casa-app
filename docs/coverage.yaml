@@ -148,7 +148,7 @@
 - item: casa/rootfs/opt/casa/event_acks.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_attempts.py
-  doc: architecture/plugin-events.md
+  doc: architecture/plugin-event-spool.md
 - item: casa/rootfs/opt/casa/event_consent.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_episodes.py
@@ -286,7 +286,7 @@
 - item: casa/rootfs/opt/casa/retry.py
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/trigger_write_lock.py
-  doc: architecture/triggers.md
+  doc: architecture/trigger-file-writers.md
 - item: casa/rootfs/opt/casa/role_artifact.py
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/role_slot.py
@@ -322,7 +322,7 @@
 - item: casa/rootfs/opt/casa/specialist_install.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_install_consent.py
-  doc: architecture/specialist-lifecycle.md
+  doc: architecture/specialist-install-consent.md
 - item: casa/rootfs/opt/casa/specialist_limits.py
   doc: architecture/delegation.md
 - item: casa/rootfs/opt/casa/specialist_materialize.py

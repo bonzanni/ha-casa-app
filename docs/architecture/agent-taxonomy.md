@@ -71,7 +71,7 @@ every other specialist is reached only through delegation ([`own-voice.md`](own-
 requests are each one long conversation ([`scratchpad.md`](scratchpad.md)); and
 `voice_handoff: true` says the specialist suits the voice concierge — nothing at runtime
 reads it, and only the install and upgrade recipes act on it
-([`specialist-lifecycle.md`](specialist-lifecycle.md)).
+([`specialist-install-consent.md`](specialist-install-consent.md)).
 
 ## Contracts & invariants
 

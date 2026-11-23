@@ -65,15 +65,9 @@
     - casa/rootfs/opt/casa/plugin_events.py::parse_and_validate_emits
     - casa/rootfs/opt/casa/plugin_events.py::parse_and_validate_subscribes
     - casa/rootfs/opt/casa/event_spool.py::EventSpool
-    - casa/rootfs/opt/casa/event_spool.py::EventSpool.fold_pass
     - casa/rootfs/opt/casa/event_spool.py::EventSpool.sweep
     - casa/rootfs/opt/casa/event_spool.py::EventSpool.ack
-    - casa/rootfs/opt/casa/event_spool.py::EventSpool.update_delivery_nudge
-    - casa/rootfs/opt/casa/event_spool.py::EventSpool.gc_orphan_dirs
     - casa/rootfs/opt/casa/event_spool.py::emit
-    - casa/rootfs/opt/casa/event_attempts.py::validate_record
-    - casa/rootfs/opt/casa/event_attempts.py::terminalize
-    - casa/rootfs/opt/casa/event_attempts.py::next_nudge_after_accept
     - casa/rootfs/opt/casa/event_acks.py::EventAckStore
     - casa/rootfs/opt/casa/event_consent.py::render_event_consent_message
     - casa/rootfs/opt/casa/event_reconcile.py::compute_desired
@@ -87,7 +81,6 @@
   tests:
     - tests/test_plugin_events.py
     - tests/test_event_spool.py
-    - tests/test_event_attempts.py
     - tests/test_event_acks.py
     - tests/test_event_consent.py
     - tests/test_event_reconcile.py
@@ -95,16 +88,34 @@
     - tests/test_tools_ack_event.py
     - tests/test_event_wiring.py
     - tests/test_event_acceptance.py
-  related: [architecture/callbacks.md, architecture/plugins.md, architecture/triggers.md]
-  defines_invariants: [INV-EV-001, INV-EV-002, INV-EV-003, INV-EV-004, INV-EV-005, INV-EV-006, INV-EV-007]
+  related: [architecture/callbacks.md, architecture/plugins.md, architecture/triggers.md, architecture/plugin-event-spool.md]
+  defines_invariants: [INV-EV-001, INV-EV-003, INV-EV-005, INV-EV-006, INV-EV-007]
   invariant_tests:
     INV-EV-001: [tests/test_event_spool.py::test_sweep_deletes_emissions_of_an_unrouted_pair_next_pass, tests/test_event_episodes.py::test_gate_defers_on_artifact_update, tests/test_event_episodes.py::test_gate_defers_on_retarget, tests/test_event_episodes.py::test_sentinel_suspends_dispatch_and_destructive_work, tests/test_event_reconcile.py::test_reconcile_compute_failure_publishes_sentinel_and_raises]
-    INV-EV-002: [tests/test_event_spool.py::test_folded_remainder_folds_into_the_next_generation, tests/test_event_spool.py::test_fold_batch_bound_65_folds_64_oldest_65th_survives, tests/test_event_spool.py::test_reconstruction_rebuilds_state_at_max_record_gen_no_emission, tests/test_event_spool.py::test_state_lost_with_no_records_silently_resets_to_gen1_no_issue]
     INV-EV-003: [tests/test_event_reconcile.py::test_artifact_update_voids_consent, tests/test_event_reconcile.py::test_retarget_voids_consent, tests/test_event_acks.py::test_malformed_record_missing_field_yields_zero_acks, tests/test_event_acks.py::test_identity_key_mismatch_yields_zero_acks_whole_store, tests/test_event_spool.py::test_deroute_then_sweep_drop_then_reconsent_never_resurrects]
-    INV-EV-004: [tests/test_event_attempts.py::test_terminalize_double_terminalize_is_a_no_op, tests/test_event_episodes.py::test_six_accepts_exhaust_via_one_atomic_update_then_note, tests/test_event_episodes.py::test_failed_exhaustion_write_sends_no_note, tests/test_event_episodes.py::test_exhaustion_notice_survives_a_boot_window_send_failure, tests/test_event_episodes.py::test_exhaustion_send_success_mark_failure_never_resends, tests/test_event_spool.py::test_mark_delivery_noted_refuses_pending_gen_mismatch_and_unknown, tests/test_event_episodes.py::test_concurrent_ack_beats_bookkeeping_on_the_advance_branch]
     INV-EV-005: [tests/test_tools_ack_event.py::test_ack_event_token_never_in_reply_or_logs, tests/test_event_acceptance.py::test_no_envelope_bytes_or_ack_token_reach_any_log_surface, tests/test_event_attempts.py::test_envelope_extra_key_refused_meta_included, tests/test_event_spool.py::test_stale_token_cas_after_fold_rotates_it]
     INV-EV-006: [tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_synthetic_key_is_reserved, tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_event_wake_value_is_stripped_from_external_context, tests/test_event_wiring.py::TestAskUserRejectsEventDispatchedTurn::test_ask_user_rejects_event_wake_origin]
     INV-EV-007: [tests/test_event_episodes.py::test_930_prestart_note_logs_info_not_error, tests/test_event_episodes.py::test_930_other_note_failures_keep_error_with_traceback, tests/test_operator_notify.py::test_930_start_completed_turns_true_only_when_start_all_returns, tests/test_operator_notify.py::test_930_start_completed_stays_false_when_a_start_raises, tests/test_operator_notify.py::test_930_not_ready_before_start_completed_raises_the_subclass, tests/test_operator_notify.py::test_930_unknown_start_state_raises_the_bare_error]
+
+- doc: architecture/plugin-event-spool.md
+  summary: The plugin event spool — generation folding, delivery records and their redelivery ladder, damaged or removed records.
+  when_changing: the event spool's on-disk layout, fold or generation minting, a delivery record's fields or ladder, exhaustion and removal notes, or how a corrupt or unreadable state file or delivery record is handled
+  covers:
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.fold_pass
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.update_delivery_nudge
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.gc_orphan_dirs
+    - casa/rootfs/opt/casa/event_attempts.py::validate_record
+    - casa/rootfs/opt/casa/event_attempts.py::terminalize
+    - casa/rootfs/opt/casa/event_attempts.py::next_nudge_after_accept
+  tests:
+    - tests/test_event_spool.py
+    - tests/test_event_attempts.py
+  related: [architecture/plugin-events.md, architecture/callbacks.md]
+  defines_invariants: [INV-EV-002, INV-EV-004]
+  invariant_tests:
+    INV-EV-002: [tests/test_event_spool.py::test_folded_remainder_folds_into_the_next_generation, tests/test_event_spool.py::test_fold_batch_bound_65_folds_64_oldest_65th_survives, tests/test_event_spool.py::test_reconstruction_rebuilds_state_at_max_record_gen_no_emission, tests/test_event_spool.py::test_state_lost_with_no_records_silently_resets_to_gen1_no_issue]
+    INV-EV-004: [tests/test_event_attempts.py::test_terminalize_double_terminalize_is_a_no_op, tests/test_event_episodes.py::test_six_accepts_exhaust_via_one_atomic_update_then_note, tests/test_event_episodes.py::test_failed_exhaustion_write_sends_no_note, tests/test_event_episodes.py::test_exhaustion_notice_survives_a_boot_window_send_failure, tests/test_event_episodes.py::test_exhaustion_send_success_mark_failure_never_resends, tests/test_event_spool.py::test_mark_delivery_noted_refuses_pending_gen_mismatch_and_unknown, tests/test_event_episodes.py::test_concurrent_ack_beats_bookkeeping_on_the_advance_branch]
+
 - doc: architecture/plugin-handoff.md
   summary: The folder files move through between plugins — /data/handoff, publish and capture (the vendored casa_handoff contract), the sweep, share_inbound_file's handoff side.
   when_changing: the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side

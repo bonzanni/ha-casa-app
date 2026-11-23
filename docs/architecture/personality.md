@@ -12,7 +12,11 @@ The separation between what an agent *is* and how it *presents*: role artifacts,
 the binding that ties one to the other, and what prompt is actually served at turn time. It
 does not cover agent declaration and loading, which belong to the taxonomy document. How a
 persona arrives, is approved, and leaves — install, consent, where a ref may resolve,
-removal, the sweep — is [`persona-lifecycle.md`](persona-lifecycle.md)'s.
+removal, the sweep — is [`persona-lifecycle.md`](persona-lifecycle.md)'s and
+[`persona-removal.md`](persona-removal.md)'s.
+Why a role's checksum covers its resolved model, and the re-derived binding of a specialist
+whose checksum moved for that reason alone, are
+[`binding-rederivation.md`](binding-rederivation.md).
 
 ## Mental model
 
@@ -52,35 +56,6 @@ checked against. It does not reject an unrecognized key at compile time, because
 is closed and every role artifact is validated against it before it becomes a role — a
 rejection there could only fire where the loader already refused, while being able to block
 an install that is entirely valid.
-
-**A role's checksum covers the model it actually resolved to, so everyone must resolve it the
-same way.** A role artifact may declare its model as an operator option rather than a fixed
-value, and the checksum hashes the resolved result alongside the declaration — deliberately,
-so flipping the option produces a new identity and a new session epoch. The consequence is a
-trap: any code path that materializes a role for a binding that will be PERSISTED, or
-checked against one that was, has to resolve that option exactly as the loader will.
-Materializing with no options resolves the
-declared *default*, which silently produces a binding the loader can never re-derive, and the
-specialist is then dropped as a binding-activation failure on a host whose option differs
-from the default. Install, upgrade, rollback, persona override and the reconcile pass all
-share one resolution helper for this reason.
-
-**A binding whose role checksum moved for model reasons alone is re-derived, not dropped.**
-The other face of that design: an operator flipping the model option, or an image release
-moving a model alias, moves every installed specialist's role checksum while nothing else
-about the install changed. The specialist loader treats exactly that case as a re-compile
-rather than a broken specialist. It proves the installed component's bytes still hash to
-the tuple's root, proves the role it is loading is that component's role under the current
-option resolution, and then re-derives the binding by carrying every stored field forward —
-the persona identity triple included — and recomputing only the role checksum and the
-digest derived from it. The compile that follows compares the carried persona identity
-against the pack it loaded, so a persona that moved is still refused, never re-bound. On a
-committing load of an enabled specialist the re-derived binding is written back in place,
-same generation: the retained prior and any staged candidate are untouched. A validation-only
-load, and a disabled specialist, re-derive in memory and write nothing. Residents already
-reconcile against the role currently loading; this puts installed specialists on the same
-footing without touching consent, because the component root the approval bound is exactly
-what the re-derivation proves unchanged.
 
 **Projection selection is scoped, not nested.** The shipped doctrines put each surface's
 instructions under the shared core heading, and a Markdown section's body would otherwise run
@@ -184,24 +159,6 @@ a declared capability is deposited with Casa and reaches the model as a
 reference, and a plugin that has not adopted that contract has its tools
 refused before they run ([`plugin-result-contract.md`](plugin-result-contract.md)).
 The prose rule still binds what the model does with everything else.
-
-**INV-PERS-016**: An installed specialist whose active binding's role checksum differs from the role the loader materialized — with the component root, persona identity triple, configuration and dependency closure unchanged — is activated on a binding re-derived for that role; on a committing load of an enabled specialist the re-derived binding replaces the active tuple in place, leaving the retained prior and any staged candidate untouched, while a validation-only load and a disabled specialist write nothing; and a binding whose persona identity or agent id differs from what the loader resolved is refused, never re-derived.
-
-Three checks gate the re-derivation, in order: the install root digest recomputed from the
-component store equals the tuple root's suffix; the component's role artifact, materialized
-under the current option resolution, is the role being loaded — so a stale roles overlay
-refuses rather than binding a freshly upgraded tuple to an older role; and the stored agent
-id is the role's. The candidate carries every stored binding field and recomputes only the
-role checksum and its derived digest, and it must compile before anything is written. The
-write is a same-generation primitive that re-observes the active tuple under the
-materialize lock, refuses on any concurrent change, and admits no delta but those two
-fields — so it cannot become a way around prior rotation for a real generation change.
-
-What it does not cover: the retained prior, which is preserved as it was and re-derived
-the same way by the rollback that restores it (INV-SPEC-012). Nor the operational files:
-the marker they carry is rewritten by the next reconcile pass, not by the load. Nor
-engagement resume: nothing here compares a suspended engagement's recorded epoch against
-the definition it resumes under.
 
 **INV-PERS-009**: Every section body a persona's Markdown declares reaches the text projection exactly once.
 
@@ -336,7 +293,6 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 
 **Tests**
 - `tests/test_personality_binding.py`
-- `tests/test_specialist_binding_rederive.py`
 - `tests/test_resident_refusal_diagnosis.py`
 - `tests/test_resident_refusal_record_boundaries.py`
 - `tests/test_refusal_observation.py`
@@ -350,4 +306,5 @@ composed prompt — otherwise it appears exactly for the agents that have no bun
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/persona-lifecycle.md`](../architecture/persona-lifecycle.md)
 - [`architecture/prompt-file-guards.md`](../architecture/prompt-file-guards.md)
+- [`architecture/binding-rederivation.md`](../architecture/binding-rederivation.md)
 <!-- END SOURCEMAP -->

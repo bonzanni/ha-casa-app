@@ -3,7 +3,7 @@
 - item: casa_browser/rootfs/opt/casa_browser/__init__.py
   doc: reference/casa-browser.md
 - item: casa_browser/rootfs/opt/casa_browser/api.py
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: casa_browser/rootfs/opt/casa_browser/downloads.py
   doc: reference/casa-browser-files.md
 - item: casa_browser/rootfs/opt/casa_browser/gate.py
@@ -37,11 +37,11 @@
 - item: casa_browser/rootfs/opt/casa_browser/proxy_main.py
   doc: reference/casa-browser-runtime.md
 - item: casa_browser/rootfs/opt/casa_browser/pairing.py
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: casa_browser/rootfs/opt/casa_browser/policy.py
   doc: reference/casa-browser.md
 - item: casa_browser/rootfs/opt/casa_browser/protocol.py
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: casa_browser/rootfs/opt/casa_browser/retention.py
   doc: reference/casa-browser.md
 - item: casa_browser/rootfs/opt/casa_browser/store.py
@@ -91,55 +91,55 @@
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/control/runs/{run}/questions/{question}/live
   doc: reference/casa-browser-approvals.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/control/runs/{run}/screenshots/{screenshot}
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/control/runs/{run}/screenshots
   doc: reference/casa-browser-contract.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/control/runs/{run}/sources
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/files/{file}
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/hello
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/notices
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/records
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/runs
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/runs/{run}
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/runs/{run}/events
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/sites
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/control/files/{file}/delivery
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/control/runs/{run}/live-complete
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/control/sites
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/control/sites/{site}/forget
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/pair/claim
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/action
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/archive
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/cancel
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/requests/cancel
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/download
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/fetch
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/finish
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/live
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/login-code
   doc: reference/casa-browser-actions.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/look
@@ -151,15 +151,15 @@
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/sign-in
   doc: reference/casa-browser-signin.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/observe
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/search
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 - item: script:casa_browser:browser-config.sh
   doc: reference/casa-browser.md
 - item: casa_browser/Dockerfile
   doc: reference/casa-browser.md
 - item: 'route:casa_browser/rootfs/opt/casa_browser/api.py:ROUTE:*'
-  doc: reference/casa-browser.md
+  doc: reference/casa-browser-protocol.md
 
 - item: casa_browser/rootfs/opt/casa_browser/broker/__init__.py
   doc: reference/casa-browser-credentials.md
@@ -197,11 +197,11 @@
 - item: casa_browser/rootfs/opt/casa_browser/i18n.py
   doc: reference/casa-browser-ingress.md
 - item: casa_browser/rootfs/opt/casa_browser/liveview.py
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: s6:casa_browser:svc-browser-nginx
   doc: reference/casa-browser-ingress.md
 - item: s6:casa_browser:svc-browser-vnc
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/
   doc: reference/casa-browser-ingress.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/home/stamp
@@ -211,23 +211,23 @@
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/runs/{run}/screenshots/{shot}
   doc: reference/casa-browser-ingress.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:POST:/runs/{run}/open
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/live/{grant}
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:POST:/live/{grant}
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/view/{run}
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/view/{run}/state
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/view/{run}/ctl
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/view/{run}/websockify
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:POST:/view/{run}/done
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/view/{run}/review
-  doc: reference/casa-browser-ingress.md
+  doc: reference/casa-browser-live-view.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/sites
   doc: reference/casa-browser-ingress.md
 - item: route:casa_browser/rootfs/opt/casa_browser/ui.py:GET:/sites/new

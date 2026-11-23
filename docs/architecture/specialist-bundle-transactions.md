@@ -16,6 +16,8 @@ warning before it, and the close after an uninstall — is
 [`specialist-open-conversations.md`](specialist-open-conversations.md). It does not cover install identity, consent and materialization
 ([`specialist-lifecycle.md`](specialist-lifecycle.md)), nor persona binding mechanics
 (`architecture/personality.md`).
+A handler's cancellation and the fence an outstanding journal puts on a slug's next
+generation are [`specialist-bundle-journal-debt.md`](specialist-bundle-journal-debt.md).
 
 ## Mental model
 
@@ -162,7 +164,7 @@ the reconcile pass — therefore has to resolve an operator-option model the way
 loader will, or it persists an identity the loader can only recover by re-deriving the
 binding at the next load — which it does when the resolved model is the only thing that
 moved, rewriting `active.yaml` in place without touching the retained prior or a staged
-candidate (INV-PERS-016), and refuses otherwise. See `architecture/personality.md`. The
+candidate (INV-PERS-016), and refuses otherwise. See `architecture/binding-rederivation.md`. The
 rollback re-derives the retained prior the same way, behind the same gates (INV-SPEC-012).
 
 **INV-SPEC-011**: A specialist's retained owned-plugins sidecar is the owned set of the generation its retained prior tuple holds: the commit that rotates the active tuple into the prior rotates the active sidecar into the prior sidecar in the same step, whatever the sidecar's bytes; a commit that rotates no tuple rotates no sidecar; a bundle rollback republishes the owned set of the generation it restores; every specialist-generation transaction — install, upgrade, rollback, uninstall, and a specialist persona override — runs whole under one lifecycle lock, so at every release of it the active tuple, the active sidecar and the registry's owned rows are one generation; a prior rotation whose promotion failed stays pending as a pair of temporaries, and a rollback completes that pair before it reads the retained generation, so the generation a rollback restores is the immediately preceding one; and a rollback that cannot swap the registry refuses a generation whose owned set differs.
@@ -182,7 +184,7 @@ What it does not cover: a prior generation that predates the sidecar, which read
 empty set, as before. The other carve-out it used to name — a transaction cancelled
 between its commit and its journal completion, whose in-progress journal boot
 reconciliation restored over any generation committed after it — is no longer open:
-INV-SPEC-013 below closes it for all four bundle handlers.
+INV-SPEC-013 ([`specialist-bundle-journal-debt.md`](specialist-bundle-journal-debt.md)) closes it for all four bundle handlers.
 
 **INV-SPEC-012**: A rollback whose retained prior's role checksum differs from the prior component's role materialized under the current option resolution — with the component store's bytes still hashing to the prior's root and the persona identity and agent id unchanged — restores the prior with its binding re-derived for that role, committing the re-derived tuple; a prior whose store bytes drifted, or whose persona identity or agent id moved, is refused by name with the active tuple untouched.
 
@@ -201,69 +203,6 @@ What it does not cover: a prior that predates the secret-digest guard, refused a
 `legacy_prior` as before; and the operational-file marker on a materialization that failed
 after the commit, which the next reconcile pass rewrites.
 
-**INV-SPEC-013**: A specialist bundle handler whose library call has been dispatched runs the library commit, the post-commit sequencer and the journal's completion or compensation as one unit that cancellation does not interrupt — the unit runs on to a terminal journal disposition while holding the plugin-tools mutation lock, whether or not the handler was cancelled, so boot never replays a cancelled handler's journal over a generation committed after it; the handler reports cancelled exactly once, waits for that disposition only for a bounded time and then stops waiting without cancelling the transaction or releasing its lock; a cancel that arrives before the mutation lock was acquired stops the transaction outright with nothing begun; and a journal left behind by a process that died is still replayed at boot.
-
-The journal's in-progress state means *undo me at boot*. It is written before the visible
-swap and the library returns with it still standing, because completion is deferred past a
-sequencer that may have to compensate a generation that is already committed. That left
-the whole post-commit window owned by an ordinary coroutine, and `CancelledError` is not
-an `Exception`: a cancelled handler completed nothing and compensated nothing, whether the
-cancel landed during the sequencer or while the library call was still in its worker
-thread — a thread cannot be cancelled, so it committed anyway.
-
-Enforced by running that whole in-lock body in a child task which takes the mutation lock
-itself and is awaited through a shield. The task that took the lock is the task that
-releases it, so a handler that stops waiting cannot let a second mutation in behind it;
-the shield begins before the library call, because the executor already has the work by
-the time the awaiting coroutine can be cancelled; a cancel arriving before the lock was
-acquired cancels the child outright, since nothing has been begun and shielding there
-would perform a mutation the caller aborted; and the absorption is bounded from the first
-cancellation absorbed, because an unbounded one would make cancellation permanently
-ineffective for a wedged reload or notify. Past the bound only the WAIT is abandoned: the
-transaction is not cancelled, keeps the lock, and still completes or compensates.
-
-What it does not cover: a transaction stopped by process death rather than cancellation,
-which is the recovery boot reconciliation exists for and is unchanged. The other case it
-does not cover — a journal left in progress on purpose because its compensating disk
-rollback failed — is covered by INV-SPEC-014 below: the debt still stands for boot, but
-nothing may commit a further generation of that slug meanwhile.
-
-**INV-SPEC-014**: Before its first durable write, each of the five specialist lifecycle writers — install, upgrade, rollback, uninstall and the specialist persona override, in their journaled and unjournaled arms alike — inspects the bundle-journal directory it would journal into, and refuses rather than commit a new generation of the slug while a journal stands there that the next boot's reconciliation would replay over that generation, or that would make it quarantine owned registry rows — the slug's own, or, for a journal whose filename carries no trustworthy slug, every owned row there is. What boot resolves without restoring or removing anything does not stand in the way: a journal a finished transaction left behind, a quarantined file, a write temporary, and any entry boot's scan skips because it is not a regular file. Uncertainty does stand: a journal that cannot be read, a listed entry that cannot be examined at all, and a journal directory that cannot be enumerated — an absent one is a real answer and does not stand. The refusal resolves nothing; boot still replays or quarantines exactly what it would have.
-
-The journal's in-progress state means *undo me at boot*, and two doors leave one standing
-on purpose: a compensating disk rollback that itself failed, and a sync-phase failure
-whose own rollback raised. Both are correct — completing a journal whose rollback did not
-succeed would strand a half-rolled-back mutation with no recovery. What was missing is the
-other half. Nothing consulted that directory before starting the next transaction, so a
-later generation of the same slug committed and completed normally beside the older
-record, and the next boot either replayed the older capture over it or, when that rollback
-failed too, quarantined the slug and dropped the newer generation's owned rows. Either way
-the operator was told the change had succeeded.
-
-Enforced by one classifier-backed read at each of the five writers, above the branch
-between their journaled and unjournaled arms — the unjournaled arms commit generations
-too, so a check placed at the journal write would leave exactly those outside it — and
-before each function's own first durable write, which for a rollback is the completion of
-a pending tuple rotation and for an uninstall is the retirement of the slug's consent
-acknowledgements, both of which happen before either journals. What counts as debt is not
-a second opinion about journals: the classification is the same single authority boot and
-the persona reference scan already share, and the only thing decided here is which of its
-verdicts describe a boot that would damage what came after. The check resolves nothing and
-writes nothing, and it returns the directory it inspected, which the writer then journals
-into — so the directory read and the directory written are the same one by construction.
-
-One state is deliberately outside it: a write temporary left by a process that died
-mid-write is skipped, because boot's pre-scan sweep deletes it. If that deletion ever
-fails, boot falls through to classification and the unparseable name quarantines every
-owned row, including an admitted generation's. Refusing every specialist mutation, for
-every slug, whenever a process died mid-write is the worse trade.
-
-What clears the debt is a restart, and the refusal says so, naming the journal file. It is
-not an unconditional unlock: boot retains a journal whenever the quarantine it needed could
-not be persisted — over an unreadable registry, say — and the fence then keeps refusing
-until a boot resolves it. The operator's own repair paths are refused with everything else,
-and that is the point: an uninstall permitted here would be undone by the very next boot.
-
 ## Failure behavior
 
 Moved out of this document when it crossed the corpus size ceiling (#974). What a bundle
@@ -271,7 +210,8 @@ transaction does when it does not succeed — the pre-journal refusals, the sync
 sequencer compensations, the boot replay/quarantine pass and the age sweeps that follow
 it, and the race and failed-rotation refusals — is in
 [`specialist-bundle-recovery.md`](specialist-bundle-recovery.md). The invariants those
-behaviours satisfy are declared above, in this document.
+behaviours satisfy are declared above, in this document, and in
+[`specialist-bundle-journal-debt.md`](specialist-bundle-journal-debt.md).
 
 ## Extension points
 
@@ -299,9 +239,6 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - `tests/test_specialist_rollback_model_flip.py`
 - `tests/test_specialist_lifecycle_lock.py`
 - `tests/test_specialist_rollback_persona_override.py`
-- `tests/test_specialist_bundle_cancellation.py`
-- `tests/test_specialist_recovery_debt.py`
-- `tests/test_specialist_recovery_debt_scanner.py`
 
 **Related**
 - [`architecture/specialist-bundle-recovery.md`](../architecture/specialist-bundle-recovery.md)
@@ -311,4 +248,5 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - [`architecture/plugin-removal.md`](../architecture/plugin-removal.md)
 - [`architecture/persona-lifecycle.md`](../architecture/persona-lifecycle.md)
 - [`architecture/specialist-open-conversations.md`](../architecture/specialist-open-conversations.md)
+- [`architecture/specialist-bundle-journal-debt.md`](../architecture/specialist-bundle-journal-debt.md)
 <!-- END SOURCEMAP -->

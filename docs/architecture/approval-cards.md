@@ -93,7 +93,7 @@ facts as data. That is an instruction to a model, not a check: what code guarant
 those facts reach it. The fallback shows what Casa's own text for the request shows, and no
 more — an install's consent text names the Casa tools the role grants, as the inspect tool's
 inspection and the one the request tool rebuilds both carry them
-([`specialist-lifecycle.md`](specialist-lifecycle.md)).
+([`specialist-install-consent.md`](specialist-install-consent.md)).
 
 **A settled card says what was asked, in the card's own words.** When a protected tool call's
 card is answered, withdrawn, expires or its approval cannot be delivered, the keyboard is

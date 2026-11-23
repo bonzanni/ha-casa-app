@@ -36,7 +36,8 @@ The invariants this document's behaviour satisfies are declared in
 [`specialist-bundle-transactions.md`](specialist-bundle-transactions.md), which owns the
 transactions themselves: INV-SPEC-003 (an upgrade failure retains the complete prior active
 tuple), INV-SPEC-011 (one generation at every lock release), INV-SPEC-012 (rollback after a
-model change), INV-SPEC-013 (a dispatched handler runs to a terminal journal disposition),
+model change), and — in
+[`specialist-bundle-journal-debt.md`](specialist-bundle-journal-debt.md) — INV-SPEC-013 (a dispatched handler runs to a terminal journal disposition),
 and INV-SPEC-014 (a writer refuses while standing recovery debt would be replayed over it).
 The two declared here are about the recorded before-state itself, which every restore below
 replays.

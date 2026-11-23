@@ -11,7 +11,7 @@ last_reviewed: 2026-10-22
 What a trusted caller — Casa's browsing plugin — can rely on when it talks to the optional
 `casa_browser/` app over `/v1`: every member name, bound, error code and event kind as the
 code holds them, gathered in one place. The routes, the guard and the error table are
-[`casa-browser.md`](casa-browser.md) ("Protocol v1"); runs and their states
+[`casa-browser-protocol.md`](casa-browser-protocol.md) ("Protocol v1"); runs and their states
 [`casa-browser-runs.md`](casa-browser-runs.md); the operator's questions
 [`casa-browser-approvals.md`](casa-browser-approvals.md); files and deliveries
 [`casa-browser-files.md`](casa-browser-files.md); the ingress pages
@@ -94,7 +94,7 @@ outside its bound, is `unsupported` before anything happens. A refusal is
 | a judgement's picture (`GET /v1/control/runs/{run}/judgements/{judgement}/picture`) | the masked PNG of the run's open judgement, or `not_found` once its verdict started applying, when it has none, and for a re-judgement; never on a model route |
 | a screenshot (X7, `GET /v1/control/runs/{run}/screenshots/{screenshot}`) | the masked PNG, that run's ids only; never on a model route; `POST /v1/control/runs/{run}/screenshots` (no members, a running run) takes one of the page as it stands → `{screenshot_id}` |
 | forget | `{site_id, status: forgotten}` |
-| a request cancel (`POST /v1/requests/cancel`) | `requests`: one per id asked, in order — `request_id`, `run_id` (null when no run of it exists yet), `stopped` (whether the id is recorded as stopped after the call: the same on a repeat), `state` (the run's, or `cancelled` with no run) — [`casa-browser.md`](casa-browser.md) |
+| a request cancel (`POST /v1/requests/cancel`) | `requests`: one per id asked, in order — `request_id`, `run_id` (null when no run of it exists yet), `stopped` (whether the id is recorded as stopped after the call: the same on a repeat), `state` (the run's, or `cancelled` with no run) — [`casa-browser-protocol.md`](casa-browser-protocol.md) |
 
 **Admission digest (X4).** `admitted_spec_digest` is `sha256:` + the hex SHA-256 of the RFC
 8785 canonical JSON of the run body's members other than `admission`; the shared vector file

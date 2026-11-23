@@ -12,7 +12,8 @@ How a specialist that declares its own chat talks to the operator from its own T
 bot: the capability rule that keeps every agent's surface in its own chat, the agent's
 conversation there, the tasks it runs for others, and how a message in an agent's chat
 finds its destination. The bot's lifecycle (offer, creation, binding, self-setup, opening,
-a move to a new bot, token changes, dormancy, release) is [`own-voice-lifecycle.md`](own-voice-lifecycle.md). The
+a move to a new bot, token changes, dormancy, release) is [`own-voice-lifecycle.md`](own-voice-lifecycle.md) and, for a move to a new bot,
+[`own-voice-switch.md`](own-voice-switch.md). The
 per-bot transport these bots run on is [`telegram-bots.md`](telegram-bots.md); a plugin's delivered posts are
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md); the run card and its admission
 are [`plugin-operator-calls.md`](plugin-operator-calls.md); the stored-call settler and the
