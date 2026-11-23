@@ -5,8 +5,10 @@ Regression pins beside the accepted red case (``test_pending_approval_output``),
 through the same real paths: a deny that
 leaves no keyboard pending keeps the words; a consume of the same grant, read
 at its OWN call's result even when its hook ran before the consumer reached
-the denied call's result, releases them (critique r3, R3-1); an attempt that
-never made the call is not cut by an abandoned attempt's deny; the words stay
+the denied call's result, releases them (critique r3, R3-1); a retried
+attempt that never made the call is delivered whole, and a turn whose denied
+call was followed by a fault is not run again and cuts nothing in the next
+turn; the words stay
 in the turn's record; and the hook's answers are the same constants on every
 build, with the record a no-op that cannot raise (F4).
 """
@@ -16,12 +18,14 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
 
 from authz_grants import (
     AuthzDeps, ChallengeCoordinator, GrantStore, make_resident_authz_hook,
     _DENY_DELIVERY_FAILED, _DENY_INACTIVE, _DENY_NOT_OPERATOR, _DENY_PENDING,
     _DENY_POSTED,
 )
+from error_kinds import _USER_MESSAGES, ErrorKind
 from output_boundary import TurnScope
 
 from test_authz_hook import (
@@ -105,21 +109,77 @@ async def test_a_same_grant_consume_releases_the_words_at_its_own_result(turn, m
     assert channel.final_texts() == ["BEFORE\n\nS\n\nAdded it."]
 
 
-# --- an abandoned attempt's deny does not cut the attempt that answered -----------
+# --- a retry is delivered whole; a denied call is never followed by another attempt
+
+async def _nothing():
+    return None
+
 
 async def test_a_retried_attempt_that_never_made_the_call_is_delivered(turn, monkeypatch):
+    """An attempt that fails before any tool call is retried, and a retry that
+    never makes the protected call is delivered whole, with no card.
+
+    No attempt can inherit an abandoned attempt's deny: an attempt that asked
+    for the approval has seen a tool call, and no other attempt follows it
+    (INV-TURN-017). That turn is the next test's."""
     agent, channel, hook, _grants = turn
     CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
     gate = _Gate()
-    attempt_1 = [_call("deny-1"), gate.step(lambda: _ask(hook, "deny-1")),
-                 _result("deny-1"), CLIConnectionError("reset")]
-    attempt_2 = [_text("Done.")]
+    attempt_1 = [_text("LOSER"), CLIConnectionError("reset")]
+    attempt_2 = [gate.step(_nothing), _text("Done.")]
     factory = _Factory([attempt_1, attempt_2])
     await _drive(agent, monkeypatch, factory, _msg("dm"), gate)
 
     assert len(factory.clients) == 2
-    assert channel.tokens == ["Done."]
+    assert channel.tokens == ["LOSER", "Done."]
     assert channel.final_texts() == ["Done."]
+    assert channel.posts == []
+
+
+async def test_a_denied_call_then_a_fault_ends_the_turn_and_the_next_reply_is_whole(
+        turn, monkeypatch):
+    """#1654: the protected call was denied (its card is up), then the stream
+    died. The turn is not run again: a rerun would ask for the same call from
+    a model that cannot see it already asked. The person gets the fault's
+    line once and the card once, and the session the denied call is in is
+    kept for the conversation. Their next message's reply is delivered
+    whole: the deny belonged to the turn that failed, and cuts nothing after
+    it. (That the next turn resumes the kept session is pinned in
+    ``test_turn_fault_after_tool``; this harness's agent has no resume
+    identity.)"""
+    agent, channel, hook, _grants = turn
+    CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
+    gate = _Gate()
+
+    def said(block) -> AssistantMessage:        # as the CLI names its session
+        return AssistantMessage(content=[block], model="sonnet",
+                                session_id="sid-1")
+
+    failed_turn = [said(TextBlock(text="BEFORE")),
+                   said(ToolUseBlock(id="deny-1", name=TOOL, input=dict(ARGS))),
+                   gate.step(lambda: _ask(hook, "deny-1")),
+                   _result("deny-1"), CLIConnectionError("reset")]
+    next_turn = [_text("Done.")]
+    factory = _Factory([failed_turn, next_turn])
+
+    await _drive(agent, monkeypatch, factory, _msg("dm"), gate)
+
+    assert len(factory.clients) == 1
+    assert [_deny_reason(a) for a in gate.answers] == [_DENY_POSTED]
+    assert channel.tokens == ["BEFORE"]
+    assert channel.final_texts() == []
+    assert [str(c.args[0]) for c in channel.send.await_args_list] == [
+        _USER_MESSAGES[ErrorKind.SDK_ERROR]]
+    assert len(channel.posts) == 1
+    assert [e["sdk_session_id"]
+            for e in agent._session_registry.all_entries().values()] == ["sid-1"]
+
+    await _drive(agent, monkeypatch, factory, _msg("dm"), gate)
+
+    assert len(factory.clients) == 2
+    assert channel.tokens == ["BEFORE", "Done."]
+    assert channel.final_texts() == ["Done."]
+    assert len(channel.posts) == 1
 
 
 # --- the words stay in the turn's own record ---------------------------------------

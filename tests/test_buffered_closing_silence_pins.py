@@ -78,15 +78,19 @@ async def test_row4_an_unrecorded_delivery_keeps_the_note(
 
 @pytest.mark.parametrize("make_msg", TURNS)
 async def test_a_consumed_retry_keeps_the_text(tmp_path, monkeypatch, make_msg):
-    """A confirmed send on attempt 1, a retryable fault, then a winning
-    attempt ending in narration and the sentinel: the send record spans two
-    attempts, so rule 1 is not available — the winner's text, untagged."""
+    """A retryable fault before any tool, then a winning attempt with a
+    confirmed send, narration and the sentinel: a retry was consumed and two
+    attempts ran, so rule 1 is not available — the winner's text, untagged.
+
+    The send is the winning attempt's: an attempt that has run a tool is
+    never followed by another (INV-TURN-017), so a send can no longer sit in
+    an abandoned attempt as this test once staged it."""
     retryable = type("CLIConnectionError", (RuntimeError,), {})
     results: list = []
     stub, factory = await _deliveries(tmp_path, monkeypatch, make_msg, None,
                                       scripts=[
-        [_send(results), retryable("upstream reset")],
-        [_mk_assistant("Done."), _mk_assistant("<silent/>")]])
+        [retryable("upstream reset")],
+        [_send(results), _mk_assistant("Done."), _mk_assistant("<silent/>")]])
     assert len(factory.clients) == 2
     assert len(stub.tool_sends()) == 1
     assert stub.final_texts() == ["Done."]
