@@ -523,7 +523,7 @@ IDENTITY_SITE_HITS = {
     "plugin_health.py": {"_normalize": 2},
     "plugin_registry.py": {"_resolve_entry": 1, "apply_owned_swap": 5},
     "plugin_requirements.py": {
-        "dependents": 1, "entry_named": 1, "unmet_requirement_issues": 2,
+        "dependents": 1, "entry_named": 1, "unmet_requirement_issues": 3,
     },
     "plugin_setup_episodes.py": {
         "<module>": 3, "_compose": 2, "_normalize": 1, "_rearm_refused_locked": 1,
