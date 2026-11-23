@@ -265,7 +265,13 @@ Sourced plugin dependencies are additionally refused categorically when they
 declare system requirements or triggers of their own, or when an environment name they
 reference — in either expansion form — collides with another installed plugin's —
 otherwise-valid bundles fail with dedicated error kinds the dependency model alone would
-not predict. A sourced dependency *may*,
+not predict. The check against other installed plugins runs only at a fresh install's
+inspect, where it can still prevent a clash. It does not cover a specialist that is
+already installed: an upgrade inspect, the commit, the resume of a pending-configuration
+install and a rollback all skip it. Adding an ordinary plugin does not check names either,
+so a plugin added later may share a name with an installed specialist's plugin, and that
+specialist can still be upgraded, rolled back or finish its configuration (#1641). Siblings
+in one bundle are still checked against each other on every inspect. A sourced dependency *may*,
 however, declare `casa.callbacks` — a callback grants no turn or memory access — and it
 may likewise declare `casa.emits`/`casa.subscribes`: an emit is inert without an
 operator-consented subscriber, and a subscribe, though it *does* wake the plugin's agent,

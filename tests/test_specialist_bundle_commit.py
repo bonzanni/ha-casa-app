@@ -271,7 +271,7 @@ class _Ctx:
 
 
 def _prep(tmp_path: Path, monkeypatch, *, with_plugin: bool = True,
-          slug: str = "mtg", ack: bool = True):
+          slug: str = "mtg", ack: bool = True, env_names: "list[str] | None" = None):
     """Build a component (optionally with a bundled `mtg` plugin), inspect it
     (stubbed fetch), load its receipt, and record consent. Returns a context
     with everything commit_specialist_install needs."""
@@ -280,7 +280,7 @@ def _prep(tmp_path: Path, monkeypatch, *, with_plugin: bool = True,
 
     comp, mpath = write_minimal_component(tmp_path, slug=slug)
     if with_plugin:
-        digest = write_bundled_plugin(comp, "mtg")
+        digest = write_bundled_plugin(comp, "mtg", env_names=env_names)
         manifest = _json.loads(mpath.read_text(encoding="utf-8"))
         manifest["dependencies"].append({
             "kind": "plugin/implementation", "identifier": "mtg", "digest": digest,
@@ -495,7 +495,7 @@ def test_bundle_crash_reconcile_restores(tmp_path: Path, monkeypatch) -> None:
 # ===========================================================================
 
 def _prep_v2(tmp_path: Path, monkeypatch, base_ctx, *, ref: str = "v2",
-             marker: str = "v2") -> dict:
+             marker: str = "v2", env_names: "list[str] | None" = None) -> dict:
     """Build a v2 mtg component (changed plugin content + bumped version, SAME
     slug + tmp paths), inspect it in upgrade mode, record consent, and return
     the kwargs for upgrade_specialist(receipt=...)."""
@@ -503,7 +503,7 @@ def _prep_v2(tmp_path: Path, monkeypatch, base_ctx, *, ref: str = "v2",
     from specialist_registry import InstalledSpecialistIndex
 
     comp2, mpath2 = write_minimal_component(tmp_path / marker, slug="mtg")
-    write_bundled_plugin(comp2, "mtg")
+    write_bundled_plugin(comp2, "mtg", env_names=env_names)
     (comp2 / "plugins" / "mtg" / "README.md").write_text(marker, encoding="utf-8")
     digest = "sha256:" + plugin_store.content_checksum(comp2 / "plugins" / "mtg")
     manifest = _json.loads(mpath2.read_text(encoding="utf-8"))
@@ -1852,3 +1852,89 @@ def test_captured_declarations_are_applied_per_root_not_merged(
     assert _yaml.safe_load(out["active.yaml"])["config_snapshot"] == {}
     assert _yaml.safe_load(out["active.yaml"])["config_digest"] == "pre-guard:removed"
     assert _yaml.safe_load(out["desired.yaml"])["config_snapshot"] == {"m": "n"}
+
+
+# ---------------------------------------------------------------------------
+# #1641: the cross-plugin env-name collision check runs only at a FRESH install
+# inspect. `plugin_add` does not refuse a name an installed specialist's plugin
+# already references, so once an ordinary plugin sharing that name is added,
+# the specialist's own closure must still resolve for everything that
+# re-verifies an already-installed specialist: rollback, upgrade inspect, and
+# the commit that resumes a pending-configuration install.
+# ---------------------------------------------------------------------------
+
+_SHARED_ENV = "SHARED_TOKEN"
+
+
+def _another_plugin_reads_the_shared_name(tmp_path: Path, monkeypatch) -> None:
+    """An ordinary plugin, installed after the specialist, whose `.mcp.json`
+    references the same env name. `plugin_add` accepts it; the registry the
+    collision check reads now lists it beside whatever was already there."""
+    from types import SimpleNamespace
+
+    other = tmp_path / "other-plugin"
+    other.mkdir()
+    (other / ".mcp.json").write_text(_json.dumps({"mcpServers": {"o": {
+        "command": "node", "env": {"T": "${%s}" % _SHARED_ENV}}}}), encoding="utf-8")
+    real_resolve_all = plugin_registry.resolve_all
+
+    def _with_other():
+        res = real_resolve_all()
+        return SimpleNamespace(plugins=[*res.plugins, SimpleNamespace(
+            name="other", path=str(other), manifest={})])
+
+    monkeypatch.setattr(plugin_registry, "resolve_all", _with_other)
+
+
+def test_1641_rollback_resolves_after_another_plugin_shares_an_env_name(
+        tmp_path: Path, monkeypatch) -> None:
+    ctx = _prep(tmp_path, monkeypatch, env_names=[_SHARED_ENV])
+    _setup_install(ctx)
+    reg = ctx.kw["registry_path"]
+    v1_aid = _owned(reg, "mtg")[0]["artifact_id"]
+    _setup_upgrade(_prep_v2(tmp_path, monkeypatch, ctx, env_names=[_SHARED_ENV]))
+
+    _another_plugin_reads_the_shared_name(tmp_path, monkeypatch)
+    instance, _txn = specialist_install.rollback_specialist(
+        slug="mtg", bundle=True, acks=ctx.acks,
+        specialists_dir=tmp_path / "specialists", agents_specialists_dir=tmp_path / "agents",
+        registry_path=reg, plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
+
+    assert instance.state == "active"
+    assert _owned(reg, "mtg")[0]["artifact_id"] == v1_aid
+
+
+def test_1641_upgrade_passes_after_another_plugin_shares_an_env_name(
+        tmp_path: Path, monkeypatch) -> None:
+    ctx = _prep(tmp_path, monkeypatch, env_names=[_SHARED_ENV])
+    _setup_install(ctx)
+
+    _another_plugin_reads_the_shared_name(tmp_path, monkeypatch)
+    kw2 = _prep_v2(tmp_path, monkeypatch, ctx, env_names=[_SHARED_ENV])
+    assert kw2["inspection"].version == "0.2.0"
+    instance, _txn = specialist_install.upgrade_specialist(**kw2)
+
+    assert instance.state == "active"
+
+
+def test_1641_pending_configuration_resume_commits_after_another_plugin_shares_an_env_name(
+        tmp_path: Path, monkeypatch) -> None:
+    import specialist_lifecycle
+
+    ctx = _prep(tmp_path, monkeypatch, env_names=[_SHARED_ENV])
+    real_satisfy = specialist_lifecycle.satisfy_config
+    monkeypatch.setattr(specialist_lifecycle, "satisfy_config",
+                        lambda **kw: (False, ["API_KEY"]))
+    pending, _txn = _setup_install(ctx)
+    assert pending.state == "pending-configuration"
+
+    _another_plugin_reads_the_shared_name(tmp_path, monkeypatch)
+    monkeypatch.setattr(specialist_lifecycle, "satisfy_config", real_satisfy)
+    checked = specialist_install.validate_resume_inputs(
+        staged_dir=ctx.inspection.staged_dir, receipt_id=ctx.inspection.receipt_id,
+        root_digest=ctx.inspection.root_digest, expect_slug="mtg",
+        receipts_dir=tmp_path / "receipts")
+    assert checked.ok, checked.detail
+    instance, _txn = specialist_install.commit_specialist_install(**ctx.kw)
+
+    assert instance.state == "active"
