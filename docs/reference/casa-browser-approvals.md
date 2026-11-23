@@ -63,7 +63,10 @@ A re-judgement's `changed`, no verdict, or `same` with `text_incomplete` or
 (`gate.py::target_record`, the same button moved to another row is a difference), every control's
 state and every exact destination must equal the reading the re-judgement judged
 (`gate.py::same_reading`, no exemption); a difference reruns the re-judgement, at most twice for the
-tap, then the question lapses. An
+tap, then the question lapses. A re-judgement that can no longer be applied lapses its question
+the same way, nothing pressed and the run `running` again with a `question` event: a verdict
+posted after its 180 s is `judgement_stale`, and the question sweep (`expire_questions`) ends a
+`confirming` question whose re-judgement is past that lifetime or gone. An
 executed tap records `Change("action_confirmed")` and an `action` event carrying the question
 screenshot. A run's end expires its questions; a restart marks an open question `expired` and a
 `confirming` one `outcome_unknown`.

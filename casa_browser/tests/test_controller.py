@@ -3787,6 +3787,39 @@ async def test_question_expires_with_its_tokens(rig):
     assert presses(rig) == [] and rig.state(run.run_id) == "running"
 
 
+async def test_late_recheck_verdict_lapses_the_confirmed_question(rig):
+    """#1637: a re-check verdict posted after its lifetime is stale, and the Yes it checked
+    lapses: nothing is pressed, the run runs again and the agent hears of it."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    qid = await asked(rig, run, els)
+    rj = await tap(rig, run.run_id, qid)
+    assert rj["outcome"] == "rejudgement_required"
+    rig.clock.advance(181)
+    with pytest.raises(ProtocolError, match="judgement_stale"):
+        await verdict(rig, run.run_id, rj, SAME)
+    assert (await rig.ctl.get_question(run.run_id, qid))["state"] == "lapsed"
+    assert rig.state(run.run_id) == "running"
+    assert rig.events(run.run_id, "question")[-1].outcome == "lapsed"
+    assert presses(rig) == []
+
+
+async def test_confirmed_question_without_a_recheck_verdict_lapses(rig):
+    """#1637: no verdict ever comes for the re-check (Casa restarted): once the re-check is
+    past its lifetime the periodic expiry lapses the question and the run runs again."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    qid = await asked(rig, run, els)
+    assert (await tap(rig, run.run_id, qid))["outcome"] == "rejudgement_required"
+    rig.clock.advance(170)
+    await rig.ctl.expire_questions()
+    assert (await rig.ctl.get_question(run.run_id, qid))["state"] == "confirming"
+    rig.clock.advance(11)
+    await rig.ctl.expire_questions()
+    assert (await rig.ctl.get_question(run.run_id, qid))["state"] == "lapsed"
+    assert rig.state(run.run_id) == "running"
+    assert rig.events(run.run_id, "question")[-1].outcome == "lapsed"
+    assert presses(rig) == []
+
+
 async def test_live_view_of_an_expired_question_returns_to_running(rig):
     run, els = await _gate_run(rig, [dict(role="button", name="Pay now")])
     qid = await asked(rig, run, els)

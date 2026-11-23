@@ -2153,6 +2153,10 @@ class RunController:
                 raise ProtocolError("judgement_stale")
             if (self.clock() - pending.created_at).total_seconds() > gate.JUDGEMENT_TTL_S:
                 active.pending = None
+                if pending.kind == "rejudge":
+                    # The Yes it was checking can no longer be confirmed: its question lapses,
+                    # so the run does not wait on a check that will never be applied (#1637).
+                    self._recheck_lapsed(active, pending.question_id)
                 raise ProtocolError("judgement_stale")
             if "no_verdict" not in body and body["packet_sha256"] != pending.digest:
                 raise ProtocolError("digest_mismatch")
@@ -3181,11 +3185,23 @@ class RunController:
     async def expire_questions(self) -> None:
         """S3-4: an open question past its hour expires with its tap tokens: ``open →
         expired``, the run back to ``running`` (a live view from it returns there at Done),
-        and a ``question`` event, so Fido's sweep continues the run."""
+        and a ``question`` event, so Fido's sweep continues the run. A confirming question whose
+        re-check is gone or past its lifetime (no verdict will ever be applied) lapses."""
         active = self.active
         if active is None or active.ending is not None:
             return
         q = self.store.open_question(active.run_id)
+        if q is not None and q.state == "confirming":
+            if self._recheck_alive(active, q.question_id):
+                return
+            async with self._lock:
+                if (self.active is active and active.ending is None
+                        and not self._recheck_alive(active, q.question_id)):
+                    if active.pending is not None and active.pending.kind == "rejudge":
+                        active.pending = None
+                    self._recheck_lapsed(active, q.question_id)
+                    self._sweep_quarantine(active)
+            return
         if q is None or q.state != "open" or \
                 (self.clock() - q.created_at).total_seconds() <= conf.QUESTION_TTL_S:
             return
@@ -3242,6 +3258,24 @@ class RunController:
             self._event(active.run_id, "live_done", "expired",
                         "Nobody opened the live view within an hour, so the run was cancelled.")
             await self._end(active, "cancelled", "run_cancelled", "cancelled")
+
+    def _recheck_alive(self, active: _Active, question_id: str) -> bool:
+        """Whether the confirming question still has its re-check pending within its
+        lifetime, so a verdict may yet be applied to it."""
+        pending = active.pending
+        return (pending is not None and pending.kind == "rejudge"
+                and pending.question_id == question_id
+                and (self.clock() - pending.created_at).total_seconds() <= gate.JUDGEMENT_TTL_S)
+
+    def _recheck_lapsed(self, active: _Active, question_id: str) -> None:
+        """A confirmed question whose re-check can no longer be answered lapses: nothing
+        executes, the run runs again and the agent gets the usual ``question`` event."""
+        q = self.store.get_question(question_id)
+        if q is None or q.state != "confirming":
+            return
+        self._settle_question(active, q, "lapsed", None, None,
+                              text="The check of the confirmed action got no answer in time; "
+                                   "nothing was done.")
 
     def _settle_question(self, active: _Active, q, state: str, response: dict | None,
                          operator_ref: str | None, *, outcome: str | None = None,
