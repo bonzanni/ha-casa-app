@@ -14111,6 +14111,8 @@ async def _bundle_reload_and_verify(
       1. grant/challenge invalidation FIRST — per removed/replaced artifact id
          (the SAME `_invalidate_lifecycle` call plugin_update/plugin_remove use)
          AND the specialist role + any removed targets, BEFORE the first reload;
+         then the event consents held on a removed artifact, before the
+         reload reconciles;
       2. ONE plugin-snapshot reload;
       3. ONE specialist-agent reload (only when the slug is installed — skipped
          for an uninstall or a still-pending specialist target);
@@ -14124,6 +14126,15 @@ async def _bundle_reload_and_verify(
     for aid in removed_artifact_ids:
         _invalidate_lifecycle(artifact_id=aid)
     _invalidate_lifecycle(roles=[f"specialist:{slug}", *targets_removed])
+    # #1671: an owned plugin whose artifact left loses the event consents it
+    # held as a subscriber, as with plugin_remove/plugin_update (#1657). The
+    # ack identity carries the artifact id, so a reinstall or a rollback to
+    # that revision would otherwise be routed again with no consent card.
+    # Before the reload below, so its event reconcile no longer sees the ack.
+    import event_acks
+    for name in sorted(event_acks.ACKS.subscribers_on(removed_artifact_ids)):
+        await _settle_through_cancellation(
+            _revoke_event_consents(name, "specialist bundle"))
 
     # 2. ONE snapshot reload.
     await asyncio.to_thread(plugin_registry.reload_snapshot)

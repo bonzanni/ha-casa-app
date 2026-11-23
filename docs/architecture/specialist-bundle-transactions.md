@@ -75,7 +75,9 @@ library rollback — refuses a generation whose owned set differs rather than re
 tuple of one generation beside a registry of another. The retained binding is restored
 under the model resolution in force at rollback time: when only the resolved model moved,
 the binding is re-derived through the same three gates the loader uses before it is
-compiled and committed.
+compiled and committed. Every bundle's post-swap sequencer revokes, before its reload, the
+event consents held on each removed artifact, so a reinstall or rollback to it asks again
+(#1671).
 
 **An agent's own chat follows a committed change.** After a committed install, upgrade or
 rollback, once the transaction has released its lock, the own-chat lifecycle's hook runs

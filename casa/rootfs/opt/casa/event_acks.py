@@ -183,6 +183,13 @@ class EventAckStore:
             rec = self._acks.get(identity)
             return dict(rec) if rec is not None else None
 
+    def subscribers_on(self, artifact_ids) -> set[str]:
+        """The subscribers holding an ack on any of *artifact_ids*."""
+        ids = set(artifact_ids)
+        with self._lock:
+            return {rec["subscriber"] for rec in self._acks.values()
+                    if rec.get("artifact_id") in ids}
+
     # -- mutations (each persists atomically before returning) ---------------
 
     def record(self, subscriber: str, artifact_id: str, emitter: str,
