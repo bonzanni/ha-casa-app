@@ -2,8 +2,8 @@
 # docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
 - doc: reference/casa-browser.md
-  summary: The Casa Browser app — its options and root bootstrap, durable state and retention, the /v1 protocol with pairing and the admission digest, and the address check and request policy.
-  when_changing: anything under casa_browser/ — an app option, the bootstrap, the store or retention, a /v1 route, its errors or pairing, the address check or the request policy
+  summary: The Casa Browser app — its options and root bootstrap, durable state and retention, and the address check and request policy.
+  when_changing: anything under casa_browser/ — an app option, the bootstrap, the store or retention, the address check or the request policy
   covers:
     - casa_browser/config.yaml::options
     - casa_browser/config.yaml::schema
@@ -12,9 +12,6 @@
     - casa_browser/rootfs/opt/casa_browser/options.py
     - casa_browser/rootfs/opt/casa_browser/store.py
     - casa_browser/rootfs/opt/casa_browser/retention.py
-    - casa_browser/rootfs/opt/casa_browser/protocol.py
-    - casa_browser/rootfs/opt/casa_browser/pairing.py
-    - casa_browser/rootfs/opt/casa_browser/api.py
     - casa_browser/rootfs/opt/casa_browser/identity.py
     - casa_browser/rootfs/opt/casa_browser/policy.py
     - casa_browser/rootfs/opt/casa_browser/infra.py
@@ -24,23 +21,35 @@
     - casa_browser/tests/test_options.py
     - casa_browser/tests/test_store.py
     - casa_browser/tests/test_retention.py
-    - casa_browser/tests/test_protocol.py
-    - casa_browser/tests/test_api_auth.py
-    - casa_browser/tests/test_pairing.py
-    - casa_browser/tests/test_digest.py
     - casa_browser/tests/test_policy.py
     - casa_browser/tests/test_task4_resolutions.py
-  related: [contributing/release-pipeline.md, reference/operator-options.md]
-  defines_invariants: [INV-BRW-001, INV-BRW-002, INV-BRW-003, INV-BRW-004, INV-BRW-005, INV-BRW-006, INV-BRW-040, INV-BRW-041]
+  related: [contributing/release-pipeline.md, reference/operator-options.md, reference/casa-browser-protocol.md]
+  defines_invariants: [INV-BRW-001, INV-BRW-002, INV-BRW-003, INV-BRW-040, INV-BRW-041]
   invariant_tests:
     INV-BRW-001: [casa_browser/tests/test_options.py::test_supervisor_token_confined, casa_browser/tests/integration/test_secret_boundaries.py::test_supervisor_token_reaches_no_service]
     INV-BRW-002: [casa_browser/tests/test_store.py::test_single_active_run_and_fifo, casa_browser/tests/test_store.py::test_lease_is_exclusive_across_threads]
     INV-BRW-003: [casa_browser/tests/test_retention.py::test_symlink_cleanup_cannot_escape_data]
+    INV-BRW-040: [casa_browser/tests/test_policy.py::test_account_document_off_site_is_site_lock, casa_browser/tests/test_policy.py::test_unclassified_request_is_held_to_the_document_rule, casa_browser/tests/test_policy.py::test_manual_lease_keeps_the_document_rule, casa_browser/tests/test_policy.py::test_provider_binding_document_during_lease, casa_browser/tests/integration/test_adversarial_sites.py::test_noisy_account_page_admits_nothing_off_the_site_and_shows_no_secret, casa_browser/tests/integration/test_proxy_enforcement.py::test_real_form_navigating_post_stays_on_the_site, casa_browser/tests/integration/test_action_gate.py::test_s4_a_signed_in_sites_buttonless_search_loads_its_result_page]
+    INV-BRW-041: [casa_browser/tests/test_policy.py::test_floor_and_infrastructure_still_refuse_in_both, casa_browser/tests/test_policy.py::test_floor, casa_browser/tests/test_policy.py::test_chrome_background_refused_quietly, casa_browser/tests/test_policy.py::test_background_quiet_unchanged, casa_browser/tests/test_policy.py::test_download_hop_is_floor_infrastructure_and_background_only, casa_browser/tests/test_task4_resolutions.py::test_every_fixed_exception_requires_its_exact_shape, casa_browser/tests/integration/test_adversarial_sites.py::test_chromes_own_background_sends_are_never_a_question]
+
+- doc: reference/casa-browser-protocol.md
+  summary: The Casa Browser app's /v1 protocol — the guard, the refusal codes, the routes, the request cancel, the admission digest and pairing.
+  when_changing: a casa_browser /v1 route, the guard or a refusal code, the request cancel, the admission digest, or pairing
+  covers:
+    - casa_browser/rootfs/opt/casa_browser/protocol.py
+    - casa_browser/rootfs/opt/casa_browser/pairing.py
+    - casa_browser/rootfs/opt/casa_browser/api.py
+  tests:
+    - casa_browser/tests/test_protocol.py
+    - casa_browser/tests/test_api_auth.py
+    - casa_browser/tests/test_pairing.py
+    - casa_browser/tests/test_digest.py
+  related: [reference/casa-browser.md, reference/casa-browser-contract.md, reference/casa-browser-runs.md]
+  defines_invariants: [INV-BRW-004, INV-BRW-005, INV-BRW-006]
+  invariant_tests:
     INV-BRW-004: [casa_browser/tests/test_api_auth.py::test_all_routes_require_auth, casa_browser/tests/test_api_auth.py::test_bad_version_before_run, casa_browser/tests/test_pairing.py::test_claim_needs_protocol_header_and_keeps_window]
     INV-BRW-005: [casa_browser/tests/test_digest.py::test_digest_over_received_members, casa_browser/tests/test_digest.py::test_vectors]
     INV-BRW-006: [casa_browser/tests/test_pairing.py::test_pair_window_atomic, casa_browser/tests/test_pairing.py::test_rotate_invalidates_old_secret, casa_browser/tests/test_pairing.py::test_claim_exact_deadline_direct, casa_browser/tests/test_pairing.py::test_pair_restart_closed]
-    INV-BRW-040: [casa_browser/tests/test_policy.py::test_account_document_off_site_is_site_lock, casa_browser/tests/test_policy.py::test_unclassified_request_is_held_to_the_document_rule, casa_browser/tests/test_policy.py::test_manual_lease_keeps_the_document_rule, casa_browser/tests/test_policy.py::test_provider_binding_document_during_lease, casa_browser/tests/integration/test_adversarial_sites.py::test_noisy_account_page_admits_nothing_off_the_site_and_shows_no_secret, casa_browser/tests/integration/test_proxy_enforcement.py::test_real_form_navigating_post_stays_on_the_site, casa_browser/tests/integration/test_action_gate.py::test_s4_a_signed_in_sites_buttonless_search_loads_its_result_page]
-    INV-BRW-041: [casa_browser/tests/test_policy.py::test_floor_and_infrastructure_still_refuse_in_both, casa_browser/tests/test_policy.py::test_floor, casa_browser/tests/test_policy.py::test_chrome_background_refused_quietly, casa_browser/tests/test_policy.py::test_background_quiet_unchanged, casa_browser/tests/test_policy.py::test_download_hop_is_floor_infrastructure_and_background_only, casa_browser/tests/test_task4_resolutions.py::test_every_fixed_exception_requires_its_exact_shape, casa_browser/tests/integration/test_adversarial_sites.py::test_chromes_own_background_sends_are_never_a_question]
 
 - doc: reference/casa-browser-runtime.md
   summary: The Casa Browser app's runtime enforcement — the kernel egress floor per service user, public-destination checks, and the enforcing TLS proxy with its pinned resolution, withdrawal of authority, login-lease closure, broker listener and control plane.
@@ -182,27 +191,36 @@
     INV-BRW-048: [casa_browser/tests/test_credential_save.py::test_save_requires_signed_in_verdict, casa_browser/tests/test_credential_save.py::test_failed_attempt_never_saved, casa_browser/tests/test_credential_save.py::test_password_typed_after_attempt_blocks_save, casa_browser/tests/test_credential_save.py::test_done_off_origin_blocks_save, casa_browser/tests/test_broker.py::test_overwrite_only_after_rejection_or_unverified, casa_browser/tests/test_broker.py::test_a_rejected_code_or_username_step_never_allows_an_overwrite, casa_browser/tests/test_broker.py::test_equal_values_write_nothing, casa_browser/tests/test_broker.py::test_save_attempt_refuses_what_the_rules_exclude, casa_browser/tests/test_broker.py::test_an_identifier_only_sign_in_saves_just_the_identifier, casa_browser/tests/test_broker.py::test_an_identifier_only_sign_in_never_removes_a_linked_password, casa_browser/tests/test_login.py::test_an_identifier_only_attempt_holds_its_own_identifier, casa_browser/tests/integration/test_login.py::test_s5n_an_email_only_sign_in_saves_just_the_email_never_the_code]
 
 - doc: reference/casa-browser-ingress.md
-  summary: The Casa Browser ingress UI and W+ live view — nginx admitting only HA's ingress peer, nonce-checked forms, pairing, sites and setup pages, grants and claims, the one viewer, the screen lock, window fit and verified restore, tap-to-type input, reconnect, and the Done screen.
-  when_changing: the ingress pages, a form or its check, pairing, sites or setup in the UI, the live view's grants, sockets, window, input, probe, reconnect or Done screen, nginx or x11vnc
+  summary: The Casa Browser ingress UI — nginx admitting only HA's ingress peer, nonce-checked forms, pairing, sites and setup pages, the pages' look and language.
+  when_changing: the ingress pages, a form or its check, pairing, sites or setup in the UI, nginx
   covers:
     - casa_browser/rootfs/opt/casa_browser/ui.py
     - casa_browser/rootfs/opt/casa_browser/i18n.py
-    - casa_browser/rootfs/opt/casa_browser/liveview.py
     - casa_browser/rootfs/etc/nginx/casa_browser.conf
     - casa_browser/rootfs/etc/s6-overlay/s6-rc.d/svc-browser-nginx/run
-    - casa_browser/rootfs/etc/s6-overlay/s6-rc.d/svc-browser-vnc/run
   tests:
     - casa_browser/tests/test_ui.py
-    - casa_browser/tests/test_liveview.py
     - casa_browser/tests/test_ingress.py
     - casa_browser/tests/test_i18n.py
     - casa_browser/tests/integration/test_ingress.py
-    - casa_browser/test/viewer_engines.py
-  related: [reference/casa-browser-runs.md, reference/casa-browser-runtime.md, reference/casa-browser-approvals.md, reference/casa-browser-credentials.md, reference/casa-browser.md, reference/casa-browser-contract.md]
-  defines_invariants: [INV-BRW-030, INV-BRW-031, INV-BRW-032, INV-BRW-055, INV-BRW-034]
+  related: [reference/casa-browser-runs.md, reference/casa-browser-runtime.md, reference/casa-browser-approvals.md, reference/casa-browser-credentials.md, reference/casa-browser.md, reference/casa-browser-contract.md, reference/casa-browser-live-view.md]
+  defines_invariants: [INV-BRW-030, INV-BRW-034]
   invariant_tests:
     INV-BRW-030: [casa_browser/tests/test_ingress.py::test_direct_ingress_request_denied, casa_browser/tests/test_ui.py::test_ingress_header_required, casa_browser/tests/test_ui.py::test_csrf_required_for_every_mutation, casa_browser/tests/integration/test_ingress.py::test_non_ingress_peer_refused]
+    INV-BRW-034: [casa_browser/tests/test_i18n.py::test_restored_binding_needs_a_live_login, casa_browser/tests/test_controller.py::test_forget_closes_and_never_touches_the_vault, casa_browser/tests/test_controller.py::test_done_drains_events_through_the_view, casa_browser/tests/test_proxy_adapter.py::test_binding_key_persists_and_restore_invalidates_tags, casa_browser/tests/integration/test_secret_boundaries.py::test_backup_excludes_profiles_downloads_and_the_proxy_key_and_restore_needs_logins]
+
+- doc: reference/casa-browser-live-view.md
+  summary: The Casa Browser live view — grants and claims, the one viewer, the screen lock, the picture, input and typing, the field probe, reconnect and Done.
+  when_changing: the live view's grants or claims, its sockets, the window fit, input or typing, the field probe, reconnect, Done, or the viewer's static files
+  covers:
+    - casa_browser/rootfs/opt/casa_browser/liveview.py
+    - casa_browser/rootfs/etc/s6-overlay/s6-rc.d/svc-browser-vnc/run
+  tests:
+    - casa_browser/tests/test_liveview.py
+    - casa_browser/test/viewer_engines.py
+  related: [reference/casa-browser-ingress.md, reference/casa-browser-runs.md, reference/casa-browser-live-states.md, reference/casa-browser-browser.md]
+  defines_invariants: [INV-BRW-031, INV-BRW-032, INV-BRW-055]
+  invariant_tests:
     INV-BRW-031: [casa_browser/tests/test_liveview.py::test_capture_armed_before_input, casa_browser/tests/test_liveview.py::test_no_input_after_close_view, casa_browser/tests/test_liveview.py::test_end_stops_input_at_once, casa_browser/tests/test_liveview.py::test_end_drains_input_before_capture_release, casa_browser/tests/test_liveview.py::test_stale_viewer_refused, casa_browser/tests/test_liveview.py::test_viewer_change_waits_for_the_old_viewers_injection, casa_browser/tests/test_ui.py::test_replaced_pages_done_form_is_refused, casa_browser/tests/test_liveview.py::test_ctl_socket_gated_like_vnc, casa_browser/tests/test_liveview.py::test_claim_serialised]
     INV-BRW-032: [casa_browser/tests/test_liveview.py::test_window_restored_before_resume, casa_browser/tests/test_liveview.py::test_live_complete_route_restores_window, casa_browser/tests/test_liveview.py::test_restore_failure_interrupts, casa_browser/tests/integration/test_ingress.py::test_viewer_end_to_end]
     INV-BRW-055: [casa_browser/tests/test_liveview.py::test_viewer_never_gets_a_field_value, casa_browser/tests/test_liveview.py::test_probe_output_not_logged, casa_browser/tests/integration/test_ingress.py::test_viewer_end_to_end]
-    INV-BRW-034: [casa_browser/tests/test_i18n.py::test_restored_binding_needs_a_live_login, casa_browser/tests/test_controller.py::test_forget_closes_and_never_touches_the_vault, casa_browser/tests/test_controller.py::test_done_drains_events_through_the_view, casa_browser/tests/test_proxy_adapter.py::test_binding_key_persists_and_restore_invalidates_tags, casa_browser/tests/integration/test_secret_boundaries.py::test_backup_excludes_profiles_downloads_and_the_proxy_key_and_restore_needs_logins]

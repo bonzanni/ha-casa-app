@@ -26,10 +26,6 @@ def _reset_published(monkeypatch):
     """The published routed map is a module global — never leak between
     tests."""
     monkeypatch.setattr(er, "_routed", event_spool.ROUTING_UNAVAILABLE)
-    # A revoke or a Deny records the operator's decision in this
-    # process-wide registry; one test's decision must not reach the next.
-    import consent_denials
-    monkeypatch.setattr(consent_denials, "_denied", set())
     yield
 
 
@@ -858,6 +854,237 @@ def test_a_subscription_never_answered_still_holds_back_the_whole_set(tmp_path):
         ("gmail", "mail_in")]
 
 
+# ---------------------------------------------------------------------------
+# #1666 — a subscription the operator turned off stays off after a restart
+# ---------------------------------------------------------------------------
+
+
+def _restart(w):
+    """Casa restarts: the consent store is read again from its file, what
+    was only in process memory (the in-process denial registry) is gone, and
+    nothing is routed until a reconcile runs."""
+    import consent_denials
+    w.acks = EventAckStore(path=w.acks.path)
+    consent_denials._denied.clear()
+    er._routed = event_spool.ROUTING_UNAVAILABLE
+
+
+def _dm_runtime(monkeypatch, w):
+    """A runtime whose consent cards reach a recording Telegram chat."""
+    import agent as agent_mod
+    telegram = _FakeTelegram()
+    runtime = SimpleNamespace(role_configs=w.role_configs,
+                              channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+    _fixed_consent_target(monkeypatch, telegram)
+
+    async def _no_health_regen():
+        return None
+    monkeypatch.setattr(er, "_regen_health_safe", _no_health_regen)
+    return runtime, telegram
+
+
+async def _reconcile(w, runtime, *, prompt=False):
+    """One reconcile; boot's is the ``prompt=False`` one."""
+    await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
+                                     entries=w.entries, prompt=prompt)
+
+
+async def _turn_off(w, emitter, event):
+    """The operator's ``event_ack_revoke`` for one subscription."""
+    return await er.revoke_and_unroute(
+        "finance", emitter, event, acks=w.acks, operator_denied=True,
+        resolver=w.resolver, entries=w.entries)
+
+
+def _waiting_for_approval(w):
+    desired = er.compute_desired(role_configs=w.role_configs, acks=w.acks,
+                                 resolver=w.resolver, entries=w.entries)
+    return [i for i in desired.issues
+            if i["reason_code"] == "event_pending_ack"]
+
+
+async def _still_off_after_a_restart(w, runtime, telegram):
+    """Restart, then check gmail's subscription — the one turned off — is
+    still off on its own: the calendar one routes, nothing waits for
+    approval, and neither boot nor a re-prompt posts a card for it. A test
+    of what later FORGETS a denial runs this first: a denial that was never
+    kept would otherwise look the same as one correctly forgotten."""
+    _restart(w)
+    await _reconcile(w, runtime)
+    routed = er.get_routed()
+    assert _subs(routed, ("calendar", "changed")) == {"finance"}
+    assert _subs(routed, ("gmail", "mail_in")) == set()
+    assert _waiting_for_approval(w) == []
+    report = []
+    await er.reprompt_pending(runtime, report=report, acks=w.acks,
+                              resolver=w.resolver, entries=w.entries)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert report == [{"kind": "event", "plugin": "finance",
+                       "name": "gmail:mail_in", "status": "denied"}]
+    assert telegram.posts == []
+
+
+async def _until_routed(key):
+    # a card's own reconcile computes in a worker thread
+    for _ in range(300):
+        if _subs(er.get_routed(), key):
+            return
+        await asyncio.sleep(0.01)
+
+
+async def test_a_revoked_subscription_stays_off_after_a_restart_and_the_other_keeps_delivering(
+        tmp_path, fake_event_episodes, monkeypatch):
+    _card_coordinator(monkeypatch)
+    w = _two_subscription_world(tmp_path)
+    runtime, telegram = _dm_runtime(monkeypatch, w)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    await _turn_off(w, "gmail", "mail_in")
+
+    await _still_off_after_a_restart(w, runtime, telegram)
+
+
+async def test_a_denied_card_stays_denied_after_a_restart(
+        tmp_path, fake_event_episodes, monkeypatch):
+    broker, coord = _card_coordinator(monkeypatch)
+    w = _two_subscription_world(tmp_path)
+    runtime, telegram = _dm_runtime(monkeypatch, w)
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    await _reconcile(w, runtime, prompt=True)
+    await _answer_only_card(broker, coord, 1)          # Deny
+    await _until_routed(("calendar", "changed"))
+
+    _restart(w)
+    await _reconcile(w, runtime)
+
+    routed = er.get_routed()
+    assert _subs(routed, ("calendar", "changed")) == {"finance"}
+    assert _subs(routed, ("gmail", "mail_in")) == set()
+    assert _waiting_for_approval(w) == []
+    assert len(telegram.posts) == 1                    # only the first card
+
+
+async def test_approving_after_a_restart_turns_it_back_on_and_it_stays_on(
+        tmp_path, fake_event_episodes, monkeypatch):
+    broker, coord = _card_coordinator(monkeypatch)
+    w = _two_subscription_world(tmp_path)
+    runtime, telegram = _dm_runtime(monkeypatch, w)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    await _turn_off(w, "gmail", "mail_in")
+    _restart(w)
+
+    # a plugin mutation or reload re-asks the one turned off
+    await _reconcile(w, runtime, prompt=True)
+    assert _subs(er.get_routed(), ("gmail", "mail_in")) == set()
+    assert _subs(er.get_routed(), ("calendar", "changed")) == {"finance"}
+    await _answer_only_card(broker, coord, 0)          # Approve
+    await _until_routed(("gmail", "mail_in"))
+    assert _subs(er.get_routed(), ("gmail", "mail_in")) == {"finance"}
+    assert len(telegram.posts) == 1
+
+    _restart(w)
+    await _reconcile(w, runtime)
+
+    routed = er.get_routed()
+    assert _subs(routed, ("gmail", "mail_in")) == {"finance"}
+    assert _subs(routed, ("calendar", "changed")) == {"finance"}
+
+
+async def test_revoking_a_subscription_never_approved_is_remembered_and_frees_the_approved_one(
+        tmp_path, fake_event_episodes, monkeypatch):
+    _card_coordinator(monkeypatch)
+    w = _two_subscription_world(tmp_path)
+    runtime, telegram = _dm_runtime(monkeypatch, w)
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    await _reconcile(w, runtime)
+    # gmail's was never answered: it holds the approved one back
+    assert _subs(er.get_routed(), ("calendar", "changed")) == set()
+
+    assert await _turn_off(w, "gmail", "mail_in") == []    # no ack to drop
+    await _reconcile(w, runtime)
+    assert _subs(er.get_routed(), ("calendar", "changed")) == {"finance"}
+
+    await _still_off_after_a_restart(w, runtime, telegram)
+
+
+async def test_an_operator_revoke_still_revokes_when_the_plugins_cannot_be_read(
+        tmp_path, fake_event_episodes):
+    w = _two_subscription_world(tmp_path)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+
+    def _unreadable(target):
+        raise RuntimeError("registry unreadable")
+
+    removed = await er.revoke_and_unroute(
+        "finance", "gmail", "mail_in", acks=w.acks, operator_denied=True,
+        resolver=_unreadable, entries=w.entries)
+
+    assert len(removed) == 1
+    identity = _identity("finance", "art-1", "gmail", "mail_in")
+    on_disk = EventAckStore(path=w.acks.path)
+    assert on_disk.get(identity) is None
+    assert on_disk.is_denied(identity) is True
+
+
+async def test_removing_the_plugin_forgets_its_denials(
+        tmp_path, fake_event_episodes, monkeypatch):
+    """A reinstall of the same revision asks afresh: every subscription is
+    waiting for its first answer, the one turned off included."""
+    _card_coordinator(monkeypatch)
+    w = _two_subscription_world(tmp_path)
+    runtime, telegram = _dm_runtime(monkeypatch, w)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    await _turn_off(w, "gmail", "mail_in")
+    await _still_off_after_a_restart(w, runtime, telegram)
+
+    await er.revoke_and_unroute("finance", acks=w.acks)     # plugin_remove
+
+    _restart(w)
+
+    desired = er.compute_desired(role_configs=w.role_configs, acks=w.acks,
+                                 resolver=w.resolver, entries=w.entries)
+    assert desired.routed == {}
+    assert [i["reason_code"] for i in desired.issues] == [
+        "event_pending_ack", "event_pending_ack"]
+
+
+async def test_a_denial_for_the_old_version_does_not_carry_to_the_new_one(
+        tmp_path, fake_event_episodes, monkeypatch):
+    _card_coordinator(monkeypatch)
+    w = _two_subscription_world(tmp_path)
+    runtime, telegram = _dm_runtime(monkeypatch, w)
+    _ack(w.acks, "finance", "art-1", "gmail", "mail_in")
+    _ack(w.acks, "finance", "art-1", "calendar", "changed")
+    await _turn_off(w, "gmail", "mail_in")
+    await _still_off_after_a_restart(w, runtime, telegram)
+
+    # the plugin moves to a new revision; its old consents were not revoked
+    gmail, calendar, _old = w.plugins
+    finance_v2 = _rp("finance", artifact_id="art-2",
+                     subscribes=[("gmail", "mail_in"), ("calendar", "changed")])
+    w.plugins = [gmail, calendar, finance_v2]
+    w.resolver, w.entries = _resolver(w.plugins), _entries(*w.plugins)
+    _restart(w)
+    await _reconcile(w, runtime, prompt=True)
+    for _ in range(8):
+        await asyncio.sleep(0)
+
+    # neither answer carries over: the set is held back and both are asked
+    assert er.get_routed() == {}
+    assert len(_waiting_for_approval(w)) == 2
+    assert len(telegram.posts) == 2
+    # and the old revision's records are gone from the file
+    on_disk = EventAckStore(path=w.acks.path)
+    assert on_disk.is_denied(
+        _identity("finance", "art-1", "gmail", "mail_in")) is False
+    assert on_disk.get(
+        _identity("finance", "art-1", "calendar", "changed")) is None
+
+
 def test_revoke_with_sentinel_routed_is_a_noop(monkeypatch):
     # No published map yet — nothing to unroute, must not raise.
     er._unroute_locked("finance")
@@ -1273,3 +1500,120 @@ async def test_consent_approve_regenerates_health(monkeypatch, tmp_path,
 
     assert acks.get(_identity("finance", "art-1", "gmail", "mail_in")) is not None
     assert regen == [[]]        # health regenerated exactly once on approve
+
+
+async def test_approving_one_of_two_subscriptions_does_not_claim_delivery(
+        tmp_path, fake_event_episodes, monkeypatch):
+    """#1642: a subscriber's subscriptions are delivered all together, so
+    approving one while the other is unanswered delivers nothing. Its card
+    must not say it receives the event; approving the other delivers both,
+    and that card does."""
+    broker, coord = _card_coordinator(monkeypatch)
+    import agent as agent_mod
+    w = _two_subscription_world(tmp_path)
+
+    class _Recording(_FakeTelegram):
+        def __init__(self):
+            super().__init__()
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text,
+                                  literal=False):
+            self.edits.append(text)
+            return True
+
+    telegram = _Recording()
+    runtime = SimpleNamespace(role_configs=w.role_configs,
+                              channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+    _fixed_consent_target(monkeypatch, telegram)
+    passes: list = []
+
+    async def _count_pass():
+        passes.append(True)
+    monkeypatch.setattr(er, "_regen_health_safe", _count_pass)
+
+    await er.reconcile_plugin_events(runtime, acks=w.acks, resolver=w.resolver,
+                                     entries=w.entries, prompt=True)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert len(telegram.posts) == 2
+
+    async def _approve(emitter):
+        key = next(k for k in coord._entries if k.emitter == emitter)
+        ch = coord._entries[key]
+        claim = broker.claim(namespace="resident_ask", scope=ch.scope,
+                             request_id=ch.rid, option_index=0, actor_id=200)
+        assert broker.commit(claim) is True
+        ch.req.meta["on_commit_sync"](0)
+        before = len(passes)
+        for _ in range(300):
+            if len(passes) > before:
+                break
+            await asyncio.sleep(0.01)
+        for _ in range(8):
+            await asyncio.sleep(0)
+
+    await _approve("gmail")
+    assert _subs(er.get_routed(), ("gmail", "mail_in")) == set()
+    assert telegram.edits[-1] == (
+        "✅ Approved — 'finance' starts receiving 'mail_in' from 'gmail' once "
+        "its other subscriptions are approved too")
+
+    await _approve("calendar")
+    assert _subs(er.get_routed(), ("calendar", "changed")) == {"finance"}
+    assert telegram.edits[-1].startswith(
+        "✅ Enabled — 'finance' now receives 'changed'")
+
+
+async def test_approving_with_a_missing_emitter_blames_no_other_approval(
+        tmp_path, fake_event_episodes, monkeypatch):
+    """#1642: finance's other subscription is on a plugin that is not
+    installed, so nothing waits for an approval; the card names no reason."""
+    broker, coord = _card_coordinator(monkeypatch)
+    import agent as agent_mod
+    gmail = _rp("gmail", emits=["mail_in"])
+    finance = _rp("finance", subscribes=[("gmail", "mail_in"),
+                                         ("calendar", "changed")])
+    plugins = [gmail, finance]
+    resolver, entries = _resolver(plugins), _entries(*plugins)
+    acks = EventAckStore(path=tmp_path / "acks.json")
+
+    class _Recording(_FakeTelegram):
+        def __init__(self):
+            super().__init__()
+            self.edits = []
+
+        async def edit_dm_message(self, chat_id, message_id, text,
+                                  literal=False):
+            self.edits.append(text)
+            return True
+
+    telegram = _Recording()
+    runtime = SimpleNamespace(role_configs=_role_configs(assistant=["telegram"]),
+                              channel_manager=_FakeChannelManager(telegram))
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime)
+    _fixed_consent_target(monkeypatch, telegram)
+    passes: list = []
+
+    async def _count_pass():
+        passes.append(True)
+    monkeypatch.setattr(er, "_regen_health_safe", _count_pass)
+
+    await er.reconcile_plugin_events(runtime, acks=acks, resolver=resolver,
+                                     entries=entries, prompt=True)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert len(telegram.posts) == 1
+    await _answer_only_card(broker, coord, 0)
+    for _ in range(300):
+        if passes:
+            break
+        await asyncio.sleep(0.01)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert _subs(er.get_routed(), ("gmail", "mail_in")) == set()
+    assert telegram.edits == [
+        "✅ Approved — checking…",
+        "✅ Approved — 'finance' is not receiving 'mail_in' yet. Ask me to "
+        "check the plugin."]

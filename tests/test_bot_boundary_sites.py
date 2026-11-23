@@ -388,7 +388,7 @@ IDENTITY_SITE_HITS = {
     },
     "callback_owner.py": {"note_link": 1},
     "canonical_bytes.py": {"assert_json_safe": 6, "deep_freeze": 7},
-    "casa_core.py": {"main": 2},
+    "casa_core.py": {"main": 1},
     "configurator_continue.py": {"_continuation": 1},
     "channels/telegram.py": {
         "TelegramChannel.__init__": 3, "TelegramChannel._ack_react": 2,
@@ -523,7 +523,7 @@ IDENTITY_SITE_HITS = {
     "plugin_health.py": {"_normalize": 2},
     "plugin_registry.py": {"_resolve_entry": 1, "apply_owned_swap": 5},
     "plugin_requirements.py": {
-        "dependents": 1, "entry_named": 1, "unmet_requirement_issues": 2,
+        "dependents": 1, "entry_named": 1, "unmet_requirement_issues": 3,
     },
     "plugin_setup_episodes.py": {
         "<module>": 3, "_compose": 2, "_normalize": 1, "_rearm_refused_locked": 1,
@@ -624,7 +624,7 @@ IDENTITY_SITE_HITS = {
     },
     "trigger_consent.py": {
         "ConsentTarget": 1, "TriggerConsentKey": 1, "casa_consent_target": 1,
-        "prompt_trigger_consent": 1, "prompt_trigger_consent._finish_factory._finish": 1,
+        "prompt_trigger_consent": 1, "prompt_trigger_consent._finish_factory._finish": 2,
         "render_trigger_consent_message": 1, "trigger_card_request": 1,
     },
     "trigger_reconcile.py": {

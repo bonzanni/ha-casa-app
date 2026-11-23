@@ -10,7 +10,9 @@ owes the split. The split separates the open-conversations rule from the
 bundle transaction mechanics:
 
 - partition, resolved through the manifest: INV-SPEC-022's declaring document
-  differs from the one document declaring the five retained ids;
+  declares none of the five retained ids (since #1670 those sit in two
+  documents, the transactions document and its journal-debt split, so the
+  pin no longer requires them to share one);
 - payload location: each of INV-SPEC-022's four passages, identified by a lead
   phrase quoted from the base bytes, occurs exactly once across the corpus's
   Markdown, in INV-SPEC-022's declaring document.
@@ -64,7 +66,7 @@ def _split_problems(entries, texts):
     problems = []
     retained = {_owner(entries, inv) for inv in RETAINED}
     moved = _owner(entries, MOVED)
-    if (len(retained), len(retained | {moved})) != (1, 2):
+    if moved in retained:
         problems.append(("partition", sorted(retained), moved))
     corpus = {path: _normalized(text) for path, text in texts.items()}
     for lead in LEADS:

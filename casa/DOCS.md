@@ -1673,7 +1673,7 @@ after the sixth attempt; you get a DM either way — an operator note if it
 had nowhere to go, or a "still hasn't been handled" notice once retries are
 exhausted. `event_ack_revoke` switches a plugin's event access off
 immediately (one subscription, or all of a plugin's, depending on what you
-ask for); re-approving later re-consents.
+ask for); a subscription you switched off this way, or denied on its card, stays off after a restart while the plugin's other approved ones keep delivering; re-approving later re-consents.
 
 ### Disk usage
 

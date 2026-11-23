@@ -255,7 +255,8 @@ async def test_reject_defers_and_spends_no_budget(wired):
 
 async def test_six_accepts_exhaust_via_one_atomic_update_then_note(wired):
     rec = wired.seed()
-    for i in range(event_attempts.MAX_NUDGES):
+    # Six accepted wakes, then the last wake's final slot passes (#1643).
+    for i in range(event_attempts.MAX_NUDGES + 1):
         due = wired.rec()["next_nudge_ts"]
         wired.clock = due
         await ee._worker_pass()
@@ -271,6 +272,89 @@ async def test_six_accepts_exhaust_via_one_atomic_update_then_note(wired):
     await ee._worker_pass()
     assert len(wired.notes) == 1
     assert wired.rec() == final
+
+
+async def test_last_wake_can_still_ack_and_draws_no_exhaustion_notice(wired):
+    """#1643: the sixth accepted wake is a real chance to handle the event.
+    Right after it is dispatched the operator is not told it went
+    unanswered, and the woken turn's ack lands as a real ack."""
+    wired.seed()
+    for _ in range(event_attempts.MAX_NUDGES):
+        wired.clock = wired.rec()["next_nudge_ts"]
+        await ee._worker_pass()
+    assert len(wired.dispatches) == event_attempts.MAX_NUDGES
+    assert [n for n in wired.notes if "went unanswered" in n] == []
+
+    ok, sub = wired.spool.ack(EMITTER, EVENT, wired.rec()["ack_token"],
+                              now=wired.clock)
+    assert (ok, sub) == ("acked", SUBSCRIBER)
+
+    wired.advance(1_000_000.0)
+    await ee._worker_pass()
+    assert wired.rec()["outcome"] == "acked"
+    assert [n for n in wired.notes if "went unanswered" in n] == []
+    assert len(wired.dispatches) == event_attempts.MAX_NUDGES
+
+
+async def test_last_wake_unacked_is_noticed_once_when_its_slot_passes(wired):
+    """#1643: the exhaustion notice goes out exactly once, and only once the
+    last wake's final slot has passed without an ack."""
+    wired.seed()
+    for _ in range(event_attempts.MAX_NUDGES):
+        wired.clock = wired.rec()["next_nudge_ts"]
+        await ee._worker_pass()
+    final_slot = wired.rec()["next_nudge_ts"]
+    assert final_slot is not None and final_slot > wired.clock
+
+    wired.clock = final_slot - 1.0
+    await ee._worker_pass()
+    assert [n for n in wired.notes if "went unanswered" in n] == []
+    assert wired.rec()["status"] == "pending"
+
+    wired.clock = final_slot
+    await ee._worker_pass()
+    assert len([n for n in wired.notes if "went unanswered" in n]) == 1
+    rec = wired.rec()
+    assert rec["status"] == "done" and rec["outcome"] == "exhausted"
+    assert len(wired.dispatches) == event_attempts.MAX_NUDGES
+
+    wired.advance(1_000_000.0)
+    await ee._worker_pass()
+    assert len([n for n in wired.notes if "went unanswered" in n]) == 1
+
+
+async def test_event_queued_behind_the_last_wake_opens_when_its_slot_passes(
+        wired):
+    """#1643: an event emitted while the last wake is still open is
+    delivered once that wake's final slot passes — the worker's own timed
+    wake at the final slot is enough, no outside kick needed."""
+    wired.seed()
+    for _ in range(event_attempts.MAX_NUDGES):
+        wired.clock = wired.rec()["next_nudge_ts"]
+        await ee._worker_pass()
+    event_spool.emit(wired.spool.root / EMITTER, EVENT)
+    await ee._worker_pass()
+    final_slot = wired.rec()["next_nudge_ts"]
+    assert ee._next_due == final_slot          # the worker's timed wake
+    assert len(wired.dispatches) == event_attempts.MAX_NUDGES
+
+    # The timed wake fires at the final slot: run the REAL worker loop from
+    # that one wake, with nothing else kicking it.
+    wired.clock = final_slot
+    wired.fired.clear()
+    ee._kick.set()
+    task = asyncio.get_running_loop().create_task(ee._worker())
+    try:
+        await asyncio.wait_for(wired.fired.wait(), timeout=5.0)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert len(wired.dispatches) == event_attempts.MAX_NUDGES + 1
+    assert len([n for n in wired.notes if "went unanswered" in n]) == 1
+    rec = wired.rec()
+    assert rec["gen"] == 2 and rec["status"] == "pending"
+    assert wired.spool.list_emissions(EMITTER, EVENT) == []
 
 
 async def test_failed_exhaustion_write_sends_no_note(wired, monkeypatch):
@@ -289,7 +373,7 @@ async def test_failed_exhaustion_write_sends_no_note(wired, monkeypatch):
         return real(emitter, event, subscriber, gen, mutator)
 
     monkeypatch.setattr(wired.spool, "update_delivery_nudge", flaky)
-    for i in range(event_attempts.MAX_NUDGES):
+    for i in range(event_attempts.MAX_NUDGES + 1):
         due = wired.rec()["next_nudge_ts"]
         wired.clock = due
         await ee._worker_pass()
@@ -317,7 +401,8 @@ def _observed_notify(wired):
 
 
 async def _drive_to_exhaustion(wired):
-    for _ in range(event_attempts.MAX_NUDGES):
+    # Six accepted wakes, then the last wake's final slot passes (#1643).
+    for _ in range(event_attempts.MAX_NUDGES + 1):
         due = wired.rec()["next_nudge_ts"]
         wired.clock = due
         await ee._worker_pass()

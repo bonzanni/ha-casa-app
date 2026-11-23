@@ -2,7 +2,7 @@
 
 The splitter is delta-fed: it receives token *suffixes* and emits whole
 blocks (prosodic units) at sentence/paragraph boundaries, treating any
-bracket span ([…], (…), {…}, <…>) as opaque.
+bracket span ([…], (…), {…}) as opaque; ``<`` is plain text (#1646).
 
 Since #257 each emission also carries ``sep`` — the exact whitespace that
 separated it from the previous block — so a consumer that concatenates
@@ -82,9 +82,10 @@ class TestTagOpacity:
             "{emotion.warm} Hello.",
         ]
 
-    def test_period_inside_angle_does_not_flush(self):
+    def test_angle_bracket_is_plain_text(self):
+        """#1646: a bare "<" in speech is not an opener."""
         s = ProsodicSplitter()
-        assert texts(s.feed("<mood.flat> Sure.")) == ["<mood.flat> Sure."]
+        assert texts(s.feed("1 < 2. Yes.")) == ["1 < 2.", "Yes."]
 
     def test_tag_binds_forward(self):
         """[warm] Good morning. is one block, not two."""
@@ -165,6 +166,101 @@ class TestSafetyCap:
         # Should break at the em-dash region, not hard-cut
         assert out[0].rstrip().endswith("—") or out[0].rstrip().endswith("— ") \
             or out[0].rstrip().endswith("—")
+
+
+def _timed(seq: list[tuple[float, str]], monkeypatch) -> list[str]:
+    clock = [seq[0][0]]
+    monkeypatch.setattr(
+        "channels.voice.prosodic.time.monotonic", lambda: clock[0],
+    )
+    s = ProsodicSplitter()
+    out: list[Block] = []
+    for at, delta in seq:
+        clock[0] = at
+        out.extend(s.feed(delta))
+    tail = s.flush_tail()
+    return texts(out + ([tail] if tail else []))
+
+
+def _by_word(text: str, step: float) -> list[tuple[float, str]]:
+    words = text.split(" ")
+    deltas = [words[0]] + [" " + w for w in words[1:]]
+    return [(i * step, d) for i, d in enumerate(deltas)]
+
+
+class TestBareLessThan:
+    """#1646: a bare "<" in a spoken answer must not hold back every later
+    sentence until the cap and then split a word."""
+
+    REPLY = (
+        "So < 19 is what you set. The heating is on. It will rain tomorrow "
+        "afternoon. Take an umbrella. The bins go out tonight. Your parcel "
+        "arrives on Friday. The front door is locked. The garage light is "
+        "still on in the back. Anything else?"
+    )
+
+    def test_splits_like_the_same_text_without_it(self, monkeypatch):
+        plain = self.REPLY.replace("So < 19", "So 19")
+        for step in (0.0, 0.1):
+            got = _timed(_by_word(self.REPLY, step), monkeypatch)
+            want = _timed(_by_word(plain, step), monkeypatch)
+            assert [t.replace("So < 19", "So 19") for t in got] == want
+            assert len(got) == 9 and got[0] == "So < 19 is what you set."
+
+
+class TestSquareAndRoundBracketsUnchanged:
+    """#1646 changes only "<": these sequences keep their earlier blocks,
+    including the known remainder that an unclosed "(" still waits for the
+    cap."""
+
+    def test_late_closing_tag_after_clause(self, monkeypatch):
+        assert _timed([
+            (0, "Okay, "), (0.1, "[wa"), (0.2, "rm,"), (2, " reass"),
+            (2.1, "uring"), (2.2, "] Hello."),
+        ], monkeypatch) == ["Okay,", "[warm, reassuring] Hello."]
+
+    def test_tag_open_past_the_time_cap(self, monkeypatch):
+        assert _timed([
+            (0, "[warm"), (2, ".rising The status is ready."),
+            (2.1, "] Follow up."),
+        ], monkeypatch) == ["[warm.rising The status is ready.", "] Follow up."]
+
+    def test_tag_after_prose_closes_late(self, monkeypatch):
+        assert _timed([
+            (0, "Right, the lights"), (2, " are off [so"),
+            (4, "ft] and the door is shut."),
+        ], monkeypatch) == [
+            "Right,", "the lights are off [soft] and the door is shut.",
+        ]
+
+    def test_tag_mid_sentence_closes_late(self, monkeypatch):
+        assert _timed([
+            (0, "The lights are"), (0.5, " off [so"), (2, "ft.wa"),
+            (2.2, "rm] now. Done."),
+        ], monkeypatch) == ["The lights are off [soft.wa", "rm] now.", "Done."]
+
+    def test_tag_at_start_closes_late(self, monkeypatch):
+        assert _timed([
+            (0, "[so"), (2, "ft] Good night."), (2.1, " Sleep well."),
+        ], monkeypatch) == ["[soft] Good night.", "Sleep well."]
+
+    def test_parenthetical_closes_late(self, monkeypatch):
+        assert _timed([
+            (0, "The boiler"), (0.5, " (the one in"), (2, " the attic"),
+            (2.5, ", I mean) is fine."),
+        ], monkeypatch) == [
+            "The boiler (the one in the attic", ", I mean) is fine.",
+        ]
+
+    def test_unclosed_paren_still_waits_for_the_cap(self, monkeypatch):
+        reply = TestBareLessThan.REPLY.replace("So < 19", "So (about 19")
+        assert _timed(_by_word(reply, 0.1), monkeypatch) == [
+            "So (about 19 is what you set. The heating is on. It will rain "
+            "tomorrow afternoon.",
+            "Take an umbrella.", "The bins go out tonight.",
+            "Your parcel arrives on Friday.", "The front door is locked.",
+            "The garage light is still on in the back.", "Anything else?",
+        ]
 
 
 class TestFinalFlush:

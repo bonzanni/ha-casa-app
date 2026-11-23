@@ -94,7 +94,15 @@ def _cmd_reload(args: argparse.Namespace) -> int:
             msg = result.get("message", "")
             print(f"error: {kind} - {msg}", file=sys.stderr)
 
-    return 0 if result.get("status") == "ok" else 1
+    if result.get("status") != "ok":
+        return 1
+    # An ok envelope can still list units that failed to load (a resident or
+    # specialist directory has no action row); report them, exit non-zero.
+    failures = result.get("failures") or []
+    if failures and not args.json:
+        for f in failures:
+            print(f"{f.get('unit')}: {f.get('detail')}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 def _print_admin_result(path: str, body: dict) -> int:

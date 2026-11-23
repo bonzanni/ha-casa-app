@@ -9065,27 +9065,35 @@ async def delegate_to_agent(args: dict) -> dict:
 
 async def _delegation_in_lane(lane: Any, reservation: Any, cfg: Any, task_text: str,
                               context_text: str, *, resolution: Any = None,
-                              output_format: Any = None) -> "DelegatedOutput":
+                              output_format: Any = None,
+                              admission_deadline: "float | None" = None) -> "DelegatedOutput":
     """One delegation as one use of its agent's lane: the lock first (the
     queue place released on admission, or on any earlier exit), the fault
     re-read under it (a delegation queued before the fault must not run),
     the run, and — before the lock is released — a run still unwinding past
     the bounded runner's teardown holds the lane until it ends. A
-    configurator delegation's whole wait, lane then lease, is one bound."""
+    configurator delegation's whole wait, lane then lease, is one bound.
+    *admission_deadline* (a ``time.monotonic`` instant) bounds only the wait
+    to be admitted, never the run: past it the use raises ``LaneBusy``."""
     import agent_lane
     import configurator_run
-    deadline = configurator_run.wait_deadline() if configurator_run.is_configurator(cfg) else None
+    is_configurator = configurator_run.is_configurator(cfg)
+    deadline = configurator_run.wait_deadline() if is_configurator else admission_deadline
     try:
         async with lane.use(reservation, deadline) as admitted:
             if not admitted:
-                raise configurator_run.busy_error()
+                if is_configurator:
+                    raise configurator_run.busy_error()
+                raise agent_lane.LaneBusy(
+                    f"{_display_name_for_role(cfg.role)} is busy with other work "
+                    "— try again later.")
             if lane.faulted:
                 raise agent_lane.LaneFaulted(
                     agent_lane.faulted_line(_display_name_for_role(cfg.role)))
             runs: list = []
             sink_tok = _lane_run_sink.set(runs)
             try:
-                with (configurator_run.waiting_until(deadline) if deadline is not None
+                with (configurator_run.waiting_until(deadline) if is_configurator
                       else nullcontext()):
                     return await _run_delegated_agent_bounded(
                         cfg, task_text, context_text, resolution=resolution,
@@ -9168,7 +9176,8 @@ async def hand_off(args: dict) -> dict:
     does not run while it waits (``_bounded_wait``). Inside a delegated chain
     it holds only its per-scope permit (the chain's root delegation holds the
     global slot); from the specialist's own chat no delegation holds one, so
-    the hand-off is the chain's root and takes the full permit."""
+    the hand-off is the chain's root and takes the full permit. Like a
+    delegation, it is one use of the target's lane (``agent_lane``)."""
     from handoff import handoff_chain, handoff_refusal
 
     origin = _snapshot_origin()
@@ -9230,7 +9239,24 @@ async def hand_off(args: dict) -> dict:
                             "working on something for this chat — try again "
                             "shortly."),
             })
+    _lane_reservation = None  # the lane queue place, until transferred
     try:
+        # A hand-off is one use of the target's lane, as every delegation to
+        # it is (#1639): an agent out of service refuses it at once, and its
+        # place on the lane's queue is reserved before any task exists.
+        import agent_lane
+        _lane = agent_lane.LANES.get(target)
+        if _lane.faulted:
+            return _result({
+                "status": "error", "kind": "agent_faulted", "agent": target,
+                "message": agent_lane.faulted_line(_display_name_for_role(target)),
+            })
+        _lane_reservation = _lane.reserve()
+        if _lane_reservation is None:
+            return _result({
+                "status": "error", "kind": "busy", "agent": target,
+                "message": f"Agent {target!r} has a full queue — try again shortly.",
+            })
         if expected:
             context_text = (
                 f"{context_text}\n\n" if context_text else ""
@@ -9251,11 +9277,20 @@ async def hand_off(args: dict) -> dict:
         _qk_tok = _delegation_quota_key.set(handoff_id)
         _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
-            task = asyncio.create_task(_run_delegated_agent_bounded(
-                cfg, task_text, context_text, resolution=resolution))
+            # The wait to be admitted is bounded as a sync delegation's wait
+            # is: the requester holds its own lane meanwhile, so two runs
+            # handing off to each other would otherwise wait on each other
+            # for ever. Once admitted, the run has its own ceiling.
+            task = asyncio.create_task(_delegation_in_lane(
+                _lane, _lane_reservation, cfg, task_text, context_text,
+                resolution=resolution,
+                admission_deadline=time.monotonic() + _SYNC_WAIT_TIMEOUT_S))
         finally:
             _agent_mod.origin_var.reset(_ov_tok)
             _delegation_quota_key.reset(_qk_tok)
+        # a task cancelled before its coroutine starts has no finally
+        task.add_done_callback(_lane_reservation.release)
+        _lane_reservation = None
         if permit is not None:
             # released when the run ACTUALLY ends, as the sync arm's is
             task.add_done_callback(_permit_release_callback(permit))
@@ -9272,7 +9307,8 @@ async def hand_off(args: dict) -> dict:
             task.cancel()
             raise
         except Exception as exc:  # noqa: BLE001 — typed to the caller
-            kind = _classify_error(exc).value
+            # a fault found under the lane's lock is ``agent_faulted``
+            kind = _delegation_failure_kind(exc)
             logger.info("Hand-off %s → %s failed: %s", handoff_id[:8],
                         _known_role(target), kind)
             return _result(_with_post_echo_payload({
@@ -9297,6 +9333,8 @@ async def hand_off(args: dict) -> dict:
     finally:
         if permit is not None:
             permit.release()
+        if _lane_reservation is not None:   # no task was created
+            _lane_reservation.release()
 
 
 # ---------------------------------------------------------------------------
@@ -9756,6 +9794,11 @@ def _inbox_for_executing_agent():
     return agent_inbox.get_inbox(role) if role else None
 
 
+def _inbound_kind(ext: str) -> str:
+    """What to call an inbound file that has no display name of its own."""
+    return "photo" if ext in (".png", ".jpg", ".jpeg") else "file"
+
+
 @tool(
     "list_inbound_files",
     "List the files the operator has sent you in Telegram, newest first: the "
@@ -9787,7 +9830,7 @@ async def list_inbound_files(args: dict) -> dict:
     lines = ["Files the operator sent you, newest first. Listing a file is not "
              "reading it: open one with the Read tool before describing it."]
     for i, f in enumerate(files, 1):
-        shown = f'"{f.display_name}"' if f.display_name != f.name else "a photo"
+        shown = f'"{f.display_name}"' if f.display_name != f.name else f"a {_inbound_kind(f.ext)}"
         size = (f"{f.size / (1024 * 1024):.1f} MB" if f.size >= 1024 * 1024
                 else f"{max(1, f.size // 1024)} KB")
         lines.append(f"{i}. {shown} — {f.ext.lstrip('.').upper()}, {size}, "
@@ -9834,8 +9877,7 @@ async def share_inbound_file(args: dict) -> dict:
                             "cannot be shared with a plugin.")
     # No display name (a photo has none; a document's may have been lost —
     # its meta is best-effort): name it by its kind, never by Casa's name.
-    kind = "photo" if match.ext in (".png", ".jpg", ".jpeg") else "file"
-    fallback = kind + match.ext
+    fallback = _inbound_kind(match.ext) + match.ext
     name = fallback if match.display_name == match.name else match.display_name
     try:
         out = await asyncio.to_thread(
@@ -14069,6 +14111,8 @@ async def _bundle_reload_and_verify(
       1. grant/challenge invalidation FIRST — per removed/replaced artifact id
          (the SAME `_invalidate_lifecycle` call plugin_update/plugin_remove use)
          AND the specialist role + any removed targets, BEFORE the first reload;
+         then the event consents held on a removed artifact, before the
+         reload reconciles;
       2. ONE plugin-snapshot reload;
       3. ONE specialist-agent reload (only when the slug is installed — skipped
          for an uninstall or a still-pending specialist target);
@@ -14082,6 +14126,16 @@ async def _bundle_reload_and_verify(
     for aid in removed_artifact_ids:
         _invalidate_lifecycle(artifact_id=aid)
     _invalidate_lifecycle(roles=[f"specialist:{slug}", *targets_removed])
+    # #1671: an owned plugin whose artifact left loses the event consents it
+    # held as a subscriber, approvals and denials alike, as with
+    # plugin_remove/plugin_update (#1657). The ack identity carries the
+    # artifact id, so a reinstall or a rollback to that revision would
+    # otherwise be routed again with no consent card. Before the reload
+    # below, so its event reconcile no longer sees the ack.
+    import event_acks
+    for name in sorted(event_acks.ACKS.subscribers_on(removed_artifact_ids)):
+        await _settle_through_cancellation(
+            _revoke_event_consents(name, "specialist bundle"))
 
     # 2. ONE snapshot reload.
     await asyncio.to_thread(plugin_registry.reload_snapshot)
@@ -18536,11 +18590,11 @@ async def _remove_and_settle(name: str) -> dict:
 
 async def _revoke_event_consents(name: str, tool: str) -> None:
     """Unroute *name* as an event subscriber and drop every event consent it
-    holds, so returning to an artifact it left asks the operator again.
-    Best-effort, like the callback teardown: a failure never fails the
-    mutation. Takes the event reconcile and dispatch-admission locks, which
-    nest inside the plugin-tools lock the caller holds (the same order
-    ``event_ack_revoke`` uses)."""
+    holds — approvals and denials alike — so returning to an artifact it left
+    asks the operator again. Best-effort, like the callback teardown: a
+    failure never fails the mutation. Takes the event reconcile and
+    dispatch-admission locks, which nest inside the plugin-tools lock the
+    caller holds (the same order ``event_ack_revoke`` uses)."""
     try:
         import event_reconcile
         removed = await event_reconcile.revoke_and_unroute(name)
@@ -18737,12 +18791,11 @@ async def callback_ack_revoke(args: dict) -> dict:
     "ONE subscription when both emitter and event are given, otherwise "
     "every subscription the plugin holds — and unroute it IMMEDIATELY (no "
     "further delivery nudges are admitted once this returns). The revoke "
-    "counts as the operator's Deny: the plugin's other subscriptions keep "
-    "delivering, and consent_reprompt does not re-ask it; the consent DM "
-    "re-asks on the next plugin mutation or reload, and an Approve there "
-    "re-consents. A Casa restart forgets the Deny: the revoked subscription "
-    "then waits for an answer again and holds the plugin's other "
-    "subscriptions back until it gets one.",
+    "counts as the operator's Deny, also for a subscription not yet "
+    "approved, and is kept across a Casa restart: the plugin's other "
+    "subscriptions keep delivering, and consent_reprompt does not re-ask "
+    "it; the consent DM re-asks on the next plugin mutation or reload, and "
+    "an Approve there re-consents.",
     {"type": "object",
      "properties": {"subscriber": {"type": "string"},
                     "emitter": {"type": "string"}, "event": {"type": "string"}},
@@ -19634,6 +19687,14 @@ def _tool_set_plugin_env_reference(
         return {"ok": False,
                 "error": f"{var_name} is set by the app option '{option}'; "
                          "change it in the app's configuration"}
+    # The file holds one entry per line and is read back with splitlines(), so
+    # any separator it recognizes would cut the value short (or start a second
+    # entry) while the write reports success.
+    if op_ref_or_value and op_ref_or_value.splitlines() != [op_ref_or_value]:
+        return {"ok": False,
+                "error": f"the value for {var_name} must be one line; keep a "
+                         "multi-line secret in the vault and wire it by "
+                         "reference"}
     from plugin_env_conf import set_entry as _set_env_entry_local
     _set_env_entry_local(var_name, op_ref_or_value)
     return {"ok": True}

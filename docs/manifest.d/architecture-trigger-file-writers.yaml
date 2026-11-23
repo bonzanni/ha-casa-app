@@ -1,0 +1,14 @@
+# Manifest shard: the trigger-file-writers document (born in its own shard: the T-Z
+# shard stands just under the index ceiling).
+- doc: architecture/trigger-file-writers.md
+  summary: Who may write a resident's triggers.yaml — the write guard, its shell backstop, the lock every writer shares.
+  when_changing: who may write a resident's trigger file, the trigger-file write guard, or the lock the trigger and reminder writers and the config_sync pass share
+  covers:
+    - casa/rootfs/opt/casa/hooks.py::make_trigger_file_write_guard
+  tests:
+    - tests/test_hooks.py
+    - tests/test_config_sync_reminder_race.py
+  related: [architecture/triggers.md, architecture/reminders.md, architecture/config-reconciliation.md]
+  defines_invariants: [INV-TRIG-011]
+  invariant_tests:
+    INV-TRIG-011: [tests/test_hooks.py::TestTriggerFileWriteGuard::test_denies_every_write_capable_primitive, tests/test_hooks.py::TestTriggerFileWriteGuard::test_denies_a_bash_write_form, tests/test_hooks.py::TestTriggerFileWriteGuard::test_guard_is_code_mandatory_for_executors_and_residents, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_relative_path_resolves_against_the_SESSION_cwd, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_a_relative_path_with_no_reported_cwd_fails_CLOSED, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_every_historical_bash_bypass_is_closed, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_reads_still_pass, tests/test_hooks.py::TestTriggerFileWriteGuardBypasses::test_the_file_tools_stay_precise, tests/test_config_trigger_tools.py::test_configurator_writers_serialize_under_the_pass_lock, tests/test_config_sync_reminder_race.py::test_reminder_survives_concurrent_reconcile_clobber]

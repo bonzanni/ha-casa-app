@@ -901,6 +901,10 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-authorization row moved on again when the approval card came to
 # be posted after the turn's reply: it gained INV-PLUG-061 with its bindings
 # (test_card_after_reply.py) and the two coordinator anchors that rule names.
+# The plugin-events row was re-pinned when the event spool moved to its own
+# document (#1670): INV-EV-002 and INV-EV-004 with their bindings, the fold,
+# nudge and orphan-GC anchors, the attempts module's anchors and its test
+# file went to the plugin-event-spool row, which the row now names as related.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "fd0a1c2aec323ac41bfb9d6adfe5242aff8979ac3750fcc79b5b8e676e34ed7e",
@@ -909,7 +913,7 @@ PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-delivered-slots.md":
         "ec4f47026f3cdc0731045aef376436a92664d5d8e059d9844f16ef2f857fd405",
     "architecture/plugin-events.md":
-        "30ee8209c4833435cbb1d8f2243963f3cbe21716465c6ebd3689a975a93006e2",
+        "e6b2cf59c2df3b6de7969ff434b59d62959461b5f972fcf88dc5ad8ea4698fd2",
     "architecture/plugin-access-profiles.md":
         "f92478d3aba7de5113314d05f9409c47e418f7970eecb4d11e3b543ada14cbac",
     "architecture/plugin-handoff.md":

@@ -20,7 +20,7 @@ a stop acts on are [`plugin-operator-calls.md`](plugin-operator-calls.md);
 the continuation queue and the driver sweep whose direct call the stop shares are
 [`plugin-continuations.md`](plugin-continuations.md); the proposal tap every other stored
 call takes is [`stored-call-buttons.md`](stored-call-buttons.md); Casa Browser's own request
-cancel is [`../reference/casa-browser.md`](../reference/casa-browser.md).
+cancel is [`../reference/casa-browser-protocol.md`](../reference/casa-browser-protocol.md).
 
 ## Mental model
 

@@ -335,15 +335,15 @@ def _select_nudgeable(spool: Any, now: float) -> "list[tuple[str, str, str, dict
 def _scan_next_due(spool: Any) -> "float | None":
     """The nearest ``next_nudge_ts`` that can still fire, or ``None`` —
     recomputed from the ledger AFTER the pass so a just-dispatched entry
-    contributes its NEW slot. Blocking; via :func:`asyncio.to_thread`."""
+    contributes its NEW slot. A spent record's final slot counts too: the
+    worker must wake to exhaust it (#1643). Blocking; via
+    :func:`asyncio.to_thread`."""
     best: "float | None" = None
     for emitter in spool.emitters():
         for evt in spool.events(emitter):
             for _sub, rec in spool.list_deliveries(emitter, evt).items():
                 nxt = rec.get("next_nudge_ts")
                 if nxt is None:
-                    continue
-                if rec.get("nudges", 0) >= event_attempts.MAX_NUDGES:
                     continue
                 if rec.get("status") == "done":
                     continue
@@ -513,8 +513,12 @@ async def _worker_pass() -> None:
                 "event nudge failed unexpectedly (emitter=%s event=%s)",
                 emitter, evt)
 
-    # Second exhaustion scan: an exhaustion minted by THIS pass's dispatch
-    # loop is noticed this pass when the channel is up (design R3-1).
+    # A last wake whose final slot passed unacknowledged is exhausted now
+    # (#1643), and the second exhaustion scan notices it this pass when the
+    # channel is up (design R3-1). The fold already ran this pass, so an
+    # event queued behind that wake opens on an immediate re-pass.
+    if await _exhaust_spent(spool) and _kick is not None:
+        _kick.set()
     await _process_unnoted_exhaustions(spool)
 
     try:
@@ -768,34 +772,20 @@ async def _run_nudge(emitter: str, event: str, subscriber: str,
 async def _accept(emitter: str, event: str, subscriber: str,
                   rec: dict) -> None:
     """Record a bus-ACCEPTED dispatch: one budget unit spent and the next
-    slot computed off the ladder, OR — the last unit — a single ATOMIC
-    ``done/exhausted/noted=false`` transition (#532: terminalize UN-noted;
-    the worker pass's unnoted-exhaustion scan owns the notice,
-    notify-after-mark at-least-once — pre-fix this wrote ``noted=true``
-    and sent through the failure-swallowing ``_note``, so a notice
-    dropped in the boot bring-up window was lost forever). A False
-    return (a concurrent ack raced this write) is skipped silently — the
-    record stays acked, exactly as it should."""
+    slot computed off the ladder. The LAST unit's slot is a final due time
+    ``FINAL_GRACE_S`` out (#1643): the record stays pending so the woken
+    turn can still ack, and :func:`_exhaust_spent` terminalizes it only
+    once that slot passes unacknowledged. A False return (a concurrent ack
+    raced this write) is skipped silently — the record stays acked,
+    exactly as it should."""
     spool = _get_spool() if _get_spool is not None else None
     if spool is None:
         return
     now = _now()
     nxt = event_attempts.next_nudge_after_accept(rec, now=now)
-    nudges = rec.get("nudges", 0) + 1
-
     if nxt is None:
-        def _exhaust(r: dict) -> dict:
-            done = event_attempts.terminalize(r, "exhausted", now=now)
-            done["nudges"] = nudges
-            done["last_nudge_ts"] = now
-            done["deferrals"] = 0
-            done["noted"] = False
-            return done
-
-        await asyncio.to_thread(
-            spool.update_delivery_nudge, emitter, event, subscriber,
-            rec["gen"], _exhaust)
-        return
+        nxt = now + event_attempts.FINAL_GRACE_S
+    nudges = rec.get("nudges", 0) + 1
 
     def _advance(r: dict) -> dict:
         r["nudges"] = nudges
@@ -807,6 +797,56 @@ async def _accept(emitter: str, event: str, subscriber: str,
     await asyncio.to_thread(
         spool.update_delivery_nudge, emitter, event, subscriber, rec["gen"],
         _advance)
+
+
+def _select_spent(spool: Any, now: float) -> "list[tuple[str, str, str, dict]]":
+    """Every pending record whose whole budget is spent and whose final
+    slot has passed — the last wake went unacknowledged. Blocking; via
+    :func:`asyncio.to_thread`."""
+    out: list = []
+    for emitter in spool.emitters():
+        for evt in spool.events(emitter):
+            for subscriber, rec in sorted(spool.list_deliveries(
+                    emitter, evt).items()):
+                nxt = rec.get("next_nudge_ts")
+                if (rec.get("status") == "pending" and nxt is not None
+                        and nxt <= now
+                        and rec.get("nudges", 0) >= event_attempts.MAX_NUDGES):
+                    out.append((emitter, evt, subscriber, rec))
+    return out
+
+
+async def _exhaust_spent(spool: Any) -> bool:
+    """Terminalize each spent record as ``done/exhausted/noted=False`` in
+    one conditional write (#532: terminalize UN-noted; the unnoted-
+    exhaustion scan owns the notice, notify-after-mark). A False return
+    (an ack landed first) is skipped silently — the record stays acked.
+    Returns whether any record was exhausted."""
+    now = _now()
+    try:
+        spent = await asyncio.to_thread(_select_spent, spool, now)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("event-episodes exhaustion selection failed")
+        return False
+    exhausted = False
+    for emitter, evt, subscriber, rec in spent:
+        def _exhaust(r: dict) -> dict:
+            done = event_attempts.terminalize(r, "exhausted", now=now)
+            done["noted"] = False
+            return done
+
+        try:
+            exhausted |= bool(await asyncio.to_thread(
+                spool.update_delivery_nudge, emitter, evt, subscriber,
+                rec["gen"], _exhaust))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — isolate per record
+            logger.exception("event exhaustion write failed (emitter=%s "
+                             "event=%s)", emitter, evt)
+    return exhausted
 
 
 async def _defer(emitter: str, event: str, subscriber: str,

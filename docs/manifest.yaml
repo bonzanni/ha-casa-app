@@ -84,6 +84,10 @@
   kind: meta
   summary: Manifest shard — the specialist open-conversations document, born in its own shard because the S shard stands just under the 40 KB index ceiling.
 
+- doc: manifest.d/architecture-trigger-file-writers.yaml
+  kind: meta
+  summary: Manifest shard — the trigger-file-writers document, born in its own shard because the T-Z shard stands just under the 40 KB index ceiling.
+
 - doc: manifest.d/architecture-configurator.yaml
   kind: meta
   summary: Manifest shard — the configurator documents (the configurator and its approvals), born in its own shard because the A-D shard stands just under the 40 KB index ceiling.

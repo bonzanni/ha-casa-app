@@ -47,6 +47,10 @@ MAX_NUDGES = 6
 #: (``RESULT_PHASE_OFFSETS`` / ``OUTCOME_PHASE_OFFSETS``) split — an event
 #: record has no second anchor to switch to at terminalization.
 PHASE_OFFSETS = (0.0, 300.0, 1800.0, 7200.0, 21600.0, 86400.0)
+#: How long the LAST accepted wake has to ack before the record is
+#: terminalized ``exhausted`` (#1643): the sixth wake is a real chance to
+#: handle the event, so its turn must be able to run and ack first.
+FINAL_GRACE_S = 3600.0
 DEFERRAL_BASE_S = 60.0
 DEFERRAL_CAP_S = 1800.0
 #: Deferral count past which the schedule SATURATES without exponentiating.

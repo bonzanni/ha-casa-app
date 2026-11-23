@@ -12,7 +12,8 @@ What the run controller (`casa_browser/rootfs/opt/casa_browser/controller.py`) d
 view: the states a run moves through, the claim, what any end of a view releases and what Done
 does. The rest of the controller is [`casa-browser-runs.md`](casa-browser-runs.md); the ingress
 pages and the view's screens, sockets and window are
-[`casa-browser-ingress.md`](casa-browser-ingress.md).
+[`casa-browser-ingress.md`](casa-browser-ingress.md) and
+[`casa-browser-live-view.md`](casa-browser-live-view.md).
 
 ## The states
 

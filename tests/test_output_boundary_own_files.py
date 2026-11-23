@@ -265,3 +265,10 @@ async def test_a_share_with_no_handoff_folder_records_no_hand_off(inbox, monkeyp
     await _call(tools.list_inbound_files, {}, s)
     await _call(tools.share_inbound_file, {"path": f.path}, s)
     assert s.evidence.handed_off == set()
+
+
+async def test_a_document_without_a_display_name_is_not_listed_as_a_photo(inbox):
+    await inbox.publish(PDF, ".pdf", "")
+    text = await _call(tools.list_inbound_files, {}, _scope())
+    assert "a photo" not in text
+    assert "1. a file — PDF" in text

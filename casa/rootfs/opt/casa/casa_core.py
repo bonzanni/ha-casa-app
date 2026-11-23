@@ -2872,17 +2872,21 @@ async def main() -> None:
     )
 
     specialist_configs = specialist_registry.all_configs()
-    # The memory meter reports each served role's view of the ledger, and
-    # the nightly pass regroups a ledger that overflows one of them.
+    # The memory meter reports each served role's view of the ledger it
+    # reads, and the nightly pass regroups a ledger that overflows one of
+    # its readers.
     from memory import meter as memory_meter
-    memory_meter.configure({
-        role: getattr(getattr(cfg, "memory", None), "token_budget", 0)
-        for role, cfg in {**role_configs, **specialist_configs}.items()})
+    from sensitivity import clearances_served
+    fleet = {**role_configs, **specialist_configs}
+    memory_meter.configure(
+        {role: getattr(getattr(cfg, "memory", None), "token_budget", 0)
+         for role, cfg in fleet.items()},
+        {role: clearances_served(getattr(cfg, "channels", None) or ())
+         for role, cfg in fleet.items()})
     # One ledger per clearance a role is served at (M6): ``private``
     # always, a lower one while a reader at it has a budget (the butler on
     # voice reads ``friends``).
     from memory import ledgers as memory_ledgers
-    from sensitivity import clearances_served
     logger.info("memory ledgers maintained: %s", ", ".join(
         memory_ledgers.configure_roles(
             [*role_configs.values(), *specialist_configs.values()],
@@ -3205,13 +3209,13 @@ async def main() -> None:
     # delegations are captured in tools._run_delegated_agent). Only
     # kind="specialist" engagements feed specialist telemetry; executor
     # engagements are out of scope for this counter.
-    def _specialist_result_observer(engagement, result_msg) -> None:
+    def _specialist_result_observer(engagement, result_msg, cost_usd) -> None:
         if getattr(engagement, "kind", "") != "specialist":
             return
         from tokens import extract_usage
         specialist_telemetry.record_cost(
             engagement.role_or_type,
-            cost_usd=float(getattr(result_msg, "total_cost_usd", 0.0) or 0.0),
+            cost_usd=cost_usd,
             usage=extract_usage(result_msg),
         )
 

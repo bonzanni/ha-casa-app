@@ -184,6 +184,40 @@ async def test_run_turn_returns_sid_and_dispatches_messages():
     assert str(c.cid_box) == "c1"
 
 
+async def test_turn_done_logs_each_turns_own_cost_on_a_warm_client(caplog):
+    """#1655: the CLI's ``total_cost_usd`` is a running total for the client's
+    session. The ``turn_done`` line of each warm turn shows what that turn
+    cost; the first result on the client counts in full, and a total below
+    the previous one (a fresh session on the same client) counts in full too,
+    never negative."""
+    import sdk_logging
+
+    c = _client()
+    await c.open()
+    totals = [0.04, 0.05, 0.06, 0.02]
+    script = []
+    for t in totals:
+        r = _mk_result("sid-1", {"input_tokens": 3, "output_tokens": 1})
+        r.total_cost_usd = t
+        r.num_turns = 1
+        script.append([_mk_assistant("x"), r])
+    c._client.script = script
+
+    async def on_message(m):
+        if isinstance(m, _SDKResultMessage):
+            sdk_logging.log_turn_done(m, started_ms=0.0)
+
+    with caplog.at_level(logging.INFO, logger="sdk"):
+        for i in range(len(totals)):
+            async with c.lock:
+                await c.run_turn_locked(
+                    f"t{i}", origin={}, cid="c1", on_message=on_message)
+    costs = [r.getMessage().split("cost_usd=")[1].split()[0]
+             for r in caplog.records
+             if r.name == "sdk" and "turn_done" in r.getMessage()]
+    assert costs == ["0.0400", "0.0100", "0.0100", "0.0200"]
+
+
 async def test_second_turn_reuses_same_transport():
     c = _client()
     await c.open()

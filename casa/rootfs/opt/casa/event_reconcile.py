@@ -26,8 +26,10 @@ Semantics (spec §6, decisions 26/27/29/30/36):
   whole subscribe set keeps its WHOLE set unrouted (the mirror of
   INV-TRIG-003 / callback's own per-plugin all-or-nothing). A subscription
   the operator explicitly turned off — a Deny on its consent card, or
-  ``event_ack_revoke``, both recorded in :mod:`consent_denials` — is not a
-  gap: it alone stays unrouted (#1656). One never answered still is.
+  ``event_ack_revoke``, both stored as a denial beside the acks in
+  :mod:`event_acks`, so they survive a restart (#1666) — is not a gap: it
+  alone stays unrouted (#1656). One never answered still is. A denial is
+  read only where a subscription has no ack; it never routes anything.
 * **Consent binds artifact + targets.** The ack identity
   (:func:`plugin_events.ack_identity`) folds in the subscriber's artifact_id
   and its sorted delivery targets — a routine plugin upgrade OR a
@@ -50,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -171,6 +174,10 @@ class DesiredEvents:
     # routing" discipline: a gap in ONE gate must not make the operator's
     # still-current consent for that exact subscription look stale.
     valid_identities: "set[str]" = field(default_factory=set)
+    # The same subscriptions with the fields their identity is computed
+    # from (the ``consent_needed`` row shape), also collected before any
+    # gate: what an operator's revoke records as denied.
+    declared: "list[dict]" = field(default_factory=list)
     # Whether this pass is trustworthy enough to prune AT ALL: False unless
     # the resolver reported zero issues AND every subscriber's own
     # casa.subscribes parsed — an unparseable declaration or a resolution
@@ -213,7 +220,6 @@ def compute_desired(
     the caller (:func:`reconcile_plugin_events`) treats an EXCEPTION from
     this function as the fail-closed trigger, never this function's own
     return value."""
-    import consent_denials
     import plugin_store
     from plugin_events import ack_identity
 
@@ -295,9 +301,14 @@ def compute_desired(
             # gate, so a gap in ONE gate (self-check, missing emitter,
             # unreachable, pending ack) can never make the operator's
             # still-current consent for THIS exact subscription look stale.
-            out.valid_identities.add(ack_identity(
-                subscriber, rp.artifact_id, emitter, event, digest,
-                subscriber_targets))
+            identity = ack_identity(subscriber, rp.artifact_id, emitter,
+                                    event, digest, subscriber_targets)
+            out.valid_identities.add(identity)
+            declared = {
+                "subscriber": subscriber, "artifact_id": rp.artifact_id,
+                "emitter": emitter, "event": event, "digest": digest,
+                "targets": subscriber_targets, "identity": identity}
+            out.declared.append(declared)
 
             if _is_self_subscription(subscriber, rp.manifest_name, emitter):
                 out.issues.append(_issue(subscriber, "event_invalid",
@@ -325,22 +336,17 @@ def compute_desired(
                 subscriber_dark = True
                 continue
 
-            identity = ack_identity(subscriber, rp.artifact_id, emitter,
-                                    event, digest, subscriber_targets)
             if acks.get(identity) is None:
-                pending = {
-                    "subscriber": subscriber, "artifact_id": rp.artifact_id,
-                    "emitter": emitter, "event": event, "digest": digest,
-                    "targets": subscriber_targets, "identity": identity}
                 # Still listed, so a plugin mutation or reload re-asks it
                 # and consent_reprompt reports it denied — the way back.
-                out.consent_needed.append(pending)
-                if consent_denials.denied(
-                        consent_denials.key("event", identity)):
+                out.consent_needed.append(declared)
+                if acks.is_denied(identity):
                     # The operator turned THIS subscription off (Deny, or
                     # event_ack_revoke): it stays unrouted on its own and
                     # is not waiting for an answer, so the subscriber's
-                    # other subscriptions keep delivering (#1656).
+                    # other subscriptions keep delivering (#1656). Asked
+                    # only here, where there is no ack: a denial can leave
+                    # a subscription unrouted, never route one.
                     continue
                 out.issues.append(_issue(subscriber, "event_pending_ack",
                                          rp.artifact_id))
@@ -405,9 +411,31 @@ def _unroute_locked(subscriber: str, emitter: str = "", event: str = "") -> None
         _routed = new_routed
 
 
+def _declared_by(subscriber: str, emitter: str, event: str, *, acks: Any,
+                 resolver: Any, entries: Any) -> "list[dict]":
+    """The subscriptions *subscriber* declares in the installed plugins —
+    the one ``(emitter, event)`` pair, or all of them — each with the fields
+    its current consent identity is computed from. Empty when the plugins
+    cannot be read: the caller's revoke must still go through."""
+    try:
+        # The one place identities are derived; what is declared does not
+        # depend on which roles are live.
+        declared = compute_desired(role_configs={}, acks=acks,
+                                   resolver=resolver, entries=entries).declared
+    except Exception:  # noqa: BLE001 — never fail the operator's off-switch
+        logger.warning("event revoke: installed subscriptions unreadable; "
+                       "denying only the revoked consents", exc_info=True)
+        return []
+    return [d for d in declared if d["subscriber"] == subscriber
+            and (not (emitter and event)
+                 or (d["emitter"], d["event"]) == (emitter, event))]
+
+
 async def revoke_and_unroute(subscriber: str, emitter: str = "",
                              event: str = "", *, acks: Any = None,
                              operator_denied: bool = False,
+                             resolver: "Callable[[str | None], Any] | None" = None,
+                             entries: "Callable[[], list[dict]] | None" = None,
                              ) -> "list[dict]":
     """Unroute *subscriber* from the published map, THEN drop its
     :class:`event_acks.EventAckStore` record(s).
@@ -438,32 +466,38 @@ async def revoke_and_unroute(subscriber: str, emitter: str = "",
     subscription. Returns the removed ack records
     (:class:`event_acks.EventAckStore`'s own list[dict] shape).
 
-    ``operator_denied`` (the ``event_ack_revoke`` tool) also records each
-    dropped consent as the operator's Deny. A plugin removal or update leaves
-    it False: the plugin's own lifecycle is not the operator's answer to a
-    subscription, so a reinstall's first prompt stays an unanswered one."""
+    ``operator_denied`` (the ``event_ack_revoke`` tool) makes the revoke the
+    operator's Deny, stored in the same write that drops the acks: each
+    dropped consent, and each subscription of that subscriber (or that one
+    pair) the installed plugins declare — one never approved has no ack to
+    drop, and is turned off all the same. The next reconcile then leaves the
+    subscriber's other subscriptions routed (#1656), and so does the one
+    after a restart (#1666); an Approve on a later card clears it. A plugin
+    removal or update leaves it False and drops the subscriber's denials
+    with its acks: the plugin's own lifecycle is not the operator's answer
+    to a subscription, so a reinstall's first prompt stays an unanswered
+    one. ``resolver``/``entries`` are the seams :func:`compute_desired`
+    takes, read only for an operator's revoke."""
     acks = acks if acks is not None else _default_acks()
-    import consent_denials
     import event_episodes
-    from plugin_events import ack_identity
 
     async with _RECONCILE_LOCK:
+        denial: dict = {}
+        if operator_denied:
+            # Read before the dispatch-admission lock is taken, so that lock
+            # is not held across a registry read.
+            denial = {"deny_ts": time.time(),
+                      "deny": await asyncio.to_thread(
+                          _declared_by, subscriber, emitter, event, acks=acks,
+                          resolver=resolver, entries=entries)}
         async with event_episodes.DISPATCH_LOCK:
             _unroute_locked(subscriber, emitter, event)
             if emitter and event:
                 removed = await asyncio.to_thread(
-                    acks.revoke_pair, subscriber, emitter, event)
+                    acks.revoke_pair, subscriber, emitter, event, **denial)
             else:
                 removed = await asyncio.to_thread(
-                    acks.revoke_subscriber, subscriber)
-            # The operator's revoke is their answer, recorded as a Deny of
-            # each dropped consent before any reconcile can run, so the next
-            # one leaves the subscriber's other subscriptions routed (#1656).
-            # An Approve on a later card clears it.
-            for rec in (removed if operator_denied else ()):
-                consent_denials.record(consent_denials.key("event", ack_identity(
-                    rec["subscriber"], rec["artifact_id"], rec["emitter"],
-                    rec["event"], rec["digest"], rec["targets"])))
+                    acks.revoke_subscriber, subscriber, **denial)
     return removed
 
 
@@ -545,7 +579,7 @@ def _fire_consent_prompts(pending: "list[dict]", *, role_configs: dict,
     channel, chat_id, operator_id = (
         target.endpoint, target.address.chat_id, target.operator_id)
 
-    async def _reconcile_again() -> None:
+    async def _reconcile_again() -> "list[dict]":
         # SOL-P2a: the reconcile fired at COMMIT time (when the operator
         # taps Approve, possibly minutes/hours after this prompt was
         # posted) must re-derive role_configs/channel_manager from the
@@ -559,7 +593,8 @@ def _fire_consent_prompts(pending: "list[dict]", *, role_configs: dict,
         # still see their own doubles on retry).
         import agent as agent_mod
         live_runtime = getattr(agent_mod, "active_runtime", None)
-        await reconcile_plugin_events(
+        # The issues are what the consent card is written from (#1642).
+        return await reconcile_plugin_events(
             live_runtime, acks=acks, resolver=resolver, entries=entries,
             prompt=False, regen_health=True)
 
@@ -708,12 +743,12 @@ async def reprompt_pending(
     ``callback_reconcile.reprompt_pending`` for the full contract (this is
     its structural mirror: prompt-only — no routing-map publish, no ack
     prune, no worker kick — under ``_RECONCILE_LOCK``, with the
-    denial-registry skip and the synchronous ack re-read). Event consents
-    live OUTSIDE the plugin-setup round ledger, so there is no nonce to
-    thread. Appends ``{"kind","plugin","name","status"|"handle"}`` rows to
-    ``report``. Never raises."""
+    denial skip (read from the ack store) and the synchronous ack re-read).
+    Event consents live OUTSIDE the plugin-setup round ledger, so there is
+    no nonce to thread. Appends
+    ``{"kind","plugin","name","status"|"handle"}`` rows to ``report``. Never
+    raises."""
     import authz_grants
-    import consent_denials
     import event_consent
     import trigger_consent
 
@@ -729,13 +764,14 @@ async def reprompt_pending(
     role_configs = getattr(runtime, "role_configs", None) or {}
     acks = acks if acks is not None else _default_acks()
 
-    async def _reconcile_again() -> None:
+    async def _reconcile_again() -> "list[dict]":
         # SOL-P2a discipline: live-runtime lookup at approve time.
         import agent as agent_mod
         live = getattr(agent_mod, "active_runtime", None)
         if live is None:
-            return
-        await reconcile_plugin_events(live, prompt=False, regen_health=True)
+            return []
+        return await reconcile_plugin_events(live, prompt=False,
+                                             regen_health=True)
 
     async with _RECONCILE_LOCK:
         try:
@@ -752,8 +788,7 @@ async def reprompt_pending(
         for p in desired.consent_needed:
             row = {"kind": "event", "plugin": p["subscriber"],
                    "name": f"{p['emitter']}:{p['event']}"}
-            if consent_denials.denied(
-                    consent_denials.key("event", p["identity"])):
+            if acks.is_denied(p["identity"]):
                 report.append(dict(row, status="denied"))
                 continue
             if acks.get(p["identity"]) is not None:

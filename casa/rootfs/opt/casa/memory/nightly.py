@@ -2,10 +2,10 @@
 
 Once a night (03:30 in the operator's zone, from Casa's scheduler) it queues,
 per maintained ledger, a ``condense`` job when an entry is over
-:data:`memory.writer.CONDENSE_OVER_TOKENS`, and a ``regroup`` job when a
-role's view of the ledger overflows its budget even at the coarsest index
-level (:mod:`memory.view`), so groups and topics are added only when the
-level below no longer fits; and it sends
+:data:`memory.writer.CONDENSE_OVER_TOKENS`, and a ``regroup`` job when the
+view of a role that reads the ledger overflows its budget even at the
+coarsest index level (:mod:`memory.view`), so groups and topics are added
+only when the level below no longer fits; and it sends
 every ``failed`` job back to ``queued`` once, which the worker then runs from
 a freshly assembled input like any other run. It writes no ledger row
 itself: every change to a ledger is made by the worker's commit, with its
@@ -42,11 +42,12 @@ def enqueue_nightly(store: MemoryStore, *,
             if any(s > writer.CONDENSE_OVER_TOKENS for s in sizes):
                 if writer._enqueue(conn, ledger, writer.CONDENSE):
                     out["condense"].append(ledger)
-            if role_budgets:
+            budgets = meter.reader_budgets(ledger, role_budgets)
+            if budgets:
                 objs = view.objects_as_of(
                     conn, ledger, pending.current_commit_no(conn))
                 if any(view.compose(objs, b).overflow
-                       for b in role_budgets.values()):
+                       for b in budgets.values()):
                     if writer._enqueue(conn, ledger, writer.REGROUP):
                         out["regroup"].append(ledger)
         out["retried"] = conn.execute(

@@ -110,10 +110,7 @@
   summary: How a persona arrives, is approved, and leaves — consent-bound install, the approved roots, removal by reference scan, and the operator-run sweep.
   when_changing: installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep
   covers:
-    - casa/rootfs/opt/casa/persona_install.py::persona_references
     - casa/rootfs/opt/casa/persona_install.py::require_persona_present
-    - casa/rootfs/opt/casa/persona_install.py::remove_installed_persona
-    - casa/rootfs/opt/casa/persona_install.py::prune_installed_personas
     - casa/rootfs/opt/casa/persona_install.py::list_installed_personas
     - casa/rootfs/opt/casa/persona_install.py::apply_persona_override
     - casa/rootfs/opt/casa/persona_install.py::validate_persona_path_segments
@@ -123,7 +120,6 @@
   tests:
     - tests/test_persona_avatar.py
     - tests/test_persona_install.py
-    - tests/test_persona_removal.py
     - tests/test_persona_apply_resident_staging.py
     - tests/test_persona_pack.py
     - tests/test_persona_install_consent.py
@@ -131,17 +127,31 @@
     - tests/test_wholebranch_security_fixes.py
     - tests/test_resident_persona_restart_notice.py
     - tests/test_resident_demo_personas.py
-  related: [architecture/personality.md, architecture/specialist-lifecycle.md]
-  defines_invariants: [INV-PERS-005, INV-PERS-006, INV-PERS-007, INV-PERS-011, INV-PERS-013, INV-PERS-018, INV-PERS-019, INV-PERS-020]
+  related: [architecture/personality.md, architecture/specialist-lifecycle.md, architecture/persona-removal.md]
+  defines_invariants: [INV-PERS-005, INV-PERS-007, INV-PERS-011, INV-PERS-013, INV-PERS-018, INV-PERS-019, INV-PERS-020]
   invariant_tests:
     INV-PERS-020: [tests/test_persona_install.py::test_latest_resolves_to_the_release_tag_and_guards_the_fetch_on_its_peel, tests/test_persona_install.py::test_no_published_release_is_refused_before_anything_is_staged, tests/test_persona_install.py::test_an_expected_revision_that_is_not_the_peel_is_a_revision_mismatch, tests/test_persona_install.py::test_a_commits_lookup_that_disagrees_with_the_peel_fetches_nothing, tests/test_persona_install.py::test_install_recipe_defaults_to_latest_through_the_tool, tests/test_tools_persona_install.py::test_inspect_ok_payload_reports_the_resolved_ref, tests/test_tools_persona_install.py::test_inspect_with_no_release_reports_no_release_found]
     INV-PERS-005: [tests/test_persona_pack.py::test_image_ships_exactly_the_persona_packs_its_resident_slots_default_to]
-    INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
     INV-PERS-007: [tests/test_persona_apply_resident_staging.py::test_resident_apply_stages_and_does_not_promote, tests/test_persona_apply_resident_staging.py::test_resident_apply_writes_nothing_when_the_candidate_cannot_compile]
     INV-PERS-018: [tests/test_resident_persona_restart_notice.py::test_persona_apply_result_tells_the_resident_conversation_cost, tests/test_resident_persona_restart_notice.py::test_resident_persona_swap_result_tells_the_resident_conversation_cost, tests/test_resident_persona_restart_notice.py::test_resident_persona_reset_result_tells_the_resident_conversation_cost, tests/test_resident_persona_restart_notice.py::test_apply_recipe_step_five_tells_the_resident_conversation_cost]
     INV-PERS-019: [tests/test_resident_demo_personas.py::test_a_shipped_resident_can_wear_every_published_demo_pack, tests/test_resident_demo_personas.py::test_a_shipped_resident_still_refuses_anything_outside_the_demo_range, tests/test_resident_demo_personas.py::test_a_shipped_resident_admits_its_own_persona_and_not_a_siblings]
     INV-PERS-011: [tests/test_persona_install_consent.py::test_approve_acks_approves_and_carries_the_configurator_on]
     INV-PERS-013: [tests/test_tools_persona_install.py::test_resolve_local_persona_refuses_traversal_ref, tests/test_tools_persona_install.py::test_resolve_local_persona_refuses_identity_mismatch, tests/test_tools_persona_install.py::test_resolve_local_persona_honors_casa_config_dir, tests/test_tools_persona_install.py::test_persona_apply_refuses_a_pack_that_does_not_declare_the_requested_identity, tests/test_wholebranch_security_fixes.py::test_validate_persona_path_segments_rejects_unsafe, tests/test_persona_removal.py::test_a_traversal_bearing_ref_never_reaches_a_path_join]
+
+- doc: architecture/persona-removal.md
+  summary: Persona removal by reference scan — unreadable state refuses, revocation generations, the operator-run sweep.
+  when_changing: removing a persona or the sweep, what counts as a reference to persona bytes, or the persona approval's revocation generations
+  covers:
+    - casa/rootfs/opt/casa/persona_install.py::persona_references
+    - casa/rootfs/opt/casa/persona_install.py::remove_installed_persona
+    - casa/rootfs/opt/casa/persona_install.py::prune_installed_personas
+  tests:
+    - tests/test_persona_removal.py
+  related: [architecture/persona-lifecycle.md, architecture/personality.md, architecture/specialist-bundle-transactions.md]
+  defines_invariants: [INV-PERS-006]
+  invariant_tests:
+    INV-PERS-006: [tests/test_persona_removal.py::test_a_resident_binding_refuses_removal, tests/test_persona_removal.py::test_an_in_progress_bundle_journal_holds_a_reference]
+
 - doc: architecture/personality.md
   summary: What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.
   when_changing: personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest
@@ -158,7 +168,6 @@
     - casa/rootfs/opt/casa/specialist_install.py::activate_binding_for_config
   tests:
     - tests/test_personality_binding.py
-    - tests/test_specialist_binding_rederive.py
     - tests/test_resident_refusal_diagnosis.py
     - tests/test_resident_refusal_record_boundaries.py
     - tests/test_refusal_observation.py
@@ -166,10 +175,9 @@
     - tests/test_assistant_prompts.py
     - tests/test_prompt_compiler.py
     - tests/test_persona_pack.py
-  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/persona-lifecycle.md, architecture/prompt-file-guards.md]
-  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-009, INV-PERS-010, INV-PERS-015, INV-PERS-016]
+  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/persona-lifecycle.md, architecture/prompt-file-guards.md, architecture/binding-rederivation.md]
+  defines_invariants: [INV-PERS-001, INV-PERS-002, INV-PERS-003, INV-PERS-004, INV-PERS-009, INV-PERS-010, INV-PERS-015]
   invariant_tests:
-    INV-PERS-016: [tests/test_specialist_binding_rederive.py::test_model_flip_rederives_default_binding_once_and_keeps_specialist_active, tests/test_specialist_binding_rederive.py::test_model_flip_rederives_override_binding_from_stored_override_identity, tests/test_specialist_binding_rederive.py::test_identity_movement_is_refused_without_rederive, tests/test_specialist_binding_rederive.py::test_rederive_rewrites_only_active_and_preserves_pending_and_prior_bytes, tests/test_specialist_binding_rederive.py::test_validate_config_repo_rederives_in_memory_with_zero_writes_or_failure_records, tests/test_specialist_binding_rederive.py::test_disabled_specialist_rederives_only_in_memory]
     INV-PERS-001: [tests/test_tools_specialist_options.py::test_build_specialist_options_prefers_compiled_bundle_when_present]
     INV-PERS-002: [tests/test_persona_pack.py::test_pin_inv_pers_002_capability_claims_are_not_semantically_validated]
     INV-PERS-003: [tests/test_phase_a_compiler_integration.py::test_missing_override_persona_blob_at_reload_raises_load_error]
@@ -177,3 +185,17 @@
     INV-PERS-010: [tests/test_refusal_observation.py::test_divergent_damaged_overrides_one_record_carries_both_restore_facts, tests/test_refusal_observation.py::test_active_unreadable_with_staged_readable, tests/test_refusal_observation.py::test_both_unreadable_one_record_active_error_wins, tests/test_refusal_observation.py::test_dangling_symlink_tuple_is_unreadable_never_absent, tests/test_refusal_observation.py::test_staged_image_default_beside_failing_default_shows_null_facts, tests/test_refusal_observation.py::test_commit_failure_after_fresh_stage_reports_the_candidate, tests/test_refusal_observation.py::test_recovery_names_no_runtime_tool_and_only_universal_facts, tests/test_refusal_observation.py::test_fact_rule_component_default_active_gets_facts_staged_does_not, tests/test_refusal_observation.py::test_fresh_install_default_failure_has_no_restore_facts]
     INV-PERS-015: [tests/test_assistant_prompts.py::test_every_resident_projection_carries_the_credential_rule_exactly_once]
     INV-PERS-009: [tests/test_prompt_compiler.py::test_a_nested_subsection_reaches_the_text_projection_exactly_once, tests/test_prompt_compiler.py::test_a_second_root_and_its_subsection_each_reach_text_once, tests/test_prompt_compiler.py::test_a_section_authored_above_core_is_emitted_once_and_only_once, tests/test_persona_pack.py::test_root_sections_returns_the_prefix_minimum_rows_in_document_order]
+
+- doc: architecture/binding-rederivation.md
+  summary: The role checksum covers a role's resolved model; a specialist binding whose checksum moved for that alone is re-derived.
+  when_changing: how a role's model option is resolved for a binding, what the role checksum covers, or the re-derivation of a specialist binding whose role checksum moved
+  covers:
+    - casa/rootfs/opt/casa/role_slot.py::resolve_role_model
+    - casa/rootfs/opt/casa/personality_binding.py::rederive_binding_for_role
+    - casa/rootfs/opt/casa/specialist_install.py::_rederive_stale_binding
+  tests:
+    - tests/test_specialist_binding_rederive.py
+  related: [architecture/personality.md, architecture/specialist-bundle-transactions.md, architecture/specialist-lifecycle.md]
+  defines_invariants: [INV-PERS-016]
+  invariant_tests:
+    INV-PERS-016: [tests/test_specialist_binding_rederive.py::test_model_flip_rederives_default_binding_once_and_keeps_specialist_active, tests/test_specialist_binding_rederive.py::test_model_flip_rederives_override_binding_from_stored_override_identity, tests/test_specialist_binding_rederive.py::test_identity_movement_is_refused_without_rederive, tests/test_specialist_binding_rederive.py::test_rederive_rewrites_only_active_and_preserves_pending_and_prior_bytes, tests/test_specialist_binding_rederive.py::test_validate_config_repo_rederives_in_memory_with_zero_writes_or_failure_records, tests/test_specialist_binding_rederive.py::test_disabled_specialist_rederives_only_in_memory]

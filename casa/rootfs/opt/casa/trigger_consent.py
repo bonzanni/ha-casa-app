@@ -159,14 +159,16 @@ def prompt_trigger_consent(
     plugin: str, artifact_id: str, effective: str, target: str,
     auth: dict, acks: Any, clearance: str = "public", deliver: str = "none",
     max_body_kib: int = plugin_triggers.MAX_BODY_KIB_DEFAULT,
-    reconcile_cb: "Callable[[], Awaitable[None]] | None" = None,
+    reconcile_cb: "Callable[[], Awaitable[Any]] | None" = None,
     setup_nonce: str = "",
 ) -> Any:
     """Post (or dedupe onto) the consent keyboard for ONE plugin trigger.
 
     Returns the coordinator's ``ChallengeHandle``. ``acks`` is the
     :class:`trigger_acks.TriggerAckStore`; ``reconcile_cb`` re-runs the
-    trigger reconciler after an approve so the route goes live immediately.
+    trigger reconciler after an approve so the route goes live immediately,
+    and returns ``(routed names, issues)``, which the card's text is written
+    from.
     *channel* is the endpoint that posts the card (Casa's, from
     :func:`casa_consent_target`); the card's key and scope carry its bot.
     """
@@ -284,15 +286,11 @@ def prompt_trigger_consent(
                         literal=True,
                     )
                     return
-                # Edit the SUCCESS state FIRST, then reconcile, then overwrite
-                # ONLY on failure (ordered inside this one hook task) —
-                # mirrors the authz edit-first → dispatch → overwrite order.
+                # #1642: take the buttons off at once; the result follows
+                # once the reconcile below has run.
                 await channel.edit_dm_message(
-                    chat_id, message_id,
-                    f"✅ Enabled — POST /webhook/{effective} now "
-                    f"routes to {role}",
-                    literal=True,
-                )
+                    chat_id, message_id, "✅ Approved — checking…",
+                    literal=True)
                 # v0.112.0 (impl r2): the DECISION is durable here — the ack
                 # is persisted (the yield-free commit step above) — so feed
                 # the setup evaluator REGARDLESS of the reconcile outcome
@@ -313,10 +311,18 @@ def prompt_trigger_consent(
                 # applied-overlay read (#803) DEFERS on that marker until the
                 # map that routes the new secret has landed.
                 await _feed_setup_episode(approved=True)
+                # #1642: the result is written from what the reconcile reports:
+                # the routed names and the issues. A plugin routes all of its
+                # triggers or none, so this approval alone may route nothing;
+                # the card blames the other approvals only when they are the
+                # plugin's sole gap.
+                live: Any = ()
+                issues: Any = ()
                 if reconcile_cb is not None:
                     try:
-                        await reconcile_cb()
+                        live, issues = await reconcile_cb() or ((), ())
                     except Exception:  # noqa: BLE001 — surface, never raise
+                        live = None
                         logger.exception(
                             "post-consent trigger reconcile failed "
                             "(plugin=%s effective=%s)", plugin, effective)
@@ -327,6 +333,21 @@ def prompt_trigger_consent(
                             "plugin_verify",
                             literal=True,
                         )
+                if live is not None:
+                    gaps = {getattr(i, "reason_code", None) for i in issues
+                            if getattr(i, "name", None) == plugin}
+                    if effective in live:
+                        text = (f"✅ Enabled — POST /webhook/{effective} now "
+                                f"routes to {role}")
+                    elif gaps == {"trigger_pending_ack"}:
+                        text = (f"✅ Approved — /webhook/{effective} starts "
+                                f"working once the {plugin} plugin's other "
+                                "webhooks are approved too")
+                    else:
+                        text = (f"✅ Approved — /webhook/{effective} is not "
+                                "active yet. Ask me to check the plugin.")
+                    await channel.edit_dm_message(
+                        chat_id, message_id, text, literal=True)
                 # impl r4: wake the setup worker — either the settlement
                 # above created an episode, or a previously-gated pending
                 # episode may now see its routes live post-reconcile.

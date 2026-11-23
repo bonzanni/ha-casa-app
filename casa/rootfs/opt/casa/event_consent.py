@@ -13,10 +13,12 @@ are mirrored here) and, on the identity side, of :mod:`trigger_consent`:
   step, before any await) and fire a reconcile so delivery starts — never
   an agent-continuation dispatch.
 * Deny / expiry → the subscription stays undelivered; the next lifecycle
-  reconcile may re-prompt. After a Deny it is off on its own, and the Deny
-  fires the same reconcile an Approve does, so the subscriber's other
-  approved subscriptions route at once; after an expiry it is still
-  ``event_pending_ack`` and holds back the subscriber's others.
+  reconcile may re-prompt. A Deny is stored as a denial in :mod:`event_acks`
+  (the same synchronous commit step), so it is off on its own, also after a
+  restart, and the Deny fires the same reconcile an Approve does, so the
+  subscriber's other approved subscriptions route at once; after an expiry
+  nothing is stored: it is still ``event_pending_ack`` and holds back the
+  subscriber's others.
 
 **Deliberately standalone from the plugin-setup round ledger** (Critical-2,
 review round 1): unlike the trigger/callback consent flavors, event consent
@@ -151,18 +153,20 @@ def prompt_event_consent(
 
     def _on_commit_sync(idx: int, meta: dict) -> None:
         # Telegram callback, IMMEDIATELY after a successful commit (no await
-        # between): idx 0 -> persist the ack atomically; idx 1 -> no-op. An
-        # exception here is swallowed+logged by the callback; ``acked`` stays
-        # absent and the finish hook edits the internal-error text — a
-        # consent that failed to persist must never start delivery.
-        import consent_denials
+        # between): idx 0 -> persist the ack atomically; idx 1 -> persist
+        # the denial. An exception here is swallowed+logged by the callback;
+        # ``acked`` stays absent and the finish hook edits the internal-error
+        # text — a consent that failed to persist must never start delivery.
         if idx != 0:
-            # #494: latest decision is a Deny — commit-ordered record so the
-            # on-demand re-prompt path never nags past it (expiry records
-            # nothing; the finish hook owns that path).
-            consent_denials.record(consent_denials.key("event", identity))
+            # The latest decision is a Deny, stored beside the acks so the
+            # subscription stays off across a restart (#1666) and the
+            # on-demand re-prompt path never nags past it (#494). Expiry
+            # stores nothing; the finish hook owns that path. A Deny that
+            # could not be written leaves the subscription unanswered.
+            acks.deny(subscriber, artifact_id, emitter, event, digest,
+                      targets, time.time())
             return
-        consent_denials.clear(consent_denials.key("event", identity))
+        # ``record`` clears an earlier denial of this identity in its write.
         acks.record(subscriber, artifact_id, emitter, event, digest, targets,
                    time.time())
         meta["acked"] = True
@@ -198,17 +202,18 @@ def prompt_event_consent(
                         literal=True,
                     )
                     return
-                # Edit the SUCCESS state FIRST, then reconcile, then overwrite
-                # ONLY on failure (the authz edit-first ordering).
+                # #1642: take the buttons off at once, then write the result
+                # from the routing map and issues the reconcile produced. A
+                # subscriber's subscriptions are delivered all together, so
+                # this approval alone may deliver nothing; the card blames
+                # the other approvals only when they are its sole gap.
                 await channel.edit_dm_message(
-                    chat_id, message_id,
-                    f"✅ Enabled — '{subscriber}' now receives '{event}' "
-                    f"from '{emitter}' ({_target_roles(targets)})",
-                    literal=True,
-                )
+                    chat_id, message_id, "✅ Approved — checking…",
+                    literal=True)
+                issues: Any = ()
                 if reconcile_cb is not None:
                     try:
-                        await reconcile_cb()
+                        issues = await reconcile_cb() or ()
                     except Exception:  # noqa: BLE001 — surface, never raise
                         logger.exception(
                             "post-consent event reconcile failed "
@@ -220,6 +225,26 @@ def prompt_event_consent(
                             "failed — run plugin_verify",
                             literal=True,
                         )
+                        return
+                import event_reconcile
+                routed = event_reconcile.get_routed()
+                delivered = isinstance(routed, dict) and subscriber in (
+                    routed.get((emitter, event)) or {})
+                gaps = {i.get("reason_code") for i in issues
+                        if isinstance(i, dict) and i.get("name") == subscriber}
+                if delivered:
+                    text = (f"✅ Enabled — '{subscriber}' now receives "
+                            f"'{event}' from '{emitter}' "
+                            f"({_target_roles(targets)})")
+                elif gaps == {"event_pending_ack"}:
+                    text = (f"✅ Approved — '{subscriber}' starts receiving "
+                            f"'{event}' from '{emitter}' once its other "
+                            "subscriptions are approved too")
+                else:
+                    text = (f"✅ Approved — '{subscriber}' is not receiving "
+                            f"'{event}' yet. Ask me to check the plugin.")
+                await channel.edit_dm_message(
+                    chat_id, message_id, text, literal=True)
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id,

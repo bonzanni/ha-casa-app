@@ -478,6 +478,289 @@ class TestLeavingAnArtifactRevokesItsEventConsent:
             ("finance", w.fin_v1.artifact_id)]
 
 
+# #1671: the same for a plugin a specialist bundle owns. The bundle tools
+# (uninstall, install, upgrade, rollback) change owned plugins through their
+# own transaction and sequencer, not plugin_remove/plugin_update, and run the
+# REAL handlers and sequencer here. Stubbed: the library transactions (an
+# in-memory registry swap), the reload (reduced to the event reconcile it
+# runs) and the verify/health/own-chat side effects.
+
+_SLUG = "mtg"
+_OWNED = f"{_SLUG}.sub"
+
+
+def _bundle_world(monkeypatch, tmp_path, events=("mail_arrived",)):
+    """The owned plugin subscribes to each of gmail's *events*."""
+    import asyncio as _asyncio
+
+    import agent as agent_mod
+    import approval_records
+    import event_acks
+    import event_reconcile
+    import plugin_registry
+    import reload as reload_mod
+    import specialist_bundle_journal
+    import specialist_install
+    import tools as tools_mod
+    import trigger_acks
+    from plugin_events import subscribe_declaration_digest
+
+    monkeypatch.setattr(approval_records, "PATH",
+                        str(tmp_path / "approval-records.json"))
+    monkeypatch.setattr(approval_records, "_RECORDS", None)  # reread PATH
+    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", _asyncio.Lock())
+
+    def plugin(name, revision, emits=(), subs=(), owned=False):
+        casa = {}
+        if emits:
+            casa["emits"] = [{"name": n} for n in emits]
+        if subs:
+            casa["subscribes"] = [{"plugin": e, "event": ev} for e, ev in subs]
+        aid = plugin_registry.compute_artifact_id(
+            repo="acme/" + name, revision=revision, subdir="", name=name)
+        return SimpleNamespace(
+            name=name, artifact_id=aid, path="/x", version=revision,
+            manifest_name=name.split(".")[-1],
+            manifest={"name": name, "casa": casa}, owned=owned,
+            targets=[f"specialist:{_SLUG}"] if owned else ["resident:assistant"])
+
+    subs = [("gmail", ev) for ev in events]
+    gmail = plugin("gmail", "v1", emits=list(events))
+    sub_v1 = plugin(_OWNED, "v1", subs=subs, owned=True)
+    sub_v2 = plugin(_OWNED, "v2", subs=subs, owned=True)
+    standing = plugin_registry.PluginIssue(
+        name="weather", target="executor:browser", stage="registry",
+        reason_code=plugin_registry.IGNORED_EXECUTOR_TARGET, artifact_id=None)
+    state = {"plugins": [gmail, sub_v1]}
+
+    def resolver(target=None):
+        return SimpleNamespace(registry_valid=True,
+                               plugins=list(state["plugins"]),
+                               issues=[standing])
+
+    def entries():
+        return [{"name": p.name, "artifact_id": p.artifact_id,
+                 "targets": list(p.targets),
+                 **({"owner": f"specialist:{_SLUG}"} if p.owned else {})}
+                for p in state["plugins"]]
+
+    store = event_acks.EventAckStore(tmp_path / "event_acks.json")
+    monkeypatch.setattr(event_acks, "ACKS", store)
+    monkeypatch.setattr(event_reconcile, "_routed", {})
+    monkeypatch.setattr(event_reconcile, "_kick_worker", lambda: None)
+    monkeypatch.setattr(trigger_acks, "ACKS",
+                        trigger_acks.TriggerAckStore(tmp_path / "trig.json"))
+    runtime = SimpleNamespace(
+        role_configs={"assistant": SimpleNamespace(channels=["telegram"])},
+        channel_manager=None, agents={}, agents_dir=None)
+    monkeypatch.setattr(agent_mod, "active_runtime", runtime, raising=False)
+
+    # The store is read off the module at call time: a restart replaces it.
+    async def reconcile():
+        await event_reconcile.reconcile_plugin_events(
+            runtime, acks=event_acks.ACKS, resolver=resolver, entries=entries,
+            prompt=False)
+
+    def desired():
+        return event_reconcile.compute_desired(
+            role_configs=runtime.role_configs, acks=event_acks.ACKS,
+            resolver=resolver, entries=entries)
+
+    def restart():
+        """Casa restarts: the consent store is read again from its file and
+        the in-process denial registry is empty."""
+        import consent_denials
+        monkeypatch.setattr(event_acks, "ACKS", event_acks.EventAckStore(
+            tmp_path / "event_acks.json"))
+        monkeypatch.setattr(consent_denials, "_denied", set())
+
+    async def turn_off(event):
+        """The operator's ``event_ack_revoke`` for one subscription."""
+        await event_reconcile.revoke_and_unroute(
+            _OWNED, "gmail", event, operator_denied=True, resolver=resolver,
+            entries=entries)
+
+    # The agent/agents reload scopes run the event reconcile.
+    async def dispatch(scope, *, runtime, role=None):
+        await reconcile()
+        return {"status": "ok"}
+
+    async def nothing(*a, **k):
+        return None
+
+    async def no_engagements(slug, *, reason, acknowledged=None):
+        return []
+
+    monkeypatch.setattr(reload_mod, "dispatch", dispatch)
+    monkeypatch.setattr(plugin_registry, "reload_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(plugin_registry, "load_registry",
+                        lambda *a, **k: SimpleNamespace(valid=True))
+    monkeypatch.setattr(
+        plugin_registry, "owned_entries_for",
+        lambda slug, reg: [e for e in entries()
+                           if e.get("owner") == f"specialist:{slug}"])
+    monkeypatch.setattr(
+        plugin_registry, "resolve_for",
+        lambda t: SimpleNamespace(plugins=[p for p in state["plugins"]
+                                           if t in p.targets]))
+    monkeypatch.setattr(tools_mod, "_tool_verify_plugin_state",
+                        lambda plugin_name: {"ready": True, "reasons": [],
+                                             "targets": []})
+    monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
+                        lambda issues: None)
+    monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible", nothing)
+    monkeypatch.setattr(tools_mod, "_record_plugin_installer", lambda names: None)
+    monkeypatch.setattr(tools_mod, "_own_chat_hook", nothing)
+    monkeypatch.setattr(tools_mod, "_own_chat_disclosure", lambda role: None)
+    monkeypatch.setattr(tools_mod, "_bound_persona", lambda slug: None)
+    monkeypatch.setattr(tools_mod, "_open_specialist_engagements",
+                        lambda slug: [])
+    monkeypatch.setattr(tools_mod, "close_specialist_engagements",
+                        no_engagements)
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree",
+                        lambda p: None)
+    monkeypatch.setattr(specialist_bundle_journal, "complete", lambda p: None)
+
+    # The library transactions, reduced to the owned-plugin swap they commit.
+    def swap_to(target):
+        before = [p for p in state["plugins"] if p.owned]
+        state["plugins"] = [gmail] + ([target] if target else [])
+        removed = tuple(p.artifact_id for p in before
+                        if target is None or p.artifact_id != target.artifact_id)
+        return SimpleNamespace(
+            slug=_SLUG, removed_artifact_ids=removed, new_artifact_ids=(),
+            removed_owned_names=(), journal_path=str(tmp_path / "j.json"),
+            before_entries=[{"name": p.name, "artifact_id": p.artifact_id}
+                            for p in before])
+
+    def activated(target):
+        return (SimpleNamespace(slug=_SLUG, state="active",
+                                last_activation_error=None), swap_to(target))
+
+    monkeypatch.setattr(specialist_install, "uninstall_specialist",
+                        lambda **k: swap_to(None))
+    monkeypatch.setattr(specialist_install, "commit_specialist_install",
+                        lambda *a, **k: activated(sub_v1))
+    monkeypatch.setattr(specialist_install, "upgrade_specialist",
+                        lambda **k: activated(sub_v2))
+    monkeypatch.setattr(specialist_install, "rollback_specialist",
+                        lambda **k: activated(sub_v1))
+
+    # The operator approved the owned plugin's subscription on v1.
+    store.record(_OWNED, sub_v1.artifact_id, "gmail", "mail_arrived",
+                 subscribe_declaration_digest(
+                     {"plugin": "gmail", "event": "mail_arrived"}),
+                 [f"specialist:{_SLUG}"], 1.0)
+    return SimpleNamespace(tools=tools_mod, er=event_reconcile, sub_v1=sub_v1,
+                           reconcile=reconcile, desired=desired,
+                           restart=restart, turn_off=turn_off)
+
+
+def _staged_bundle(monkeypatch, tmp_path) -> dict:
+    """The tool arguments for a staged component of the bundle's slug."""
+    import specialist_receipt
+    from specialist_component import load_specialist_component
+    from specialist_install import (
+        compute_install_root_digest, resolve_dependency_closure)
+    from test_specialist_install import _write_component
+    staged = _write_component(tmp_path / ".staging" / "staged", slug=_SLUG)
+    component = load_specialist_component(staged, staged / "manifest.json")
+    digest = compute_install_root_digest(
+        component, resolve_dependency_closure(component, staged),
+        manifest_bytes=(staged / "manifest.json").read_bytes())
+    monkeypatch.setattr(specialist_receipt, "load", lambda rid, *a, **k: (
+        SimpleNamespace(receipt_id=rid, receipt_digest="", slug=_SLUG,
+                        plugins=())))
+    return {"component_id": component.component_id,
+            "version": component.version, "slug": _SLUG,
+            "staged_dir": str(staged), "root_digest": digest,
+            "receipt_id": "7" * 32}
+
+
+def _owned_routed(er) -> bool:
+    return _OWNED in er.get_routed().get(("gmail", "mail_arrived"), {})
+
+
+@pytest.mark.asyncio
+class TestLeavingASpecialistBundleRevokesItsEventConsent:
+    async def test_a_reinstall_after_uninstall_asks_again(
+            self, monkeypatch, tmp_path):
+        from test_tools_specialist_install import _approved_call, _payload
+        args = _staged_bundle(monkeypatch, tmp_path)
+        w = _bundle_world(monkeypatch, tmp_path)
+        await w.reconcile()
+        assert _owned_routed(w.er)                 # approved and delivering
+        assert w.desired().prunable is False       # the prune never runs here
+
+        res = _payload(await w.tools.specialist_uninstall.handler(
+            {"slug": _SLUG}))
+        assert res["ok"] is True, res
+        res = _payload(await _approved_call(
+            w.tools.specialist_install_commit, args))  # the same revision
+        assert res["ok"] is True, res
+
+        assert not _owned_routed(w.er)
+        pending = w.desired().consent_needed
+        assert [(p["subscriber"], p["artifact_id"]) for p in pending] == [
+            (_OWNED, w.sub_v1.artifact_id)]
+
+    # #1666: a subscription the operator turned off is remembered in the same
+    # store, and leaves with the artifact the same way — also when the
+    # subscriber holds nothing but denials there.
+    @pytest.mark.parametrize("turned_off", [
+        ["mail_read"], ["mail_read", "mail_arrived"]])
+    async def test_a_reinstall_after_uninstall_asks_again_for_one_turned_off(
+            self, monkeypatch, tmp_path, turned_off):
+        from test_tools_specialist_install import _approved_call, _payload
+        args = _staged_bundle(monkeypatch, tmp_path)
+        w = _bundle_world(monkeypatch, tmp_path,
+                          events=("mail_arrived", "mail_read"))
+        for event in turned_off:
+            await w.turn_off(event)
+        # The answer is on file and in effect after a restart — otherwise
+        # "asks again" below could not tell a denial the uninstall dropped
+        # from one that was never kept. Off by the operator's answer:
+        # nothing waits for approval, and what is still approved delivers.
+        w.restart()
+        await w.reconcile()
+        assert w.desired().issues == []
+        assert _owned_routed(w.er) is ("mail_arrived" not in turned_off)
+        assert w.desired().prunable is False       # the prune never runs here
+
+        res = _payload(await w.tools.specialist_uninstall.handler(
+            {"slug": _SLUG}))
+        assert res["ok"] is True, res
+        w.restart()
+        res = _payload(await _approved_call(
+            w.tools.specialist_install_commit, args))  # the same revision
+        assert res["ok"] is True, res
+
+        # both are unanswered again: neither approved nor turned off
+        assert w.er.get_routed() == {}
+        assert [(i["name"], i["reason_code"]) for i in w.desired().issues] == [
+            (_OWNED, "event_pending_ack"), (_OWNED, "event_pending_ack")]
+
+    async def test_a_rollback_after_upgrade_asks_again(
+            self, monkeypatch, tmp_path):
+        from test_tools_specialist_install import _approved_call, _payload
+        args = _staged_bundle(monkeypatch, tmp_path)
+        w = _bundle_world(monkeypatch, tmp_path)
+        await w.reconcile()
+        assert _owned_routed(w.er)
+
+        res = _payload(await _approved_call(w.tools.specialist_upgrade, args))
+        assert res["ok"] is True, res
+        res = _payload(await w.tools.specialist_rollback.handler(
+            {"slug": _SLUG}))
+        assert res["ok"] is True, res
+
+        assert not _owned_routed(w.er)
+        pending = w.desired().consent_needed
+        assert [(p["subscriber"], p["artifact_id"]) for p in pending] == [
+            (_OWNED, w.sub_v1.artifact_id)]
+
+
 # ---------------------------------------------------------------------------
 # Health merge — event_reconcile.current_issues() folds in as dicts.
 # ---------------------------------------------------------------------------

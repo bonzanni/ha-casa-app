@@ -11,7 +11,7 @@ last_reviewed: 2026-11-07
 How the optional `casa_browser/` app runs a browsing task: one leased run at a time, its
 browser sessions and policy, its broker and driver calls and every way
 it ends — `casa_browser/rootfs/opt/casa_browser/controller.py` (`RunController`, which the
-`/v1` routes of [`casa-browser.md`](casa-browser.md) await) and the s6 unit
+`/v1` routes of [`casa-browser-protocol.md`](casa-browser-protocol.md) await) and the s6 unit
 `svc-browser-controller`. The components it composes have their own documents: the request
 policy and the store ([`casa-browser.md`](casa-browser.md)), the floor and the proxy
 ([`casa-browser-runtime.md`](casa-browser-runtime.md)), Chrome
@@ -20,7 +20,7 @@ policy and the store ([`casa-browser.md`](casa-browser.md)), the floor and the p
 ([`casa-browser-files.md`](casa-browser-files.md)), the operator's questions
 ([`casa-browser-approvals.md`](casa-browser-approvals.md)), and the broker and login driver
 ([`casa-browser-credentials.md`](casa-browser-credentials.md)), and the ingress pages and the
-live view's screens, sockets and window ([`casa-browser-ingress.md`](casa-browser-ingress.md)),
+live view's screens, sockets and window ([`casa-browser-ingress.md`](casa-browser-ingress.md), [`casa-browser-live-view.md`](casa-browser-live-view.md)),
 whose `LiveView` is the controller's grant issuer.
 
 ## Mental model
@@ -219,7 +219,7 @@ confirmed. An account run whose `end_run` is unacknowledged is also written to t
 `owed_releases` before it takes its state, so the obligation survives a controller restart.
 A run that is ending
 never gets another install. `cancel` is idempotent; a queued run is cancelled by its transition
-alone; the request cancel takes the same path ([`casa-browser.md`](casa-browser.md)). There is no run-duration limit: time is a progress signal (events carry their time).
+alone; the request cancel takes the same path ([`casa-browser-protocol.md`](casa-browser-protocol.md)). There is no run-duration limit: time is a progress signal (events carry their time).
 
 **Service start.** Before a run is ended or begun: `status()`; a policy a previous controller
 left installed is revoked, then the launcher's exit proof — both retried every 5 s until

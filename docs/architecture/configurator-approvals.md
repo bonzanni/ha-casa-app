@@ -15,7 +15,7 @@ request that changes nothing and asks nothing, and the continuations an erasure 
 configurator. The configurator itself, its lease and its other origins are
 [`configurator.md`](configurator.md); what the card says about the component and its digests,
 and the consent ack the library checks, are
-[`specialist-lifecycle.md`](specialist-lifecycle.md) and
+[`specialist-install-consent.md`](specialist-install-consent.md), [`specialist-lifecycle.md`](specialist-lifecycle.md) and
 [`persona-lifecycle.md`](persona-lifecycle.md); the lane a run waits for is
 [`agent-lane.md`](agent-lane.md).
 
@@ -41,7 +41,7 @@ value, marks the ones the request did not submit `(kept from the current setting
 the secrets provided, never their values (`specialist_install_consent.render_settings_lines`).
 A consent text over the challenge size limit is cut to its leading whole lines and a count of
 the ones left out, which can leave settings off the fallback card
-([`specialist-lifecycle.md`](specialist-lifecycle.md)). Either way the approval binds the frozen values, not the card's wording. A newer request for
+([`specialist-install-consent.md`](specialist-install-consent.md)). Either way the approval binds the frozen values, not the card's wording. A newer request for
 the same component replaces the record, and the older card is edited to say "Replaced by a
 newer request; nothing was installed." (or "updated"); a card still being written when that
 happens is never posted, and the older request is told `approval_superseded`. Deny and an

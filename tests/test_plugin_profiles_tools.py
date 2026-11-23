@@ -424,3 +424,21 @@ async def test_a_wider_profile_covers_a_narrower_named_requirement(monkeypatch, 
     assert st.log.count("save") == 1
     assert st.raw["plugins"][0]["profiles"] == {"specialist:finance": "wide"}
     assert st.raw["plugins"][0]["targets"] == ["specialist:finance"]
+
+
+def test_each_unmet_requirement_of_one_plugin_has_its_own_fingerprint(tmp_path):
+    """#1647: a plugin recommending two plugins for one target must not have
+    its rows collapse into one announcement identity, or a later, different
+    unmet recommendation is treated as already announced."""
+    import plugin_health
+    import plugin_requirements
+    _store_manifest(tmp_path, "quarterly", "a" * 64,
+                    {"requires": [{"plugin": "b", "why": "x"},
+                                  {"plugin": "c", "why": "y"}]}, servers=("q",))
+    entry = _entry("quarterly")
+    entry["targets"] = ["resident:assistant"]
+    entry["artifact_id"] = "a" * 64
+    rows = plugin_requirements.unmet_requirement_issues(
+        {"plugins": [entry]}, tmp_path / "store")
+    assert sorted(r.detail["plugin"] for r in rows) == ["b", "c"]
+    assert len({plugin_health.fingerprint(r) for r in rows}) == 2

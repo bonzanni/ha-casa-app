@@ -260,13 +260,10 @@ class TestEventAckRevokeTool:
         stopping this test from exercising the ACTUAL lock
         ``revoke_and_unroute`` and the worker's pre-send gate share."""
         import agent as agent_mod
-        import consent_denials
         import event_episodes
         import event_reconcile
         import tools
 
-        # the real revoke records a Deny; keep it out of later tests
-        monkeypatch.setattr(consent_denials, "_denied", set())
         acks = EventAckStore(path=tmp_path / "acks.json")
         digest = subscribe_declaration_digest({"plugin": EMITTER, "event": EVENT})
         acks.record(SUBSCRIBER_A, "art-1", EMITTER, EVENT, digest,
@@ -292,11 +289,11 @@ class TestEventAckRevokeTool:
         observed = {}
         real_revoke = acks.revoke_subscriber
 
-        def spy(subscriber):
+        def spy(subscriber, **denial):
             routed = event_reconcile.get_routed()
             observed["still_routed"] = subscriber in (
                 routed.get((EMITTER, EVENT)) or {})
-            return real_revoke(subscriber)
+            return real_revoke(subscriber, **denial)
 
         acks.revoke_subscriber = spy
 
@@ -305,6 +302,8 @@ class TestEventAckRevokeTool:
         payload = _payload(res)
         assert payload["ok"] is True
         assert acks.get(identity) is None
+        # the tool's revoke is the operator's Deny, kept in the store's file
+        assert EventAckStore(path=tmp_path / "acks.json").is_denied(identity)
 
     async def test_registered_in_casa_tools(self):
         import tools

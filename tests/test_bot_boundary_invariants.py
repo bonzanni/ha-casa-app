@@ -1437,6 +1437,7 @@ def _c_no_denials(h):
 def _c_acks() -> MagicMock:
     acks = MagicMock()
     acks.get = MagicMock(return_value=None)
+    acks.is_denied = MagicMock(return_value=False)
     return acks
 
 

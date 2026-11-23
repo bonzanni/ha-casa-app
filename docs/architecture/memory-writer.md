@@ -45,7 +45,7 @@ at the end of a session (an explicit reset); and right after a correction mark. 
 measured by `seq`, which the store assigns inside its single write transaction, so an event a
 run's read snapshot missed always counts as not given, whenever it was stamped. Nightly, at 03:30 in
 the operator's zone, a pass queues `condense` (an entry over 1 024 tokens), `regroup` (a
-ledger whose view overflows a served role's budget even at its coarsest index level, so
+ledger whose view overflows the budget of a role that reads it even at its coarsest index level, so
 groups and topics are added only when the level below no longer fits) and a retry of every
 failed job. The nightly pass writes no
 ledger row itself.
@@ -214,8 +214,8 @@ failure count and possibly a notice) describes the store, not the job, and a req
 no state beyond the job's id.
 
 **The meter.** After every commit and every failure, `memory.meter.persist` stores in
-`meta` the per-ledger entry count and tokens, unreachable objects, each served role's view of
-the ledger (whole or index, its size, and whether it overflows the role's budget at the
+`meta` the per-ledger entry count and tokens, unreachable objects, the view of each
+role that reads the ledger (whole or index, its size, and whether it overflows the role's budget at the
 coarsest level), the twenty largest entries (ids and sizes), the week's growth, pending events with the oldest, pending corrections and
 failed jobs, plus provisional events, the spool's size, the transcript runs an earlier
 process left unconfirmed (unresolved, INV-MEM-031), each open session's

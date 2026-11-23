@@ -14,6 +14,8 @@ opening, the journal that holds updates until the agent can take them, dormancy,
 release. What the chat is for once open — the capability rule, a task's delivery and
 requester, the agent's conversation, own-chat routing — is [`own-voice.md`](own-voice.md); the
 per-bot transport these bots run on is [`telegram-bots.md`](telegram-bots.md).
+A move to a new bot, a return to an earlier one and a renamed bot are
+[`own-voice-switch.md`](own-voice-switch.md).
 
 ## Mental model
 
@@ -54,8 +56,8 @@ BotFather once; Casa never gates on `getMe.can_manage_bots`, which lags that swi
 
 **Binding: match or ask, one bot per agent.** A new bot binds to the waiting agent (one
 with no bot and no pending change) whose current suggested username it has, in any case;
-the display name is not compared (see below). A bot whose username is a
-pending change's current suggestion starts that agent's switch instead (below). With no
+the display name is not compared (see [`own-voice-switch.md`](own-voice-switch.md)). A bot whose username is a
+pending change's current suggestion starts that agent's switch instead ([`own-voice-switch.md`](own-voice-switch.md)). With no
 single match Casa asks in the resident's chat ("A new bot @… was just created. Which agent
 is it for?"), offering the waiting agents, then the agents whose pending change has no bot
 yet — never an agent with a bot and no change — and "None — I'll delete it", so a bot
@@ -76,64 +78,6 @@ for it, else the persona's), description, short description, the one `/new` comm
 restricted to its owner, the persona's picture (set, changed or removed) — each call
 idempotent, re-run whenever the digest of the values it applies changes (a persona apply or
 a rename included). A refused picture never fails the binding.
-
-**A new bot for an agent.** The operator asks the resident for a new handle and she calls
-`offer_own_chat` with mode `replace`. It is refused while anything still waits on the
-agent's current bot (`own_voice.open_on_bot`, which names each kind it finds; see
-[`own-voice.md`](own-voice.md)), so she can say what is open and that the change can happen
-once it is done. Otherwise the handle meets the same refusals as an offer, the agent's
-record gains a pending `change` (the old bot and its username), and the card reads "Alex
-can move to a new chat with you, replacing @old. Tap below, then Create." A new handle
-replaces the suggestion and keeps the change; mode `drop` cancels it while its bot does not
-exist yet ("Alex keeps @old."). A created bot whose username is exactly that change's
-current suggestion turns it, under the registry lock, into a **pending switch**: the bot is
-recorded in phase `switching` and is never bound in this process; its endpoint holds what
-it receives and says once that the chat is being set up. Casa edits the card ("Alex is
-moving to @new and says hi there in a moment.", which never mentions the restart) and asks the Supervisor for a restart
-(`supervisor_restart`), which answers only once Casa has stopped, so nothing Casa's stop
-waits for may be awaiting it — after the restart step's own busy check. At boot `casa_core._apply_own_chat_switches`
-(→ `Lifecycle.apply_switches`) runs once the durable stores and the tools are loaded and
-before the plugin outbox, the agents, Telegram, the workers, the HTTP server, the channels
-and the scheduler start; it reads only Casa's records and the token store. For each
-pending switch it asks `open_on_bot` again, durable kinds only: if anything still waits on
-the old bot the switch stays pending, the old bot boots as usual, and the card says Alex
-still had something open there; asking again with `replace` once it is done requests
-another restart, with no new bot to create. Otherwise it **retires** the old bot — its held
-journal and its stored token (vault item or file) go, and its record stays, `released`,
-with its role and handle and no setup digest — and hands the new bot to the ordinary
-binding as `binding`; every step is persisted and idempotent, so a
-crash re-runs it from what is on disk. The agent keeps the old handle (`moved_from`) until
-its new chat opens. The move's cards are new messages, since the offer card is far up the
-resident's chat by then and an edit there goes unnoticed: the switch clears the agent's
-offer card, so the binding posts the ready card ("Alex's new chat is ready: @…. Open it and
-say hi.") as a new message, which later restarts edit; a bound agent whose chat is not
-open and whose card is missing (a post that failed) gets it posted at the next restart. The opening turn tells the agent the
-chat is its new one, and Casa posts "Alex has moved to @new. You can delete @old now." with
-a "Delete @old" button opening BotFather's delete flow, and edits the ready card to "Alex's
-new chat is open." (a post that fails puts that text and button on the ready card instead). Nothing moves from the old chat: its history stays there, and what
-was sent to either bot around the restart may be lost. An uninstall drops a pending change
-whose bot does not exist yet, and retires a pending switch's new bot together with the old
-one (below).
-
-**Back to an earlier bot.** A released bot is no agent's bot: `bot_of`, the chat-opening
-reads (`_role_of`), the boot steps and intake all pass it by. For the agent it was moved
-away from, `check` reports its handle `used_before` (unless the handle was ever offered to
-another agent); for every other agent nothing changes, so a bot is never offered to another
-agent. Offering that handle (`replace`, after the same busy check, or `offer` for an agent
-with no bot) posts no card: Casa fetches the bot's token with `getManagedBotToken`. Refused,
-no agent or card changes and the result says so — `bot_gone` when Telegram reports the bot
-deleted (Casa then forgets its record, so the handle is an ordinary one again) or
-`bot_unreachable`. Fetched, the bot becomes the pending change's new bot in phase
-`switching`, under the registry lock (unless a bot created from an earlier offer claimed
-the change meanwhile), and Casa asks for the restart as for a created bot; the switch binds
-it and its self-setup runs afresh.
-
-**The bot's name.** Mode `rename`, or a name typed over the current Create form's pre-filled one,
-stores the operator's chosen display name as the agent's suggestion name (1–64 characters, `setMyName`'s limit) — a suggestion name equal to the
-persona name recorded beside it counts as none, so an older offer's stored persona name
-follows the persona. Self-setup applies it, so a bound bot takes it at once with its own
-token, with no new bot and no restart, and a refused call is made again at the next boot;
-later offers keep it for the Create form and the next bot. Cards keep the persona's name.
 
 **The agent speaks first; the chat opens once Telegram takes a turn's reply or the operator
 writes.** The card becomes "Alex's chat is ready: @…. Open it and say hi." (after a move,
@@ -217,8 +161,6 @@ not authorized no fetch is tried and the log says so once. An uninstall's result
 
 **INV-OWN-012**: A bot is registered only from the operator's own `managed_bot_created` message to Casa's bot in his chat, and bound to an agent only when its username equals that agent's current suggestion (a waiting agent's first bot, or a pending change) or the operator names a waiting agent or one with a pending change; a bot is never rebound to another agent, and an agent has one bound bot at a time.
 
-**INV-OWN-015**: A pending switch is applied only by the boot step that runs before Casa's HTTP server, channels, workers and scheduler start, and only when no durable record still waits on the old bot; it drops the old bot's held journal and stored token and keeps its record as `released`, no agent's bot, before the new bot enters binding, and a stored token is used only for the bot whose id it begins with.
-
 **INV-OWN-016**: An offer's handle is refused when it is not a valid bot username, when it was ever offered to another agent, or when the t.me probe shows it taken — except the handle of a released bot of the same agent, which records that bot as the agent's pending change only once its token was fetched; a released bot of another agent is never offered, and a probe that cannot complete refuses nothing.
 
 ## Failure behavior
@@ -232,23 +174,6 @@ token is fetched again, and a held journal is released once the conversation's q
 registered (`_reconcile_own_chats`, after the channels start and before replays and job
 resumes). Pending switches are applied earlier, before anything can start a bot. The
 graceful stop cancels pending retries before the channels stop.
-
-**Something open on the old bot.** When the new bot is created or picked (any kind) or at
-the boot step (durable kinds): no restart, the switch stays pending, the old bot runs as
-usual, and the card says the move waits until it is done. A boot step that
-fails is logged and never stops the boot; the switch is tried again at the next one.
-
-**The restart request fails.** The card says "Alex moves to @new when Casa next restarts.",
-the tool answers `restart_failed`, and the switch completes at the next restart.
-
-**The old bot's token cannot be deleted.** Logged; the switch goes on. The binding writes the
-same vault item in place, and a stored token of another bot is never used.
-
-**An earlier bot Telegram will not hand back.** Nothing moves and no card is posted; the
-result says the bot is gone or not reachable, and the resident tells the operator.
-
-**A store `open_on_bot` reads fails.** Logged, and reported as "something Casa could not
-check": the change waits rather than going ahead blind.
 
 **A turn taken but the mark not written.** A crash after the agent's queue accepted the opening
 turn and before `chat_open_at` was written leaves the chat unopened, so its next operator turn
@@ -272,8 +197,6 @@ the opening line too, but the chat is marked open, and its cards posted, once.
 ## Extension points
 
 **A new phase** persists its name before its effect and adds its boot step to `BOOT_STEPS`.
-**A new kind of open item on a bot** (something that waits on an agent's current bot) joins
-`own_voice.open_on_bot`, marked durable when it survives a restart.
 **A new path that hands an operator's turn to an agent's queue** goes through
 `TelegramChannel._send_turn`, so a turn that opens the chat marks it open once it is taken.
 
@@ -292,18 +215,12 @@ the opening line too, but the chat is marked open, and its cards posted, once.
 - `casa/rootfs/opt/casa/own_voice.py::chat_opening`
 - `casa/rootfs/opt/casa/own_voice.py::mark_open`
 - `casa/rootfs/opt/casa/own_voice.py::chat_moved`
-- `casa/rootfs/opt/casa/own_voice.py::open_on_bot`
-- `casa/rootfs/opt/casa/own_voice.py::apply_switches_at_boot`
-- `casa/rootfs/opt/casa/casa_core.py::_apply_own_chat_switches`
 
 **Tests**
 - `tests/test_own_voice_lifecycle.py`
 - `tests/test_managed_bot_signals.py`
 - `tests/test_own_chat_routing.py`
 - `tests/test_own_voice_conversation.py`
-- `tests/test_own_chat_open_items.py`
-- `tests/test_own_chat_switch_boot.py`
-- `tests/test_own_chat_move_back_and_rename.py`
 
 **Related**
 - [`architecture/own-voice.md`](../architecture/own-voice.md)
@@ -311,4 +228,5 @@ the opening line too, but the chat is marked open, and its cards posted, once.
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/persona-lifecycle.md`](../architecture/persona-lifecycle.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
+- [`architecture/own-voice-switch.md`](../architecture/own-voice-switch.md)
 <!-- END SOURCEMAP -->

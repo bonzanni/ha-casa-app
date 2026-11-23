@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.381.7] - 2026-11-23
+
+### Fixed
+
+- A plugin event subscription you turned off, by asking for it to be revoked or by tapping Deny on its card, now stays off after Casa restarts, and the plugin's other approved subscriptions keep delivering. Revoking one you had not answered yet turns it off the same way. This lifts the limit stated in 0.381.5 (#1666).
+- When a specialist is uninstalled and reinstalled, or upgraded and rolled back, its plugin's event subscriptions ask for your consent again instead of quietly resuming (#1671).
+- A specialist that hands work to another agent that is out of service until Casa restarts now gets the plain line saying so, instead of a wasted run. A hand-off also waits its turn behind the other work of the agent it goes to, and says that agent is busy if it is not let in within a minute (#1639).
+- Approving one of a plugin's webhooks or event subscriptions no longer shows "Enabled" while it is still not working. The buttons go at once, and the card then says it is enabled, or that it waits for the plugin's other approvals, or that it is not active yet (#1642).
+- When an event delivery reaches its last wake-up, the agent can still acknowledge it. You are told the delivery went unanswered only if that last wake-up really passes without an answer, an hour later (#1643).
+- Giving the configurator a multi-line value for a plugin setting, such as a PEM key, is now refused with a message to keep it in the vault and wire it by reference. Until now it was stored cut to its first line and reported as saved (#1638).
+- A daily or weekly reminder set between 02:00 and 02:59 no longer arrives twice on the night the clocks go back (#1648).
+- When a plugin recommends several other plugins for one agent, each unmet recommendation is announced. Until now, later ones were treated as already announced (#1647).
+- A file an agent sends shows its caption's bold, links and dates as formatting instead of literal asterisks and link syntax (#1661).
+- A task started with a very long request of many lines shows its "asked:" post as one clipped message instead of two (#1662).
+- A file sent without a name is no longer called "a photo" in the agent's file listing unless it is an image (#1640).
+- A voice reply containing a bare "<", as in "below < 19", no longer holds the following sentences back and splits a word across two utterances (#1646).
+- The nightly memory pass no longer restructures the private memory because a role that only reads the friends memory has a smaller budget, and the meter no longer reports it as overflowing for that reason (#1659).
+- The cost on each turn's log line, and the specialist cost total behind the cost alert, count what that turn cost instead of adding up the conversation's running total, so the alert no longer fires early on long specialist conversations (#1655).
+- `casactl reload` prints each unit that failed to load and exits with an error, instead of printing ok (#1650).
+
 ## [0.381.6] - 2026-11-23
 
 ### Fixed

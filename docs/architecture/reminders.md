@@ -138,7 +138,9 @@ to rewrite the file at all.
 **A recurring reminder keeps its first occurrence as an anchor.** The derived cron fields
 drive the recurrence — evaluated in the scheduler's timezone, which is what keeps a series
 firing at the same local time across a DST boundary — while the anchor becomes the
-scheduler's start date, so "every Thursday from the 20th" cannot fire on the 6th.
+scheduler's start date, so "every Thursday from the 20th" cannot fire on the 6th. When the
+clock goes back and a local time happens twice, a recurring reminder fires only at the first
+pass (#1648), so "every day at 02:30" arrives once that night.
 
 **What a cron cannot express exactly is refused, not approximated.** A repeating reminder must
 land on a whole minute, and a monthly one on the 28th or earlier — cron has minute resolution
@@ -197,7 +199,7 @@ The configurator's trigger edits now come through the same module, by a second p
 doors bounded the opposite way: they refuse an entry marked agent-owned, in the submitted
 entry *and* in the entry they would replace. That is not a convenience — the configurator
 runs in a separate process, and its hand edit of this file discarded reminders silently
-(INV-TRIG-011 in [`architecture/triggers.md`](triggers.md)).
+(INV-TRIG-011 in [`architecture/trigger-file-writers.md`](trigger-file-writers.md)).
 
 An update is a WHOLE-ENTRY replacement, so a field the caller does not send is a field that
 disappears. For most keys that is fine: the operator reads the diff and can put it back. A

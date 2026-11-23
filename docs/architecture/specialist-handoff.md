@@ -69,7 +69,9 @@ the requester's own answer. The target is any loaded specialist, by role id or b
 persona display name exactly one specialist carries; no declaration is needed. The run
 writes no job row (the chain's root delegation owns the durable record; a chain that
 started in a specialist's own chat has none, and is that conversation's turn), posts no
-hand-off line, and carries a fresh send-quota key.
+hand-off line, and carries a fresh send-quota key. Like a delegation, it is one use of the
+target's lane ([`agent-lane.md`](agent-lane.md)): it waits behind the target's other uses,
+and its queue place is reserved before its run exists.
 
 **From its own chat a specialist is the chain's root.** A turn of a specialist's own chat
 runs under no delegation, so a hand-off made there starts a chain whose first requester is
@@ -134,7 +136,13 @@ bounds (INV-ENG-025).
 kind (`timeout` for its ceiling), never a partial answer; its own run continues.
 **The caller's run is cancelled.** The hand-off's run is cancelled with it and its permit
 is released when that run actually ends. **The target already runs for this chat.** The
-call is `busy`. **Casa restarts.** The whole chain is lost with the process; the root
+call is `busy`, as it is when the target's lane queue is full. **The target's lane stays
+held.** The wait to be admitted is bounded by the sync delegation's wait
+(`_SYNC_WAIT_TIMEOUT_S`, 60 s); past it the call is `busy` ("busy with other work — try
+again later") and its queue place is given back, so two runs handing off to each other,
+each holding its own lane, both end. The bound never cuts a run once admitted. **The target is out of
+service.** The call is `agent_faulted` with the line that says a restart is needed, and the
+target does not run, also when the fault came while the hand-off waited. **Casa restarts.** The whole chain is lost with the process; the root
 delegation's row is reported to its resident as any lost delegation is
 ([`delegation-announcements.md`](delegation-announcements.md)).
 

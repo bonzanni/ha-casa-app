@@ -182,7 +182,10 @@ def unmet_requirement_issues(raw, store_root) -> list:
                 if state == SATISFIED:
                     continue
                 rows.append(PluginIssue(
-                    name=e.get("name"), target=t, stage="requires",
+                    # The required plugin is in the stage so each recommendation
+                    # has its own announcement fingerprint (detail is not hashed).
+                    name=e.get("name"), target=t,
+                    stage=f"requires:{req['plugin']}",
                     reason_code=REASON_UNMET, artifact_id=e.get("artifact_id"),
                     detail={"plugin": req["plugin"], "profile": req.get("profile"),
                             "why": req["why"], "state": state}))

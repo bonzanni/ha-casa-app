@@ -13,6 +13,7 @@ real ``Agent._process`` with the CLI client stubbed.
 from __future__ import annotations
 
 import asyncio
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -496,3 +497,28 @@ async def test_an_engagement_owes_every_correction_filed_since_it_started(
     for prompt in _EngagementClient.prompts[1:]:
         assert 'his words: "the city is Milan"' in prompt
         assert "4417" not in prompt
+
+
+def test_seed_waits_out_a_write_that_holds_the_lock(tmp_path):
+    """seed() stores even when a turn's own write still holds the write lock
+    for longer than the turn-path bound (the job rig returns while those
+    writes run), instead of spooling."""
+    from memory_writer_support import new_store, rows
+    store = new_store(tmp_path)
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with store.transaction(write=True):
+            held.set()
+            release.wait(5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    assert held.wait(5)
+    threading.Timer(0.3, release.set).start()
+    try:
+        seq = seed(store, "kept after a slow commit")
+    finally:
+        release.set()
+        t.join()
+    assert rows(store, "SELECT seq FROM events WHERE seq = ?", seq)
