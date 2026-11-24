@@ -10124,6 +10124,10 @@ async def set_contact_marks(args: dict) -> dict:
 
 _PRIORITY_CARD_OPTIONS = ["Approve", "Cancel"]
 _PRIORITY_NOT_CHANGED = "Not changed."
+#: How long the priority card waits for a tap. Short on purpose: while it
+#: waits it holds the operator's authz lane, which a scheduled question needs
+#: free; he is in the chat when he asks, and can ask again.
+_PRIORITY_CARD_TIMEOUT_S = 300.0
 
 
 async def _contact_priority_card(person, applied: dict) -> dict:
@@ -10163,7 +10167,7 @@ async def _contact_priority_card(person, applied: dict) -> dict:
                       "Priority callers are put through to you."])
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
-        timeout_s=86400.0, detached=True, supersede=False,
+        timeout_s=_PRIORITY_CARD_TIMEOUT_S, detached=True, supersede=False,
         meta={
             "options": list(_PRIORITY_CARD_OPTIONS),
             "bot_id": bot_id,
@@ -10225,7 +10229,8 @@ async def _contact_priority_card(person, applied: dict) -> dict:
         return _reply("error", (
             f"{name} was not made priority: the confirmation card could not "
             "be posted."))
-    return _reply("awaiting_user", "Asked the operator to confirm on a card.",
+    return _reply("awaiting_user", ("Asked the operator to confirm on a card. "
+                                    "The card expires after five minutes."),
                   request_id=rid)
 
 

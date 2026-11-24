@@ -26,7 +26,8 @@ CASA_BOT = 111
 OPERATOR = 500
 SCOPE = f"authz:{CASA_BOT}:{OPERATOR}"
 
-ASKED = "Asked the operator to confirm on a card."
+ASKED = ("Asked the operator to confirm on a card. "
+         "The card expires after five minutes.")
 CARD = ("Make priority?\n\n"
         "Marco Example\n+31201110001\n+31201110009\n\n"
         "Priority callers are put through to you.")
@@ -170,7 +171,7 @@ async def test_priority_true_posts_card_and_changes_nothing_yet(
     assert broker.pending(namespace="resident_ask", scope=SCOPE) == [
         got["request_id"]]
     req = broker._live[("resident_ask", SCOPE, got["request_id"])]
-    assert req.timeout_s == 86400.0
+    assert req.timeout_s == 300.0
     assert {k: v for k, v in req.meta.items() if k != "message_id"} == {
         "options": ["Approve", "Cancel"], "bot_id": CASA_BOT,
         "chat_id": OPERATOR, "operator_id": OPERATOR,
@@ -215,7 +216,7 @@ async def test_cancel_and_timeout_change_nothing(
 
     channel.edits.clear()
     got = await _ask()
-    broker._on_timeout(("resident_ask", SCOPE, got["request_id"]))  # a day on
+    broker._on_timeout(("resident_ask", SCOPE, got["request_id"]))  # 5 min on
     await asyncio.wait_for(broker.drain_hooks(), 5)
     assert channel.edits == [(OPERATOR, 42, f"{CARD}\n\nNot changed.")]
     assert _rows(opened) == []
