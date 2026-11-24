@@ -1,0 +1,27 @@
+{
+  "name": "stranger_real_emergency",
+  "group": "transfer",
+  "caller": {
+    "known": false,
+    "priority": false,
+    "first_name": "",
+    "name": "",
+    "language": "en"
+  },
+  "transfer_level": "emergency",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hello, you have reached the assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "I live next door to him. There is smoke coming out of his house and nobody answers the door. I've called the fire brigade, but he needs to know right now."
+    }
+  ],
+  "expect": {
+    "action": "transfer",
+    "outcome": "Recognises an emergency and tells the caller it is putting them through right away."
+  }
+}

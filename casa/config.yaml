@@ -1,6 +1,6 @@
 name: "Casa"
 description: "An always-on fleet of Claude agents — assistant, butler, concierge and specialists you add"
-version: "0.384.2"
+version: "0.385.0"
 slug: casa
 url: https://github.com/bonzanni/ha-casa-app
 image: "ghcr.io/bonzanni/casa"
@@ -51,6 +51,7 @@ options:
   # Phone line
   phone_enabled: false
   phone_transfer_number: ""
+  phone_line_number: ""
   phone_owner_name: ""
   live_voices: ""
   live_api_host: ""
@@ -85,6 +86,7 @@ schema:
   contacts_default_region: str?
   phone_enabled: bool?
   phone_transfer_number: str?
+  phone_line_number: str?
   phone_owner_name: str?
   live_voices: str?
   live_api_host: str?

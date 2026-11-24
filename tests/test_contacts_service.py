@@ -1,25 +1,36 @@
-"""The contacts service: the iCloud secret, the shared refresh and the daily
+"""The contacts service: the iCloud login, the shared refresh and the daily
 job with its one operator line per failure streak.
 
 Real SQLite files in a temporary directory; the source, the model, the
-operator channel and the ``op`` front are fakes. The people are invented.
+operator channel and the ``op`` front are fakes. The people and the vault
+items are invented.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import subprocess
 from pathlib import Path
 
 import pytest
 
+import logins
 from contacts import service
 from contacts import store as cstore
 from contacts import sync
 from contacts.store import ContactsStore
 from contacts.sync import SourceError
 from contacts.vcard import Card
+from op_fake import FakeOp, fresh_logins, install, item
+
+LOGIN = "icloud_contacts"
+
+
+@pytest.fixture(autouse=True)
+def op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeOp:
+    """An empty vault and no chosen item; a test adds what it needs."""
+    fresh_logins(monkeypatch, tmp_path)
+    return install(monkeypatch)
 
 
 @pytest.fixture
@@ -88,41 +99,49 @@ class Operator:
         return self.delivered
 
 
-def _secrets(**fields: str):
-    def read(field: str) -> str | None:
-        return fields.get(field)
-    return read
+def ICLOUD() -> dict[str, str]:
+    """A login read whole, as :func:`logins.read_all` hands it over."""
+    return {"username": "fictional-apple-id", "password": "abcd-efgh"}
 
 
-ICLOUD = _secrets(username="fictional-apple-id", password="abcd-efgh")
+def _none() -> None:
+    return None
+
+
+#: Stands for the service's own reader, which goes through ``logins``.
+THROUGH_LOGINS = object()
 
 
 def _configure(monkeypatch: pytest.MonkeyPatch, store: ContactsStore,
-               source: FakeSource, *, read_secret=ICLOUD,
+               source: FakeSource, *, read_login=ICLOUD,
                notify=None, model=None) -> None:
     def build(username: str, password: str) -> FakeSource:
         source.credentials.append((username, password))
         return source
     monkeypatch.setattr(service, "ICloudSource", build)
-    service.configure(store=store, notify=notify, model=model,
-                      read_secret=read_secret)
+    if read_login is THROUGH_LOGINS:
+        service.configure(store=store, notify=notify, model=model)
+    else:
+        service.configure(store=store, notify=notify, model=model,
+                          read_login=read_login)
 
 
-async def test_refresh_without_secret_is_none_and_silent(
-    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch,
+async def test_refresh_without_a_login_is_none_and_silent(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
 ) -> None:
     source = FakeSource([_card("U1", "Marco Example")])
     operator = Operator()
-    for secret in (_secrets(), _secrets(username="fictional-apple-id"),
-                   _secrets(password="abcd-efgh")):
-        _configure(monkeypatch, opened, source, read_secret=secret,
-                   notify=operator)
-        assert await service.refresh(reason="test") is None
-        await service.run_daily()
+    _configure(monkeypatch, opened, source, read_login=_none,
+               notify=operator)
+    assert await service.refresh(reason="test") is None
+    await service.run_daily()
     assert source.fetches == 0
     assert operator.lines == []
+    assert service.login_problem() is None
     with opened.transaction() as conn:
         assert cstore.sync_state(conn, "icloud")["failing"] is False
+    # Never set up: nothing was looked for in the vault either.
+    assert op.calls == []
 
 
 async def test_run_daily_tells_operator_once_per_failure_streak(
@@ -168,11 +187,11 @@ async def test_run_daily_never_raises_when_notify_or_store_fails(
     assert "could not be refreshed" in caplog.text
 
     # A store that cannot be written, a source that breaks in an unexpected
-    # way, a secret reader that raises: each is a failed result, never an
+    # way, a login reader that raises: each is a failed result, never an
     # exception, and run_daily returns after telling the operator.
-    def raising(field: str) -> str | None:
+    def raising() -> dict[str, str] | None:
         raise OSError("no op")
-    for store, source, read_secret, line in (
+    for store, source, read_login, line in (
             (ContactsStore(opened.directory), FakeSource([_card("U1", "M")]),
              ICLOUD, UNAVAILABLE_LINE),
             (opened, FakeSource(ValueError("not a SourceError")), ICLOUD,
@@ -180,12 +199,12 @@ async def test_run_daily_never_raises_when_notify_or_store_fails(
             (opened, FakeSource([]), raising,
              UNEXPECTED_LINE + " No contacts are stored yet.")):
         operator = Operator()
-        _configure(monkeypatch, store, source, read_secret=read_secret,
+        _configure(monkeypatch, store, source, read_login=read_login,
                    notify=operator)
         result = await service.refresh(reason="test")
         assert result is not None and result.ok is False and result.error
         # That refresh began the streak; configuring again starts afresh.
-        _configure(monkeypatch, store, source, read_secret=read_secret,
+        _configure(monkeypatch, store, source, read_login=read_login,
                    notify=operator)
         await service.run_daily()
         assert operator.lines == [line]
@@ -231,11 +250,14 @@ async def test_service_failure_tells_operator_once_per_streak(
 
 SYNC_LINE = ("Contacts could not be refreshed from iCloud: iCloud did not "
              "answer. No contacts are stored yet.")
+LOGIN_LINE = ("Contacts could not be refreshed: the iCloud login could not "
+              "be read.")
+GONE = "The vault item chosen for iCloud contacts is no longer in the vault."
 
 
 def _failing(kind: str, tmp_path: Path):
-    """A store and a source that fail tonight, the line they cause, and a
-    callable that makes the next night succeed."""
+    """A store, a source and a login reader that fail tonight, the line they
+    cause, and a callable that makes the next night succeed."""
     store = ContactsStore(str(tmp_path / "contacts"))
     if kind == "sync":
         assert store.open() is True
@@ -243,22 +265,32 @@ def _failing(kind: str, tmp_path: Path):
 
         def recover() -> None:
             source._answers = [[_card("U1", "Marco Example")]]
-        return store, source, SYNC_LINE, recover
+        return store, source, ICLOUD, SYNC_LINE, recover
+    if kind == "login":
+        # An item was chosen once and is no longer in the (empty) vault.
+        assert store.open() is True
+        logins.choose(LOGIN, "gone1")
+        source = FakeSource([_card("U1", "Marco Example")])
+        held: dict = {"login": None}
+        return (store, source, lambda: held["login"],
+                f"{LOGIN_LINE} {GONE} No contacts are stored yet.",
+                lambda: held.update(login=ICLOUD()))
     # Never opened: the store is unavailable until it opens.
     source = FakeSource([_card("U1", "Marco Example")])
-    return store, source, UNAVAILABLE_LINE, store.open
+    return store, source, ICLOUD, UNAVAILABLE_LINE, store.open
 
 
-@pytest.mark.parametrize("kind", ["sync", "service"])
+@pytest.mark.parametrize("kind", ["sync", "service", "login"])
 @pytest.mark.parametrize("first", [RuntimeError("Telegram is down"), False],
                          ids=["notify-raises", "notify-false"])
 async def test_undelivered_notice_is_sent_on_the_next_failing_night(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
     first: Exception | bool,
 ) -> None:
-    store, source, line, _recover = _failing(kind, tmp_path)
+    store, source, read_login, line, _recover = _failing(kind, tmp_path)
     operator = Operator(first)
-    _configure(monkeypatch, store, source, notify=operator)
+    _configure(monkeypatch, store, source, read_login=read_login,
+               notify=operator)
 
     await service.run_daily()
     assert operator.lines == [line] and operator.received == []
@@ -273,13 +305,14 @@ async def test_undelivered_notice_is_sent_on_the_next_failing_night(
     assert operator.received == [line]
 
 
-@pytest.mark.parametrize("kind", ["sync", "service"])
+@pytest.mark.parametrize("kind", ["sync", "service", "login"])
 async def test_undelivered_notice_is_dropped_once_a_sync_works(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
 ) -> None:
-    store, source, line, recover = _failing(kind, tmp_path)
+    store, source, read_login, line, recover = _failing(kind, tmp_path)
     operator = Operator(False)
-    _configure(monkeypatch, store, source, notify=operator)
+    _configure(monkeypatch, store, source, read_login=read_login,
+               notify=operator)
 
     await service.run_daily()
     assert operator.lines == [line]
@@ -305,21 +338,177 @@ async def test_failure_line_says_when_no_contacts_are_stored(
         "No contacts are stored yet."]
 
 
-async def test_missing_username_reads_no_password(
-    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Home Vault")
-    fake = _Op({"username": _done(1, "", "[ERROR] no such item"),
-                "password": _done(0, "abcd-efgh\n")})
-    monkeypatch.setattr(service.subprocess, "run", fake)
-    source = FakeSource([_card("U1", "Marco Example")])
-    _configure(monkeypatch, opened, source,
-               read_secret=service.read_icloud_secret)
+def _item(item_id: str, title: str, user: str = "fictional-apple-id",
+          password: str = "abcd-efgh") -> dict:
+    return item(item_id, title, username=user, password=password)
 
-    assert await service.refresh(reason="test") is None
-    assert [call[call.index("--fields") + 1] for call in fake.calls] == [
-        "label=username"]
+
+async def test_refresh_reads_the_login_through_the_chosen_item(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
+) -> None:
+    op.items = [_item("dflt1", "iCloud Contacts", "default-id", "default-pw"),
+                _item("chosen1", "Apple account", "chosen-id", "chosen-pw")]
+    source = FakeSource([_card("U1", "Marco Example")])
+    _configure(monkeypatch, opened, source, read_login=THROUGH_LOGINS)
+
+    # Nothing chosen: the item under the default title.
+    result = await service.refresh(reason="test")
+    assert result is not None and result.ok
+    assert source.credentials == [("default-id", "default-pw")]
+
+    logins.choose(LOGIN, "chosen1")
+    result = await service.refresh(reason="test")
+    assert result is not None and result.ok
+    assert source.credentials[-1] == ("chosen-id", "chosen-pw")
+    assert {ref for ref, _ in op.reads()[-2:]} == {"chosen1"}
+    assert service.login_problem() is None
+
+
+async def test_a_never_configured_installation_stays_silent(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
+) -> None:
+    # No successful sync ever, nothing chosen, no item under the default
+    # title; and the same with a half-filled item under it.
+    source = FakeSource([_card("U1", "Marco Example")])
+    operator = Operator()
+    _configure(monkeypatch, opened, source, read_login=THROUGH_LOGINS,
+               notify=operator)
+    for items in ([], [item("dflt1", "iCloud Contacts",
+                            username="fictional-apple-id")]):
+        op.items = items
+        assert await service.refresh(reason="test") is None
+        await service.run_daily()
+        await service.run_daily()
     assert source.fetches == 0
+    assert operator.lines == []
+    # Only the reads of the values: the vault is not examined any further.
+    assert set(op.kinds()) == {"field"}
+
+
+async def test_a_login_that_stops_working_is_told_once_per_streak(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
+) -> None:
+    op.items = [_item("dflt1", "iCloud Contacts", "default-id", "default-pw"),
+                _item("chosen1", "Apple account")]
+    logins.choose(LOGIN, "chosen1")
+    source = FakeSource([_card("U1", "Marco Example")])
+    operator = Operator()
+    _configure(monkeypatch, opened, source, read_login=THROUGH_LOGINS,
+               notify=operator)
+
+    await service.run_daily()                   # a successful start
+    assert operator.lines == [] and source.fetches == 1
+
+    # The chosen item is deleted: the next scheduled sync fails and says so.
+    op.remove("chosen1")
+    await service.run_daily()
+    line = f"{LOGIN_LINE} {GONE} The last good copy is still in use."
+    assert operator.lines == [line]
+    result = await service.refresh(reason="test")
+    assert result is not None and result.ok is False
+    assert result.error == service.LOGIN_ERROR
+    found = service.login_problem()
+    assert found is not None and (found.problem, found.item_is_default) == (
+        "item_not_found", False)
+
+    # Not again the next night, and never with the default item's login.
+    await service.run_daily()
+    assert operator.lines == [line]
+    assert source.fetches == 1
+    assert source.credentials == [("fictional-apple-id", "abcd-efgh")]
+    with opened.transaction() as conn:
+        assert cstore.count(conn, "icloud") == 1
+
+    # The item is back: the streak ends; a later loss is told again.
+    op.items.append(_item("chosen1", "Apple account"))
+    await service.run_daily()
+    assert operator.lines == [line] and source.fetches == 2
+    assert service.login_problem() is None
+    op.get("chosen1")["fields"]["password"] = ""
+    await service.run_daily()
+    assert operator.lines == [line, (
+        f"{LOGIN_LINE} The vault item for iCloud contacts has no "
+        "app-specific password in `password`: the field is empty. The last "
+        "good copy is still in use.")]
+
+
+async def test_a_damaged_choice_file_is_a_lost_login_told_once(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
+) -> None:
+    op.items = [_item("dflt1", "iCloud Contacts", "default-id", "default-pw"),
+                _item("chosen1", "Apple account")]
+    logins.choose(LOGIN, "chosen1")
+    source = FakeSource([_card("U1", "Marco Example")])
+    operator = Operator()
+    _configure(monkeypatch, opened, source, read_login=THROUGH_LOGINS,
+               notify=operator)
+    await service.run_daily()                   # a successful start
+    assert operator.lines == [] and source.fetches == 1
+
+    # Casa starts again and finds the file of choices damaged.
+    Path(logins.PATH).write_text("{ damaged")
+    monkeypatch.setattr(logins, "_choices", None)
+    asked = len(op.calls)
+    await service.run_daily()
+    await service.run_daily()
+    assert operator.lines == [
+        f"{LOGIN_LINE} Casa can no longer read which vault item was chosen "
+        "for iCloud contacts; ask the assistant to connect it again. The "
+        "last good copy is still in use."]
+    found = service.login_problem()
+    assert found is not None and found.problem == "choice_unreadable"
+    # No sync ran, and nothing in the vault was asked for: not the item
+    # under the default title, complete as it is, nor any other.
+    assert source.fetches == 1 and len(op.calls) == asked
+    assert source.credentials == [("fictional-apple-id", "abcd-efgh")]
+
+    # The item is taken again: the next night works, with that item.
+    logins.choose(LOGIN, "chosen1")
+    await service.run_daily()
+    assert source.fetches == 2 and len(operator.lines) == 1
+    assert source.credentials[-1] == ("fictional-apple-id", "abcd-efgh")
+    assert service.login_problem() is None
+
+
+async def test_a_login_that_synced_an_empty_address_book_and_is_deleted(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
+) -> None:
+    # Nothing was ever chosen: the default item worked, into no contacts.
+    op.items = [_item("dflt1", "iCloud Contacts")]
+    source = FakeSource([])
+    operator = Operator()
+    _configure(monkeypatch, opened, source, read_login=THROUGH_LOGINS,
+               notify=operator)
+    await service.run_daily()
+    assert operator.lines == [] and source.fetches == 1
+    assert service.mirror_empty() is True
+
+    op.remove("dflt1")
+    await service.run_daily()
+    await service.run_daily()
+    assert operator.lines == [
+        f"{LOGIN_LINE} The vault has no item titled 'iCloud Contacts' for "
+        "iCloud contacts. No contacts are stored yet."]
+    assert source.fetches == 1
+
+
+async def test_a_vault_that_is_gone_is_told_like_a_lost_item(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
+) -> None:
+    op.items = [_item("dflt1", "iCloud Contacts")]
+    source = FakeSource([_card("U1", "Marco Example")])
+    operator = Operator()
+    _configure(monkeypatch, opened, source, read_login=THROUGH_LOGINS,
+               notify=operator)
+    await service.run_daily()
+
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "")
+    await service.run_daily()
+    await service.run_daily()
+    assert operator.lines == [
+        f"{LOGIN_LINE} No default vault is set, so Casa cannot read the "
+        "vault item for iCloud contacts. The last good copy is still in "
+        "use."]
 
 
 async def test_concurrent_refresh_runs_one_sync(
@@ -368,61 +557,6 @@ async def test_refresh_passes_the_model_and_notes_become_marks(
     assert origin == "note"
     assert service.active_store() is opened
     assert service.mirror_empty() is False
-
-
-class _Op:
-    """A fake ``subprocess.run`` for the ``op`` front."""
-
-    def __init__(self, answers: dict[str, subprocess.CompletedProcess]):
-        self.answers = answers
-        self.calls: list[list[str]] = []
-
-    def __call__(self, args, **kwargs):
-        self.calls.append(list(args))
-        assert kwargs.get("timeout") == 10
-        field = args[args.index("--fields") + 1].removeprefix("label=")
-        answer = self.answers[field]
-        if isinstance(answer, BaseException):
-            raise answer
-        return answer
-
-
-def _done(code: int, out: str = "", err: str = ""):
-    return subprocess.CompletedProcess(["op"], code, out, err)
-
-
-def test_read_secret_uses_op_front_and_hides_output(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
-) -> None:
-    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Home Vault")
-    fake = _Op({"username": _done(0, "fictional-apple-id\n"),
-                "password": _done(0, "abcd-efgh\n")})
-    monkeypatch.setattr(service.subprocess, "run", fake)
-
-    assert service.read_icloud_secret("username") == "fictional-apple-id"
-    assert service.read_icloud_secret("password") == "abcd-efgh"
-    assert fake.calls == [
-        ["op", "item", "get", "iCloud Contacts", "--vault", "Home Vault",
-         "--fields", f"label={field}", "--reveal"]
-        for field in ("username", "password")]
-
-    leak = "secret-looking-op-diagnostic"
-    for answer in (_done(1, "", f"[ERROR] {leak}"), _done(0, "\n", leak),
-                   subprocess.TimeoutExpired(["op"], 10, output=leak,
-                                             stderr=leak)):
-        monkeypatch.setattr(service.subprocess, "run",
-                            _Op({"password": answer}))
-        with caplog.at_level(logging.DEBUG):
-            assert service.read_icloud_secret("password") is None
-    assert leak not in caplog.text
-    assert "abcd-efgh" not in caplog.text
-    assert all(leak not in str(r.args) for r in caplog.records)
-
-    monkeypatch.delenv("ONEPASSWORD_DEFAULT_VAULT")
-    unused = _Op({})
-    monkeypatch.setattr(service.subprocess, "run", unused)
-    assert service.read_icloud_secret("username") is None
-    assert unused.calls == []
 
 
 def test_default_region_reads_env_uppercased(

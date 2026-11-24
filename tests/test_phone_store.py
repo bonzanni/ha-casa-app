@@ -113,6 +113,42 @@ def test_set_record_keeps_what_the_call_wrote(opened: PhoneStore) -> None:
     assert done["ended_at"] == 5.0 and done["delivered"] == 0
 
 
+def test_the_first_line_of_a_call_is_marked_once_sent(
+        opened: PhoneStore) -> None:
+    with opened.transaction(write=True) as conn:
+        pstore.insert_call(conn, _call("c1", "live_1", 1.0))
+        assert pstore.get_call(conn, "c1")["headline_sent"] == 0
+        assert pstore.mark_headline_sent(conn, "c1")
+        assert not pstore.mark_headline_sent(conn, "nope")
+        done = pstore.get_call(conn, "c1")
+    assert done["headline_sent"] == 1 and done["delivered"] == 0
+
+
+def test_a_v1_store_migrates_to_v2_keeping_its_rows(tmp_path: Path) -> None:
+    from phone.schema import MIGRATIONS
+    directory = tmp_path / "phone"
+    directory.mkdir(mode=0o700)
+    path = directory / "phone.db"
+    conn = sqlite3.connect(path, isolation_level=None)
+    for statement in MIGRATIONS[1]:
+        conn.execute(statement)
+    conn.execute("PRAGMA user_version = 1")
+    conn.execute(
+        "INSERT INTO calls (id, session_id, started_at, ended_at, number, "
+        "outcome, record, delivered) VALUES ('c1', 'live_1', 1.0, 5.0, "
+        "'+31201110001', 'caller_hung_up', '{\"number_tail\": \"0001\"}', 0)")
+    conn.close()
+    store = PhoneStore(str(directory))
+    assert store.open() is True, store.unavailable_reason
+    with store.transaction() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        [row] = pstore.undelivered(conn)
+    assert row["id"] == "c1" and row["number"] == "+31201110001"
+    assert row["record"] == {"number_tail": "0001"}
+    assert row["headline_sent"] == 0 and row["delivered"] == 0
+    assert pstore.schema_version() == 2
+
+
 def test_session_id_is_unique(opened: PhoneStore) -> None:
     with opened.transaction(write=True) as conn:
         pstore.insert_call(conn, _call("c1", "live_1"))

@@ -12,8 +12,8 @@ The contacts store: a read-only copy of the operator's address book, synced from
 CardDAV, plus the marks Casa keeps about a person (priority, relation, language); how a sync
 writes it, how a model reads the address book's notes, the caller lookup, the three tools
 the resident assistant uses, and the card on which the operator confirms a priority
-contact. How the iCloud secret is read on either secrets backend is
-[`builtin-secrets-store.md`](builtin-secrets-store.md); the private-state inventory that
+contact. Which vault item holds the iCloud login is [`logins.md`](logins.md), and how it
+is read on either secrets backend [`builtin-secrets-store.md`](builtin-secrets-store.md); the private-state inventory that
 holds `/data/contacts` is [`persistent-state.md`](persistent-state.md); the option is in
 [`../reference/operator-options.md`](../reference/operator-options.md).
 
@@ -25,8 +25,9 @@ in the private-state inventory) is a SQLite file with `STRICT` tables
 the source's name (`icloud` today): every row carries it, and a sync rewrites only its own
 source's rows. `marks` holds, per person and field (`priority`, `relation`, `language`), one
 row per origin — `operator`, `group`, `note` — and does not reference `people`, so a mark
-can outlive its person's absence from a sync. `note_reads` records, per person, the hash of
-the note last settled into `note`-origin marks. `sync_state` holds each source's last
+can outlive its person's absence from a sync. `note_reads` records, per person, a hash of
+the note last settled into `note`-origin marks taken together with the note reader's prompt
+version (`store.settled_hash`). `sync_state` holds each source's last
 success, last error and whether it is failing.
 
 **The store follows the memory store's connection discipline.** `ContactsStore` gives every
@@ -82,21 +83,26 @@ changed, or not read by an earlier sync — is handled outside any transaction
 without a model call. A non-empty one goes to `notes.read`, in batches of 20, as one isolated
 query on the small model (`haiku`) with no tools, no session and no settings, under the
 prompt in `contacts/prompts/note_reader.md`, which tells the model a note is data, never
-instructions. The answer is a JSON object keyed by uid, each entry carrying `relation`
+instructions, and that a country flag in a note marks the language the person speaks. The answer is a JSON object keyed by uid, each entry carrying `relation`
 (free text) and `language` (a two-letter code or empty); code checks only that shape, and
 an entry that fails it is dropped. Each valid reading rewrites that person's `note`-origin
 relation and language marks — only if the note is still the one that was read — and
-settles the note by writing its hash to `note_reads` (INV-CONTACTS-007). Note reading never
+settles the note by writing its settled hash to `note_reads` (INV-CONTACTS-007). A new
+`notes.PROMPT_VERSION` makes every settled note differ once, so the next sync reads each
+again and then settles it under the new version. Note reading never
 fails the sync.
 
 **The running service.** `contacts/service.py` holds the store Casa opened at boot, the
-operator channel, the note model and the secret reader, configured once Telegram exists.
-The iCloud account is the vault item `iCloud Contacts` with fields `username` and
-`password`, read with `op item get "iCloud Contacts" --vault $ONEPASSWORD_DEFAULT_VAULT
---fields label=<field> --reveal` — a form both secrets backends answer. An unset vault
-name, a non-zero exit, a 10-second timeout or empty output means contacts are not set up,
-and a refresh then does nothing; the password is read only once the username has been. `op` output is never logged or returned except the value
-itself. `service.refresh` never raises, and concurrent callers share the refresh already
+operator channel, the note model and the login reader, configured once Telegram exists.
+The iCloud account is the `icloud_contacts` login ([`logins.md`](logins.md)): the Apple ID
+and its app-specific password, both read in one go from the vault item the assistant chose,
+else, when no choice is recorded, from the item titled `iCloud Contacts`; while the record
+of the choice is unreadable nothing is read from the vault until the login is connected
+again. Without both values a refresh does nothing.
+Where the login never worked — no successful sync on record and no item chosen — that is
+silence: contacts are not set up. Where it did, a refresh that finds no login is a failed
+refresh (`service.LOGIN_ERROR`), and `service.login_problem` keeps what the check found
+wrong. `service.refresh` never raises, and concurrent callers share the refresh already
 running. The scheduler runs `service.run_daily` at 04:10 in Casa's timezone (`casa_tz`), and once
 60 seconds after boot while the iCloud mirror is empty.
 
@@ -113,8 +119,9 @@ number or an unavailable store is an unknown caller.
 (case-insensitive) and the number a query reads as, and returns up to ten people, priority
 first, each with numbers, organisation, groups and effective marks with the priority's
 origin; `more` says others matched. `refresh_contacts` runs a refresh now and reports
-added, removed and kept people and skipped numbers, or the error, or that the vault item is
-not set up. `set_contact_marks` writes `operator`-origin marks for exactly one match:
+added, removed and kept people and skipped numbers, or the error, or `not_connected` with
+the login check's problem code when no login can be read, pointing the assistant to
+`connect_login`. `set_contact_marks` writes `operator`-origin marks for exactly one match:
 relation and language apply at once (`""` removes the operator's setting), as does
 `priority: false`; `priority: true` posts a confirmation card and changes nothing yet. When
 the contact matches none or several people nothing changes, and the candidates are named
@@ -173,7 +180,8 @@ button, outside any engagement). The gate runs before the tool's first await.
 
 **INV-CONTACTS-007**: A non-blank note is settled only once a valid reading of it has landed; a note whose reading failed, was unusable, or was skipped because no model was given is read again by the next sync.
 
-A settled note is not sent to the model again until it changes.
+A settled note is not sent to the model again until it changes, or until the note reader's
+prompt version does, which makes every settled note read once more.
 
 ## Failure behavior
 
@@ -197,8 +205,12 @@ was not delivered) stays pending in the service's memory, and every later daily 
 it again, one notice and never a stack of them, until the channel takes it or a refresh
 succeeds. With no operator channel the notice is only logged.
 
-**The vault item is missing or incomplete.** A refresh does nothing and logs it at info; the
-daily job sends nothing; `refresh_contacts` says which item and fields to create.
+**The login cannot be read.** When it never worked, a refresh does nothing and logs it at
+info, the daily job sends nothing, and `refresh_contacts` answers `not_connected` with what
+is wrong. When it worked before (a deleted or emptied item, a chosen item gone), the refresh
+fails with `the iCloud login could not be read`, the mirror and the marks stay as they
+were, and the daily job tells the operator once per failure streak, adding what is wrong
+with the login (`logins.Check.sentence`). Nothing falls back to another item.
 
 **A note cannot be read.** A model error, a timeout (60 seconds per batch) or an unusable
 answer leaves that note's marks as they were and its note unsettled, so the next sync reads
@@ -260,6 +272,7 @@ the missing versions in one transaction.
 - `tests/test_contacts_priority_card.py`
 
 **Related**
+- [`architecture/logins.md`](../architecture/logins.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 - [`architecture/builtin-secrets-store.md`](../architecture/builtin-secrets-store.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)

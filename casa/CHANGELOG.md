@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.385.0] - 2026-11-24
+
+### Added
+
+- You can ask the assistant about your calls and change how the phone line behaves, in your own chat with it. It can list recent calls, show what one was about, and send you a call's transcript as a text file (the assistant itself never reads the transcript). It can show the phone settings, change a voice or a model, and change who is put through. Narrowing who is put through takes effect at once; widening it never does on the assistant's word: Casa asks you to confirm on a card that expires after five minutes.
+- Tell the assistant to connect a login instead of creating a vault item under an exact name. For your iCloud contacts and for the phone line's OpenAI key, the assistant first looks in your vault for an item that clearly fits, takes it and tells you which one; it asks you when none fits or several could. You can also ask it to use another item for a login that already works. The assistant finds an item only if its name contains "iCloud" or "Apple" (contacts) or "OpenAI" (phone line). To judge this it sees the titles of the few matching items, never a field name or a value. Whenever an item is chosen, Casa itself tells you which, by its title. The password may be in a field named `password` or `credential`, and field names are matched in any case. Items named `iCloud Contacts` and `OpenAI Voice` still work without being chosen. When a login is missing something, or stops working later, Casa says what is wrong (the item is gone, a field is missing or empty, the vault cannot be read) instead of only "not set up". If Casa's own record of which item each login uses is ever damaged, it uses no item for either login until you ask the assistant to connect it again.
+- A new option, `phone_line_number`: the phone line's own number. With it set, Casa recognises a call that comes back after it put someone through and you did not pick up; without it, such a call is treated as an ordinary call.
+- `test-local/eval/phone_eval.py`, a script you run by hand to check how the phone assistant behaves in set situations. It makes paid calls to OpenAI and never runs on its own.
+
+### Changed
+
+- When a call ends, Casa itself first sends one line with who called, from which number, when, and how the call ended; the assistant's summary of what the caller wanted follows as a second message. The caller's full number is shown, so you can call back. Log lines still carry only the last four digits. If that first line cannot be sent, Casa tries twice more over the next minutes, and after that at its next start, for calls that ended within the previous 24 hours.
+- A quiet line is handled sooner. After about seven seconds of silence the phone assistant asks, in its own words, whether the caller is still there; if nobody speaks for ten more seconds it says goodbye and ends the call. Before, it waited 45 seconds.
+- A country flag in a contact's note is now read as that person's language. Your contacts' notes are read once more after this update, at the next sync; what you told the assistant yourself about a person is never overwritten by a note.
+- The phone line's fixed lines gained `check_in`. If you edited `/config/phone/prompts/lines.yaml`, the update replaces it with the shipped version and keeps your edit in the configuration history. A copy that still lacks `check_in` in any language is not used: Casa logs a warning and uses the shipped lines.
+
 ## [0.384.2] - 2026-11-24
 
 ### Removed

@@ -72,10 +72,10 @@ giving (`tests/fixtures/op_reference`, CLI 2.30.0):
 | Form | |
 |---|---|
 | `--version` | prints `2.30.0` |
-| `read op://VAULT/ITEM/FIELD` | a field by id, else by label |
+| `read op://VAULT/ITEM/FIELD` | a field by id, else by label in any case |
 | `item list [--vault V] [--tags T[,T]] [--include-archive] --format json` | every item, or those with any of the tags |
 | `item get REF [--vault V] --format json` | the item's document |
-| `item get REF --vault V --fields label=L --reveal` | one field's value |
+| `item get REF --vault V --fields label=L --reveal` | one field's value, its label matched in any case |
 | `item create --vault V --format json -` | from a template on standard input |
 | `item create --category "API Credential" --title T --vault V --tags T ASSIGN...` | fields from `LABEL[password]=VALUE` / `LABEL[text]=VALUE` |
 | `item create --category ssh --title T --vault V --tags T --ssh-generate-key rsa,BITS` | a new RSA key of 2048, 3072 or 4096 bits |
@@ -89,6 +89,8 @@ Anything else fails with one error line whose message begins `unsupported by the
 The store has one vault, named by the helper's vault value, and a command naming another
 vault fails the way the CLI does for a vault it cannot find. An item is found by its id or by
 its exact title; two items with one title make a lookup by that title fail as ambiguous.
+A field read by label is the one labelled exactly so, else the first whose label differs only
+in case, as the CLI matches a label; a write names its label exactly.
 
 **The files.** `/data/vault/casa.kdbx` is a KeePass (KDBX 4) database and `/data/vault/key`
 the text that unlocks it; the directory is `0700` and both files `0600`, and all three are in

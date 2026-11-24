@@ -11,8 +11,10 @@ what Casa itself holds about a person (priority, relation, language), one row
 per origin; it does not reference ``people``, so a mark can outlive its
 person's absence from a sync. ``note_reads`` holds, per person, the hash of
 the note last settled into ``note``-origin marks (read by a model, or emptied
-and cleared), so a note that was not read is tried again. ``sync_state`` is
-per source.
+and cleared) taken together with the note reader's prompt version
+(:func:`contacts.store.settled_hash`), so a note that was not read is tried
+again, and every note is read once more after the prompt changes.
+``sync_state`` is per source.
 
 Tables are ``STRICT``. JSON-valued columns hold arrays as text. Times are
 ISO-8601 text.

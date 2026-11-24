@@ -1,0 +1,17 @@
+# Manifest shard — the document on Casa's own logins, born in its own shard beside the
+# contacts and phone-line shards that use it. Loaded with the root docs/manifest.yaml by
+# scripts/verify_docs.py; same entry format.
+
+- doc: architecture/logins.md
+  summary: Casa's own logins (contacts, phone) — which vault item holds each, the accepted labels, the check, and connect_login.
+  when_changing: which vault item a login of Casa's own is read from, its accepted field labels or default titles, the login check, connect_login, or /data/logins.json
+  covers:
+    - casa/rootfs/opt/casa/logins.py
+    - casa/rootfs/opt/casa/vault_read.py
+    - casa/rootfs/opt/casa/tools.py::connect_login
+    - casa/rootfs/opt/casa/tools.py::_operator_chat_refusal
+  tests:
+    - tests/test_logins.py
+    - tests/test_connect_login_tool.py
+    - tests/test_vault_read.py
+  related: [architecture/contacts.md, architecture/phone.md, architecture/builtin-secrets-store.md, architecture/persistent-state.md]

@@ -126,7 +126,8 @@ def _default_vault() -> str:
 def _op_item_list(query: str, vault: str) -> dict:
     """The parsed ``op item list`` rows matching ``query`` (case-folded
     substring of the title), or a classified error dict. Rows carry titles;
-    they never leave the two callers below unprojected."""
+    they never leave a caller unprojected: the two below drop the title, and
+    :mod:`logins` keeps it for the few candidates of one login (see there)."""
     cmd = ["op", "item", "list", "--format", "json"]
     if vault:
         cmd += ["--vault", vault]
@@ -168,7 +169,8 @@ def _tool_list_vault_items(*, query: str = "", vault: str = "") -> dict:
 
 def _op_item_get(item: str, vault: str) -> dict:
     """The parsed ``op item get`` document, or a classified error dict. The
-    document holds VALUES; it never leaves the two callers below unprojected."""
+    document holds VALUES; it never leaves a caller unprojected (the two
+    below, and :mod:`logins`, which looks only at labels and emptiness)."""
     cmd = ["op", "item", "get", item, "--format", "json"]
     if vault:
         cmd += ["--vault", vault]
@@ -225,6 +227,10 @@ def _op_unreadable() -> dict:
 # derived in-process from the label (which is never returned). In place of a
 # title, the query term the item matched. A wiring reference is
 # ``op://<vault>/<item id>/<field id>``, which the resolver accepts.
+# The tools of this module never return a title. One other tool does, and
+# only that: ``connect_login`` shows the resident assistant, in the
+# operator's own chat, the titles of the few items that match a login's
+# search terms (:func:`logins.candidates`), still without a label or a value.
 _FIELD_ROLES = (
     # (regex over the case-folded, whitespace-normalised label, role)
     (re.compile(r"^(oauth[ -]?)?client[ _-]?id$"), "client_id"),

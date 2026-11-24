@@ -54,6 +54,15 @@ tools:
     - mcp__casa-framework__find_contact
     - mcp__casa-framework__refresh_contacts
     - mcp__casa-framework__set_contact_marks
+    # finds the vault item one of Casa's own logins (contacts, voice) lives
+    # in: private clearance, the operator's direct chat only. Never granted
+    # to another agent.
+    - mcp__casa-framework__connect_login
+    # the operator's phone line: its calls and settings; private clearance,
+    # changes in the operator's direct chat only. Never granted to another
+    # agent.
+    - mcp__casa-framework__read_call
+    - mcp__casa-framework__phone_settings
   disallowed:
     # #460: the assistant is a router—all concrete work is delegated.
     # Broad Bash is unused authority and must be fenced via CLI-enforcement.

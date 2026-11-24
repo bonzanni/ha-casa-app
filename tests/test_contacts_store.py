@@ -203,7 +203,7 @@ def test_notes_to_settle_follows_note_reads(opened: ContactsStore) -> None:
         assert [p.uid for p in cstore.notes_to_settle(conn, "icloud")] == [
             "U1", "U2"]
         cstore.settle_note(conn, "icloud", "U1",
-                           hashlib.sha256(b"likes tea").hexdigest())
+                           cstore.settled_hash("likes tea"))
         # A blank note with a note mark still has to be cleared.
         cstore.set_mark(conn, "icloud", "U4", "language", "it", "note")
         assert [p.uid for p in cstore.notes_to_settle(conn, "icloud")] == [
@@ -215,8 +215,42 @@ def test_notes_to_settle_follows_note_reads(opened: ContactsStore) -> None:
         assert [p.uid for p in cstore.notes_to_settle(conn, "icloud")] == [
             "U1"]
         cstore.settle_note(conn, "icloud", "U1",
-                           hashlib.sha256(b"likes coffee").hexdigest())
+                           cstore.settled_hash("likes coffee"))
         assert cstore.notes_to_settle(conn, "icloud") == []
         cstore.replace_source(conn, "icloud", [U2])
         assert conn.execute(
             "SELECT uid FROM note_reads").fetchall() == []
+
+
+def test_settled_hash_carries_the_prompt_version() -> None:
+    from contacts import notes
+
+    note = "Mia sorella \U0001F1EE\U0001F1F9"
+    assert cstore.note_hash(note) == hashlib.sha256(
+        note.encode("utf-8")).hexdigest()
+    assert cstore.settled_hash(note) == hashlib.sha256(
+        f"{notes.PROMPT_VERSION}\0{note}".encode("utf-8")).hexdigest()
+    assert cstore.settled_hash(note) != cstore.note_hash(note)
+
+
+def test_notes_settled_before_a_prompt_change_are_read_once_more(
+    opened: ContactsStore,
+) -> None:
+    blank = _person("U4", "Dan Madeup", "+31201110004")
+    with opened.transaction(write=True) as conn:
+        cstore.replace_source(conn, "icloud", [U1, U2, U3, blank])
+        # Settled by an earlier version, which stored the note's own hash.
+        for person in (U1, U2, U3, blank):
+            cstore.settle_note(conn, "icloud", person.uid,
+                               cstore.note_hash(person.note))
+        to_settle = cstore.notes_to_settle(conn, "icloud")
+        assert [p.uid for p in to_settle if p.note.strip()] == [
+            "U1", "U2", "U3"]
+        for person in to_settle:
+            cstore.settle_note(conn, "icloud", person.uid,
+                               cstore.settled_hash(person.note))
+        assert cstore.notes_to_settle(conn, "icloud") == []
+        # The mirror's own note hash is unchanged by settling.
+        stored = conn.execute(
+            "SELECT note_hash FROM people WHERE uid = 'U1'").fetchone()[0]
+    assert stored == hashlib.sha256(b"likes tea").hexdigest()

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 WHO = ("priority", "known", "unknown", "returned")
 TRANSFER = ("off", "emergency", "urgent", "open")
-LINE_KEYS = ("silence", "too_long", "transfer_failed")
+LINE_KEYS = ("silence", "too_long", "transfer_failed", "check_in")
 LANGUAGE_NAMES = {"nl": "Dutch", "it": "Italian", "en": "English"}
 DEFAULT_LANGUAGE = "en"
 

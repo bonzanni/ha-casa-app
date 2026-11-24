@@ -6,6 +6,8 @@ and voice ids are invented."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import logging
 from pathlib import Path
 
 import aiohttp
@@ -31,13 +33,15 @@ LINE = "+31201234567"          # the line the calls come in on
 PRIORITY = "+31612345678"
 TRANSFER_TO = "+31687654321"
 STORED_NL_VOICE = "voice_test_nl"
+NOW = 1_800_000_000.0
 
 TIMING = Timing(first_speech_s=3.0, quiet_s=5.0, silence_s=5.0,
                 max_call_s=8.0, reconnect_s=1.0, decision_timeout_s=0.5,
                 undecided_silence_s=1.0, goodbye_grace_s=0.3,
                 speak_margin_s=0.0, pending_s=2.0)
 OPTIONS = Options(enabled=True, transfer_number=TRANSFER_TO,
-                  owner_name="Sam Owner", seed_voices={}, api_host="")
+                  owner_name="Sam Owner", seed_voices={}, api_host="",
+                  line_number=LINE)
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +111,7 @@ def deps(fake, http, store, *, contacts=None, op: Operator,
     return Deps(api=LiveApi(key=KEY, http=http, base_url=fake.base_url),
                 store=store, contacts=lambda: contacts, options=OPTIONS,
                 default_region="NL", notify=op.notify, finish=op.finish,
-                timing=TIMING, now=lambda: 1_800_000_000.0, **extra)
+                timing=TIMING, now=lambda: NOW, **extra)
 
 
 def accepted(fake, sid: str) -> list[dict]:
@@ -171,6 +175,41 @@ async def test_known_priority_caller_end_to_end(fake, http, phone_store,
     assert op.lines == []
 
 
+async def test_the_delays_of_a_call_are_logged_once_as_numbers(
+        fake, http, phone_store, contacts, caplog) -> None:
+    op = Operator()
+    sid = "live_delays"
+    with caplog.at_level(logging.INFO, logger="phone.controller"):
+        task = asyncio.create_task(controller.handle_call(
+            Incoming(sid, PRIORITY, LINE),
+            deps(fake, http, phone_store, contacts=contacts, op=op)))
+        await wait_for(lambda: accepted(fake, sid))
+        for kind, text, start_ms, end_ms in (
+                ("output", "Hello Bea", 0, 400),
+                ("input", "Hi, just a message", 600, 900),
+                ("output", "Go ahead", 1100, 1500),
+                ("input", "Call me back", 2000, 2600),
+                ("output", "I will pass it on", 3200, 3900)):
+            await fake.emit(sid, {"type": f"session.{kind}_transcript.delta",
+                                  "delta": text, "start_ms": start_ms,
+                                  "end_ms": end_ms})
+        await fake.close(sid, "remote_hangup")
+        await asyncio.wait_for(task, 5)
+    found = [r.getMessage() for r in caplog.records
+             if r.name == "phone.controller" and "reply gap" in r.getMessage()]
+    assert len(found) == 1
+    [line] = found
+    assert "reply gap median 400 ms, max 600 ms" in line
+    assert "first speech" in line
+    # Numbers only: nothing said in the call, nobody's name or number.
+    for word in ("Bea", "message", "Call me back", PRIORITY[-4:]):
+        assert word not in line
+    # For tuning only: neither the call's record nor the operator's chat.
+    [row] = calls(phone_store)
+    assert not any("gap" in key or "speech" in key for key in row)
+    assert op.lines == []
+
+
 async def test_unknown_number_without_contacts_store(fake, http,
                                                      phone_store) -> None:
     op = Operator()
@@ -189,8 +228,12 @@ async def test_unknown_number_without_contacts_store(fake, http,
     assert op.finished == [row["id"]]
 
 
+# The To header of a real call carries no number, so only the line's own
+# number as the caller marks a call that came back.
+@pytest.mark.parametrize("to_number", ["", LINE, "+31209999999"])
 async def test_returned_call_gets_no_identity(fake, http, phone_store,
-                                              contacts, monkeypatch) -> None:
+                                              contacts, monkeypatch,
+                                              to_number) -> None:
     # A call of the priority contact that was put through seconds earlier.
     with phone_store.transaction(write=True) as conn:
         pstore.insert_call(conn, {
@@ -206,7 +249,7 @@ async def test_returned_call_gets_no_identity(fake, http, phone_store,
     op = Operator()
     sid = "live_back"
     task = asyncio.create_task(controller.handle_call(
-        Incoming(sid, LINE, LINE),
+        Incoming(sid, LINE, to_number),
         deps(fake, http, phone_store, contacts=contacts, op=op)))
     await wait_for(lambda: accepted(fake, sid))
     session = accepted(fake, sid)[0]
@@ -226,6 +269,31 @@ async def test_returned_call_gets_no_identity(fake, http, phone_store,
     assert row["language"] == "en"
 
 
+async def test_without_the_line_number_a_call_from_it_is_ordinary(
+        fake, http, phone_store, contacts, monkeypatch) -> None:
+    looked_up: list = []
+    real = controller.lookup
+
+    def spy(*args, **kwargs):
+        looked_up.append(args[1])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "lookup", spy)
+    op = Operator()
+    sid = "live_unset"
+    d = dataclasses.replace(
+        deps(fake, http, phone_store, contacts=contacts, op=op),
+        options=dataclasses.replace(OPTIONS, line_number=""))
+    task = asyncio.create_task(controller.handle_call(
+        Incoming(sid, LINE, LINE), d))
+    await wait_for(lambda: accepted(fake, sid))
+    await fake.close(sid, "remote_hangup")
+    await asyncio.wait_for(task, 5)
+    assert looked_up == [LINE]
+    row = next(r for r in calls(phone_store) if r["session_id"] == sid)
+    assert row["returned"] == 0
+
+
 async def test_unavailable_phone_store_still_answers(fake, http, tmp_path,
                                                      contacts) -> None:
     store = PhoneStore(str(tmp_path / "never-opened"))
@@ -242,9 +310,12 @@ async def test_unavailable_phone_store_still_answers(fake, http, tmp_path,
     await fake.close(sid, "remote_hangup")
     await asyncio.wait_for(task, 5)
     assert op.finished == []
-    assert len(op.lines) == 1
-    assert "Bea Sample" in op.lines[0]
-    assert "hung up" in op.lines[0]
+    [line] = op.lines
+    # Who, the full number, when, how it ended; then the note.
+    assert line.startswith(
+        f"Bea Sample · {PRIORITY} · {controller.when_words(NOW)} · ")
+    assert "the caller hung up" in line
+    assert line.endswith(controller.UNRECORDED_NOTE)
     assert not (tmp_path / "never-opened" / "phone.db").exists()
 
 
@@ -286,8 +357,8 @@ async def test_transfer_then_closed_is_transferred(fake, http, phone_store,
     assert row["outcome"] == "transferred"
     assert any(a["ability"] == "transfer" and a["status"] == "done"
                for a in row["actions"])
-    # The operator was told who is being put through.
-    assert op.lines == ["Putting through: Bea Sample"]
+    # The operator was told who is being put through, and from which number.
+    assert op.lines == [f"Putting through: Bea Sample ({PRIORITY})"]
     assert op.finished == [row["id"]]
 
 
@@ -326,15 +397,49 @@ async def test_clock_ending_is_ended_by_casa(fake, http, phone_store) -> None:
     assert row["number"] == ""
 
 
-def test_fallback_words() -> None:
+def test_the_headline_says_who_which_number_when_and_how_it_ended() -> None:
+    from datetime import datetime
+
+    from timekeeping import resolve_tz
+    # Noon local time, so a minute earlier is the same day whatever the
+    # wall clock says.
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=resolve_tz()).timestamp()
     row = {"name": "", "number": "+31612345678", "caller_class": "unknown",
-           "outcome": "caller_hung_up", "started_at": 10.0, "ended_at": 52.4,
-           "returned": 0}
-    line = controller.describe(row)
-    assert "5678" in line and "+3161234" not in line
-    assert "42 s" in line
-    assert "a withheld number" in controller.describe({**row, "number": ""})
-    assert "Ann Example" in controller.describe({**row, "name": "Ann Example"})
+           "outcome": "caller_hung_up", "started_at": now - 60,
+           "ended_at": now - 18, "returned": 0}
+
+    def line(**over) -> str:
+        return controller.headline({**row, **over}, now=now)
+    assert controller.when_words(now - 60, now) == "11:59"
+    assert line() == (
+        "Unknown caller · +31612345678 · 11:59 · the caller hung up")
+    assert line(number="").startswith(
+        "Unknown caller · number withheld · 11:59 · ")
+    assert line(name="Ann Example").startswith(
+        "Ann Example · +31612345678 · 11:59 · ")
+    # A call back from a transfer carries the line's own number: not shown.
+    back = line(number=LINE, returned=1)
+    assert back == ("A caller who came back after being put through · 11:59 · "
+                    "the caller hung up")
+    # A call of an earlier day carries its date.
+    assert controller.when_words(now - 3 * 24 * 3600, now) \
+        == "2026-06-12 12:00"
+    assert line(started_at=now - 3 * 24 * 3600).startswith(
+        "Unknown caller · +31612345678 · 2026-06-12 12:00 · ")
+
+
+def test_a_time_out_of_range_leaves_the_time_out() -> None:
+    row = {"name": "", "number": "+31612345678", "outcome": "caller_hung_up",
+           "started_at": 1e300, "returned": 0}
+    assert controller.when_words(1e300) == ""
+    assert controller.headline(row) == (
+        "Unknown caller · +31612345678 · the caller hung up")
+
+
+def test_the_log_shows_a_number_by_its_last_four_digits() -> None:
+    assert controller.number_tail("+31612345678") == "…5678"
+    assert controller.number_tail("") == "withheld"
+    assert controller.number_words("+31612345678") == "+31612345678"
 
 
 async def test_unanswered_accept_is_hung_up(fake, http, phone_store) -> None:
@@ -396,7 +501,7 @@ async def test_a_call_hung_up_by_the_stop_is_interrupted(fake, http,
     await asyncio.wait_for(task, 5)
     [row] = calls(phone_store)
     assert row["outcome"] == "interrupted"
-    assert "cut off" in controller.describe(row)
+    assert "cut off" in controller.headline(row)
 
 
 async def test_no_accept_once_casa_is_stopping(fake, http, phone_store) -> None:
@@ -485,3 +590,59 @@ async def test_a_row_whose_outcome_was_not_written_is_kept(
     [row] = calls(phone_store)
     assert row["outcome"] is None
     assert forgotten == []
+    # The operator still learns who called, from which number and when.
+    [line] = op.lines
+    assert line.startswith(
+        f"Unknown caller · {PRIORITY} · {controller.when_words(NOW)} · ")
+    assert line.endswith(controller.UNRECORDED_NOTE)
+    assert op.finished == []
+
+
+async def test_putting_through_names_an_unknown_callers_full_number(
+        fake, http, phone_store) -> None:
+    with phone_store.transaction(write=True) as conn:
+        pstore.set_grant(conn, "unknown", "transfer", "open")
+    op = Operator()
+    sid = "live_put"
+    caller = "+39201110099"
+    task = asyncio.create_task(controller.handle_call(
+        Incoming(sid, caller, LINE), deps(fake, http, phone_store, op=op)))
+    await wait_for(lambda: accepted(fake, sid))
+    await fake.emit(sid, {"type": "session.delegation.created",
+                          "delegation": {"id": "d1", "type": "delegation"}})
+    await fake.emit(sid, {**tool_call_event("transfer", {"why": "asked"}),
+                          "delegation_id": "d1"})
+    await wait_for(lambda: any(v == "refer" for v, _, _ in fake.requests))
+    await fake.close(sid, "remote_hangup")
+    await asyncio.wait_for(task, 5)
+    assert op.lines == [f"Putting through: a caller on {caller}"]
+
+
+async def test_no_log_line_of_a_call_carries_the_full_number(
+        fake, http, phone_store, contacts, caplog) -> None:
+    caplog.set_level(logging.DEBUG, logger="phone")
+    caplog.set_level(logging.DEBUG, logger="live_voice")
+    op = Operator()
+    sid = "live_logged"
+    task = asyncio.create_task(controller.handle_call(
+        Incoming(sid, PRIORITY, LINE),
+        deps(fake, http, phone_store, contacts=contacts, op=op)))
+    await wait_for(lambda: accepted(fake, sid))
+    await fake.emit(sid, {"type": "session.output_transcript.delta",
+                          "delta": "Hello Bea", "start_ms": 0, "end_ms": 400})
+    await fake.emit(sid, {"type": "session.delegation.created",
+                          "delegation": {"id": "d1", "type": "delegation"}})
+    await fake.emit(sid, {**tool_call_event("transfer", {"why": "asked"}),
+                          "delegation_id": "d1"})
+    await wait_for(lambda: any(v == "refer" for v, _, _ in fake.requests))
+    await fake.close(sid, "remote_hangup")
+    await asyncio.wait_for(task, 5)
+    # The operator was given the number; the log never is.
+    assert any(PRIORITY in line for line in op.lines)
+    logged = [r for r in caplog.records
+              if r.name.split(".")[0] in ("phone", "live_voice")]
+    assert logged
+    text = caplog.text
+    for form in (PRIORITY, PRIORITY[1:], PRIORITY[3:]):
+        assert form not in text
+    assert PRIORITY[-4:] in text

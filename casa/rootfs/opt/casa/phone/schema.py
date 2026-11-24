@@ -6,8 +6,10 @@ is version 0, so creating and migrating are the same loop (:mod:`phone.store`).
 ``settings`` holds the model choices, ``voices`` one voice per language,
 ``grants`` the level at which each caller class may use an ability (only rows
 that differ from the defaults need exist). ``calls`` is one row per call;
-``actions`` and ``record`` are JSON text. ``transcripts`` holds a call's words
-until ``expires_at``, apart from the call so the call outlives them.
+``actions`` and ``record`` are JSON text; ``headline_sent`` (version 2) is set
+once Casa's own first line about the ended call reached the operator.
+``transcripts`` holds a call's words until ``expires_at``, apart from the call
+so the call outlives them.
 
 Tables are ``STRICT``. Times are seconds since the epoch.
 """
@@ -63,6 +65,11 @@ V1: tuple[str, ...] = (
     """,
 )
 
+V2: tuple[str, ...] = (
+    "ALTER TABLE calls ADD COLUMN headline_sent INTEGER NOT NULL DEFAULT 0",
+)
+
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: V1,
+    2: V2,
 }

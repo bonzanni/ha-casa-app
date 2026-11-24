@@ -14,7 +14,7 @@ from phone.store import PhoneStore
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
     for name in ("PHONE_ENABLED", "PHONE_TRANSFER_NUMBER", "PHONE_OWNER_NAME",
-                 "LIVE_VOICES", "LIVE_API_HOST"):
+                 "LIVE_VOICES", "LIVE_API_HOST", "PHONE_LINE_NUMBER"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CONTACTS_DEFAULT_REGION", "NL")
     settings.reset()
@@ -31,7 +31,7 @@ def test_defaults_when_nothing_is_set() -> None:
     opts = _fresh()
     assert opts == settings.Options(
         enabled=False, transfer_number="", owner_name="", seed_voices={},
-        api_host="")
+        api_host="", line_number="")
 
 
 def test_enabled_only_for_true(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,6 +65,35 @@ def test_transfer_number_is_normalised(
     assert len([r for r in caplog.records
                 if r.levelno == logging.WARNING]) == 1
     assert "garbage" not in caplog.text
+
+
+def test_line_number_is_normalised(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("PHONE_LINE_NUMBER", "020 1234567")
+    assert _fresh().line_number == "+31201234567"
+    monkeypatch.setenv("PHONE_LINE_NUMBER", "garbage")
+    with caplog.at_level(logging.WARNING):
+        assert _fresh().line_number == ""
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "phone_line_number" in warnings[0].getMessage()
+    assert "garbage" not in caplog.text
+
+
+def test_transfer_to_the_line_itself_is_refused(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Put through to its own number, a call would come straight back.
+    monkeypatch.setenv("PHONE_LINE_NUMBER", "+31201234567")
+    monkeypatch.setenv("PHONE_TRANSFER_NUMBER", "020 1234567")
+    with caplog.at_level(logging.WARNING):
+        opts = _fresh()
+    assert (opts.transfer_number, opts.line_number) == ("", "+31201234567")
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "phone_transfer_number" in warnings[0].getMessage()
+    assert "1234567" not in caplog.text
 
 
 def test_owner_and_host_are_stripped(monkeypatch: pytest.MonkeyPatch) -> None:

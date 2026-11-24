@@ -1,0 +1,35 @@
+{
+  "name": "caller_says_goodbye",
+  "group": "action",
+  "caller": {
+    "known": true,
+    "priority": false,
+    "first_name": "Tomas",
+    "name": "Tomas Brandt",
+    "language": "en"
+  },
+  "transfer_level": "urgent",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hi Tomas, you have reached the assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "Could you tell him I returned the ladder? It's in the garage."
+    },
+    {
+      "who": "agent",
+      "text": "Of course, I'll let him know the ladder is back in the garage. Is there anything else?"
+    },
+    {
+      "who": "caller",
+      "text": "No, that's all. Thanks, bye!"
+    }
+  ],
+  "expect": {
+    "action": "end_call",
+    "outcome": "Says a short goodbye."
+  }
+}

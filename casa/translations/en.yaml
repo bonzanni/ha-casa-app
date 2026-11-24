@@ -88,6 +88,14 @@ configuration:
     description: >-
       The number callers may be put through to, with country code (or without
       one, using the contacts country). Leave empty and nobody is put through.
+  phone_line_number:
+    name: Phone Line Number
+    description: >-
+      The phone number of Casa's own line, with country code (or without one,
+      using the contacts country). When Casa puts a caller through and nobody
+      answers, the call comes back from this number, and Casa then knows it
+      is a caller it already spoke to. Leave empty and such a call is treated
+      as a new one.
   phone_owner_name:
     name: Phone Owner Name
     description: >-

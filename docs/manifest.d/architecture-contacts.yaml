@@ -3,7 +3,7 @@
 # scripts/verify_docs.py; same entry format.
 
 - doc: architecture/contacts.md
-  summary: The contacts store — a read-only copy of the iCloud address book, the marks Casa keeps about people, the note reading, the caller lookup, the assistant's three contact tools and the priority card.
+  summary: The contacts store — the iCloud address book copy, the marks Casa keeps about people, note reading, the caller lookup, the contact tools and the priority card.
   when_changing: the contacts store or its schema, the iCloud sync or vCard reading, how address-book notes are read, the caller lookup, find_contact, refresh_contacts or set_contact_marks, or the priority confirmation card
   covers:
     - casa/rootfs/opt/casa/contacts/__init__.py
@@ -33,7 +33,7 @@
     - tests/test_contacts_service.py
     - tests/test_contacts_tools.py
     - tests/test_contacts_priority_card.py
-  related: [architecture/persistent-state.md, architecture/builtin-secrets-store.md, architecture/tools-interface.md, architecture/memory-scoping.md, architecture/tool-questions.md, reference/operator-options.md]
+  related: [architecture/logins.md, architecture/persistent-state.md, architecture/builtin-secrets-store.md, architecture/tools-interface.md, architecture/memory-scoping.md, architecture/tool-questions.md, reference/operator-options.md]
   defines_invariants: [INV-CONTACTS-001, INV-CONTACTS-002, INV-CONTACTS-003, INV-CONTACTS-004, INV-CONTACTS-005, INV-CONTACTS-006, INV-CONTACTS-007]
   invariant_tests:
     INV-CONTACTS-001: [tests/test_contacts_lookup.py::test_callerinfo_has_exactly_five_fields, tests/test_contacts_lookup.py::test_withheld_and_garbage_never_raise, tests/test_contacts_lookup.py::test_store_unavailable_is_unknown, tests/test_contacts_lookup.py::test_store_read_that_raises_is_unknown]

@@ -128,6 +128,14 @@
   kind: meta
   summary: Manifest shard — the phone-line document, in a shard of its own as the contacts document is; no lettered shard's named range takes it.
 
+- doc: manifest.d/architecture-live-voice.yaml
+  kind: meta
+  summary: Manifest shard — the live voice session document, split from the phone-line document.
+
+- doc: manifest.d/architecture-logins.yaml
+  kind: meta
+  summary: Manifest shard — the document on Casa's own logins, used by contacts and the phone line.
+
 - doc: manifest.yaml
   kind: meta
   summary: The publication allowlist for this corpus.
@@ -139,6 +147,10 @@
 - doc: coverage.d/casa_browser.yaml
   kind: meta
   summary: Coverage ledger shard — the optional Casa Browser app's surfaces.
+
+- doc: coverage.d/phone-and-contacts.yaml
+  kind: meta
+  summary: Coverage ledger shard — the phone line, the live voice session, contacts and Casa's own logins.
 
 - doc: README.md
   kind: index

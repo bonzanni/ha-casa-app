@@ -153,7 +153,7 @@ def _settle_blank(store: ContactsStore, source: str) -> list[Person]:
             for field in ("relation", "language"):
                 cstore.clear_mark(conn, source, person.uid, field, "note")
             cstore.settle_note(conn, source, person.uid,
-                               cstore.note_hash(person.note))
+                               cstore.settled_hash(person.note))
         return to_read
 
 
@@ -165,11 +165,11 @@ def _apply_readings(store: ContactsStore, source: str,
     meanwhile), and settle that note."""
     with store.transaction(write=True) as conn:
         for uid, reading in readings.items():
-            digest = cstore.note_hash(read_notes[uid])
+            note = read_notes[uid]
             row = conn.execute(
                 "SELECT note_hash FROM people WHERE source = ? AND uid = ?",
                 (source, uid)).fetchone()
-            if row is None or row[0] != digest:
+            if row is None or row[0] != cstore.note_hash(note):
                 continue
             for field, value in (("relation", reading.relation),
                                  ("language", reading.language)):
@@ -177,7 +177,7 @@ def _apply_readings(store: ContactsStore, source: str,
                     cstore.set_mark(conn, source, uid, field, value, "note")
                 else:
                     cstore.clear_mark(conn, source, uid, field, "note")
-            cstore.settle_note(conn, source, uid, digest)
+            cstore.settle_note(conn, source, uid, cstore.settled_hash(note))
 
 
 async def _read_notes(store: ContactsStore, source: str,

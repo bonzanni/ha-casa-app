@@ -5,7 +5,8 @@ the operator.
 Each is an :class:`live_voice.session.Ability` whose runner is plain Casa
 code with one free-text argument. The texts sent to the operator are written
 here and carry nothing a model wrote: only the caller's label, which Casa
-builds from the contact's name or the number.
+builds from the contact's name and the caller's full number (the operator's
+phone shows the line's own number, not the caller's).
 """
 from __future__ import annotations
 

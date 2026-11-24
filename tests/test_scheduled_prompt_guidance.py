@@ -428,6 +428,18 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
         "making a contact priority posts Casa's confirmation card to the "
         "operator's DM, and every change is refused unless the turn is a "
         "direct DM or button turn; it has no scheduled arm",
+    "tools.py::connect_login":
+        "taking a vault item for a login posts Casa's own line naming that "
+        "item to the operator's DM, and every call is refused unless the turn "
+        "is a direct DM or button turn; it has no scheduled arm",
+    "tools.py::read_call":
+        "sending a call's transcript posts it as a file to the operator's DM "
+        "on Casa's bot, and that part is refused unless the turn is a direct "
+        "DM or button turn; it has no scheduled arm",
+    "tools.py::phone_settings":
+        "a wider grant waits for Casa's own confirmation card in the "
+        "operator's DM, and every change is refused unless the turn is a "
+        "direct DM or button turn; it has no scheduled arm",
     "tools.py::stop_work":
         "stops a specialist's own work (browsing) and may mark that request's card; it "
         "is refused on every turn but the operator's own live message, so it has no "

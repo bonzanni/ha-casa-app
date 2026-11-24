@@ -41,6 +41,9 @@ class Options:
     owner_name: str
     seed_voices: dict[str, str]
     api_host: str
+    #: The line's own number: a call from it is a transfer that came back.
+    #: Empty means such calls are not recognised.
+    line_number: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,31 +73,46 @@ def reset() -> None:
 
 
 def options() -> Options:
-    """The options, read from env on first use and kept: a transfer number
-    that does not read as a number becomes ``""`` with one warning (the value
-    itself is not logged), once."""
+    """The options, read from env on first use and kept: a transfer or line
+    number that does not read as a number becomes ``""`` with one warning
+    (the value itself is not logged), once. A transfer number equal to the
+    line's own number is refused the same way: the call would come back."""
     global _options
     if _options is None:
         _options = _read()
     return _options
 
 
+def _number(raw: str, option: str, consequence: str) -> str:
+    """*raw* in E.164, or ``""`` with one warning naming *option*."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    normal = phone_numbers.to_e164(raw, contacts_service.default_region())
+    if normal is None:
+        logger.warning("phone: %s is not a usable number; %s", option,
+                       consequence)
+    return normal or ""
+
+
 def _read() -> Options:
     env = os.environ
-    transfer = env.get("PHONE_TRANSFER_NUMBER", "").strip()
-    if transfer:
-        normal = phone_numbers.to_e164(
-            transfer, contacts_service.default_region())
-        if normal is None:
-            logger.warning("phone: phone_transfer_number is not a usable "
-                           "number; nobody will be put through")
-        transfer = normal or ""
+    transfer = _number(env.get("PHONE_TRANSFER_NUMBER", ""),
+                       "phone_transfer_number",
+                       "nobody will be put through")
+    line = _number(env.get("PHONE_LINE_NUMBER", ""), "phone_line_number",
+                   "a transfer that comes back is not recognised")
+    if transfer and transfer == line:
+        logger.warning("phone: phone_transfer_number is the line's own "
+                       "number; nobody will be put through")
+        transfer = ""
     return Options(
         enabled=env.get("PHONE_ENABLED", "").strip().lower() == "true",
         transfer_number=transfer,
         owner_name=env.get("PHONE_OWNER_NAME", "").strip(),
         seed_voices=_seed_voices(env.get("LIVE_VOICES", "")),
-        api_host=env.get("LIVE_API_HOST", "").strip())
+        api_host=env.get("LIVE_API_HOST", "").strip(),
+        line_number=line)
 
 
 def voice_param(value: str) -> str | dict:

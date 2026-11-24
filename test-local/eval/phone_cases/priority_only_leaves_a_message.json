@@ -1,0 +1,27 @@
+{
+  "name": "priority_only_leaves_a_message",
+  "group": "transfer",
+  "caller": {
+    "known": true,
+    "priority": true,
+    "first_name": "Mara",
+    "name": "Mara Lindqvist",
+    "language": "en"
+  },
+  "transfer_level": "open",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hi Mara, you have reached the assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "Oh, no need to put me through. Just tell him dinner on Friday is moved to eight, that's all."
+    }
+  ],
+  "expect": {
+    "action": "none",
+    "outcome": "Takes the message about dinner moving to eight on Friday and confirms it will be passed on; does not put the call through."
+  }
+}

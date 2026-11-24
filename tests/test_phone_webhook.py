@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
+import logging
 
 import pytest
 from aiohttp import web
@@ -341,6 +342,27 @@ async def test_anonymous_caller_has_empty_number(make_harness):
     ev = event(from_value=ANONYMOUS)
     assert (await h.post_event(ev)).status == 200
     assert h.calls[0].from_number == ""
+
+
+async def test_sip_header_names_are_logged_at_debug_without_values(
+        make_harness, caplog):
+    h = await make_harness()
+    ev = event()
+    ev["data"]["sip_headers"] += [
+        {"name": "Diversion", "value": "<tel:+31209876543>"},
+        {"name": "X-Carrier-Note", "value": "secret-ish-value"},
+    ] + [{"name": f"X-Extra-{i:02d}", "value": f"v{i}"} for i in range(50)]
+    with caplog.at_level(logging.DEBUG, logger="phone.webhook"):
+        assert (await h.post_event(ev)).status == 200
+    lines = [r.getMessage() for r in caplog.records
+             if r.levelno == logging.DEBUG and "header" in r.getMessage()]
+    assert len(lines) == 1
+    names = sorted(["from", "to", "diversion", "x-carrier-note"]
+                   + [f"x-extra-{i:02d}" for i in range(50)])[:40]
+    assert lines[0].endswith(", ".join(names))
+    assert "x-extra-49" not in lines[0]
+    for value in ("9876543", "secret-ish-value", "12345678", "1234567"):
+        assert value not in caplog.text
 
 
 async def test_31st_request_in_a_minute_is_429(make_harness):

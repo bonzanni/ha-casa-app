@@ -124,6 +124,14 @@ groups the operator allowed a specialist's bot to answer everyone in are
 when it was made; saved whole, atomically and owner-only; a file not of its shape is moved
 aside to `.corrupt` and the store starts empty — [`guest-summons.md`](guest-summons.md)).
 
+**Which vault item holds each of Casa's own logins** is `/data/logins.json` (0600, in the
+private-state inventory): per login, the `op` id of the item the resident assistant chose,
+or `null` where the choice is unknown, saved whole and atomically. A missing file means
+nothing was chosen. A file that is not of its shape is logged as an error, its content copied
+to `logins.json.corrupt` (0600, under the inventory's `/data/*.corrupt` entry), and it is
+replaced by one that records every choice as unknown: no login then reads any vault item, the
+default one included, until it is connected again ([`logins.md`](logins.md)).
+
 **Secrets without 1Password have a directory of their own.** `/data/vault/` (0700, in the
 private-state inventory) holds `casa.kdbx`, the built-in secrets store's KeePass database,
 and `key`, the text that opens it (both 0600; no key file when `CASA_VAULT_KEY` supplies the
@@ -142,7 +150,7 @@ numbers and marks as they were ([`contacts.md`](contacts.md), INV-CONTACTS-002).
 **The phone line has a directory of its own.** `/data/phone/` (0700, in the private-state
 inventory) holds `phone.db`, a SQLite store in WAL mode with one transaction per
 connection: the phone line's stored settings, voices and grants, a row per call (its
-outcome, action log and record), and each call's transcript until it expires 30 days after
+outcome, action log, record and whether its first line reached the operator), and each call's transcript until it expires 30 days after
 the call, when a nightly job deletes it; audio is never kept. Boot opens it only with
 `phone_enabled` on. A failure leaves an existing file as it was and the line answering calls
 unrecorded ([`phone.md`](phone.md)), and Casa boots either way.

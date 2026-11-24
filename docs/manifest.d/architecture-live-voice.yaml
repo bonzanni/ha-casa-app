@@ -1,0 +1,25 @@
+# Manifest shard — the live voice session document, split from the phone-line document and
+# kept in a shard of its own beside it. Loaded with the root docs/manifest.yaml by
+# scripts/verify_docs.py; same entry format.
+
+- doc: architecture/live-voice.md
+  summary: The live voice session a call runs in — the provider client, turns, the action state and decision step, and the clock with its two-step silence.
+  when_changing: the live voice client or session, the action state, the decision step, the goodbye grace, the clock or the silence check-in, or the session's delays
+  covers:
+    - casa/rootfs/opt/casa/live_voice/__init__.py
+    - casa/rootfs/opt/casa/live_voice/api.py
+    - casa/rootfs/opt/casa/live_voice/actions.py
+    - casa/rootfs/opt/casa/live_voice/session.py
+    - casa/rootfs/opt/casa/live_voice/clock.py
+    - casa/rootfs/opt/casa/live_voice/decision.py
+  tests:
+    - tests/test_live_voice_api.py
+    - tests/test_live_voice_actions.py
+    - tests/test_live_voice_session.py
+    - tests/test_live_voice_decision.py
+  related: [architecture/phone.md]
+  defines_invariants: [INV-PHONE-002, INV-PHONE-003, INV-PHONE-004]
+  invariant_tests:
+    INV-PHONE-002: [tests/test_live_voice_actions.py::test_same_ability_twice_in_one_round_runs_once, tests/test_live_voice_actions.py::test_concurrent_requests_run_once_and_share_the_outcome, tests/test_live_voice_session.py::test_both_triggers_asking_in_one_round_run_the_ability_once]
+    INV-PHONE-003: [tests/test_live_voice_actions.py::test_a_request_from_an_older_round_is_superseded, tests/test_live_voice_actions.py::test_a_request_that_waited_through_a_new_round_is_superseded, tests/test_live_voice_session.py::test_a_decision_the_caller_spoke_over_does_not_act, tests/test_live_voice_session.py::test_a_helper_call_from_before_the_caller_spoke_is_superseded, tests/test_phone_abilities.py::test_a_caller_who_speaks_during_the_notification_supersedes_it]
+    INV-PHONE-004: [tests/test_live_voice_session.py::test_no_agent_speech_ends_the_session, tests/test_live_voice_session.py::test_silence_says_the_line_and_then_ends_the_session, tests/test_live_voice_session.py::test_the_agents_own_question_does_not_put_the_closing_line_off, tests/test_live_voice_session.py::test_a_caller_who_answers_the_check_in_is_not_hung_up_on, tests/test_live_voice_session.py::test_a_failed_decision_after_the_check_in_does_not_end_the_session, tests/test_live_voice_session.py::test_the_check_in_comes_when_its_time_has_passed_and_not_later, tests/test_live_voice_session.py::test_caller_speech_after_the_silence_line_keeps_the_session, tests/test_live_voice_session.py::test_caller_speech_while_the_silence_line_is_sent_keeps_the_session, tests/test_live_voice_session.py::test_caller_words_do_not_bring_the_check_in_before_the_line_was_played, tests/test_live_voice_session.py::test_an_answer_over_the_agents_question_waits_for_the_question_to_end, tests/test_live_voice_session.py::test_no_check_in_while_the_agents_line_is_still_played, tests/test_live_voice_session.py::test_the_closing_line_waits_until_the_agents_question_was_played, tests/test_live_voice_session.py::test_a_failed_decision_does_not_end_the_session_while_the_line_is_played, tests/test_live_voice_session.py::test_a_failed_decision_over_a_long_line_is_followed_by_the_check_in, tests/test_live_voice_session.py::test_a_check_in_drops_a_decision_that_had_already_failed, tests/test_live_voice_session.py::test_no_check_in_while_work_is_pending, tests/test_live_voice_session.py::test_work_accepted_after_the_closing_line_is_not_hung_up_on, tests/test_live_voice_session.py::test_no_check_in_before_the_agent_has_spoken, tests/test_live_voice_session.py::test_the_silence_starts_afresh_when_pending_work_did_not_finish, tests/test_live_voice_session.py::test_a_decision_failing_twice_then_silence_ends_the_session, tests/test_live_voice_session.py::test_caller_speech_after_the_too_long_line_changes_nothing, tests/test_live_voice_session.py::test_a_dropped_socket_that_cannot_be_reattached_is_lost, tests/test_live_voice_session.py::test_a_first_attach_that_never_completes_is_lost, tests/test_phone_controller.py::test_clock_ending_is_ended_by_casa]
