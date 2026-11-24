@@ -63,8 +63,6 @@
   doc: architecture/plugin-handoff.md
 - item: casa/rootfs/opt/casa/casa_core_middleware.py
   doc: architecture/observability.md
-- item: casa/rootfs/opt/casa/casa_eval/base.py
-  excluded: scaffolding with an empty tester registry; no application code imports it, only its own tests do
 - item: casa/rootfs/opt/casa/channels/telegram.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/ask_labels.py
@@ -717,8 +715,6 @@
   doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/authored_markers.py
   doc: architecture/personality.md
-- item: casa/rootfs/opt/casa/casa_eval/__init__.py
-  excluded: scaffolding with an empty tester registry; no application code imports it, only its own tests do
 - item: casa/rootfs/opt/casa/channel_authz.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channel_policy.py

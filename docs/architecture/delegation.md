@@ -188,11 +188,10 @@ voice budget: the Concierge policy silently bypassed. The pre-handoff pass is de
 silent and total — it rewrites only a name it can resolve to exactly one declared role, and
 every denial stays the ACL's to emit, in the established gate order.
 
-What it does not cover: this says nothing about *global* name uniqueness. The registry's
-own `name_to_role` is a global, first-binding-wins map and is deliberately **not** what the
-ACL consults — a collision there would silently pick a winner, which is not a resolution an
-authorization boundary may perform. Nothing prevents two agents elsewhere in a deployment
-from sharing a display name; it only stops mattering at this gate.
+What it does not cover: this says nothing about *global* name uniqueness. The ACL resolves
+a display name only among the caller's declared delegates, and refuses one that two of them
+share. Nothing prevents two agents elsewhere in a deployment from sharing a display name;
+it only stops mattering at this gate.
 
 **INV-ENG-007**: Every `<delegates>` block Casa builds names delegates as the ACL then resolves them.
 

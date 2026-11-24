@@ -27,9 +27,8 @@ registry is the likeliest mistake in this area.
 Two names exist for a registered agent and they are not interchangeable. The **role** is the
 stable identifier the system routes on. The **name** is what a person sees. Code resolves by
 role and translates to a name at the edge, so routing survives a rename — but nothing
-enforces that names are unique, and reverse lookup from a name is first-wins, so
-name-keyed behaviour is not guaranteed to survive one. Routing is what a rename is safe
-for; not everything is routing.
+enforces that names are unique, so name-keyed behaviour is not guaranteed to survive one.
+Routing is what a rename is safe for; not everything is routing.
 
 Failure is **not uniform across tiers**, and that is the second thing to internalise.
 Residents are gating: a bad one stops boot. Specialists load on an isolated path whose
@@ -144,8 +143,8 @@ termination control for in-flight work too: when the disable takes effect, Casa 
 **A resident and a specialist claim one role.** Registry construction raises, naming the
 role. The check is cross-tier because each directory looks fine on its own.
 
-**A role is unknown at runtime.** The registry does not raise: `name_to_role` returns `None`,
-`is_known` returns `False`, and `role_to_name` returns the role unchanged. Callers decide
+**A role is unknown at runtime.** The registry does not raise: `is_known` returns `False`,
+`tier_for_role` returns `None`, and `role_to_name` returns the role unchanged. Callers decide
 what that means — read the call site rather than assuming it errors.
 
 ## Extension points
@@ -198,7 +197,7 @@ is not.
 
 **Tests**
 - `tests/test_agent_registry.py::test_role_to_name_basic`
-- `tests/test_agent_registry.py::test_name_to_role_unknown_returns_none`
+- `tests/test_agent_registry.py::test_role_to_name_unknown_returns_role_itself`
 - `tests/test_agent_loader.py::test_duplicate_role_across_residents_and_specialists_fails`
 
 **Related**

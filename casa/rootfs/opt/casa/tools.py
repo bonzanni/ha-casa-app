@@ -5684,17 +5684,16 @@ def persona_name(role: str | None = None) -> str:
 
 
 def _declared_name_candidates(name: str, declared) -> list[str]:
-    """#433: the DECLARED roles whose persona display name matches *name*,
-    compared case- and whitespace-insensitively (matching
-    ``AgentRegistry.name_to_role``).
+    """#433: the roles in *declared* whose persona display name matches
+    *name*, compared after trimming surrounding whitespace and lowercasing.
+    Every match is returned, sorted; the caller decides what more than one
+    means.
 
     Scoped to *declared* by construction: the only values this can yield are
-    roles the caller already declares, so alias resolution cannot widen the
+    roles in the set the caller passes. The delegation ACL passes the
+    origin's declared delegates, so alias resolution there cannot widen the
     authorization boundary no matter what display names exist elsewhere in
-    the deployment. That is why this does NOT use
-    ``AgentRegistry.name_to_role`` — that map is global and its
-    ``setdefault`` silently keeps the first binding on a collision, which is
-    precisely the resolution an authz boundary must not perform silently.
+    the deployment, and a name two of them share is refused, never guessed.
     """
     # Total over arbitrary JSON: this is reachable from the tool handler,
     # whose `agent` argument is not guaranteed to be a string on paths that
