@@ -187,28 +187,26 @@ def test_check_ok_reads_the_document_once(
 @pytest.mark.parametrize(
     ("service", "fields", "problem", "field", "sentence", "what"), [
         (ICLOUD, {"password": "abcd-efgh"}, "field_missing", "username",
-         "The vault item for iCloud contacts has no Apple ID in `username`.",
+         "The vault item for iCloud contacts has no Apple ID.",
          "the Apple ID"),
         (ICLOUD, {"username": "", "password": "abcd-efgh"}, "field_empty",
          "username",
-         "The vault item for iCloud contacts has no Apple ID in `username`: "
-         "the field is empty.", "the Apple ID"),
+         "The Apple ID in the vault item for iCloud contacts is empty.",
+         "the Apple ID"),
         (ICLOUD, {"email": "fictional-apple-id"}, "field_missing",
          "password",
-         "The vault item for iCloud contacts has no app-specific password "
-         "in `password`.", "the app-specific password"),
+         "The vault item for iCloud contacts has no app-specific password.",
+         "the app-specific password"),
         (ICLOUD, {"username": "fictional-apple-id", "credential": "  "},
          "field_empty", "password",
-         "The vault item for iCloud contacts has no app-specific password "
-         "in `credential`: the field is empty.",
-         "the app-specific password"),
+         "The app-specific password in the vault item for iCloud contacts "
+         "is empty.", "the app-specific password"),
         (VOICE, {"webhook_secret": "whsec_x"}, "field_missing", "credential",
-         "The vault item for OpenAI voice has no API key in `credential`.",
-         "the API key"),
+         "The vault item for OpenAI voice has no API key.", "the API key"),
         (VOICE, {"api key": "sk-test-not-a-real-key"}, "field_missing",
          "webhook_secret",
-         "The vault item for OpenAI voice has no webhook signing secret in "
-         "`webhook_secret`.", "the webhook signing secret"),
+         "The vault item for OpenAI voice has no webhook signing secret.",
+         "the webhook signing secret"),
     ])
 def test_check_names_the_value_that_is_missing_or_empty(
         monkeypatch: pytest.MonkeyPatch, service: str, fields: dict,
@@ -230,10 +228,10 @@ def test_check_takes_a_value_under_any_accepted_label(
         "api1", "iCloud Contacts", "API_CREDENTIAL", username="",
         email="fictional-apple-id", credential="abcd-efgh"))
     found = logins.check(ICLOUD)
-    assert found.ok and found.problem == ""
-    # Which label holds a value that is not under the first accepted one.
-    assert dict(found.found) == {"username": "email",
-                                 "password": "credential"}
+    assert found == logins.Check(ok=True, problem="", field="",
+                                 item_is_default=True, service=ICLOUD)
+    assert logins.read_all(ICLOUD) == {"username": "fictional-apple-id",
+                                       "password": "abcd-efgh"}
 
 
 def test_labels_are_matched_whatever_their_case(
@@ -249,16 +247,14 @@ def test_labels_are_matched_whatever_their_case(
                 "Webhook Secret": "whsec_x"}))
 
     found = logins.check(ICLOUD)
-    assert (found.ok, found.problem, found.found) == (True, "", ())
+    assert (found.ok, found.problem) == (True, "")
     assert logins.read_all(ICLOUD) == {"username": "fictional-apple-id",
                                        "password": "abcd-efgh"}
     assert logins.candidates(ICLOUD) == [
         {"id": "icl1", "title": "iCloud Contacts", "category": "LOGIN",
          "has": {"the Apple ID": True, "the app-specific password": True}}]
 
-    found = logins.check(VOICE)
-    assert found.ok and dict(found.found) == {
-        "credential": "api key", "webhook_secret": "webhook secret"}
+    assert logins.check(VOICE).ok
     assert logins.read(VOICE, "credential") == "sk-test-not-a-real-key"
     assert logins.read(VOICE, "webhook_secret") == "whsec_x"
     assert logins.candidates(VOICE)[0]["has"] == {
@@ -268,8 +264,7 @@ def test_labels_are_matched_whatever_their_case(
     # that is there and empty is still told apart from one that is missing.
     fields = op.get("icl1")["fields"]
     fields.update(Password="", CREDENTIAL="from-credential")
-    found = logins.check(ICLOUD)
-    assert found.ok and dict(found.found) == {"password": "credential"}
+    assert logins.check(ICLOUD).ok
     assert logins.read(ICLOUD, "password") == "from-credential"
     del fields["CREDENTIAL"]
     found = logins.check(ICLOUD)
@@ -397,15 +392,59 @@ def test_what_a_tool_may_return_holds_no_label(
     seen.append(logins.check(ICLOUD).for_model())
     text = json.dumps(seen)
     assert "zzlabel" not in text and "ZZVALUE" not in text
-    # The sentence for the operator is where a label may be named.
-    op.down = False
-    op.items = cases["field_missing"]
-    assert "`zzlabel-user`" in logins.check(ICLOUD).sentence()
     # A result holds only Casa's own words.
     for found in seen:
         assert set(found) <= {"ok", "problem", "what"}
         assert found.get("what") in (None, "the Apple ID",
                                      "the app-specific password")
+
+
+def test_what_the_operator_is_told_holds_no_label(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    # The operator may answer Casa's line, and the quoted line then reaches
+    # the assistant: it names a value by Casa's own name only.
+    _marked_service(monkeypatch)
+    title = "iCloud Contacts"
+    op = install(monkeypatch)
+    cases = {
+        "field_missing": [item("m1", title, **{"zzlabel-cred": "ZZVALUE"})],
+        "field_empty": [item("m1", title, **{"zzlabel-user": "",
+                                             "zzlabel-pass": "ZZVALUE"})],
+        "password empty": [item("m1", title, **{"zzlabel-mail": "ZZVALUE",
+                                                "zzlabel-cred": ""})],
+        "item_not_found": [],
+        "": [item("m1", title, **{"zzlabel-mail": "ZZVALUE-a",
+                                  "zzlabel-cred": "ZZVALUE-b"})],
+    }
+    lines = []
+    seen = set()
+
+    def tell(item_ref: str | None = None) -> None:
+        found = logins.check(ICLOUD, item=item_ref)
+        seen.add(found.problem)
+        lines.append(found.sentence())
+        lines.append(logins.chosen_line(ICLOUD, "Apple account", found))
+
+    for items in cases.values():
+        op.items = list(items)
+        tell()
+        if items:
+            tell("m1")
+    op.down = True
+    tell()
+    op.down = False
+    logins.choose(ICLOUD, "gone1")
+    tell()
+    Path(logins.PATH).write_text("{ damaged")
+    monkeypatch.setattr(logins, "_choices", None)
+    tell()
+    monkeypatch.delenv("ONEPASSWORD_DEFAULT_VAULT")
+    tell("m1")
+    assert seen == {"", "field_missing", "field_empty", "item_not_found",
+                    "vault_unreadable", "choice_unreadable", "no_vault"}
+    text = "\n".join(lines)
+    assert "zzlabel" not in text.lower() and "ZZVALUE" not in text
+    assert "`" not in text and "field" not in text
 
 
 # --- the candidates ---------------------------------------------------------
@@ -843,11 +882,14 @@ def test_the_line_about_a_choice_names_the_item_and_its_state(
     assert line(ICLOUD, "full1") == (
         "Contacts now use the vault item 'Apple account'.")
     assert line(ICLOUD, "api2") == (
-        "Contacts now use the vault item 'iCloud app password', "
-        "app-specific password from its `credential` field.")
+        "Contacts now use the vault item 'iCloud app password'.")
     assert line(ICLOUD, "half3") == (
         "Contacts are set to use the vault item 'Apple work', but the vault "
-        "item for iCloud contacts has no Apple ID in `username`.")
+        "item for iCloud contacts has no Apple ID.")
+    op.get("half3")["fields"]["username"] = ""
+    assert line(ICLOUD, "half3") == (
+        "Contacts are set to use the vault item 'Apple work', but the Apple "
+        "ID in the vault item for iCloud contacts is empty.")
     assert line(VOICE, "oai4") == (
         "OpenAI voice now uses the vault item 'OpenAI key'.")
     op.remove("oai4")

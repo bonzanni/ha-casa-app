@@ -163,8 +163,21 @@ def test_purge_transcripts_deletes_only_expired(opened: PhoneStore) -> None:
         pstore.put_transcript(conn, "c1", "old words", 10.0)
         pstore.put_transcript(conn, "c2", "new words", 100.0)
         assert pstore.purge_transcripts(conn, 50.0) == 1
-        assert pstore.transcript(conn, "c1") is None
-        assert pstore.transcript(conn, "c2") == "new words"
+        # Read as of a time before either expiry: only the purged one is gone.
+        assert pstore.transcript(conn, "c1", 0.0) is None
+        assert pstore.transcript(conn, "c2", 0.0) == "new words"
+
+
+def test_a_transcript_past_its_expiry_is_not_read(opened: PhoneStore) -> None:
+    with opened.transaction(write=True) as conn:
+        pstore.insert_call(conn, _call("c1", "live_1"))
+        pstore.put_transcript(conn, "c1", "words", 100.0)
+        # Not purged yet, and still not read once it has expired.
+        assert pstore.transcript(conn, "c1", 99.0) == "words"
+        assert pstore.transcript(conn, "c1", 100.0) is None
+        assert pstore.transcript(conn, "c1", 101.0) is None
+        assert conn.execute("SELECT count(*) FROM transcripts").fetchone()[0] \
+            == 1
 
 
 def test_deleting_a_call_removes_its_transcript(opened: PhoneStore) -> None:
@@ -172,4 +185,4 @@ def test_deleting_a_call_removes_its_transcript(opened: PhoneStore) -> None:
         pstore.insert_call(conn, _call("c1", "live_1"))
         pstore.put_transcript(conn, "c1", "words", 10.0)
         conn.execute("DELETE FROM calls WHERE id = 'c1'")
-        assert pstore.transcript(conn, "c1") is None
+        assert pstore.transcript(conn, "c1", 0.0) is None

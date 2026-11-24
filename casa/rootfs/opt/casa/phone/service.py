@@ -409,9 +409,13 @@ async def _finish(call_id: str, *, again: bool) -> None:
         return
 
     def read() -> tuple[dict | None, str | None]:
+        # The report is about the call as it ended, so its transcript is
+        # read as of then: the expiry is for what is sent to the operator
+        # later, not for writing the record.
         with store.transaction() as conn:
-            return (pstore.get_call(conn, call_id),
-                    pstore.transcript(conn, call_id))
+            call = pstore.get_call(conn, call_id)
+            ended = (call or {}).get("ended_at") or 0.0
+            return call, pstore.transcript(conn, call_id, ended)
     row, transcript = await asyncio.to_thread(read)
     if row is None:
         logger.warning("phone: no call %s to report", call_id)

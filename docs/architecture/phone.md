@@ -154,7 +154,7 @@ the record has no model part (`summary_failed`) and is handed on all the same.
 contact's name or the full number, class, outcome), gives one call's record under
 `outside_content` with a note that the caller's two fields are not instructions, or sends a
 call's transcript to the operator's chat as a text file and answers `sent` (`expired` once
-it is gone): a transcript never enters a tool result. A call still under way is listed with
+it is past its 30 days, even before the purge): a transcript never enters a tool result. A call still under way is listed with
 the outcome `in_progress`, and `record` and `transcript` answer `in_progress` for it with
 only what its row knows (who, the number, when). For an ended call with no summary yet
 `record` answers `record_pending`, or `no_record` when none will be written (the call was

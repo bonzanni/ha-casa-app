@@ -165,7 +165,7 @@ async def test_known_priority_caller_end_to_end(fake, http, phone_store,
     assert row["language"] == "nl"
     assert row["returned"] == 0
     with phone_store.transaction() as conn:
-        text = pstore.transcript(conn, row["id"])
+        text = pstore.transcript(conn, row["id"], row["ended_at"])
     assert text == "Assistant: Hello Bea\nCaller: Hi, just a message"
     with phone_store.transaction() as conn:
         [(expires,)] = conn.execute(
@@ -331,7 +331,7 @@ async def test_accept_refused(fake, http, phone_store) -> None:
     assert op.finished == [row["id"]]
     assert fake.attach_count == 0
     with phone_store.transaction() as conn:
-        assert pstore.transcript(conn, row["id"]) is None
+        assert pstore.transcript(conn, row["id"], 0.0) is None
 
 
 async def test_transfer_then_closed_is_transferred(fake, http, phone_store,

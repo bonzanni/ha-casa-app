@@ -349,11 +349,10 @@ async def test_refresh_reports_counts_and_not_connected(
         assert got == {"status": "not_connected", "ok": False,
                        "problem": "field_empty", "what": "the Apple ID"}
         # A login that worked before: what the refresh itself found, and
-        # never its sentence for the operator, which names a field.
+        # never its sentence for the operator.
         monkeypatch.setattr(service, "_login_check", logins.Check(
             ok=False, problem="field_missing", field="password",
-            item_is_default=False, service="icloud_contacts",
-            label="zzlabel"))
+            item_is_default=False, service="icloud_contacts"))
         lost = await _call("refresh_contacts", {})
         assert lost == {"status": "not_connected", "ok": False,
                         "problem": "field_missing",
