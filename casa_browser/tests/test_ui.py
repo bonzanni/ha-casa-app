@@ -79,12 +79,12 @@ def test_nonces_single_use_bound_and_expiring():
     t = [0.0]
     n = Nonces(clock=lambda: t[0])
     a = n.issue("/pair")
-    assert not n.spend(a, "/sites") and not n.spend(a, "/pair")     # bound; and a miss spends it
+    assert not n.take(a, "/sites")[0] and not n.take(a, "/pair")[0]     # bound; and a miss spends it
     b = n.issue("/pair")
     t[0] = 3601
-    assert not n.spend(b, "/pair")
+    assert not n.take(b, "/pair")[0]
     c = n.issue("/pair")
-    assert n.spend(c, "/pair") and not n.spend(c, "/pair")
+    assert n.take(c, "/pair")[0] and not n.take(c, "/pair")[0]
 
 
 async def test_home_lists_live_waits_first(rig, operator):

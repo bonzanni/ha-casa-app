@@ -102,7 +102,6 @@ SEARCH_PATH = "/search?q="
 RETENTION_EVERY_S = 6 * 3600
 QUESTION_SWEEP_S = 30.0         # an open question past its hour expires within this; so does
                                 # a live view the model asked for and nobody opened
-DEPENDENCY_CODES = frozenset({"unavailable", "timeout", "internal"})
 PICTURE_WAIT_S = 12.0           # a picture for a model takes at most this; then there is none
 COOKIES_WAIT_S = 5.0            # reading or putting back session cookies takes at most this
 LONG_TEXT = 200                 # more characters than this into a <textarea> are one insertion
@@ -3361,7 +3360,6 @@ class RunController:
         ``text_incomplete`` or with ``destination_changed`` lapse the question into a fresh
         judgement; ``same`` leads to the final read, then F4/F9 and the press."""
         frozen = active.question
-        gen = self._generation(active)
         if frozen is None or frozen.question_id != pending.question_id:
             raise ProtocolError("judgement_stale")
         q = self.store.get_question(frozen.question_id)

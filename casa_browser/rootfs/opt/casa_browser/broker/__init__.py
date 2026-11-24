@@ -1,5 +1,4 @@
 """Private credential broker interface types."""
-from dataclasses import dataclass
 
 ERROR_CODES = frozenset({'unsupported', 'refused', 'not_found', 'conflict', 'unavailable', 'timeout', 'internal',
                          'page_changed'})   # slice 5u: driver-to-broker only
@@ -13,19 +12,3 @@ class BrokerError(Exception):
             code = 'internal'
         self.args = (code,)
         self.code = code
-
-@dataclass(frozen=True)
-class LoginMetadata:
-    site_id: str
-    roles_available: tuple[str, ...]
-    extra_field_names: tuple[str, ...]
-
-@dataclass(frozen=True)
-class LoginOutcome:
-    status: str
-    reason: str
-
-@dataclass(frozen=True)
-class GuestStatus:
-    state: str
-    reason: str

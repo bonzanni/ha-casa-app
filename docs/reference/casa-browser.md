@@ -85,8 +85,8 @@ HA language takes effect at the next app start. An invalid option is named (neve
 in the log and in the public options record.
 
 Service users have fixed ids: `casa-browser` 1100, `casa-proxy` 1101, `casa-broker` 1102,
-`casa-controller` 1103. `options.child_environment` passes only `PATH`, `LANG`, `LC_ALL`
-and `TZ` to a child process.
+`casa-controller` 1103. `launcher.chrome_env` gives Chrome only `PATH`, `HOME`, `DISPLAY`,
+`XAUTHORITY`, `TZ` and `LANG`.
 
 ## Durable state and retention
 

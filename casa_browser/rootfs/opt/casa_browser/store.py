@@ -860,11 +860,6 @@ class Store:
                  None if now is None else _ts(now), question_id, *expected))
             return cur.rowcount == 1
 
-    def set_question_response(self, question_id: str, response: dict) -> None:
-        with self.transaction() as db:
-            db.execute("UPDATE confirmations SET response=? WHERE question_id=?",
-                       (json.dumps(response, sort_keys=True, ensure_ascii=False), question_id))
-
     def end_questions(self, run_id: str | None = None, now: datetime | None = None, *,
                       confirming: str = "outcome_unknown") -> list[tuple[str, str, str]]:
         """A run's (every run's, at start) open questions expire; its confirming ones become

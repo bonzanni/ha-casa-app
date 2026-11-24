@@ -52,8 +52,6 @@ _LANGUAGE = re.compile(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,3}")
 # The 1Password account's own sign-in host (``<team>.1password.<region>``): the proxy admits it
 # for the extension and the broker. ``my.`` is the generic region address and names no account.
 _ACCOUNT_HOST = re.compile(r"(?!my\.)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.1password\.(?:eu|com|ca)")
-# Variables a service child process may inherit; everything else is dropped.
-CHILD_ENV_ALLOWLIST = ("PATH", "LANG", "LC_ALL", "TZ")
 
 
 class OptionsError(ValueError):
@@ -281,14 +279,6 @@ def effective_locale(options: PublicOptions, ha_language: str | None,
         return None
     return EffectiveLocale(language=language.replace("_", "-"), timezone=tz,
                            language_source=source)
-
-
-def child_environment(base: Mapping[str, str], extra: Mapping[str, str] | None = None) -> dict:
-    """The environment a service may pass to a child process: the allowlist only."""
-    env = {k: base[k] for k in CHILD_ENV_ALLOWLIST if k in base}
-    if extra:
-        env.update(extra)
-    return env
 
 
 # ---------------------------------------------------------------------------

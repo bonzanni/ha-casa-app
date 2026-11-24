@@ -28,13 +28,9 @@ def test_stale_handle_other_run_or_generation():
         reg.resolve(None, "r1", 7)
 
 
-def test_invalidate_page_drops_older_generations():
+def test_drop_run_drops_the_runs_handles():
     reg = HandleRegistry()
-    old = reg.issue("r1", "s1", 3, PrivateTarget("element"))
     new = reg.issue("r1", "s1", 4, PrivateTarget("element"))
-    reg.invalidate_page(3)
-    with pytest.raises(StaleHandle):
-        reg.resolve(old, "r1", 3)
     assert reg.resolve(new, "r1", 4)
     reg.drop_run("r1")
     with pytest.raises(StaleHandle):

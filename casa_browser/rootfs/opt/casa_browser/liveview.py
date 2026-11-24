@@ -66,8 +66,7 @@ MAX_REFUSED = 256       # refused sends told in every state until the viewer rea
                         # keeps at most 64 unresolved)
 VNC_SOCKET = Path("/run/casa-browser/vnc/vnc.sock")
 CLOSE_ENDED, CLOSE_ELSEWHERE, CLOSE_DONE = 4001, 4002, 4003
-KEYS = {"Enter": "Return", "Tab": "Tab", "ShiftTab": "shift+Tab", "Backspace": "BackSpace",
-        "Escape": "Escape", "Delete": "Delete",
+KEYS = {"Enter": "Return", "Backspace": "BackSpace", "Delete": "Delete",
         # the strip's caret buttons (live view K, revision 7)
         "Left": "Left", "Right": "Right",
         # the phone's delete-word key (live view K, plain keyboard)

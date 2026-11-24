@@ -13,7 +13,6 @@ from casa_browser.options import (
     Paths,
     PublicOptions,
     bootstrap,
-    child_environment,
     effective_locale,
     load_options,
     parse_options,
@@ -195,10 +194,6 @@ def test_supervisor_token_confined(tmp_path, monkeypatch):
         assert TOKEN not in _all_text(root)
     assert TOKEN not in "\n".join(logs)
     assert TOKEN not in repr(result)
-    # A service child's environment is the allowlist only.
-    child = child_environment({"SUPERVISOR_TOKEN": TOKEN, "HASSIO_TOKEN": TOKEN, "PATH": "/bin",
-                               "TZ": "UTC", "OP_SERVICE_ACCOUNT_TOKEN": "x"})
-    assert child == {"PATH": "/bin", "TZ": "UTC"}
     # The token is scrubbed even when bootstrap fails part-way.
     paths2 = _layout(tmp_path / "second", None)
     (paths2.data / "state").write_text("a file where a directory belongs")

@@ -397,7 +397,7 @@ async def test_type_box_sends_keystrokes(rig, operator):
     await ctl.send_str(json.dumps({"t": "text", "s": "Corr3ct-Horse€ü!", "to": TO}))
     await ctl.send_str(json.dumps({"t": "text", "s": "", "to": TO}))              # nothing: dropped
     await ctl.send_str(json.dumps({"t": "key", "k": "CtrlBackspace", "to": TO}))
-    await ctl.send_str(json.dumps({"t": "key", "k": "Tab"}))
+    await ctl.send_str(json.dumps({"t": "key", "k": "Left"}))
     await ctl.send_str(json.dumps({"t": "key", "k": "rm -rf"}))            # not a key: dropped
     await ctl.send_str(json.dumps({"t": "text", "s": "x" * 257}))   # too long: dropped
     assert await _until(lambda: ("injected", "key", None) in rig.log)
@@ -480,7 +480,7 @@ def test_parse_input_target():
     assert parse_input({"t": "text", "s": "a"}, state) is None
     assert parse_input({"t": "text", "s": "a", "bar": 1}, state) is None         # bar means True only
     assert parse_input({"t": "text", "s": "a", "bar": True}, state) == {"t": "text", "s": "a"}
-    assert "to" not in parse_input({"t": "key", "k": "Tab"}, state)              # a key alone is fine
+    assert "to" not in parse_input({"t": "key", "k": "Left"}, state)              # a key alone is fine
     assert lv.message_number({"t": "key", "q": 17}) == 17
     assert lv.message_number({"t": "scroll", "n": 3}) is None                    # notches are not q
     assert lv.message_number({"q": True}) is None and lv.message_number({"q": -1}) is None
@@ -536,7 +536,7 @@ async def test_text_for_a_field_types_only_while_chrome_focuses_it(rig, operator
         await ctl.send_str(json.dumps({"t": "text", "s": "p", "q": q, "ok": 5, "to": to}))
     told = await _state(ctl, lambda m: m["ack"] >= 15)
     assert told["refused"] == list(range(6, 16))
-    await ctl.send_str(json.dumps({"t": "key", "k": "Tab", "q": 16, "ok": 11}))   # read up to 11
+    await ctl.send_str(json.dumps({"t": "key", "k": "Left", "q": 16, "ok": 11}))   # read up to 11
     await ctl.send_str(json.dumps({"t": "text", "s": "p", "q": 17, "ok": 11, "to": to}))
     told = await _state(ctl, lambda m: m["ack"] >= 17)
     assert told["refused"] == [12, 13, 14, 15, 17]

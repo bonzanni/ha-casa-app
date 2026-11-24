@@ -42,7 +42,7 @@ from pathlib import Path
 from casa_browser.gate import (CONTROLS_JS, FIELD_KINDS, INPUT_KINDS, MAX_JUDGE_PICTURE_BYTES,
                                MULTI_LINE, SECRET_JS)
 from casa_browser.handles import HandleRegistry, PrivateTarget
-from casa_browser.masking import MASK, MAX_INPUT, MAX_TEXT, mask_text, mask_whole
+from casa_browser.masking import MAX_INPUT, MAX_TEXT, mask_text, mask_whole
 from casa_browser.policy import RequestMeta, RunPolicy, decide
 from casa_browser.protocol import ElementView, Observation
 

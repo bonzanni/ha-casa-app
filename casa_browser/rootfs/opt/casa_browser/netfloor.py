@@ -268,13 +268,6 @@ table inet {TABLE} {{
 """
 
 
-def chain_text(text: str, chain: str) -> str:
-    """The body of one chain of a rendered ruleset (tests and the read-back check)."""
-    start = text.index(f"chain {chain} {{") + len(f"chain {chain} {{")
-    end = text.index("\n  }", start)
-    return text[start:end]
-
-
 def _run(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=30)
 

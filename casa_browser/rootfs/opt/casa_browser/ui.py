@@ -18,7 +18,6 @@ when there is no catalog for it), and ``lang`` names the language actually shown
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import html
 import json
@@ -96,9 +95,6 @@ class Nonces:
         entry = self._live.pop(nonce, None)
         ok = entry is not None and entry[0] == path and self.clock() < entry[1]
         return ok, (entry[2] if ok else None)
-
-    def spend(self, nonce: Any, path: str) -> bool:
-        return self.take(nonce, path)[0]
 
 
 # --------------------------------------------------------------------------- the app
