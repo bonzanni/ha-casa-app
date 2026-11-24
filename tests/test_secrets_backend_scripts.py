@@ -461,6 +461,7 @@ bashio::config() {{
         claude_oauth_token) printf "%s" "${{K_CC_OAUTH-}}" ;;
     esac
 }}
+bashio::config.true() {{ return 1; }}
 bashio::app.version() {{ echo 0.0.0; }}
 """
 

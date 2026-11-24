@@ -29,6 +29,7 @@ mkdir -p "$CONFIG_DIR/agents" \
          "$CONFIG_DIR/specialists/.staging" \
          "$CONFIG_DIR/specialists/.roles-overlay" \
          "$CONFIG_DIR/schema" \
+         "$CONFIG_DIR/phone" \
          "$DATA_DIR/sdk-sessions" \
          "$DATA_DIR/engagements"
 
@@ -93,6 +94,8 @@ elif [ ! -d "$CONFIG_DIR/.git" ]; then
 !bindings/**
 !schema/
 !schema/**
+!phone/
+!phone/**
 # Unified plugin architecture (v0.71.0): the registry is config — the single
 # plugin-assignment authority — and versioning it gives an audit trail.
 # ONLY registry.json: the artifact store and staging under plugins/ are

@@ -47,6 +47,8 @@ _GITIGNORE_CONTENT = """\
 !bindings/**
 !schema/
 !schema/**
+!phone/
+!phone/**
 # Unified plugin architecture (v0.71.0): the registry is config — the single
 # plugin-assignment authority — and versioning it gives an audit trail.
 # ONLY registry.json: the artifact store and staging under plugins/ are
@@ -72,7 +74,7 @@ plugins/.staging/
 # wrote there hunting for a nonexistent gitignore rule when they got an empty
 # SHA; #1097: the specialists/ tuples it once named were never admitted).
 TRACKED_PATHS_SUMMARY = (
-    "agents/, policies/, bindings/, schema/, and plugins/registry.json"
+    "agents/, policies/, bindings/, schema/, phone/, and plugins/registry.json"
 )
 
 

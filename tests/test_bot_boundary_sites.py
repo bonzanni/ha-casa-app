@@ -197,6 +197,7 @@ ORIGIN_SITES = {
     ("origin-builders", "casa_core.py", "_setup_turn_context"): (1, FRESH, "test_bot_webhook_routes.py::test_a_setup_turn_stays_on_casas_bot_after_its_role_is_bound_elsewhere"),
     ("origin-builders", "casa_core.py", "build_invoke_message"): (2, FRESH, "test_bot_webhook_routes.py::test_an_invoked_turn_is_born_with_its_roles_route"),
     ("origin-builders", "casa_core.py", "main._setup_dispatch"): (1, FRESH, "test_bot_webhook_routes.py::test_a_setup_turn_stays_on_casas_bot_after_its_role_is_bound_elsewhere"),
+    ("origin-builders", "phone/record.py", "hand_off"): (3, FRESH, "test_phone_record.py::test_hand_off_builds_the_restricted_operator_turn"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
@@ -637,6 +638,11 @@ IDENTITY_SITE_HITS = {
         "TriggerRegistry._validate_agent": 3, "TriggerRegistry.register_agent": 4,
         "TriggerRegistry.reregister_for": 1,
     },
+    "live_voice/actions.py": {"ActionState.__init__": 1, "ActionState.resolve_pending": 1},
+    "live_voice/api.py": {"LiveApi.respond": 1, "LiveApi.respond_json": 1, "_items": 1},
+    "live_voice/session.py": {"_Actions.__init__": 1},
+    "phone/service.py": {"<module>": 1, "_fetch": 1, "_field": 1},
+    "phone/store.py": {"recent_calls": 1},
     "vault_drop_off.py": {"item_title": 1, "store": 1},
     "vault_store.py": {"Store._entries": 1, "Store.list": 1},
     "verdict_broker.py": {
@@ -706,6 +712,10 @@ IDENTITY_FILES = {
     "vault_drop_off.py": (SAFE, "shared by roles, not by bots: no Telegram component"),
     "vault_store.py": (NOISE, "the KeePass entries of the built-in secrets store, not keys: "
                               "no Telegram component"),
+    "live_voice/actions.py": (NON_TELEGRAM, "a live voice session's own action state"),
+    "live_voice/api.py": (NON_TELEGRAM, "the voice service's response items"),
+    "live_voice/session.py": (NON_TELEGRAM, "a live voice session's own action state"),
+    "phone/store.py": (NON_TELEGRAM, "the phone line's call rows"),
     "approval_card.py": (SAFE, "the written-card cache is keyed by model, kind and a hash "
                                "of the facts, and holds only reply text: the card is "
                                "rebuilt for each request"),
@@ -733,6 +743,11 @@ for _file in ("agent.py", "casa_core.py", "job_registry.py",
 
 #: Functions classified apart from their file.
 IDENTITY_FUNCTIONS = {
+    ("phone/service.py", "<module>"): (SAFE, "the vault-read cache, keyed by field name; the "
+                                              "module's operator lines go on Casa's own bot "
+                                              "only"),
+    ("phone/service.py", "_fetch"): (SAFE, "the vault-read cache, keyed by field name"),
+    ("phone/service.py", "_field"): (SAFE, "the vault-read cache, keyed by field name"),
     ("tools.py", "_delegation_scope"): (SAFE, "a per-(chat, role) concurrency cap, kept per "
                                                "role by design"),
     ("tools.py", "_erase_gate._run"): (SAFE, "Casa's own erase question: always on Casa's bot"),
@@ -877,6 +892,7 @@ ROUTE_READERS = {
     ("casa_core.py", "_make_webhook_handler.webhook_handler"): (1, ROUTE, "stamped where an /invoke, webhook or setup turn is born"),
     ("casa_core.py", "_setup_turn_context"): (4, ROUTE, "stamped where an /invoke, webhook or setup turn is born; a callback nudge keeps the bot it was born for"),
     ("casa_core.py", "build_invoke_message"): (1, ROUTE, "stamped where an /invoke, webhook or setup turn is born"),
+    ("phone/record.py", "hand_off"): (1, ROUTE, "stamped where a phone call's record turn is born, as a webhook turn is"),
     ("channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (1, ROUTE, "stamped with the receiving endpoint's bot"),

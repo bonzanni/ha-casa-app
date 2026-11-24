@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-22
+last_reviewed: 2026-11-24
 ---
 
 # Triggers and scheduling
@@ -238,7 +238,8 @@ the error names exactly the jobs that remain.
 the current set is four.
 
 **A new resident webhook** needs the trigger declaration and a name outside the reserved
-plugin prefix. Declaring the webhook channel on the resident is *not* checked for webhooks —
+plugin prefix and other than `casa-phone`, which registration refuses because Casa raises
+turns under it itself ([`webhook-delivery.md`](webhook-delivery.md)). Declaring the webhook channel on the resident is *not* checked for webhooks —
 the channel gate is scheduled-only (see INV-TRIG-001). Its secret — minted at
 registration, receipted, reported per slot — is
 [`trigger-secrets.md`](trigger-secrets.md)'s subject.

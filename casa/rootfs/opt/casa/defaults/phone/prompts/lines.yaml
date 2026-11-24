@@ -1,0 +1,15 @@
+# Fixed lines of a call, per language. silence and too_long are spoken to the
+# caller as written; transfer_failed is told to the voice model, which then
+# carries on in its own words. {owner_name} is filled in by Casa.
+en:
+  silence: "I can't hear you any more, so I'll end the call here. Goodbye."
+  too_long: "I'm sorry, I have to end the call now. Goodbye."
+  transfer_failed: "The transfer did not go through: {owner_name} could not be reached. Tell the caller so and take a message."
+nl:
+  silence: "Ik hoor u niet meer, dus ik hang nu op. Tot ziens."
+  too_long: "Het spijt me, ik moet het gesprek nu beëindigen. Tot ziens."
+  transfer_failed: "The transfer did not go through: {owner_name} could not be reached. Tell the caller so, in Dutch, and take a message."
+it:
+  silence: "Non la sento più, quindi chiudo la chiamata. Arrivederci."
+  too_long: "Mi dispiace, devo chiudere la chiamata adesso. Arrivederci."
+  transfer_failed: "The transfer did not go through: {owner_name} could not be reached. Tell the caller so, in Italian, and take a message."

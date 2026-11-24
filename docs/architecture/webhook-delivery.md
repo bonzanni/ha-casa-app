@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-24
 ---
 
 # Webhook delivery: where a plugin webhook fire's reply goes
@@ -9,7 +9,8 @@ last_reviewed: 2026-11-12
 ## Scope
 
 What happens to the reply of a turn started by a plugin webhook trigger: whether it reaches
-the operator, which tools such a turn is offered, and whether it may end in silence. What a
+the operator, which tools such a turn is offered, and whether it may end in silence; and the
+one turn of that kind Casa raises itself, under a reserved name. What a
 plugin's trigger must satisfy before it routes at all — declaration, consent, secrets — is
 [`plugin-triggers.md`](plugin-triggers.md). The admission rules that judge any final reply
 are [`output-boundary.md`](output-boundary.md), and its silence is [`output-scope-properties.md`](output-scope-properties.md). The line Casa adds when a
@@ -32,6 +33,15 @@ model's judgement decides whether the operator hears about the fire. Under
 `operator_always` the operator has decided instead: every accepted fire reaches them. The
 line drops the invitation, and a reply that is silent anyway is replaced by one line of
 Casa's own, naming the webhook.
+
+**Casa raises one such turn itself.** An ended phone call's record reaches the resident
+assistant as a webhook-trigger turn that core builds and puts on the bus, with no request to
+`/webhook/{name}` behind it: the name `casa-phone`, public clearance, `operator_always`
+delivery, the same closing line, and everything downstream reads it as it reads a plugin
+fire ([`phone.md`](phone.md), INV-PHONE-006). The name is reserved: trigger registration
+refuses a resident webhook trigger called `casa-phone`, and a plugin's names always carry
+the `plg-` prefix, so no request can reach a turn under it. A silent reply to a call record
+gets the fallback line above, naming `casa-phone`.
 
 ## Contracts & invariants
 

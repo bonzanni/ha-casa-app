@@ -587,9 +587,13 @@ _C5_EXPECTED = {
     "policies/probe/nested/config.txt",
     "bindings/probe/nested/config.txt",
     "schema/probe/nested/config.txt",
+    "phone/probe/nested/config.txt",
     "plugins/registry.json",
 }
-_C5_SUMMARY = "agents/, policies/, bindings/, schema/, and plugins/registry.json"
+_C5_SUMMARY = ("agents/, policies/, bindings/, schema/, phone/, "
+               "and plugins/registry.json")
+# What the frozen base whitelist below admitted: everything but phone/.
+_C5_BASE_EXPECTED = _C5_EXPECTED - {"phone/probe/nested/config.txt"}
 _C5_EXCLUDED = {
     "specialists/registry.json",
     "specialists/probe/active.yaml",
@@ -680,17 +684,17 @@ def _c5_seed(root: Path, content: bytes) -> None:
         p.write_bytes(content)
 
 
-def _c5_assert_tracked(root: Path) -> None:
+def _c5_assert_tracked(root: Path, expected: set[str] = _C5_EXPECTED) -> None:
     index, head = _c5_index(root), _c5_head(root)
-    assert (len(index), len(head)) == (6, 6), (index, head)
-    assert set(index) == set(head) == _C5_EXPECTED
+    assert (len(index), len(head)) == (len(expected),) * 2, (index, head)
+    assert set(index) == set(head) == expected
 
 
 def _c5_assert_positive_commit(root: Path, sha: str, count: int) -> None:
     assert sha and sha == _c5_git(root, "rev-parse", "HEAD").decode().strip()
     assert _c5_count(root) == count
     changed = _c5_changed(root, sha)
-    assert len(changed) == 5, changed
+    assert len(changed) == 6, changed
     assert set(changed) == _C5_EXPECTED - {".gitignore"}
     _c5_assert_tracked(root)
 
@@ -741,7 +745,7 @@ class TestConfigRepoAdmittedSet:
         sha = commit_config(str(root), "probe add")
         assert sha and _c5_count(root) == n + 1
         added = _c5_changed(root, sha)
-        assert len(added) == 5, added
+        assert len(added) == 6, added
         assert set(added) == _C5_EXPECTED - {".gitignore"}
         _c5_assert_tracked(root)
 
@@ -813,7 +817,7 @@ class TestConfigRepoAdmittedSet:
         from config_git import init_repo, snapshot_manual_edits
 
         root = tmp_path
-        for rel in _C5_EXPECTED - {".gitignore"}:
+        for rel in _C5_BASE_EXPECTED - {".gitignore"}:
             p = root / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(b"v1\n")
@@ -828,7 +832,7 @@ class TestConfigRepoAdmittedSet:
         _c5_git(root, "add", "-A")
         _c5_git(root, "commit", "-qm", "base install")
         assert _c5_count(root) == 1
-        _c5_assert_tracked(root)
+        _c5_assert_tracked(root, _C5_BASE_EXPECTED)
         base_head = _c5_git(root, "rev-parse", "HEAD").decode().strip()
 
         delta = int(config_git._GITIGNORE_CONTENT != _C5_BASE_WHITELIST)
@@ -843,7 +847,7 @@ class TestConfigRepoAdmittedSet:
         assert len(new) == delta
         for sha in new:
             assert _c5_changed(root, sha) == [".gitignore"]
-        _c5_assert_tracked(root)
+        _c5_assert_tracked(root, _C5_BASE_EXPECTED)
         for rel in _C5_TUPLES:
             assert (root / rel).read_bytes() == _C5_TUPLE_BYTES
 

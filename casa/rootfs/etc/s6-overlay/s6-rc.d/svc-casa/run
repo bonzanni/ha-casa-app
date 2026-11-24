@@ -129,6 +129,21 @@ if [ "$_contacts_region" != "null" ] && [ -n "$_contacts_region" ]; then
     export CONTACTS_DEFAULT_REGION="$_contacts_region"
 fi
 
+# Phone line: each option is exported only when set; PHONE_ENABLED only when
+# the option is on, so the default leaves the line off.
+if bashio::config.true 'phone_enabled'; then
+    export PHONE_ENABLED=true
+fi
+for _phone_opt in phone_transfer_number:PHONE_TRANSFER_NUMBER \
+        phone_owner_name:PHONE_OWNER_NAME live_voices:LIVE_VOICES \
+        live_api_host:LIVE_API_HOST; do
+    _phone_val="$(bashio::config "${_phone_opt%%:*}")"
+    if [ "$_phone_val" != "null" ] && [ -n "$_phone_val" ]; then
+        export "${_phone_opt##*:}=$_phone_val"
+    fi
+done
+unset _phone_opt _phone_val
+
 # v0.18.1: operator-facing log level. install_logging() at
 # casa_core.py:743 reads LOG_LEVEL env when set; falls back to INFO
 # when unset/null/empty.

@@ -77,6 +77,33 @@ configuration:
       The country to assume for phone numbers in your contacts that are
       written without a country code, as a two-letter code (for example NL).
       Leave empty to skip such numbers.
+  phone_enabled:
+    name: Phone Line
+    description: >-
+      Let Casa answer phone calls to your assistant's number. Off by default.
+      The OpenAI key and webhook secret are read from the vault item named
+      "OpenAI Voice".
+  phone_transfer_number:
+    name: Phone Transfer Number
+    description: >-
+      The number callers may be put through to, with country code (or without
+      one, using the contacts country). Leave empty and nobody is put through.
+  phone_owner_name:
+    name: Phone Owner Name
+    description: >-
+      How the phone assistant names the person whose phone it answers. Leave
+      empty to say "the person you called".
+  live_voices:
+    name: Live Voices
+    description: >-
+      Starting voices per language for live calls, like
+      nl=voice_abc,it=voice_def,en=marin. A value starting with voice_ is a
+      custom voice id; anything else is a stock voice name.
+  live_api_host:
+    name: Live API Host
+    description: >-
+      The OpenAI API host for live calls. Leave empty for api.openai.com; use
+      eu.api.openai.com for a project with EU data residency.
   log_level:
     name: Log Level
     description: >-

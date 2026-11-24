@@ -163,6 +163,10 @@ DIRS: tuple[Entry, ...] = (
     Entry("/data/contacts", 0o700, PRIVATE,
           "The contacts store: a copy of the operator's address book "
           "(names, numbers, notes) and the marks Casa keeps about people."),
+    Entry("/data/phone", 0o700, PRIVATE,
+          "The phone store: the phone line's settings, and a record of each "
+          "call (who called, what was done, a summary) with its transcript "
+          "until it expires."),
     Entry("/config/cc-home", 0o700, PRIVATE,
           "The resident agent's Claude home, including its transcripts."),
     Entry("/config/.git", 0o700, PRIVATE,

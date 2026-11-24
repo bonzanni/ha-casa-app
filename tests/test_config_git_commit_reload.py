@@ -101,6 +101,10 @@ _TABLE = [
     (["bindings/resident-assistant/desired.yaml"], []),
     (["bindings/resident-assistant/desired.yaml",
       "agents/assistant/character.yaml"], [("agent", "assistant")]),
+    # the phone agent's prompts are read afresh for every call
+    (["phone/prompts/agent.md"], []),
+    (["phone/prompts/lines.yaml",
+      "agents/assistant/character.yaml"], [("agent", "assistant")]),
     # full
     (["schema/probe.v1.json"], [("full", None)]),
     ([], [("full", None)]),                                         # paths unreadable

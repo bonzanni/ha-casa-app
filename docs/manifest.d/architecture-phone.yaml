@@ -1,0 +1,58 @@
+# Manifest shard — the phone-line document, in a shard of its own as the contacts
+# document is: `phone` sorts between the N-personality and plugin shards, and no
+# lettered shard's named range takes it. Loaded with the root docs/manifest.yaml by
+# scripts/verify_docs.py; same entry format.
+
+- doc: architecture/phone.md
+  summary: Casa answering a phone line — the signed call webhook, call slots, caller class and transfer grants, the prompts, the live voice session and its clock, the three abilities, the phone store, and the call record handed to the assistant.
+  when_changing: the call webhook or its route, the phone options or the OpenAI Voice vault item, the phone store or its schema, the phone prompts, the live voice client or session, the action state, the clock, end_call, transfer or alert_operator, the call record or its hand-off, or the phone line's stop
+  covers:
+    - casa/rootfs/opt/casa/phone/__init__.py
+    - casa/rootfs/opt/casa/phone/settings.py
+    - casa/rootfs/opt/casa/phone/schema.py
+    - casa/rootfs/opt/casa/phone/store.py
+    - casa/rootfs/opt/casa/phone/webhook.py
+    - casa/rootfs/opt/casa/phone/policy.py
+    - casa/rootfs/opt/casa/phone/prompt.py
+    - casa/rootfs/opt/casa/phone/abilities.py
+    - casa/rootfs/opt/casa/phone/controller.py
+    - casa/rootfs/opt/casa/phone/record.py
+    - casa/rootfs/opt/casa/phone/service.py
+    - casa/rootfs/opt/casa/live_voice/__init__.py
+    - casa/rootfs/opt/casa/live_voice/api.py
+    - casa/rootfs/opt/casa/live_voice/actions.py
+    - casa/rootfs/opt/casa/live_voice/session.py
+    - casa/rootfs/opt/casa/live_voice/clock.py
+    - casa/rootfs/opt/casa/live_voice/decision.py
+    - casa/rootfs/opt/casa/vault_read.py
+    - casa/rootfs/opt/casa/defaults/phone/prompts/agent.md
+    - casa/rootfs/opt/casa/defaults/phone/prompts/helper.md
+    - casa/rootfs/opt/casa/defaults/phone/prompts/decision.md
+    - casa/rootfs/opt/casa/defaults/phone/prompts/record.md
+    - casa/rootfs/opt/casa/defaults/phone/prompts/lines.yaml
+    - casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry._check_webhook_collision
+  tests:
+    - tests/test_phone_settings.py
+    - tests/test_phone_store.py
+    - tests/test_phone_webhook.py
+    - tests/test_phone_policy.py
+    - tests/test_phone_prompt.py
+    - tests/test_phone_abilities.py
+    - tests/test_phone_controller.py
+    - tests/test_phone_record.py
+    - tests/test_phone_service.py
+    - tests/test_live_voice_api.py
+    - tests/test_live_voice_actions.py
+    - tests/test_live_voice_session.py
+    - tests/test_live_voice_decision.py
+    - tests/test_vault_read.py
+  related: [architecture/contacts.md, architecture/webhook-delivery.md, architecture/http-surface.md, architecture/persistent-state.md, architecture/config-reconciliation.md, reference/operator-options.md]
+  defines_invariants: [INV-PHONE-001, INV-PHONE-002, INV-PHONE-003, INV-PHONE-004, INV-PHONE-005, INV-PHONE-006, INV-PHONE-007]
+  invariant_tests:
+    INV-PHONE-001: [tests/test_phone_prompt.py::test_a_known_caller_is_named_and_nothing_else_about_them_reaches_the_texts, tests/test_phone_prompt.py::test_the_full_name_appears_only_for_known_callers, tests/test_phone_prompt.py::test_a_returned_caller_is_not_named_even_when_known, tests/test_phone_controller.py::test_returned_call_gets_no_identity, tests/test_phone_controller.py::test_known_priority_caller_end_to_end]
+    INV-PHONE-002: [tests/test_live_voice_actions.py::test_same_ability_twice_in_one_round_runs_once, tests/test_live_voice_actions.py::test_concurrent_requests_run_once_and_share_the_outcome, tests/test_live_voice_session.py::test_both_triggers_asking_in_one_round_run_the_ability_once]
+    INV-PHONE-003: [tests/test_live_voice_actions.py::test_a_request_from_an_older_round_is_superseded, tests/test_live_voice_actions.py::test_a_request_that_waited_through_a_new_round_is_superseded, tests/test_live_voice_session.py::test_a_decision_the_caller_spoke_over_does_not_act, tests/test_live_voice_session.py::test_a_helper_call_from_before_the_caller_spoke_is_superseded, tests/test_phone_abilities.py::test_a_caller_who_speaks_during_the_notification_supersedes_it]
+    INV-PHONE-004: [tests/test_live_voice_session.py::test_no_agent_speech_ends_the_session, tests/test_live_voice_session.py::test_silence_says_the_line_and_then_ends_the_session, tests/test_live_voice_session.py::test_a_decision_failing_twice_then_silence_ends_the_session, tests/test_live_voice_session.py::test_caller_speech_after_the_too_long_line_changes_nothing, tests/test_live_voice_session.py::test_a_dropped_socket_that_cannot_be_reattached_is_lost, tests/test_live_voice_session.py::test_a_first_attach_that_never_completes_is_lost, tests/test_phone_controller.py::test_clock_ending_is_ended_by_casa]
+    INV-PHONE-005: [tests/test_phone_webhook.py::test_wrong_signature_is_refused, tests/test_phone_webhook.py::test_tampered_body_is_refused, tests/test_phone_webhook.py::test_timestamp_301_seconds_old_is_refused, tests/test_phone_webhook.py::test_no_secret_is_503, tests/test_phone_webhook.py::test_same_session_under_new_webhook_id_calls_once, tests/test_phone_webhook.py::test_same_webhook_id_twice_calls_once, tests/test_phone_webhook.py::test_refused_event_does_not_poison_dedup]
+    INV-PHONE-006: [tests/test_phone_record.py::test_hand_off_builds_the_restricted_operator_turn, tests/test_phone_record.py::test_the_transcript_never_enters_the_turn, tests/test_phone_record.py::test_no_trigger_can_take_the_reserved_name, tests/test_phone_record.py::test_finish_hands_the_record_to_the_assistant]
+    INV-PHONE-007: [tests/test_phone_service.py::test_route_absent_when_disabled, tests/test_phone_service.py::test_route_present_when_enabled, tests/test_setup_nginx_ingress.py::test_phone_webhook_is_refused_on_ingress_only]

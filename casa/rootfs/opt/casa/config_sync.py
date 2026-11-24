@@ -35,7 +35,7 @@ logger = logging.getLogger("config_sync")
 
 # In-scope trees, relative to each of the three roots. schema/ keeps its
 # own always-overwrite handling in setup-configs.sh and is out of scope here.
-SYNC_TREES = ("agents", "policies", "bindings", "specialists")
+SYNC_TREES = ("agents", "policies", "bindings", "specialists", "phone")
 
 # --- Entry-level reconcile (#398) -----------------------------------------
 #

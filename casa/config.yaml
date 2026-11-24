@@ -1,6 +1,6 @@
 name: "Casa"
 description: "An always-on fleet of Claude agents — assistant, butler, concierge and specialists you add"
-version: "0.383.2"
+version: "0.384.0"
 slug: casa
 url: https://github.com/bonzanni/ha-casa-app
 image: "ghcr.io/bonzanni/casa"
@@ -48,6 +48,13 @@ options:
   # Contacts
   contacts_default_region: ""
 
+  # Phone line
+  phone_enabled: false
+  phone_transfer_number: ""
+  phone_owner_name: ""
+  live_voices: ""
+  live_api_host: ""
+
   # Logging (#279: was schema-only; the omission predates the option audit.
   # Behavior is unchanged — absent/empty falls back to INFO — but every
   # schema key now has an install-time default.)
@@ -76,6 +83,11 @@ schema:
   casa_tz: str?
   engagement_reap_days: int?
   contacts_default_region: str?
+  phone_enabled: bool?
+  phone_transfer_number: str?
+  phone_owner_name: str?
+  live_voices: str?
+  live_api_host: str?
   log_level: "list(debug|info|warning|error)?"
   specialist_max_concurrency: "int(1,20)?"
   specialist_cost_alert_threshold: "float(0,)?"

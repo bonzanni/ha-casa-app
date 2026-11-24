@@ -46,6 +46,12 @@ def _fresh_route(role: str) -> dict:
 # resident route, and a plugin route without ``max_body_kib``.
 _DEFAULT_MAX_BODY = 1024 * plugin_triggers.MAX_BODY_KIB_DEFAULT
 
+#: Webhook names Casa uses for turns it builds itself on the webhook-trigger
+#: path (``phone.record.RESERVED_WEBHOOK_NAME``: an ended call's record). No
+#: resident trigger may take one, so no request to ``/webhook/{name}`` can
+#: reach a turn under that name; plugin names are ``plg-…`` and cannot match.
+RESERVED_WEBHOOK_NAMES = frozenset({"casa-phone"})
+
 
 class _RoutingUnavailable:
     """The type of :data:`ROUTING_UNAVAILABLE` — a unique sentinel, never
@@ -551,6 +557,11 @@ class TriggerRegistry:
             self._webhook_routes[trig.name] = record
 
     def _check_webhook_collision(self, role: str, name: str) -> None:
+        if name in RESERVED_WEBHOOK_NAMES:
+            raise TriggerError(
+                f"agent {role!r} trigger {name!r}: the webhook name is "
+                f"reserved for Casa's own turns"
+            )
         owner = (self._webhook_routes.get(name) or {}).get("role")
         if owner is not None and owner != role:
             raise TriggerError(

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-18
+last_reviewed: 2026-11-24
 ---
 
 # Config-tree reconciliation
@@ -28,6 +28,13 @@ while the image copy is unchanged and an image change reintroduces the file; for
 other path the unconditional reseed is what repairs a deleted required file before boot
 fatals on it. Predicting which of your edits survive means knowing which of these cases
 each file is in.
+
+**Five trees are reconciled.** `agents/`, `policies/`, `bindings/`, `specialists/` and
+`phone/`, each against its image copy (`schema/` keeps its own always-overwrite handling in
+the boot script). `phone/prompts/` holds the phone line's prompt files — `agent.md`,
+`helper.md`, `decision.md`, `record.md`, `lines.yaml` — reconciled whole-file, with no
+schema and no entry-level merge; an operator edit the image overwrites is recoverable from
+the pre-reconciliation commit like any tracked file ([`phone.md`](phone.md)).
 
 **Two files resolve per entry rather than per file, and that changes the answer for
 them.** A small explicit set — the trigger and delegate lists under each agent —
@@ -224,7 +231,8 @@ overwritten local edit is recoverable.
 ## Extension points
 
 **A new default tree** must be added to the reconciler's list *and* to the version-control
-whitelist separately. Neither implies the other.
+whitelist separately. Neither implies the other: `phone/` was added to both, `specialists/`
+is reconciled but not tracked, and `schema/` is tracked but not reconciled here.
 
 **A new list-of-entries file** does not get entry-level reconciliation by being shaped like
 one. It must be added to the reconciler's table with its list key and the field that names
