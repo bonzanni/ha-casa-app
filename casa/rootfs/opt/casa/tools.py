@@ -19481,6 +19481,8 @@ def _tool_verify_plugin_state(
 def _tool_verify_plugin_secrets(*, plugin_name: str) -> dict:
     """Back-compat shim (one release only)."""
     state = _tool_verify_plugin_state(plugin_name=plugin_name)
+    if "secrets" not in state:
+        return state  # not-ready report: no registry entry to read secrets of
     return {"secrets": state["secrets"]}
 
 

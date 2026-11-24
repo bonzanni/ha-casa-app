@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.384.1] - 2026-11-24
+
+### Fixed
+
+- `verify_plugin_secrets`, the older form of `verify_plugin_state`, failed with an internal error when asked about a plugin that is not installed or whose registry entry is invalid. It now gives the same "not ready" answer and reason as `verify_plugin_state`. No agent has this tool unless you granted it by hand.
+
 ## [0.384.0] - 2026-11-24
 
 ### Added

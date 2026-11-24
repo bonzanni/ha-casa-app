@@ -290,6 +290,23 @@ def test_verify_plugin_secrets_shim(tmp_path, monkeypatch):
     assert "secrets" in out and isinstance(out["secrets"], list)
 
 
+def test_verify_plugin_secrets_shim_reports_an_unregistered_plugin(
+        tmp_path, monkeypatch):
+    """The shim answers for a plugin the registry does not hold with the same
+    not-ready report verify_plugin_state gives, not with an exception."""
+    import tools as tools_mod
+    mk_registry(tmp_path, [])
+    orig = tools_mod._tool_verify_plugin_state
+    monkeypatch.setattr(
+        tools_mod, "_tool_verify_plugin_state",
+        lambda *, plugin_name: orig(
+            plugin_name=plugin_name, _registry_path=tmp_path / "registry.json",
+            _store_root=tmp_path / "store"))
+    out = tools_mod._tool_verify_plugin_secrets(plugin_name="absent")
+    assert out == {"ready": False, "reasons": ["not_registered"],
+                   "targets": []}
+
+
 # --- Sol review regressions -------------------------------------------------
 
 def _mk_artifact_raw(store, name, artifact_id, *, plugin_json, mcp_text=None,
