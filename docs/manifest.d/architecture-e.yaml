@@ -90,16 +90,3 @@
   defines_invariants: [INV-ENG-009]
   invariant_tests:
     INV-ENG-009: [tests/test_engagement_registry.py::TestBeginTurnDelivery::test_seam_is_not_a_coroutine_function, tests/test_engagement_registry.py::TestBeginTurnDelivery::test_terminal_record_is_refused_and_never_resurrected, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_follow_up_to_a_terminal_record_never_reaches_the_client, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_an_idle_record_is_active_at_the_client_hand_off, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_direct_caller_with_no_seam_ticket_is_fenced_too, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_the_brief_is_fenced_like_every_write, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_an_operator_message_to_a_terminal_record_is_refused_at_the_seam]
-- doc: architecture/eval-framework.md
-  summary: The evaluation scaffolding — and the fact that its registry ships empty.
-  when_changing: adding an evaluator, or before assuming behaviour is evaluated somewhere
-  covers:
-    - casa/rootfs/opt/casa/casa_eval/base.py::Tester
-    - casa/rootfs/opt/casa/casa_eval/__init__.py::get_tester
-  tests:
-    - tests/test_eval_framework.py
-  related: [contributing/doc-contract.md]
-  defines_invariants: [INV-EVAL-001, INV-EVAL-002]
-  invariant_tests:
-    INV-EVAL-001: [tests/test_pin_g5_invariants.py::test_pin_inv_eval_001_shipped_registry_is_empty]
-    INV-EVAL-002: [tests/test_pin_g5_invariants.py::test_pin_inv_eval_002_sweep_forwards_caller_selected_value]

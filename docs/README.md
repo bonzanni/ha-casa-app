@@ -50,7 +50,6 @@ which is keyed on what you are about to do rather than on subsystem names.
 | adding a tool, a tool's result contract, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
 | adding an agent or a tier, the required file set, or role resolution | [`architecture/agent-taxonomy.md`](architecture/agent-taxonomy.md) |
-| adding an evaluator, or before assuming behaviour is evaluated somewhere | [`architecture/eval-framework.md`](architecture/eval-framework.md) |
 | adding durable state, changing a corrupt-file policy, or anything about what survives | [`architecture/persistent-state.md`](architecture/persistent-state.md) |
 | adding or removing an app option, or changing what consumes one | [`reference/operator-options.md`](reference/operator-options.md) |
 | adding or removing an option, the reload scopes, the config repo, or secret resolution | [`architecture/configuration.md`](architecture/configuration.md) |

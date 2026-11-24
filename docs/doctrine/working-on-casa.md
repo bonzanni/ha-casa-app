@@ -54,8 +54,8 @@ The line at the top of every file in this corpus is not decoration.
 ## Changing things
 
 **Tests are the gate that runs.** The evaluation package is scaffolding with an empty
-registry; behavioural guarantees belong in the ordinary suite. See
-`architecture/eval-framework.md`.
+registry: nothing in the application or in CI runs an evaluator. Behavioural guarantees
+belong in the ordinary suite.
 
 **A signature change means auditing every caller**, including shell and end-to-end callers
 that the unit suite does not exercise.
