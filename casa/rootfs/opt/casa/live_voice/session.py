@@ -32,7 +32,10 @@ after their words, the ability does not run.
 The clock (:mod:`live_voice.clock`) ends the session without any model: when
 the agent never speaks, when both sides stay silent, when a decision could
 not be made and nobody speaks, when the session lasts too long, and when the
-control channel is lost and cannot be attached again in time.
+control channel is lost and cannot be attached again in time. A silence is
+checked on before it ends anything: the agent is first told to ask whether
+the other side is still there, and only when that brings no word from them
+is the closing line said and the session ended.
 """
 from __future__ import annotations
 
@@ -108,16 +111,22 @@ class Profile:
 class Timing:
     """Seconds. ``first_speech_s``: the agent must have spoken this long after
     the attach. ``quiet_s``: no further agent delta for this long means the
-    agent has finished saying something. ``silence_s``: neither side speaks.
+    agent has finished saying something. ``check_in_s``: nobody has been
+    speaking for this long since someone was last heard, and the agent is
+    told to check on the other side. ``silence_s``: nobody has been speaking
+    for this long since that check-in, without a word from the other side,
+    and the session is closed. ``undecided_silence_s``: nobody has been
+    speaking for this long since a decision could not be made. These three
+    are never counted from before the agent's latest line has been played.
     ``max_call_s``: the longest session. ``reconnect_s``: how long an attach
     may be retried. ``decision_timeout_s``: one decision call.
-    ``undecided_silence_s``: silence after a decision that could not be made.
     ``goodbye_grace_s``: the longest wait for a line to be played.
     ``speak_margin_s``: added to a line's end before it counts as played.
     ``pending_s``: how long accepted work may stay unfinished."""
     first_speech_s: float = 8.0
     quiet_s: float = 1.0
-    silence_s: float = 45.0
+    check_in_s: float = 7.0
+    silence_s: float = 10.0
     max_call_s: float = 600.0
     reconnect_s: float = 10.0
     decision_timeout_s: float = 6.0
@@ -141,13 +150,21 @@ class Line:
 class Result:
     """How a session went. ``closed_reason`` is the service's reason,
     ``clock:<which>`` when the clock ended it, or ``lost``; ``started`` and
-    ``ended`` are ``time.monotonic()`` values, like the ``t`` of an action."""
+    ``ended`` are ``time.monotonic()`` values, like the ``t`` of an action.
+
+    Two delays, for tuning only. ``first_speech_ms``: from the moment the
+    session began to be followed (it has just been accepted) to the agent's
+    first transcript delta; ``None`` when the agent never spoke.
+    ``reply_gaps_ms``: for each line of the other side that the agent
+    answered, the time from that line's end to the start of the answer."""
     lines: tuple[Line, ...]
     actions: tuple[dict, ...]
     phase: str
     closed_reason: str
     started: float
     ended: float
+    first_speech_ms: int | None = None
+    reply_gaps_ms: tuple[int, ...] = ()
 
 
 class _Actions(ActionState):
@@ -168,9 +185,9 @@ class _Actions(ActionState):
 
 
 class LiveSession:
-    """Follows one accepted session; ``lines`` holds the fixed spoken lines
-    (``silence``, ``too_long``, ``transfer_failed``) in the session's
-    language."""
+    """Follows one accepted session; ``lines`` holds the fixed lines in the
+    session's language: ``silence`` and ``too_long`` are said as written,
+    ``check_in`` and ``transfer_failed`` are told to the agent as context."""
 
     def __init__(self, api: LiveApi, sid: str, profile: Profile, *,
                  timing: Timing = Timing(), lines: Mapping[str, str]) -> None:
@@ -194,6 +211,8 @@ class LiveSession:
         self._reason: str | None = None
         #: When the first event was seen: the session's zero for ``*_ms``.
         self._zero: float | None = None
+        #: When the agent's first transcript delta arrived.
+        self._first_agent: float | None = None
         self._agent_end_ms = 0
         #: Count transcript deltas, to tell whether anyone spoke since.
         self._deltas = 0
@@ -220,11 +239,15 @@ class LiveSession:
             await self._done.wait()
         finally:
             await self._stop()
+        lines = tuple(self._lines)
         return Result(
-            lines=tuple(self._lines),
+            lines=lines,
             actions=tuple(dict(entry) for entry in self.actions.log),
             phase=self.actions.phase, closed_reason=self._reason or "lost",
-            started=started, ended=time.monotonic())
+            started=started, ended=time.monotonic(),
+            first_speech_ms=None if self._first_agent is None
+            else max(0, round((self._first_agent - started) * 1000)),
+            reply_gaps_ms=_reply_gaps(lines))
 
     def _spawn(self, coro: Coroutine[Any, Any, None], what: str) -> asyncio.Task:
         task = asyncio.create_task(coro, name=f"live-voice {what}")
@@ -414,7 +437,6 @@ class LiveSession:
         if not isinstance(text, str) or not text:
             return
         self._deltas += 1
-        self._clock.heard(who)
         # Without a time of its own, a delta ends about now.
         end = _ms(event.get("end_ms"),
                   int((time.monotonic() - (self._zero or 0.0)) * 1000))
@@ -430,10 +452,16 @@ class LiveSession:
                 self.actions.new_round()
             self._lines.append(Line(who, text.lstrip(), start, end))
         if who == "agent":
+            if self._first_agent is None:
+                self._first_agent = time.monotonic()
             self._agent_end_ms = self._lines[-1].end_ms
+            # The text of a line arrives before it has been played to the
+            # end; until then the line is not silence.
+            self._clock.heard(who, self._agent_line_played())
             self._restart_quiet()
         else:
             self._caller_deltas += 1
+            self._clock.heard(who)
             self._cancel_quiet()
         for waiter, wanted in self._speech_waiters.items():
             if wanted in (None, who) and not waiter.done():
@@ -441,6 +469,12 @@ class LiveSession:
 
     def _agent_spoke_last(self) -> bool:
         return bool(self._lines) and self._lines[-1].who == "agent"
+
+    def _agent_line_played(self) -> float:
+        """When the agent's latest line, plus a margin, has been played (a
+        ``time.monotonic()`` value)."""
+        return (self._zero or 0.0) + self._agent_end_ms / 1000 \
+            + self._timing.speak_margin_s
 
     async def _speech_within(self, seconds: float,
                              who: str | None = None) -> bool:
@@ -597,9 +631,7 @@ class LiveSession:
         said more than *heard* deltas."""
         limit = time.monotonic() + self._timing.goodbye_grace_s
         while self._caller_deltas == heard and self._zero is not None:
-            played = self._zero + self._agent_end_ms / 1000 \
-                + self._timing.speak_margin_s
-            wait = min(played, limit) - time.monotonic()
+            wait = min(self._agent_line_played(), limit) - time.monotonic()
             if wait <= 0:
                 return
             await self._speech_within(wait, "caller")
@@ -616,10 +648,25 @@ class LiveSession:
                 if self._spoken.get("transfer_failed"):
                     await self.tell(self._spoken["transfer_failed"])
             return False
+        if which == "check_in":
+            # Context for the agent, which words the question itself. From
+            # here on only the other side's speech starts the silence again.
+            self._clock.checked_in()
+            if self._spoken.get("check_in"):
+                await self.tell(self._spoken["check_in"])
+            return False
         if which == "silence":
+            # Counted from before the line is sent: words of the other side
+            # that arrive while it is being sent count like words in the
+            # grace.
+            heard = self._caller_deltas
             await self._say_line("silence")
-            if await self._speech_within(grace, "caller"):
+            if self._caller_deltas == heard:
+                await self._speech_within(grace, "caller")
+            if self._caller_deltas != heard:
                 return False  # that speech started the silence again
+            if self.actions.phase == "pending":
+                return False  # work was accepted meanwhile; its clock decides
         elif which == "max":
             await self._say_line("too_long")
             await asyncio.sleep(grace)
@@ -628,6 +675,15 @@ class LiveSession:
     async def _say_line(self, key: str) -> None:
         if self._spoken.get(key):
             await self.say(self._spoken[key])
+
+
+def _reply_gaps(lines: tuple[Line, ...]) -> tuple[int, ...]:
+    """For each line of the other side that the agent answered: milliseconds
+    from that line's end to the start of the answer (0 when the answer began
+    before the line had ended)."""
+    return tuple(max(0, after.start_ms - before.end_ms)
+                 for before, after in zip(lines, lines[1:])
+                 if before.who == "caller" and after.who == "agent")
 
 
 def _ms(value: Any, default: int) -> int:

@@ -12,20 +12,30 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
+import logins
 from contacts import service
 from contacts import store as cstore
 from contacts.store import ContactsStore, Person
 from contacts.sync import Result
+from op_fake import FakeOp, fresh_logins, install, item
 
 CONTACT_TOOLS = ("find_contact", "refresh_contacts", "set_contact_marks")
 GRANTS = {f"mcp__casa-framework__{name}" for name in CONTACT_TOOLS}
 
 NOT_PRIVATE = "Contacts are only available in the operator's own chat."
 NOT_DIRECT = "Marks can only be changed in a direct chat with the operator."
-NOT_SET_UP = ('Contacts are not set up: add a vault item named '
-              '"iCloud Contacts" with fields username and password.')
+#: No item holds the iCloud login: what refresh_contacts answers.
+NOT_CONNECTED = {"status": "not_connected", "ok": False,
+                 "problem": "item_not_found"}
 
 DEFAULTS = pathlib.Path("casa/rootfs/opt/casa/defaults")
+
+
+@pytest.fixture(autouse=True)
+def op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeOp:
+    """An empty vault and no chosen item."""
+    fresh_logins(monkeypatch, tmp_path)
+    return install(monkeypatch)
 
 
 @pytest.fixture
@@ -302,15 +312,21 @@ async def test_ambiguous_contact_changes_nothing_and_lists_candidates(
     assert _rows(opened) == []
 
 
-async def test_refresh_reports_counts_and_not_set_up(
-        opened: ContactsStore, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_refresh_reports_counts_and_not_connected(
+        opened: ContactsStore, monkeypatch: pytest.MonkeyPatch,
+        op: FakeOp) -> None:
+    def failed(error: str) -> Result:
+        return Result(ok=False, added=0, removed=0, kept=0,
+                      skipped_numbers=0, note_changed=(), error=error,
+                      tell_operator=False)
     answers: list[Result | None] = [
         Result(ok=True, added=3, removed=1, kept=40, skipped_numbers=2,
                note_changed=("A",), error="", tell_operator=False),
         None,
-        Result(ok=False, added=0, removed=0, kept=0, skipped_numbers=0,
-               note_changed=(), error="iCloud refused the sign-in",
-               tell_operator=False),
+        failed("iCloud refused the sign-in"),
+        None,
+        failed(service.LOGIN_ERROR),
+        failed(service.LOGIN_ERROR),
     ]
     reasons: list[str] = []
 
@@ -323,11 +339,35 @@ async def test_refresh_reports_counts_and_not_set_up(
         assert await _call("refresh_contacts", {}) == {
             "status": "ok", "added": 3, "removed": 1, "kept": 40,
             "skipped_numbers": 2}
-        assert await _call("refresh_contacts", {}) == {
-            "status": "unavailable", "message": NOT_SET_UP}
+        # Never set up: the tool itself asks what is wrong with the login.
+        assert await _call("refresh_contacts", {}) == NOT_CONNECTED
         assert await _call("refresh_contacts", {}) == {
             "status": "error", "message": "iCloud refused the sign-in"}
-    assert len(reasons) == 3
+        op.items = [item("dflt1", "iCloud Contacts", username="",
+                         zzlabel="ZZVALUE")]
+        got = await _call("refresh_contacts", {})
+        assert got == {"status": "not_connected", "ok": False,
+                       "problem": "field_empty", "what": "the Apple ID"}
+        # A login that worked before: what the refresh itself found, and
+        # never its sentence for the operator, which names a field.
+        monkeypatch.setattr(service, "_login_check", logins.Check(
+            ok=False, problem="field_missing", field="password",
+            item_is_default=False, service="icloud_contacts",
+            label="zzlabel"))
+        lost = await _call("refresh_contacts", {})
+        assert lost == {"status": "not_connected", "ok": False,
+                        "problem": "field_missing",
+                        "what": "the app-specific password"}
+        assert "zzlabel" not in json.dumps([got, lost])
+        assert "ZZVALUE" not in json.dumps([got, lost])
+        # The refresh could not read it and the check finds nothing wrong.
+        monkeypatch.setattr(service, "_login_check", logins.Check(
+            ok=True, problem="", field="", item_is_default=True,
+            service="icloud_contacts"))
+        assert await _call("refresh_contacts", {}) == {
+            "status": "error", "message": (
+                "The iCloud login could not be read just now. Try again.")}
+    assert len(reasons) == 6
 
 
 async def test_unavailable_store_is_reported_by_all_three(
@@ -349,7 +389,6 @@ async def test_unavailable_store_is_reported_by_all_three(
                                        "relation": "brother"})]:
             got = await _call(name, args)
             assert got["status"] == "unavailable", (name, got)
-            assert got["message"] != NOT_SET_UP, name
     assert refreshed == []
 
 

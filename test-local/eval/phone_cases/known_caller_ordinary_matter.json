@@ -1,0 +1,27 @@
+{
+  "name": "known_caller_ordinary_matter",
+  "group": "reply",
+  "caller": {
+    "known": true,
+    "priority": false,
+    "first_name": "Tomas",
+    "name": "Tomas Brandt",
+    "language": "nl"
+  },
+  "transfer_level": "urgent",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hallo Tomas, je spreekt met de assistent die deze telefoon beantwoordt. Waarmee kan ik helpen?"
+    },
+    {
+      "who": "caller",
+      "text": "Hoi! Ik wilde even laten weten dat het boek dat ik geleend heb klaarligt om op te halen. Geen haast hoor."
+    }
+  ],
+  "expect": {
+    "action": "none",
+    "outcome": "Answers in Dutch, takes the message that the borrowed book is ready to be picked up, and says it will be passed on; does not put the call through."
+  }
+}

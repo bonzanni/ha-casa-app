@@ -149,6 +149,25 @@ async def test_transfer_notifies_then_refers_then_waits(fake, http):
     assert session.actions.phase == "pending"
 
 
+@pytest.mark.parametrize("known", [True, False])
+async def test_the_put_through_notice_carries_the_callers_full_number(
+        fake, http, known):
+    from contacts.lookup import CallerInfo
+    from phone import controller
+    caller = "+31698765432"
+    info = (CallerInfo(True, False, "Ann Example", "Ann", "nl") if known
+            else CallerInfo(False, False, "", "", "nl"))
+    notes = Notes()
+    session, _ = setup(fake, http, notify=notes,
+                       caller_label=controller.caller_label(
+                           info, caller, returned=False))
+    assert await request(session, "transfer") == Outcome("done", "")
+    [sent] = notes.sent
+    assert caller in sent.text
+    assert sent.text == ("Putting through: Ann Example (+31698765432)" if known
+                         else "Putting through: a caller on +31698765432")
+
+
 async def test_notify_comes_before_refer(fake, http):
     notes = Notes()
     notes.gate = asyncio.Event()

@@ -412,7 +412,18 @@ def _lookup(vault: str, ref: str) -> Iterator[None]:
 
 
 def _field(item: Item, label: str) -> Field | None:
-    return next((field for field in item.fields if field.label == label), None)
+    """The field a read names by *label*, matched whatever its case, as the
+    real CLI matches a label.
+
+    A write names its label exactly, so an item can hold `Password` beside
+    `password`. The field labelled exactly as asked comes first: what a
+    caller has just stored under a label is what that label reads back.
+    Failing that, the first field whose label differs only in case.
+    """
+    wanted = label.casefold()
+    return (next((field for field in item.fields if field.label == label), None)
+            or next((field for field in item.fields
+                     if field.label.casefold() == wanted), None))
 
 
 # -- what is printed -----------------------------------------------------------

@@ -228,7 +228,7 @@ def set_grant(conn: sqlite3.Connection, caller_class: str, ability: str,
 
 _CALL_COLUMNS = ("id", "session_id", "started_at", "ended_at", "number",
                  "name", "caller_class", "language", "returned", "outcome",
-                 "actions", "record", "delivered")
+                 "actions", "record", "delivered", "headline_sent")
 _SELECT_CALL = f"SELECT {', '.join(_CALL_COLUMNS)} FROM calls"
 
 
@@ -272,6 +272,13 @@ def set_record(conn: sqlite3.Connection, call_id: str, record: object) -> bool:
 def mark_delivered(conn: sqlite3.Connection, call_id: str) -> bool:
     """True when the call exists and was marked."""
     return conn.execute("UPDATE calls SET delivered = 1 WHERE id = ?",
+                        (call_id,)).rowcount > 0
+
+
+def mark_headline_sent(conn: sqlite3.Connection, call_id: str) -> bool:
+    """Casa's first line about the call reached the operator; True when the
+    call exists and was marked."""
+    return conn.execute("UPDATE calls SET headline_sent = 1 WHERE id = ?",
                         (call_id,)).rowcount > 0
 
 

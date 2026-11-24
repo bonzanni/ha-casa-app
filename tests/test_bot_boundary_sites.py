@@ -198,6 +198,7 @@ ORIGIN_SITES = {
     ("origin-builders", "casa_core.py", "build_invoke_message"): (2, FRESH, "test_bot_webhook_routes.py::test_an_invoked_turn_is_born_with_its_roles_route"),
     ("origin-builders", "casa_core.py", "main._setup_dispatch"): (1, FRESH, "test_bot_webhook_routes.py::test_a_setup_turn_stays_on_casas_bot_after_its_role_is_bound_elsewhere"),
     ("origin-builders", "phone/record.py", "hand_off"): (3, FRESH, "test_phone_record.py::test_hand_off_builds_the_restricted_operator_turn"),
+    ("origin-builders", "tools.py", "read_call"): (1, RULE_C, "test_phone_tools.py::test_the_transcript_file_goes_out_on_casas_own_bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
@@ -259,6 +260,7 @@ ORIGIN_SITES = {
     ("origin-builders", "tools.py", "wait_for_delegation_slot"): (1, NOISE, "a concurrency cap's scope label"),
     ("origin-builders", "tools.py", "wipe_memory"): (1, PRE_POST, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
     ("origin-builders", "tools.py", "_contact_priority_card"): (1, PRE_POST, "test_contacts_priority_card.py::test_before_casas_bot_has_an_id_no_card_is_registered_or_posted"),
+    ("origin-builders", "tools.py", "_phone_grant_card"): (1, PRE_POST, "test_phone_grant_card.py::test_before_casas_bot_has_an_id_no_card_is_registered_or_posted"),
     ("origin-builders", "trigger_registry.py", "TriggerRegistry._register_scheduled._dispatch"): (3, FRESH, "test_fresh_routes.py::test_a_fired_trigger_is_born_with_route_for_its_role"),
     # empty-contexts
     ("empty-contexts", "casa_core.py", "_make_invoke_handler.invoke_handler"): (1, FRESH, "test_bot_webhook_routes.py::test_an_invoked_turn_is_born_with_its_roles_route"),
@@ -283,6 +285,7 @@ ORIGIN_SITES = {
     ("broker-registrations", "tools.py", "ask_user"): (1, PRE_POST, "test_ask_scopes.py::test_a_pending_question_on_one_bot_does_not_block_the_other"),
     ("broker-registrations", "tools.py", "wipe_memory"): (1, PRE_POST, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
     ("broker-registrations", "tools.py", "_contact_priority_card"): (1, PRE_POST, "test_contacts_priority_card.py::test_before_casas_bot_has_an_id_no_card_is_registered_or_posted"),
+    ("broker-registrations", "tools.py", "_phone_grant_card"): (1, PRE_POST, "test_phone_grant_card.py::test_before_casas_bot_has_an_id_no_card_is_registered_or_posted"),
     # raw-bot-use
     ("raw-bot-use", "casa_core.py", "<module>"): (1, NOISE, "names the token option among the protected settings"),
     ("raw-bot-use", "casa_core.py", "_resolve_password_options"): (1, NOISE, "a docstring naming the token option"),
@@ -625,6 +628,7 @@ IDENTITY_SITE_HITS = {
         "consent_reprompt": 3, "start_scheduled_job.tell": 1, "stop_work": 1,
         "wipe_memory._finish_factory._finish": 1,
         "_contact_priority_card._finish_factory._settle_priority_card": 2,
+        "_phone_grant_card._finish_factory._settle_grant_card": 2,
     },
     "trigger_consent.py": {
         "ConsentTarget": 1, "TriggerConsentKey": 1, "casa_consent_target": 1,
@@ -743,11 +747,13 @@ for _file in ("agent.py", "casa_core.py", "job_registry.py",
 
 #: Functions classified apart from their file.
 IDENTITY_FUNCTIONS = {
-    ("phone/service.py", "<module>"): (SAFE, "the vault-read cache, keyed by field name; the "
-                                              "module's operator lines go on Casa's own bot "
-                                              "only"),
-    ("phone/service.py", "_fetch"): (SAFE, "the vault-read cache, keyed by field name"),
-    ("phone/service.py", "_field"): (SAFE, "the vault-read cache, keyed by field name"),
+    ("phone/service.py", "<module>"): (SAFE, "the vault-read cache, keyed by vault item and "
+                                              "field name; the module's operator lines go on "
+                                              "Casa's own bot only"),
+    ("phone/service.py", "_fetch"): (SAFE, "the vault-read cache, keyed by vault item and "
+                                            "field name"),
+    ("phone/service.py", "_field"): (SAFE, "the vault-read cache, keyed by vault item and "
+                                            "field name"),
     ("tools.py", "_delegation_scope"): (SAFE, "a per-(chat, role) concurrency cap, kept per "
                                                "role by design"),
     ("tools.py", "_erase_gate._run"): (SAFE, "Casa's own erase question: always on Casa's bot"),
@@ -1023,6 +1029,7 @@ BOT_ID_READS = {
     ("tools.py", "stop_work"): (2, RESOLUTION, "the endpoint the turn's route resolves to, and the found request's own bot"),
     ("tools.py", "wipe_memory"): (1, FIELD, "Casa's operator address, read before the card"),
     ("tools.py", "_contact_priority_card"): (1, FIELD, "Casa's operator address, read before the card"),
+    ("tools.py", "_phone_grant_card"): (1, FIELD, "Casa's operator address, read before the card"),
     ("trigger_consent.py", "prompt_trigger_consent"): (2, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),
 }
 

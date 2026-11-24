@@ -37,6 +37,9 @@ MODEL_SHORTNAME = "haiku"
 #: People sent to the model in one query.
 BATCH_SIZE = 20
 TIMEOUT_S = 60.0
+#: Bumped with every change to the prompt's rules: a note settled under an
+#: older version is read once more (:func:`contacts.store.settled_hash`).
+PROMPT_VERSION = 2
 
 _PROMPT = Path(__file__).with_name("prompts") / "note_reader.md"
 

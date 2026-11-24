@@ -266,3 +266,57 @@ async def test_person_without_note_never_reaches_the_model_or_note_reads(
 
     assert model.prompts == []
     assert _note_reads(opened) == [] and _note_rows(opened) == []
+
+
+FLAG_IT = "\U0001F1EE\U0001F1F9"
+
+
+def test_prompt_reads_a_country_flag_as_the_language() -> None:
+    prompt = notes.system_prompt()
+    assert "country flag emoji" in prompt
+    assert "main language" in prompt
+    for flag, code in (("\U0001F1EE\U0001F1F9", "it"),
+                       ("\U0001F1EC\U0001F1E7", "en"),
+                       ("\U0001F1FA\U0001F1F8", "en"),
+                       ("\U0001F1F3\U0001F1F1", "nl")):
+        assert flag in prompt and f"→ {code}" in prompt
+
+
+async def test_a_flag_only_note_reaches_the_model_unchanged(
+    opened: ContactsStore,
+) -> None:
+    model = FakeModel(_reply(U1=("", "it")))
+    await _sync(opened, [_card("U1", "Marco Example", FLAG_IT)], model)
+
+    assert FLAG_IT in model.prompts[0]
+    assert json.loads(model.prompts[0])[0]["note"] == FLAG_IT
+    assert _marks(opened, "U1").language == "it"
+
+
+async def test_notes_settled_by_an_older_prompt_are_read_once_more(
+    opened: ContactsStore,
+) -> None:
+    cards = [_card("U1", "Marco Example", FLAG_IT),
+             _card("U2", "Nora Sample", "Neighbour"),
+             _card("U3", "Carl Invented", "")]
+    await _sync(opened, cards, FakeModel(_reply(U1=("", ""),
+                                                U2=("neighbour", ""))))
+    # What an earlier version stored: the note's own hash.
+    with opened.transaction(write=True) as conn:
+        for uid, note in (("U1", FLAG_IT), ("U2", "Neighbour")):
+            conn.execute("UPDATE note_reads SET note_hash = ? WHERE uid = ?",
+                         (cstore.note_hash(note), uid))
+        cstore.set_mark(conn, "icloud", "U2", "language", "nl", "operator")
+
+    model = FakeModel(_reply(U1=("", "it"), U2=("neighbour", "de")))
+    await _sync(opened, cards, model)
+    await _sync(opened, cards, model)
+
+    assert model.sent_uids() == [{"U1", "U2"}]
+    assert _marks(opened, "U1").language == "it"
+    # The operator's own language survives a reading that says otherwise.
+    assert _marks(opened, "U2").language == "nl"
+    with opened.transaction() as conn:
+        assert list(conn.execute(
+            "SELECT value FROM marks WHERE uid = 'U2' AND field = 'language' "
+            "AND origin = 'operator'")) == [("nl",)]

@@ -211,7 +211,7 @@ def test_spoken_lines_in_italian_and_the_english_fallback():
     italian = prompt.spoken_lines("it", "Sam Owner")
     english = prompt.spoken_lines("en", "Sam Owner")
     assert set(italian) == set(english) == {"silence", "too_long",
-                                            "transfer_failed"}
+                                            "transfer_failed", "check_in"}
     assert italian != english
     assert prompt.spoken_lines("de", "Sam Owner") == english
     assert prompt.spoken_lines("nl", "Sam Owner") != english
@@ -228,8 +228,21 @@ def test_spoken_lines_override_missing_a_key_falls_back(config_dir, caplog):
     with caplog.at_level(logging.WARNING):
         lines = prompt.spoken_lines("en", "Sam Owner")
     assert lines["silence"] != "Hello?"
-    assert set(lines) == {"silence", "too_long", "transfer_failed"}
+    assert set(lines) == {"silence", "too_long", "transfer_failed",
+                          "check_in"}
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_the_check_in_is_an_instruction_in_every_language():
+    english = prompt.spoken_lines("en", "Sam Owner")["check_in"]
+    assert english == ("The caller has been silent for a while. Ask briefly, "
+                       "in your own words, whether they are still there.")
+    for language, name in (("nl", "Dutch"), ("it", "Italian")):
+        text = prompt.spoken_lines(language, "Sam Owner")["check_in"]
+        # Told to the voice model, so in English; it names the language the
+        # question is to be asked in.
+        assert text.startswith("The caller has been silent for a while.")
+        assert name in text
 
 
 def test_spoken_lines_override_wins(config_dir):

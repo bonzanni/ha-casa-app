@@ -219,8 +219,18 @@ def _now() -> str:
 
 
 def note_hash(note: str) -> str:
-    """The hash a note is stored and settled under."""
+    """The hash a note is stored under in the mirror."""
     return hashlib.sha256(note.encode("utf-8")).hexdigest()
+
+
+def settled_hash(note: str) -> str:
+    """The hash a note is settled under in ``note_reads``: the note together
+    with the note reader's prompt version, so a prompt change makes every
+    settled note differ once and the next sync reads it again."""
+    from contacts.notes import PROMPT_VERSION  # notes imports this module
+
+    return hashlib.sha256(
+        f"{PROMPT_VERSION}\0{note}".encode("utf-8")).hexdigest()
 
 
 def replace_source(conn: sqlite3.Connection, source: str,
@@ -292,18 +302,19 @@ def count(conn: sqlite3.Connection, source: str | None = None) -> int:
 
 def notes_to_settle(conn: sqlite3.Connection, source: str) -> list[Person]:
     """*source*'s people whose note differs from the one last settled (no
-    ``note_reads`` row counts as different), by uid. A blank note with no
-    row and no ``note``-origin mark is left out: there is nothing to do."""
+    ``note_reads`` row counts as different; the comparison is by
+    :func:`settled_hash`), by uid. A blank note with no row and no
+    ``note``-origin mark is left out: there is nothing to do."""
     rows = conn.execute(
-        f"SELECT {_PEOPLE_COLUMNS_P}, r.note_hash IS NOT NULL, EXISTS ("
+        f"SELECT {_PEOPLE_COLUMNS_P}, r.note_hash, EXISTS ("
         "SELECT 1 FROM marks AS m WHERE m.source = p.source "
         "AND m.uid = p.uid AND m.origin = 'note') "
         "FROM people AS p LEFT JOIN note_reads AS r "
         "ON r.source = p.source AND r.uid = p.uid "
-        "WHERE p.source = ? AND r.note_hash IS NOT p.note_hash "
-        "ORDER BY p.uid", (source,)).fetchall()
+        "WHERE p.source = ? ORDER BY p.uid", (source,)).fetchall()
     return [_person(conn, row[:-2]) for row in rows
-            if row[5].strip() or row[-2] or row[-1]]
+            if row[-2] != settled_hash(row[5])
+            and (row[5].strip() or row[-2] is not None or row[-1])]
 
 
 def settle_note(conn: sqlite3.Connection, source: str, uid: str,

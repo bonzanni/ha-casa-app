@@ -451,6 +451,45 @@ def test_a_reference_names_a_field_by_label_or_by_id(store):
     assert op(store, "read", by_ids) == op(store, "read", "op://Casa/X/f") == (0, "plain\n", "")
 
 
+def test_a_label_is_matched_whatever_its_case_when_read(store):
+    # The real CLI finds a field by its label in any case, on both of its
+    # read paths.
+    code, _, err = op(store, "item", "create", "--category", "API Credential",
+                      "--title", "cased", "--vault", "Casa", "--tags", "tag",
+                      "Password[password]=hunter3", "API Key[password]=key-one")
+    assert (code, err) == (0, "")
+
+    def by_label(label):
+        return op(store, "item", "get", "cased", "--vault", "Casa",
+                  "--fields", f"label={label}", "--reveal")
+
+    def by_reference(label):
+        return op(store, "read", f"op://Casa/cased/{label}")
+
+    for label in ("password", "Password", "PASSWORD"):
+        assert by_label(label) == by_reference(label) == (0, "hunter3\n", ""), label
+    for label in ("api key", "API Key"):
+        assert by_label(label) == by_reference(label) == (0, "key-one\n", ""), label
+
+    # A label the item does not have is still not a field, in the CLI's words.
+    code, out, err = by_label("nope")
+    assert (code, out) == (1, "") and '"nope" isn\'t a field in the "cased" item' in err
+    code, out, err = by_reference("nope")
+    assert (code, out) == (1, "") and "does not have a field 'nope'" in err
+
+    # A write names its label exactly, so `password` is kept beside
+    # `Password`. Each is then read by its own spelling, and what was just
+    # written under a label is what that label reads back; a third spelling
+    # finds the first of the two.
+    assert op(store, "item", "edit", "cased", "--vault", "Casa",
+              "password[password]=lower")[0::2] == (0, "")
+    assert [f.label for f in store.get("cased").fields] == [
+        "Password", "API Key", "password"]
+    assert by_label("password") == by_reference("password") == (0, "lower\n", "")
+    assert by_label("Password") == by_reference("Password") == (0, "hunter3\n", "")
+    assert by_label("PASSWORD") == by_reference("PASSWORD") == (0, "hunter3\n", "")
+
+
 def test_a_field_added_later_cannot_take_over_a_reference_by_id(store):
     # Casa wires references as op://vault/item id/field id, so a field whose
     # label happens to equal another field's id must not redirect them.

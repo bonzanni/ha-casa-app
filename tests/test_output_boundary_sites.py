@@ -88,19 +88,22 @@ CASA_TEXT_SITES = {
     ("casa_core.py", "operator_notify"): "operator notice, Casa template",
     ("tools.py", "_post"): "wipe_memory's confirmation keyboard, Casa template",
     ("tools.py", "_post_priority_card"): "the contact priority card: a fixed template over the stored contact's name and numbers",
+    ("tools.py", "_post_grant_card"): "the phone grant card: a fixed template over the stored change's caller class and levels",
+    ("tools.py", "connect_login"): "the line naming the vault item taken for a login, Casa template over the item's own title in the vault and the check's fixed sentence; nothing the model wrote",
     ("own_voice_lifecycle.py", "post_card"): "an own-chat card in the resident's chat (offer, bound, released), Casa template",
     ("own_voice_lifecycle.py", "_post"): "the own-chat question naming a new bot, Casa template",
-    ("contacts/service.py", "run_daily"): "the contacts refresh failure line, Casa template; the error is a source's own fixed text",
-    ("phone/abilities.py", "_transfer"): "the put-through notice, Casa template over the contact's name or the number",
+    ("contacts/service.py", "run_daily"): "the contacts refresh failure line, Casa template; the error is a source's own fixed text, and a lost login adds the check's fixed sentence",
+    ("phone/abilities.py", "_transfer"): "the put-through notice, Casa template over the contact's name and the caller's full number",
     ("phone/abilities.py", "_alert"): "the returned-call emergency alert, Casa template over the caller's label; the model's reason is not sent",
-    ("phone/controller.py", "_tell"): "the line about a call the phone store could not record, Casa template over the contact's name or the number's last four digits, the class, the outcome and the duration",
-    ("phone/service.py", "_send"): "the phone line's operator lines (the missing API key, the ended-call fallback), Casa templates over the contact's name or the number's last four digits, the class, the outcome and the duration",
+    ("phone/controller.py", "_tell"): "the line about a call the phone store could not record, Casa template over the contact's name, the caller's full number, the call's time and the outcome",
+    ("phone/service.py", "_send"): "the phone line's operator lines (a login that cannot be read, with the check's fixed sentence; an ended call's first line and the note that its summary did not go), Casa templates over the contact's name, the caller's full number, the call's time and the outcome",
 }
 
 EDIT_DM_MESSAGE_CALLERS = {
     ("tools.py", "_finish"): {"derived", "status"},                 # ask_user: answered/retired body; 'delivery failed' status
     ("tools.py", "_wipe_status"): {"status"},                      # wipe_memory: the memory wipe's fixed lines
     ("tools.py", "_settle_priority_card"): {"status"},             # the contact priority card: its body + a fixed outcome line
+    ("tools.py", "_settle_grant_card"): {"status"},                # the phone grant card: its body + a fixed outcome line
     ("scheduled_asks.py", "_settle"): {"derived"},                 # the stored admitted body + terminal suffix
     ("scheduled_asks.py", "_replay_terminal_edit"): {"derived"},   # the persisted terminal_edit of that body
     ("authz_grants.py", "_finish_inner"): {"status"},              # retired / denied / delivery-failed statuses
@@ -199,6 +202,7 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
     ("tools.py", "_post_priority_card"): "casa_text",           # the contact priority card
+    ("tools.py", "_post_grant_card"): "casa_text",              # the phone grant card
     ("tools.py", "ask_operator"): "admitted",                   # a job's question, admitted on the job's scope
     ("stored_call_settler.py", "handle_tap"): "admitted",       # the stored call's receipt, the plugin's admitted text
     ("tools.py", "_post_task_text"): "admitted",                # a task's answer, admitted on the task's scope

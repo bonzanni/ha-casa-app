@@ -3739,8 +3739,7 @@ async def main() -> None:
         store=contacts_store,
         notify=telegram_channel.notify_operator
         if telegram_channel is not None else None,
-        model=contacts_notes.NoteModel(),
-        read_secret=contacts_service.read_icloud_secret)
+        model=contacts_notes.NoteModel())
     # The phone line: its own client session (closed by its stop), and the
     # vault check in the background so the boot does not wait on it.
     if phone_service.enabled():

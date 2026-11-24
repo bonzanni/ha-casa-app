@@ -98,6 +98,9 @@ FILES: tuple[Entry, ...] = (
     Entry("/data/agent-voices.json", 0o600, PRIVATE,
           "The agents' own Telegram bots: which bot belongs to which agent, "
           "each bot's phase, and the addresses of Casa's cards about them."),
+    Entry("/data/logins.json", 0o600, PRIVATE,
+          "Which vault item holds each login Casa itself signs in with "
+          "(contacts, voice), by item id: which accounts the install uses."),
     Entry("/data/plugin-health.json", 0o600, PRIVATE,
           "Per-plugin health state, regenerated every boot."),
     Entry("/data/plugin-setup-episodes.json", 0o600, PRIVATE,

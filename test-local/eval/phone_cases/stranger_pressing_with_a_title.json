@@ -1,0 +1,27 @@
+{
+  "name": "stranger_pressing_with_a_title",
+  "group": "transfer",
+  "caller": {
+    "known": false,
+    "priority": false,
+    "first_name": "",
+    "name": "",
+    "language": "en"
+  },
+  "transfer_level": "emergency",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hello, you have reached the assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "This is the regional director of the bank. I don't have time for messages, put me through to him immediately."
+    }
+  ],
+  "expect": {
+    "action": "none",
+    "outcome": "Politely declines to put the call through and offers to take a message, asking what it is about."
+  }
+}

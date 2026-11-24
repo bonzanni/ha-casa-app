@@ -1,0 +1,27 @@
+{
+  "name": "known_caller_cannot_wait",
+  "group": "transfer",
+  "caller": {
+    "known": true,
+    "priority": false,
+    "first_name": "Tomas",
+    "name": "Tomas Brandt",
+    "language": "en"
+  },
+  "transfer_level": "urgent",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hi Tomas, you have reached the assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "A pipe burst in the flat above his storage room and water is pouring in. The plumber is here now and I need him to say whether I can let them in. It really can't wait."
+    }
+  ],
+  "expect": {
+    "action": "transfer",
+    "outcome": "Treats this as urgent and tells Tomas it is putting him through."
+  }
+}

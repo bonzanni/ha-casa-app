@@ -271,6 +271,12 @@ calendar.
 marks over the operator's synced address book, refused below private clearance, with a
 priority contact applied only by the operator's tap on Casa's card — are described in
 [`contacts.md`](contacts.md) (INV-CONTACTS-004, INV-CONTACTS-006).
+`connect_login`, which shows the assistant the titles of the few vault items that could hold
+one of Casa's own logins and stores her choice once Casa's line naming it reached the
+operator, is described in [`logins.md`](logins.md); it is the one tool that returns a vault
+title. `read_call` and `phone_settings` — the calls the phone line answered and its voices,
+models and grants, a wider grant applied only by the operator's tap — are described in
+[`phone.md`](phone.md) (INV-PHONE-008).
 
 The assistant's `start_job` and a job session's `report_job_progress` are described in
 [`background-jobs.md`](background-jobs.md); a specialist job's `ask_operator`, and the start

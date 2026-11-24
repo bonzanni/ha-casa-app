@@ -41,6 +41,7 @@ _URI_SCHEMES = ("sips:", "sip:", "tel:")
 # Longer than any real epoch timestamp; also keeps int arithmetic finite.
 _MAX_TIMESTAMP_CHARS = 20
 _SIGNATURE_HEADERS = ("webhook-id", "webhook-timestamp", "webhook-signature")
+_MAX_LOGGED_HEADER_NAMES = 40
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,17 @@ def _header_value(sip_headers: object, name: str) -> str:
             value = header.get("value")
             return value if isinstance(value, str) else ""
     return ""
+
+
+def _header_names(sip_headers: object) -> list[str]:
+    """The names (never the values) of the SIP headers of an event,
+    lower-cased, sorted and capped, so a carrier header that carries the
+    dialled number or a diversion can be found from the log."""
+    if not isinstance(sip_headers, list):
+        return []
+    names = {str(h.get("name", "")).lower() for h in sip_headers
+             if isinstance(h, dict) and h.get("name")}
+    return sorted(names)[:_MAX_LOGGED_HEADER_NAMES]
 
 
 def _uri_part(value: str) -> str:
@@ -279,6 +291,9 @@ def make_handler(
 
         logger.info("phone webhook: incoming call from %s to %s",
                     _tail(incoming.from_number), _tail(incoming.to_number))
+        logger.debug("phone webhook: SIP headers of %s: %s",
+                     incoming.session_id,
+                     ", ".join(_header_names(event["data"].get("sip_headers"))))
         try:
             on_incoming(incoming)
         except Exception:

@@ -149,6 +149,7 @@ just its name inside `/data/memory/exports/`.
 | `contacts_default_region` | The country to assume for phone numbers in your contacts written without a country code, as a two-letter code such as `NL` (see [Contacts](#contacts)). Leave empty to skip such numbers. Default: empty. |
 | `phone_enabled` | Let Casa answer your phone line (see [Phone](#phone)). Default: `false`. |
 | `phone_transfer_number` | The number Casa may put callers through to, with country code (or without one, using `contacts_default_region`). Leave empty and nobody is put through. Default: empty. |
+| `phone_line_number` | The number of Casa's own phone line, with country code (or without one, using `contacts_default_region`). When a caller Casa put through to you is not picked up, the call comes back from this number, and Casa then knows it is someone it already spoke to. Leave empty and such a call is treated as a new one. Default: empty. |
 | `phone_owner_name` | How the phone assistant names you to callers. Leave empty to say "the person you called". Default: empty. |
 | `live_voices` | Voices per language for calls, like `nl=voice_abc,en=marin`: a value starting with `voice_` is a custom voice id, anything else a stock voice name. Default: empty (a stock voice). |
 | `live_api_host` | The OpenAI API host for calls. Leave empty for `api.openai.com`; use `eu.api.openai.com` for a project with EU data residency. Default: empty. |
@@ -1962,11 +1963,25 @@ people are when you mention them, and you can tell it who matters most. The
 copy is read-only: Casa never changes anything in iCloud.
 
 **Setting it up.** In 1Password, in the vault named in
-`onepassword_default_vault`, create an item named exactly `iCloud Contacts`
-with two fields: `username`, your Apple ID, and `password`, an app-specific
-password you create at account.apple.com (not your Apple ID password). Casa
-reads the same item from the [built-in store](#secrets-without-1password) when
-you have no 1Password token, but that store has no page for adding items yet.
+`onepassword_default_vault`, keep an item with your Apple ID (a field
+`username` or `email`) and an app-specific password you create at
+account.apple.com, not your Apple ID password (a field `password` or
+`credential`). The item's name must contain "iCloud" or "Apple" (in any
+upper or lower case, written as one word), because only those items are looked
+at. Then tell the assistant to connect your iCloud contacts. It
+looks at the names of the vault items that could be it, takes the one that
+clearly is, and asks you when none or several could be; Casa then tells you in
+your chat which item it uses. The assistant never sees what is in the item. An
+item named `iCloud Contacts` is used without asking as long as no other item
+has been chosen; once one has, Casa reads that one. To switch, say for example
+"use my other iCloud item instead": the assistant looks at the items that could
+be it, sees which one is in use, and Casa tells you which item it uses from then
+on. If Casa's own note of
+which item was chosen is ever damaged, Casa uses no item at all, not even that
+one, and tells you to ask the assistant to connect the login again; the same
+holds for the phone line. Casa reads the same items
+from the [built-in store](#secrets-without-1password) when you have no
+1Password token, but that store has no page for adding items yet.
 If some numbers in your contacts are written without a country code, set
 `contacts_default_region` to your country (for example `NL`); otherwise those
 numbers are skipped.
@@ -2000,14 +2015,17 @@ back an incomplete address book, Casa keeps the copy it has and changes
 nothing. An empty address book counts as a failure only when Casa already had
 contacts. Casa tells you once, with the reason, and not again until a refresh
 has worked; the same goes when Casa cannot refresh for a reason of its own,
-such as a damaged contacts file.
+such as a damaged contacts file, or when the vault item that worked before is
+gone or empty: the message then says what is wrong with it. Casa never
+switches to another item by itself; tell the assistant to connect your iCloud
+contacts again.
 
 ## Phone
 
 Casa can answer your phone line when you cannot pick up. It greets people it
 knows from your [contacts](#contacts) by name, takes a message, puts urgent
-calls through to you, and afterwards the assistant tells you in your chat who
-called and what it was about. The feature is **off by default**.
+calls through to you, and afterwards tells you in your chat who called, from
+which number, when, and what it was about. The feature is **off by default**.
 
 **Calls are processed by OpenAI.** The caller's voice and the conversation go
 to OpenAI's live voice service, which does the talking; Casa follows the call
@@ -2023,14 +2041,31 @@ urgent, someone unknown only in an emergency. Before putting a call through,
 Casa sends you a line in your chat saying who it is, because your phone will
 show your own line's number. If you do not pick up and the call comes back to
 the line, the assistant tells the caller, takes a message, and sends you an
-urgent alert if they say it is an emergency. Casa ends a call itself after a
-long silence, after ten minutes, or when the connection is lost. Up to two
+urgent alert if they say it is an emergency; Casa recognises such a call only
+when `phone_line_number` is set. When nobody speaks for a few seconds, the
+assistant asks whether the caller is still there; if there is still no answer,
+it says goodbye and hangs up. Casa also ends a call after ten minutes, or when
+the connection is lost. Up to two
 calls are answered at once; a third caller hears busy.
 
-**After the call.** The assistant gets a short summary of the call (never the
-transcript) and tells you about it in your chat. Phone
-numbers appear there only as their last four digits. Casa keeps a transcript
-of each call for 30 days, then deletes it; it never records audio.
+**After the call.** You get two messages in your chat. First Casa's own line:
+who called (the name from your contacts, or "Unknown caller"), their full
+number so you can call back, the time and how the call ended. Then the
+assistant's summary of what they wanted and what happened. The assistant gets
+a short summary of the call, never the transcript. Casa keeps a transcript of
+each call for 30 days; a nightly clean-up removes it after that, and until then
+the assistant can still send it to you. Casa never records audio.
+
+**Asking about calls.** Ask the assistant about your calls ("who called
+today?", "what did the last caller want?"), or for a call's transcript: it
+arrives in your chat as a text file. You can also ask it to show the phone
+settings, or to change the voice for a language, a model, or who is put
+through to you. Making it stricter happens at once. Letting more callers
+through does not: Casa posts a card in your chat with Approve and Cancel, and
+nothing changes until you tap Approve. The card expires after five minutes.
+The assistant can look up your calls and the phone settings only in a
+conversation that is private to you. To change a setting or have a transcript
+sent, you also have to ask it yourself, in your own chat with it.
 
 **Setting it up.** Most of this happens outside Casa:
 
@@ -2046,26 +2081,36 @@ of each call for 30 days, then deletes it; it never records audio.
    for incoming calls with the URL `<public_url>/phone/incoming`, and note its
    signing secret.
 4. **Add the vault item.** In 1Password, in the vault named in
-   `onepassword_default_vault`, create an item named exactly `OpenAI Voice`
-   with two fields: `credential`, the project's API key, and `webhook_secret`,
-   the signing secret. Casa reads the same item from the
+   `onepassword_default_vault`, keep an item with the project's API key (a
+   field `credential`, `password` or `api key`) and the signing secret (a
+   field `webhook_secret` or `webhook secret`), with "OpenAI" in its name
+   (in any case, as one word), because only such items are looked at. Then
+   tell the assistant to
+   connect your OpenAI voice login; it picks the item as it does for
+   [contacts](#contacts), and Casa tells you which one. An item named
+   `OpenAI Voice` is used without asking as long as no other item has been
+   chosen. Casa reads the same items from the
    [built-in store](#secrets-without-1password) when you have no 1Password
    token, but that store has no page for adding items yet.
 5. **Set the options** and restart: `phone_enabled` on, `phone_transfer_number`
-   (your mobile, for example), and optionally `phone_owner_name`,
-   `live_voices` and `live_api_host`. After the restart the log says
+   (your mobile, for example), `phone_line_number` (the number of the line
+   itself), and optionally `phone_owner_name`, `live_voices` and
+   `live_api_host`. After the restart the log says
    `phone: enabled, webhook at …`, or names what is missing.
 
 **Changing what the assistant says.** The instructions for the call are files
 in `/config/phone/prompts/` (`agent.md` for the voice, `lines.yaml` for the
 fixed lines). Edits take effect on the next call; a file Casa cannot use is
-ignored, with a warning in the log, and the shipped version is used.
+ignored, with a warning in the log, and the shipped version is used. Every
+language in `lines.yaml` needs all of its lines, `check_in` included; a copy
+that lacks one is not used at all.
 
 **When something is missing.** Without the vault item, calls are not answered
-and go to your carrier's fallback; the log says what is missing at every start,
-and when a call comes in without the API key Casa tells you, at most once an
-hour. If
+and go to your carrier's fallback; the log says what is wrong at every start,
+and when a call comes in Casa tells you what is wrong with the item (not
+found, or which value is missing or empty), at most once an hour. If
 Casa's phone records cannot be opened, calls are still answered and messages
-taken, but nobody is put through, and you get one short line per call instead
-of the assistant's summary. If Casa restarts during a call, the call ends and
+taken, but nobody is put through, and you get only Casa's own line about each
+call, without the assistant's summary. If the summary cannot be delivered,
+Casa says so after its own line. If Casa restarts during a call, the call ends and
 is reported as cut off.

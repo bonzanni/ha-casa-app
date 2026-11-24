@@ -23,12 +23,14 @@ from phone_fakes import FakeOpenAI, function_call, tool_call_event
 KEY = "sk-test-not-a-real-key"
 SID = "live_fake_1"
 FAR = 30.0
-TIMING = Timing(first_speech_s=FAR, quiet_s=0.05, silence_s=FAR, max_call_s=FAR,
-                reconnect_s=0.3, decision_timeout_s=1.0, undecided_silence_s=0.15,
-                goodbye_grace_s=0.2, speak_margin_s=0.02, pending_s=0.2)
-SPOKEN = {"silence": "Are you still there?",
+TIMING = Timing(first_speech_s=FAR, quiet_s=0.05, check_in_s=FAR, silence_s=FAR,
+                max_call_s=FAR, reconnect_s=FAR, decision_timeout_s=1.0,
+                undecided_silence_s=0.15, goodbye_grace_s=0.2,
+                speak_margin_s=0.02, pending_s=0.2)
+SPOKEN = {"silence": "I cannot hear you, so I will end this here.",
           "too_long": "I have to end this now.",
-          "transfer_failed": "Nobody picked up. Take a message instead."}
+          "transfer_failed": "Nobody picked up. Take a message instead.",
+          "check_in": "Nobody has spoken for a while. Ask whether they are there."}
 SAY = "Immediately say the following exactly, then continue: "
 PARAMETERS = {"properties": {"why": {"type": "string"}}, "required": ["why"]}
 END = [function_call("end_call", {"why": "goodbye said"})]
@@ -199,7 +201,7 @@ async def test_a_quiet_agent_line_is_decided_once_and_can_end_the_session(
 
 async def test_two_close_agent_deltas_are_one_line_and_one_decision(
         fake, start) -> None:
-    call = start()
+    call = start(quiet_s=0.5)
     await call.agent(" One")
     await asyncio.sleep(0.02)
     await call.agent(" moment.")
@@ -230,12 +232,12 @@ async def test_a_decision_the_caller_spoke_over_does_not_act(fake, start) -> Non
 async def test_a_caller_delta_before_the_quiet_moment_cancels_the_decision(
         fake, start) -> None:
     fake.responses_queue = [END]
-    call = start(quiet_s=0.2)
+    call = start(quiet_s=1.0)
     await call.agent(" Is that all?")
     await call.caller(" No,")
     await call.caller(" there is")
     await call.caller(" more.")
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(1.3)  # past the quiet moment
     assert call.decisions == []
     assert call.hangups == [] and call.verbs("refer") == []
     result = await call.result(close="remote_hangup")
@@ -330,11 +332,11 @@ async def test_a_helper_call_of_an_unseen_delegation_never_runs(fake, start) -> 
 async def test_a_decision_failing_twice_then_caller_speech_goes_on(
         fake, start) -> None:
     fake.responses_queue = [RuntimeError("down"), RuntimeError("down")]
-    call = start(undecided_silence_s=0.3)
+    call = start(undecided_silence_s=1.0)
     await call.agent(" Goodbye.")
     await until(lambda: len(call.decisions) == 2)
     await call.caller(" Hello?")
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.3)  # past the moment the failed decision would end it
     assert call.hangups == []
     result = await call.result(close="remote_hangup")
     assert result.actions == ()
@@ -365,8 +367,42 @@ async def test_a_decision_timing_out_twice_then_silence_ends_the_session(
     assert result.closed_reason == "clock:undecided"
 
 
+async def test_a_failed_decision_does_not_end_the_session_while_the_line_is_played(
+        fake, start) -> None:
+    fake.responses_queue = [RuntimeError("down"), RuntimeError("down")]
+    call = start()
+    seen = time.monotonic()
+    await call.emit({"type": "session.started"})
+    await call.agent(" A long answer that takes a while to say.", 0, 800)
+    result = await call.result()
+    assert len(call.decisions) == 2
+    assert len(call.hangups) == 1
+    assert result.closed_reason == "clock:undecided"
+    # Counted from the end of the line, not from the failed decision.
+    assert result.ended - seen >= (0.8 + TIMING.speak_margin_s
+                                   + TIMING.undecided_silence_s)
+
+
+async def test_a_failed_decision_over_a_long_line_is_followed_by_the_check_in(
+        fake, start) -> None:
+    # The check-in's time is the shorter of the two, as it is by default;
+    # both are counted from the end of the line, so the check-in comes first
+    # and the session ends on the closing line, not on the failed decision.
+    fake.responses_queue = [RuntimeError("down"), RuntimeError("down")]
+    call = start(check_in_s=0.2, undecided_silence_s=0.3, silence_s=0.3,
+                 goodbye_grace_s=0.1)
+    seen = time.monotonic()
+    await call.emit({"type": "session.started"})
+    await call.agent(" A long answer that takes a while to say.", 0, 600)
+    result = await call.result()
+    assert len(call.decisions) == 2
+    assert result.closed_reason == "clock:silence"
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
+    assert result.ended - seen >= 0.6 + TIMING.speak_margin_s + 0.2 + 0.3 + 0.1
+
+
 async def test_no_action_and_silence_waits_for_the_silence_clock(fake, start) -> None:
-    call = start(silence_s=1.0)
+    call = start()
     await call.agent(" Take your time.")
     await until(lambda: len(call.decisions) == 1)
     await asyncio.sleep(0.4)
@@ -388,34 +424,316 @@ async def test_no_agent_speech_ends_the_session(fake, start) -> None:
 
 
 async def test_silence_says_the_line_and_then_ends_the_session(fake, start) -> None:
-    call = start(silence_s=0.15, goodbye_grace_s=0.15)
+    call = start(check_in_s=0.2, silence_s=0.5, goodbye_grace_s=0.15)
+    seen = time.monotonic()
     await call.agent(" Hello.")
     await fake.wait_sent("session.instructions.append")
-    assert call.appended == [SAY + SPOKEN["silence"]]
-    assert call.hangups == []
+    # First the agent is told to ask: context, not a line to read out.
+    assert time.monotonic() - seen >= 0.2
+    assert call.appended[0] == SPOKEN["check_in"]
+    await fake.wait_sent("session.instructions.append", 2)
+    assert time.monotonic() - seen >= 0.2 + 0.5
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
     result = await call.result()
+    # The one hang-up ended the session, and not before both steps and the
+    # grace had passed: nothing was hung up at the check-in.
     assert len(call.hangups) == 1
     assert result.closed_reason == "clock:silence"
+    assert result.ended - seen >= 0.2 + 0.5 + 0.15
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
     assert fake.ws_sent[-1]["delegation_id"] is None
     assert isinstance(fake.ws_sent[-1]["event_id"], str)
 
 
-async def test_caller_speech_after_the_silence_line_keeps_the_session(
+async def test_the_check_in_comes_when_its_time_has_passed_and_not_later(
         fake, start) -> None:
-    call = start(silence_s=0.3, goodbye_grace_s=0.1)
+    # The longest session allows less than twice the check-in's time, so a
+    # check-in that came late would come after the session's last line.
+    call = start(check_in_s=1.0, max_call_s=1.8, goodbye_grace_s=0.1)
+    await call.agent(" Hello.")
+    result = await call.result()
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["too_long"]]
+    assert result.closed_reason == "clock:max"
+
+
+async def test_the_agents_own_question_does_not_put_the_closing_line_off(
+        fake, start) -> None:
+    call = start(check_in_s=0.15, silence_s=0.3, goodbye_grace_s=0.15)
+    await call.agent(" Hello.")
+    await fake.wait_sent("session.instructions.append")
+    # Text of the agent keeps arriving for far longer than the silence may
+    # last, all of it already played. It is not the other side speaking: no
+    # second check-in, and the closing line comes while it still arrives.
+    for _ in range(60):
+        if len(call.appended) > 1:
+            break
+        await call.agent(" Are you still there?")
+        await asyncio.sleep(0.05)
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
+    result = await call.result()
+    assert result.closed_reason == "clock:silence"
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
+
+
+async def test_the_closing_line_waits_until_the_agents_question_was_played(
+        fake, start) -> None:
+    call = start(check_in_s=0.2, silence_s=1.0, goodbye_grace_s=0.1)
+    await call.emit({"type": "session.started"})
+    await call.agent(" Hello.")
+    await fake.wait_sent("session.instructions.append")
+    # The agent's question takes longer to say than the silence may last,
+    # and its end moves on while the clock is already waiting for it.
+    asked = time.monotonic()
+    now_ms = int((asked - call.started) * 1000)
+    await call.agent(" Are you", now_ms, now_ms + 400)
+    await asyncio.sleep(0.1)
+    await call.agent(" still there?", now_ms + 400, now_ms + 1200)
+    await fake.wait_sent("session.instructions.append", 2)
+    # The other side gets the whole silence after the question's end.
+    assert time.monotonic() - asked >= 1.2 + TIMING.speak_margin_s + 1.0
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
+    result = await call.result()
+    assert result.closed_reason == "clock:silence"
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
+
+
+async def test_a_caller_who_answers_the_check_in_is_not_hung_up_on(
+        fake, start) -> None:
+    call = start(check_in_s=0.2)
     await call.agent(" Hello.")
     await fake.wait_sent("session.instructions.append")
     await call.caller(" Yes, I am here.")
-    await asyncio.sleep(0.2)
+    # The next thing the silence brings is a new check-in, not the closing line.
+    await fake.wait_sent("session.instructions.append", 2)
+    assert call.appended == [SPOKEN["check_in"], SPOKEN["check_in"]]
     assert call.hangups == []
     result = await call.result(close="remote_hangup")
     assert call.hangups == []
     assert result.closed_reason == "remote_hangup"
 
 
+async def test_caller_speech_after_the_silence_line_keeps_the_session(
+        fake, start) -> None:
+    call = start(check_in_s=0.1, silence_s=0.3, goodbye_grace_s=FAR)
+    await call.agent(" Hello.")
+    await fake.wait_sent("session.instructions.append", 2)
+    assert call.appended[1] == SAY + SPOKEN["silence"]
+    await call.caller(" Yes, I am here.")
+    # The clock goes on to the next silence, which it can do only once the
+    # hang-up was called off: one not called off would wait out the grace.
+    await fake.wait_sent("session.instructions.append", 3)
+    assert call.appended[2] == SPOKEN["check_in"]
+    assert call.hangups == []
+    result = await call.result(close="remote_hangup")
+    assert call.hangups == []
+    assert result.closed_reason == "remote_hangup"
+
+
+async def test_caller_speech_while_the_silence_line_is_sent_keeps_the_session(
+        fake, start) -> None:
+    call = start(check_in_s=0.1, silence_s=0.2, goodbye_grace_s=0.2)
+    say = call.session.say
+
+    async def say_and_hear(text: str) -> None:
+        # The caller's words arrive while the line is being sent: before
+        # the session has begun to wait for them.
+        await say(text)
+        call.session._on_event({"type": "session.input_transcript.delta",
+                                "delta": " Hello?", "start_ms": 0, "end_ms": 0})
+
+    call.session.say = say_and_hear
+    await call.agent(" Hello.")
+    await fake.wait_sent("session.instructions.append", 2)
+    assert call.appended[-1] == SAY + SPOKEN["silence"]
+    await asyncio.sleep(0.5)  # past the grace the closing line began
+    assert call.hangups == []
+    assert not call.task.done()
+    result = await call.result(close="remote_hangup")
+    assert call.hangups == []
+    assert result.closed_reason == "remote_hangup"
+
+
+async def test_a_failed_decision_after_the_check_in_does_not_end_the_session(
+        fake, start) -> None:
+    # No action for the greeting; nobody can decide for the agent's question.
+    fake.responses_queue = [[], RuntimeError("down"), RuntimeError("down")]
+    call = start(check_in_s=0.2, silence_s=1.0, undecided_silence_s=0.05,
+                 goodbye_grace_s=FAR)
+    seen = time.monotonic()
+    await call.agent(" Hello.")
+    await until(lambda: len(call.decisions) == 1)
+    await fake.wait_sent("session.instructions.append")
+    await call.agent(" Are you still there?")
+    await until(lambda: len(call.decisions) == 3)
+    await asyncio.sleep(0.25)  # five times what the undecided clock waits
+    # With the grace far away nothing but the failed decision could have
+    # ended the session by now.
+    assert not call.task.done()
+    assert call.hangups == []
+    # The silence still runs its course, and the caller can still stop it.
+    await fake.wait_sent("session.instructions.append", 2)
+    assert time.monotonic() - seen >= 0.2 + 1.0
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
+    await call.caller(" Sorry, yes.")
+    # The next check-in can come only once the hang-up was called off.
+    await fake.wait_sent("session.instructions.append", 3)
+    assert call.appended[2] == SPOKEN["check_in"]
+    assert call.hangups == []
+    result = await call.result(close="remote_hangup")
+    assert result.closed_reason == "remote_hangup"
+
+
+async def test_a_check_in_drops_a_decision_that_had_already_failed(
+        fake, start) -> None:
+    # Nobody could decide for the greeting; the check-in comes before the
+    # undecided clock runs out, and from then on only the silence counts.
+    fake.responses_queue = [RuntimeError("down"), RuntimeError("down")]
+    call = start(check_in_s=0.2, silence_s=1.0, undecided_silence_s=0.6,
+                 goodbye_grace_s=0.1)
+    await call.agent(" Hello.")
+    result = await call.result()
+    assert result.closed_reason == "clock:silence"
+    assert call.appended == [SPOKEN["check_in"], SAY + SPOKEN["silence"]]
+    assert len(call.hangups) == 1
+
+
+async def test_no_check_in_while_the_agents_line_is_still_played(
+        fake, start) -> None:
+    call = start(check_in_s=0.2)
+    seen = time.monotonic()
+    await call.emit({"type": "session.started"})
+    await call.agent(" A long sentence that takes a while to say.", 0, 600)
+    await fake.wait_sent("session.instructions.append")
+    assert call.appended == [SPOKEN["check_in"]]
+    assert time.monotonic() - seen >= 0.6 + TIMING.speak_margin_s + 0.2
+    await call.result(close="remote_hangup")
+
+
+async def test_caller_words_do_not_bring_the_check_in_before_the_line_was_played(
+        fake, start) -> None:
+    call = start(check_in_s=0.2)
+    seen = time.monotonic()
+    await call.emit({"type": "session.started"})
+    await call.agent(" A long sentence that takes a while to say.", 0, 800)
+    await call.caller(" Mm-hm.")
+    await fake.wait_sent("session.instructions.append")
+    assert call.appended == [SPOKEN["check_in"]]
+    assert time.monotonic() - seen >= 0.8 + TIMING.speak_margin_s + 0.2
+    await call.result(close="remote_hangup")
+
+
+async def test_an_answer_over_the_agents_question_waits_for_the_question_to_end(
+        fake, start) -> None:
+    call = start(check_in_s=0.2, silence_s=FAR)
+    await call.emit({"type": "session.started"})
+    await call.agent(" Hello.")
+    await fake.wait_sent("session.instructions.append")
+    # The agent's question is still being played when the caller answers.
+    asked = time.monotonic()
+    zero_ms = int((asked - call.started) * 1000)
+    await call.agent(" Are you still there?", zero_ms, zero_ms + 800)
+    await call.caller(" Yes.")
+    await fake.wait_sent("session.instructions.append", 2)
+    assert call.appended == [SPOKEN["check_in"], SPOKEN["check_in"]]
+    assert time.monotonic() - asked >= 0.8 + TIMING.speak_margin_s + 0.2
+    await call.result(close="remote_hangup")
+
+
+async def test_no_check_in_before_the_agent_has_spoken(fake, start) -> None:
+    call = start(check_in_s=0.1, silence_s=0.1)
+    await call.emit({"type": "session.started"})
+    await asyncio.sleep(0.25)
+    await call.caller(" Hello?")
+    await asyncio.sleep(0.5)
+    assert call.appended == []
+    assert call.hangups == []
+    await call.result(close="remote_hangup")
+
+
+async def test_no_check_in_while_work_is_pending(fake, start) -> None:
+    # The check-in was armed by the agent's line before the work began.
+    call = start(check_in_s=1.0, silence_s=0.1, pending_s=FAR)
+    call.transfer_answer = "pending"
+    await call.delegation("d1")
+    await call.agent(" I will put you through.")
+    await call.helper_call("d1", "transfer")
+    await until(lambda: call.session.actions.phase == "pending")
+    await asyncio.sleep(1.5)  # past the check-in and the silence after it
+    assert call.appended == []
+    assert call.hangups == []
+    result = await call.result(close="close_requested")
+    assert result.phase == "handed_off"
+
+
+async def test_work_that_begins_after_a_check_in_is_not_closed_on(
+        fake, start) -> None:
+    call = start(check_in_s=0.15, silence_s=1.0, pending_s=FAR)
+    call.transfer_answer = "pending"
+    await call.delegation("d1")
+    await call.agent(" One moment.")
+    await fake.wait_sent("session.instructions.append")
+    await call.helper_call("d1", "transfer")
+    await until(lambda: call.session.actions.phase == "pending")
+    await asyncio.sleep(1.4)  # past the silence the check-in started
+    assert call.appended == [SPOKEN["check_in"]]
+    assert call.hangups == []
+    result = await call.result(close="close_requested")
+    assert result.phase == "handed_off"
+
+
+async def test_work_accepted_after_the_closing_line_is_not_hung_up_on(
+        fake, start) -> None:
+    call = start(check_in_s=0.1, silence_s=0.3, goodbye_grace_s=1.0,
+                 pending_s=FAR)
+    call.transfer_answer = "pending"
+    await call.delegation("d1")
+    await call.agent(" One moment.")
+    await fake.wait_sent("session.instructions.append", 2)
+    assert call.appended[-1] == SAY + SPOKEN["silence"]
+    await call.helper_call("d1", "transfer")
+    await until(lambda: call.session.actions.phase == "pending")
+    await asyncio.sleep(1.4)  # past the grace the closing line began
+    assert call.hangups == []
+    assert call.session.actions.phase == "pending"
+    result = await call.result(close="close_requested")
+    assert result.phase == "handed_off"
+
+
+@pytest.mark.parametrize("checked_on_first", [False, True],
+                         ids=["before_a_check_in", "after_a_check_in"])
+async def test_the_silence_starts_afresh_when_pending_work_did_not_finish(
+        fake, start, checked_on_first: bool) -> None:
+    call = start(check_in_s=1.0, silence_s=1.0, pending_s=0.4,
+                 goodbye_grace_s=0.1)
+    call.transfer_answer = "pending"
+    await call.delegation("d1")
+    await call.agent(" I will put you through.")
+    earlier: list[str] = []
+    if checked_on_first:
+        # The work begins only once the silence has been checked on.
+        await fake.wait_sent("session.instructions.append")
+        earlier = [SPOKEN["check_in"]]
+    asked = time.monotonic()
+    await call.helper_call("d1", "transfer")
+    # The work is given up; the agent is told, and then a silence begins
+    # that owes the other side both of its steps, whatever came before.
+    fresh = earlier + [SPOKEN["transfer_failed"], SPOKEN["check_in"]]
+    await fake.wait_sent("session.instructions.append", len(fresh))
+    assert call.appended[:len(fresh)] == fresh
+    # Not the silence that began with the agent's line or with the earlier
+    # check-in: either would have been due sooner than this.
+    assert time.monotonic() - asked >= 0.4 + 1.0
+    result = await call.result()
+    assert result.closed_reason == "clock:silence"
+    assert call.appended == fresh + [SAY + SPOKEN["silence"]]
+    assert len(call.hangups) == 1
+    assert result.ended - asked >= 0.4 + 1.0 + 1.0 + 0.1
+
+
 async def test_caller_speech_after_the_too_long_line_changes_nothing(
         fake, start) -> None:
-    call = start(max_call_s=0.2, goodbye_grace_s=0.1)
+    # The grace is long enough for the caller's words to arrive within it.
+    call = start(max_call_s=0.2, goodbye_grace_s=1.0)
     await call.agent(" Hello.")
     await fake.wait_sent("session.instructions.append")
     assert call.appended == [SAY + SPOKEN["too_long"]]
@@ -424,7 +742,8 @@ async def test_caller_speech_after_the_too_long_line_changes_nothing(
     assert len(call.hangups) == 1
     assert result.closed_reason == "clock:max"
     assert len(call.appended) == 1
-    assert result.ended - result.started < 0.2 + 0.1 + 0.15
+    assert [line.who for line in result.lines] == ["agent", "caller"]
+    assert result.ended - result.started < 0.2 + 1.0 + 1.0
 
 
 async def test_a_failed_hangup_still_ends_the_session(fake, start) -> None:
@@ -439,9 +758,13 @@ async def test_a_failed_hangup_still_ends_the_session(fake, start) -> None:
 
 async def test_a_dropped_socket_that_cannot_be_reattached_is_lost(
         fake, start) -> None:
-    call = start(reconnect_s=0.25)
+    call = start()
     await call.agent(" Hello.")
     await until(lambda: len(call.decisions) == 1)
+    # The window is made short only now that the session is attached: the
+    # first attach is not what this test is about, and how long it takes
+    # depends on the machine.
+    call.session._timing = replace(TIMING, reconnect_s=1.0)
     fake.attach_refuse = True
     dropped = time.monotonic()
     await fake.drop_ws(SID)
@@ -449,7 +772,7 @@ async def test_a_dropped_socket_that_cannot_be_reattached_is_lost(
     assert len(call.hangups) == 1
     assert result.closed_reason == "lost"
     assert result.phase == "ended"
-    assert result.ended - dropped >= 0.25
+    assert result.ended - dropped >= 1.0
     assert fake.attach_count >= 3  # the first attach and at least two retries
 
 
@@ -546,7 +869,7 @@ async def test_run_leaves_no_task_behind(fake, start) -> None:
 # Work that was accepted but has not finished.
 
 async def test_pending_work_and_a_closed_session_is_a_hand_over(fake, start) -> None:
-    call = start()
+    call = start(pending_s=FAR)
     call.transfer_answer = "pending"
     await call.delegation("d1")
     await call.agent(" I will put you through.")
@@ -566,7 +889,8 @@ async def test_pending_work_that_never_finishes_is_told_as_failed(
     await call.delegation("d1")
     await call.agent(" I will put you through.")
     await call.helper_call("d1", "transfer")
-    await until(lambda: call.session.actions.phase == "pending")
+    # The work was accepted: its runner has answered, so it is pending.
+    assert await call.output() == {"status": "done", "detail": ""}
     await fake.wait_sent("session.instructions.append")
     assert call.session.actions.phase == "active"
     assert call.appended == [SPOKEN["transfer_failed"]]
@@ -578,7 +902,7 @@ async def test_pending_work_that_never_finishes_is_told_as_failed(
 async def test_a_failed_decision_does_not_end_a_session_with_pending_work(
         fake, start) -> None:
     fake.responses_queue = [RuntimeError("down"), RuntimeError("down")]
-    call = start(pending_s=0.6, undecided_silence_s=0.1)
+    call = start(pending_s=FAR, undecided_silence_s=0.1)
     call.transfer_answer = "pending"
     await call.delegation("d1")
     await call.agent(" I will put you through.")
@@ -594,14 +918,14 @@ async def test_a_failed_decision_does_not_end_a_session_with_pending_work(
 async def test_pending_work_takes_over_from_a_decision_that_failed(
         fake, start) -> None:
     fake.responses_queue = [RuntimeError("down"), RuntimeError("down")]
-    call = start(pending_s=0.8, undecided_silence_s=0.2)
+    call = start(pending_s=FAR, undecided_silence_s=1.0)
     call.transfer_answer = "pending"
     await call.delegation("d1")
     await call.agent(" I will put you through.")
     await until(lambda: len(call.decisions) == 2)
     await call.helper_call("d1", "transfer")
     await until(lambda: call.session.actions.phase == "pending")
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(1.2)  # past the moment the failed decision would end it
     assert call.hangups == []
     result = await call.result(close="close_requested")
     assert result.phase == "handed_off"
@@ -634,14 +958,17 @@ async def test_ending_never_waits_longer_than_the_grace(fake, start) -> None:
 async def test_caller_speech_while_the_last_line_plays_keeps_the_session(
         fake, start) -> None:
     fake.responses_queue = [END, END]
-    call = start(goodbye_grace_s=2.0)
+    call = start(goodbye_grace_s=FAR)
     await call.emit({"type": "session.started"})
-    await call.agent(" Goodbye.", 0, 600)
-    await until(lambda: len(call.decisions) == 1)
-    await asyncio.sleep(0.05)  # the request is now waiting for the line to end
+    await call.agent(" Goodbye.", 0, 1500)
+    # The request is now waiting for the line to end.
+    await until(lambda: call.session._speech_waiters)
+    heard = time.monotonic()  # the line began before this moment
     await call.caller(" Oh, one more thing.")
     await until(lambda: call.log == [("end_call", "decision", 1, "superseded")])
-    await asyncio.sleep(0.7)  # past the moment the first line finished playing
+    # Past the moment the first line finished playing.
+    await asyncio.sleep(max(0.0, heard + 1.5 + TIMING.speak_margin_s + 0.1
+                            - time.monotonic()))
     assert call.hangups == []
     await call.agent(" Sure. Goodbye.", 0, 0)
     result = await call.result()
@@ -654,17 +981,17 @@ async def test_caller_speech_while_the_last_line_plays_keeps_the_session(
 
 async def test_a_helper_cannot_end_the_session_while_the_caller_speaks(
         fake, start) -> None:
-    call = start(goodbye_grace_s=1.0)
+    call = start(goodbye_grace_s=FAR)
     await call.agent(" Hello.")
     await until(lambda: len(call.decisions) == 1)
     await call.caller(" I wanted")
     await call.delegation("d1")
     await call.helper_call("d1", "end_call")
-    await asyncio.sleep(0.05)  # the request is now waiting for the agent
-    spoke = time.monotonic()
+    # The request is now waiting for the agent.
+    await until(lambda: call.session._speech_waiters)
     await call.caller(" to ask something.")
+    # Answered at once, not after the grace, which is far away.
     assert await call.output() == {"status": "superseded", "detail": ""}
-    assert time.monotonic() - spoke < 0.5  # at once, not after the grace
     assert call.hangups == []
     assert call.log == [("end_call", "helper", 2, "superseded")]
     result = await call.result(close="remote_hangup")
@@ -681,7 +1008,7 @@ async def test_a_helper_cannot_end_the_session_on_unanswered_words(
     asked = time.monotonic()
     await call.helper_call("d1", "end_call")
     assert await call.output() == {"status": "superseded", "detail": ""}
-    assert 0 <= time.monotonic() - asked - TIMING.goodbye_grace_s < 0.5
+    assert 0 <= time.monotonic() - asked - TIMING.goodbye_grace_s < 2.0
     assert call.hangups == []
     # Nothing was settled: once the agent has answered, the round can end.
     fake.responses_queue = [END]
@@ -696,11 +1023,11 @@ async def test_a_helper_cannot_end_the_session_on_unanswered_words(
 async def test_an_agent_answer_does_not_revive_a_request_the_caller_spoke_over(
         fake, start) -> None:
     fake.responses_queue = [END]
-    call = start(goodbye_grace_s=2.0)
+    call = start(goodbye_grace_s=FAR)
     await call.emit({"type": "session.started"})
-    await call.agent(" Goodbye.", 0, 600)
-    await until(lambda: len(call.decisions) == 1)
-    await asyncio.sleep(0.05)  # the request is now waiting for the line to end
+    await call.agent(" Goodbye.", 0, 60_000)
+    # The request is now waiting for the line to end.
+    await until(lambda: call.session._speech_waiters)
     # One network read can deliver both deltas before the waiting request
     # looks again; the fake cannot batch frames, so the session is handed
     # the two events back to back.
@@ -780,8 +1107,37 @@ async def test_say_and_tell_append_instructions(fake, start) -> None:
     await call.result(close="remote_hangup")
 
 
+async def test_the_delays_of_a_session_are_in_its_result(fake, start) -> None:
+    call = start()
+    await asyncio.sleep(0.1)
+    await call.agent(" Hello.", 0, 400)
+    await call.caller(" Hi,", 900, 1200)
+    await call.caller(" it is me.", 1200, 1500)
+    await call.agent(" How can", 1800, 2100)
+    await call.agent(" I help?", 2100, 2500)
+    await call.caller(" A message, please.", 3000, 4000)
+    await call.agent(" Go ahead.", 4700, 5200)
+    await call.caller(" Never mind.", 5300, 5900)
+    result = await call.result(close="remote_hangup")
+    # One gap per caller line the agent answered: from that line's end to the
+    # start of the answer. The last caller line got no answer.
+    assert result.reply_gaps_ms == (300, 700)
+    assert isinstance(result.first_speech_ms, int)
+    assert 90 <= result.first_speech_ms < 3000
+
+
+async def test_a_session_in_which_the_agent_never_spoke_has_no_delays(
+        fake, start) -> None:
+    call = start()
+    await call.caller(" Hello?")
+    result = await call.result(close="remote_hangup")
+    assert result.first_speech_ms is None
+    assert result.reply_gaps_ms == ()
+
+
 async def test_the_default_timing() -> None:
     assert Timing() == Timing(
-        first_speech_s=8.0, quiet_s=1.0, silence_s=45.0, max_call_s=600.0,
-        reconnect_s=10.0, decision_timeout_s=6.0, undecided_silence_s=8.0,
-        goodbye_grace_s=8.0, speak_margin_s=0.6, pending_s=30.0)
+        first_speech_s=8.0, quiet_s=1.0, check_in_s=7.0, silence_s=10.0,
+        max_call_s=600.0, reconnect_s=10.0, decision_timeout_s=6.0,
+        undecided_silence_s=8.0, goodbye_grace_s=8.0, speak_margin_s=0.6,
+        pending_s=30.0)

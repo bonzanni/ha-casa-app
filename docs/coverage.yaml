@@ -175,62 +175,6 @@
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/log_redact.py
   doc: architecture/observability.md
-- item: casa/rootfs/opt/casa/contacts/__init__.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/carddav.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/lookup.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/notes.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/numbers.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/schema.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/service.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/store.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/sync.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/contacts/vcard.py
-  doc: architecture/contacts.md
-- item: casa/rootfs/opt/casa/live_voice/__init__.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/live_voice/actions.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/live_voice/api.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/live_voice/clock.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/live_voice/decision.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/live_voice/session.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/__init__.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/abilities.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/controller.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/policy.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/prompt.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/record.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/schema.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/service.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/settings.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/store.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/phone/webhook.py
-  doc: architecture/phone.md
-- item: casa/rootfs/opt/casa/vault_read.py
-  doc: architecture/phone.md
 - item: casa/rootfs/opt/casa/memory/__init__.py
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/browse.py
@@ -443,18 +387,6 @@
   doc: reference/operator-options.md
 - item: option:claude_oauth_token
   doc: reference/operator-options.md
-- item: option:contacts_default_region
-  doc: reference/operator-options.md
-- item: option:phone_enabled
-  doc: reference/operator-options.md
-- item: option:phone_transfer_number
-  doc: reference/operator-options.md
-- item: option:phone_owner_name
-  doc: reference/operator-options.md
-- item: option:live_voices
-  doc: reference/operator-options.md
-- item: option:live_api_host
-  doc: reference/operator-options.md
 - item: option:enable_terminal
   doc: reference/operator-options.md
 - item: option:engagement_reap_days
@@ -555,12 +487,6 @@
   doc: architecture/plugin-events.md
 - item: tool:get_item_fields
   doc: architecture/plugin-secret-exploration.md
-- item: tool:find_contact
-  doc: architecture/contacts.md
-- item: tool:refresh_contacts
-  doc: architecture/contacts.md
-- item: tool:set_contact_marks
-  doc: architecture/contacts.md
 - item: tool:get_schedule
   doc: architecture/tools-interface.md
 - item: tool:guest_access
@@ -687,8 +613,6 @@
   doc: architecture/telegram-bots.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/webhook/{name}
   doc: architecture/triggers.md
-- item: route:casa/rootfs/opt/casa/phone/service.py:POST:PHONE_WEBHOOK_PATH
-  doc: architecture/phone.md
 - item: route:casa/rootfs/opt/casa/channels/voice/channel.py:GET:VOICE_AGENT_CATALOG_PATH
   doc: architecture/voice.md
 - item: route:casa/rootfs/opt/casa/channels/voice/channel.py:GET:self._ws_path
@@ -809,18 +733,6 @@
   doc: architecture/plugins.md
 - item: env:CASA_HANDOFF_DIR
   doc: architecture/plugin-handoff.md
-- item: env:CONTACTS_DEFAULT_REGION
-  doc: reference/operator-options.md
-- item: env:PHONE_ENABLED
-  doc: reference/operator-options.md
-- item: env:PHONE_TRANSFER_NUMBER
-  doc: reference/operator-options.md
-- item: env:PHONE_OWNER_NAME
-  doc: reference/operator-options.md
-- item: env:LIVE_VOICES
-  doc: reference/operator-options.md
-- item: env:LIVE_API_HOST
-  doc: reference/operator-options.md
 - item: env:CASA_TZ
   doc: reference/operator-options.md
 - item: env:CASA_VAULT_KEY

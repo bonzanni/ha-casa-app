@@ -135,6 +135,7 @@ if bashio::config.true 'phone_enabled'; then
     export PHONE_ENABLED=true
 fi
 for _phone_opt in phone_transfer_number:PHONE_TRANSFER_NUMBER \
+        phone_line_number:PHONE_LINE_NUMBER \
         phone_owner_name:PHONE_OWNER_NAME live_voices:LIVE_VOICES \
         live_api_host:LIVE_API_HOST; do
     _phone_val="$(bashio::config "${_phone_opt%%:*}")"

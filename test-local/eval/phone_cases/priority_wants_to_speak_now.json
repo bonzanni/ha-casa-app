@@ -1,0 +1,27 @@
+{
+  "name": "priority_wants_to_speak_now",
+  "group": "transfer",
+  "caller": {
+    "known": true,
+    "priority": true,
+    "first_name": "Mara",
+    "name": "Mara Lindqvist",
+    "language": "en"
+  },
+  "transfer_level": "open",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hi Mara, you have reached the assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "Hi! Is he there? I'd really like to talk to him right now, if that's possible."
+    }
+  ],
+  "expect": {
+    "action": "transfer",
+    "outcome": "Tells Mara it is putting her through, without asking her to leave a message first."
+  }
+}

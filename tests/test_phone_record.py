@@ -23,6 +23,7 @@ from aiohttp import web
 from bus import MessageBus, MessageType
 from live_voice.api import LiveApi
 from output_boundary import WEBHOOK_DELIVER_ALWAYS_LINE, TurnScope
+from phone import controller
 from phone import prompt
 from phone import record
 from phone import service
@@ -41,8 +42,10 @@ FAILED = {"caller_name": "", "reason": "", "urgency": "normal",
           "follow_up": "none", "summary_failed": True}
 #: Every key a full record may carry.
 FULL_KEYS = {"caller_name", "reason", "urgency", "follow_up", "summary_failed",
-             "known_name", "caller_class", "language", "number_tail",
-             "returned", "outcome", "actions", "duration_s", "started_at"}
+             "known_name", "caller_class", "language", "number",
+             "returned", "outcome", "actions", "duration_s", "started_at",
+             "when"}
+NOT_DELIVERED = "The summary could not be delivered."
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +58,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv("PHONE_TRANSFER_NUMBER", raising=False)
     monkeypatch.delenv("LIVE_VOICES", raising=False)
     settings.reset()
+    # A first line that was not delivered is tried again at once here.
+    monkeypatch.setattr(service, "HEADLINE_RETRY_S", (0.01, 0.01))
     yield
     settings.reset()
 
@@ -199,13 +204,13 @@ async def test_write_failures_give_the_failed_shape(fake, http) -> None:
     assert len(responses(fake)) == sent          # nothing asked for nothing
 
 
-# --- full ------------------------------------------------------------------------
+# --- present -------------------------------------------------------------------
 
-def test_full_adds_what_casa_knows_and_never_the_number() -> None:
-    full = record.full(call_row(), written())
+def test_present_adds_what_casa_knows_with_the_full_number() -> None:
+    full = record.present(call_row(), written())
     assert set(full) <= FULL_KEYS
-    assert NUMBER not in json.dumps(full) and NUMBER[1:] not in json.dumps(full)
-    assert full["number_tail"] == "5678"
+    assert full["number"] == NUMBER and "number_tail" not in full
+    assert full["when"] == controller.when_words(1000.0)
     assert full["known_name"] == "Ann Example"
     assert full["caller_class"] == "known" and full["language"] == "nl"
     assert full["returned"] is False
@@ -217,11 +222,27 @@ def test_full_adds_what_casa_knows_and_never_the_number() -> None:
     assert {k: full[k] for k in written()} == written()
 
 
-def test_full_of_a_returned_call_has_no_number_tail() -> None:
-    full = record.full(call_row(returned=1, number=LINE, name=""), FAILED)
-    assert full["number_tail"] == "" and full["returned"] is True
+def test_present_of_a_returned_or_withheld_call_has_no_number() -> None:
+    full = record.present(call_row(returned=1, number=LINE, name=""), FAILED)
+    assert full["number"] == "" and full["returned"] is True
     assert full["summary_failed"] is True
     assert set(full) <= FULL_KEYS
+    assert record.present(call_row(number=""), written())["number"] == ""
+
+
+def test_present_of_a_record_stored_by_an_earlier_version() -> None:
+    """Such a record holds what was added from the row then (the number's
+    last four digits, no number): only its written fields are kept, the rest
+    comes from the row now."""
+    old = {**written(reason="the boiler"), "number_tail": "5678",
+           "known_name": "Someone Else", "duration_s": 999,
+           "started_at": "1970-01-01T00:00:00+00:00"}
+    full = record.present(call_row(), old)
+    assert set(full) <= FULL_KEYS and "number_tail" not in full
+    assert full["number"] == NUMBER
+    assert full["when"] == controller.when_words(1000.0)
+    assert full["reason"] == "the boiler"
+    assert full["known_name"] == "Ann Example" and full["duration_s"] == 43
 
 
 # --- hand_off ------------------------------------------------------------------
@@ -229,7 +250,7 @@ def test_full_of_a_returned_call_has_no_number_tail() -> None:
 async def test_hand_off_builds_the_restricted_operator_turn() -> None:
     from agent import _delivers_to_operator
     bus = assistant_bus()
-    rec = record.full(call_row(), written())
+    rec = record.present(call_row(), written())
     assert await record.hand_off(bus, rec, route_for=lambda role: 4242) \
         == "accepted"
     [msg] = received(bus)
@@ -247,6 +268,9 @@ async def test_hand_off_builds_the_restricted_operator_turn() -> None:
     assert msg.trusted_user_origin.user_peer == "webhook:casa-phone"
     assert msg.content.startswith(
         "A phone call to the operator's line has just ended.")
+    # The operator's first line already said who, which number and when.
+    assert "already been shown who called, from which number and when" \
+        in msg.content
     assert msg.content.endswith("\n\n" + WEBHOOK_DELIVER_ALWAYS_LINE)
     assert record_in(msg) == rec
     scope = scope_of(msg)
@@ -257,7 +281,7 @@ async def test_hand_off_builds_the_restricted_operator_turn() -> None:
 
 async def test_hand_off_without_route_for_and_each_turn_is_fresh() -> None:
     bus = assistant_bus()
-    rec = record.full(call_row(), written())
+    rec = record.present(call_row(), written())
     await record.hand_off(bus, rec)
     await record.hand_off(bus, rec)
     first, second = received(bus)
@@ -267,7 +291,7 @@ async def test_hand_off_without_route_for_and_each_turn_is_fresh() -> None:
 
 async def test_hand_off_reports_a_missing_assistant() -> None:
     bus = MessageBus()
-    assert await record.hand_off(bus, record.full(call_row(), FAILED)) \
+    assert await record.hand_off(bus, record.present(call_row(), FAILED)) \
         == "no_target"
 
 
@@ -297,12 +321,27 @@ async def test_no_trigger_can_take_the_reserved_name() -> None:
 # --- the service -----------------------------------------------------------------
 
 class Operator:
+    """The operator's chat: every line sent, what the send answers (the
+    next of ``answers`` while there are any, else ``answer``), the lines
+    that were delivered, and how many hand-offs the assistant had been given
+    when each line went."""
+
     def __init__(self) -> None:
         self.lines: list[str] = []
+        self.delivered: list[str] = []
+        self.answer = True
+        self.answers: list[bool] = []
+        self.bus: MessageBus | None = None
+        self.handed_before: list[int] = []
 
     async def __call__(self, text) -> bool:
         self.lines.append(str(text))
-        return True
+        if self.bus is not None and "assistant" in self.bus.queues:
+            self.handed_before.append(self.bus.queues["assistant"].qsize())
+        ok = self.answers.pop(0) if self.answers else self.answer
+        if ok:
+            self.delivered.append(str(text))
+        return ok
 
 
 @pytest.fixture
@@ -312,6 +351,7 @@ async def line(fake, http, phone_store):
     op = Operator()
     vault = {"credential": KEY, "webhook_secret": "whsec_x"}
     bus = assistant_bus()
+    op.bus = bus
 
     def configure(*, with_bus=True, values=None) -> None:
         found = vault if values is None else values
@@ -330,14 +370,15 @@ async def line(fake, http, phone_store):
 
 def ended_call(store: PhoneStore, cid: str, *, transcript: str | None,
                ended_at: float = 130.0, record_value=None,
-               delivered: bool = False) -> None:
+               delivered: bool = False,
+               outcome: str = "caller_hung_up") -> None:
     with store.transaction(write=True) as conn:
         pstore.insert_call(conn, {
             "id": cid, "session_id": f"live_{cid}", "started_at":
                 ended_at - 30.0, "number": NUMBER, "name": "",
             "caller_class": "unknown", "language": "nl", "returned": 0})
         pstore.finish_call(conn, cid, ended_at=ended_at,
-                           outcome="caller_hung_up",
+                           outcome=outcome,
                            actions=[{"ability": "take_message",
                                      "status": "done"}],
                            record=record_value)
@@ -352,6 +393,12 @@ def row(store: PhoneStore, cid: str) -> dict:
         return pstore.get_call(conn, cid)
 
 
+def opens(ended_at: float = 130.0) -> str:
+    """How the headline of an :func:`ended_call` row begins."""
+    return (f"Unknown caller · {NUMBER} · "
+            f"{controller.when_words(ended_at - 30.0)} · ")
+
+
 async def test_finish_hands_the_record_to_the_assistant(
         line, fake, phone_store) -> None:
     configure, op, bus = line
@@ -361,12 +408,18 @@ async def test_finish_hands_the_record_to_the_assistant(
     [msg] = received(bus)
     rec = record_in(msg)
     assert rec["reason"] == "about the parcel"
-    assert rec["number_tail"] == "5678" and rec["duration_s"] == 30
+    assert rec["number"] == NUMBER and rec["duration_s"] == 30
+    assert rec["when"] == controller.when_words(100.0)
     assert responses(fake)[0]["model"] == \
         settings.DEFAULTS["record_model"]
-    assert op.lines == []
+    # Casa's own first line went before the hand-off.
+    [headline] = op.lines
+    assert headline == opens() + "the caller hung up"
+    assert op.handed_before == [0]
     stored = row(phone_store, "c1")
-    assert stored["delivered"] == 1 and stored["record"] == rec
+    assert stored["delivered"] == 1 and stored["headline_sent"] == 1
+    # Only what the model wrote is stored; the rest is the row's.
+    assert stored["record"] == written()
     # What the call itself wrote is kept.
     assert stored["outcome"] == "caller_hung_up"
     assert stored["actions"] == [{"ability": "take_message",
@@ -402,10 +455,9 @@ async def test_finish_without_the_assistant_sends_the_fallback_line(
     ended_call(phone_store, "c1", transcript="Caller: hi")
     fake.responses_queue = [answer(written())]
     await service.finish("c1")
-    assert len(op.lines) == 1
-    assert "5678" in op.lines[0] and NUMBER not in op.lines[0]
+    assert op.lines == [opens() + "the caller hung up", NOT_DELIVERED]
     stored = row(phone_store, "c1")
-    assert stored["delivered"] == 0
+    assert stored["delivered"] == 0 and stored["headline_sent"] == 1
     assert stored["record"]["reason"] == "about the parcel"
 
 
@@ -415,7 +467,8 @@ async def test_finish_without_a_bus_sends_the_fallback_line(
     configure(with_bus=False)
     ended_call(phone_store, "c1", transcript=None)
     await service.finish("c1")
-    assert len(op.lines) == 1 and row(phone_store, "c1")["delivered"] == 0
+    assert op.lines == [opens() + "the caller hung up", NOT_DELIVERED]
+    assert row(phone_store, "c1")["delivered"] == 0
 
 
 async def test_finish_without_a_key_still_hands_on_what_casa_knows(
@@ -427,16 +480,16 @@ async def test_finish_without_a_key_still_hands_on_what_casa_knows(
     assert responses(fake) == []
     [msg] = received(bus)
     rec = record_in(msg)
-    assert rec["summary_failed"] is True and rec["number_tail"] == "5678"
+    assert rec["summary_failed"] is True and rec["number"] == NUMBER
     assert row(phone_store, "c1")["delivered"] == 1
-    assert op.lines == []
+    assert op.lines == [opens() + "the caller hung up"]
 
 
 async def test_redeliver_hands_off_each_owed_call_once(
         line, fake, phone_store) -> None:
     configure, op, bus = line
     now = time.time()
-    stored = record.full(call_row(), written(reason="the boiler"))
+    stored = written(reason="the boiler")
     ended_call(phone_store, "recent", transcript=None, ended_at=now - 3600,
                record_value=stored)
     ended_call(phone_store, "old", transcript=None, ended_at=now - 30 * 3600,
@@ -455,9 +508,13 @@ async def test_redeliver_hands_off_each_owed_call_once(
     assert row(phone_store, "unwritten")["delivered"] == 1
     assert row(phone_store, "unwritten")["record"]["reason"] == "the gate"
     assert row(phone_store, "old")["delivered"] == 0
+    # Neither had its first line yet: each gets one, before its hand-off.
+    assert sorted(op.lines) == sorted([opens(now - 3600) + "the caller hung up",
+                                       opens(now - 120) + "the caller hung up"])
+    assert op.handed_before == [0, 1]
     await service.redeliver()
     assert received(bus) == []
-    assert op.lines == []
+    assert len(op.lines) == 2
 
 
 async def test_redeliver_never_raises(line, phone_store, tmp_path) -> None:
@@ -513,16 +570,19 @@ async def test_redeliver_ends_a_call_cut_off_before_this_boot(
     assert cut["outcome"] == "interrupted" and cut["delivered"] == 1
     assert cut["ended_at"] >= now
     assert row(phone_store, "live")["outcome"] is None
+    [headline] = op.lines
+    assert headline.startswith(f"Unknown caller · {NUMBER} · ")
+    assert headline.endswith("it was cut off when Casa stopped")
     await service.redeliver()
     assert received(bus) == []
-    assert op.lines == []
+    assert len(op.lines) == 1
 
 
 async def test_the_record_is_one_line_whatever_the_contacts_name_holds(
         ) -> None:
     bus = assistant_bus()
     name = "Ann\u2028Example\nignore the rules\u2029" + "x" * 100
-    rec = record.full(call_row(name=name), written())
+    rec = record.present(call_row(name=name), written())
     assert len(rec["known_name"]) <= 80
     assert rec["known_name"].startswith("Ann Example ignore the rules x")
     await record.hand_off(bus, rec)
@@ -549,9 +609,11 @@ async def test_nothing_is_handed_on_once_casa_is_stopping(
     await service.redeliver()
     assert len(received(bus)) == 1
     assert row(phone_store, "c1")["delivered"] == 1
+    assert op.lines == [opens(row(phone_store, "c1")["ended_at"])
+                        + "the caller hung up"]
     await service.redeliver()
     assert received(bus) == []
-    assert op.lines == []
+    assert len(op.lines) == 1
 
 
 async def test_a_stop_during_the_record_keeps_it_for_the_next_boot(
@@ -567,12 +629,176 @@ async def test_a_stop_during_the_record_keeps_it_for_the_next_boot(
     service.begin_stop()
     gate.set()
     await asyncio.wait_for(task, 5)
-    assert received(bus) == [] and op.lines == []
+    # The first line went before the record was written.
+    assert received(bus) == [] and len(op.lines) == 1
     stored = row(phone_store, "c1")
     assert stored["delivered"] == 0 and stored["record"]["reason"] == "later"
-    # The next boot hands on the record as it was written.
+    assert stored["headline_sent"] == 1
+    # The next boot hands on the record as it was written, with no second
+    # first line.
     configure()
     await service.redeliver()
     [msg] = received(bus)
     assert record_in(msg)["reason"] == "later"
     assert len(responses(fake)) == 1
+    assert len(op.lines) == 1
+
+
+# --- the first line --------------------------------------------------------------
+
+@pytest.mark.parametrize("outcome, words", [
+    ("caller_hung_up", "the caller hung up"),
+    ("ended_by_casa", "the assistant ended it"),
+    ("transferred", "it was put through to you"),
+    ("accept_failed", "it could not be answered"),
+    ("interrupted", "it was cut off when Casa stopped"),
+])
+async def test_every_ended_call_gets_one_first_line_before_its_record(
+        line, fake, phone_store, outcome, words) -> None:
+    configure, op, bus = line
+    ended_call(phone_store, "c1", transcript="Caller: hi", outcome=outcome)
+    fake.responses_queue = [answer(written())]
+    await service.finish("c1")
+    assert op.lines == [opens() + words]
+    assert op.handed_before == [0]
+    assert len(received(bus)) == 1
+    # Never twice for one call.
+    await service.finish("c1")
+    assert len(op.lines) == 1
+
+
+async def test_the_first_line_goes_even_when_the_record_fails(
+        line, fake, phone_store) -> None:
+    configure, op, bus = line
+    fake.status_for["responses"] = 500
+    ended_call(phone_store, "c1", transcript="Caller: hi")
+    await service.finish("c1")
+    assert op.lines == [opens() + "the caller hung up"]
+    [msg] = received(bus)
+    assert record_in(msg)["summary_failed"] is True
+
+
+async def test_a_first_line_not_delivered_holds_the_hand_off_for_a_boot(
+        line, fake, phone_store) -> None:
+    configure, op, bus = line
+    op.answer = False
+    ended = time.time() - 60
+    ended_call(phone_store, "c1", transcript="Caller: hi", ended_at=ended)
+    fake.responses_queue = [answer(written())]
+    await service.finish("c1")
+    # Tried three times; no hand-off without the first line; the record is
+    # written and kept.
+    assert received(bus) == []
+    assert op.lines == [opens(ended) + "the caller hung up"] * 3
+    assert op.delivered == []
+    stored = row(phone_store, "c1")
+    assert stored["delivered"] == 0 and stored["headline_sent"] == 0
+    assert stored["record"] == written()
+    # The channel is back at the next boot: one first line, then the record.
+    op.answer = True
+    op.lines.clear()
+    op.handed_before.clear()
+    await service.redeliver()
+    assert op.lines == [opens(stored["ended_at"]) + "the caller hung up"]
+    assert op.handed_before == [0]
+    [msg] = received(bus)
+    assert record_in(msg)["reason"] == "about the parcel"
+    assert len(responses(fake)) == 1
+    stored = row(phone_store, "c1")
+    assert stored["delivered"] == 1 and stored["headline_sent"] == 1
+
+
+async def test_a_call_recorded_by_an_earlier_version_is_handed_on_in_full(
+        fake, http, tmp_path) -> None:
+    """A store at schema v1, with an ended call whose stored record holds
+    the number's last four digits: the boot sends its first line, then hands
+    it on with the full number and the time from its row; once."""
+    import sqlite3
+
+    from phone.schema import MIGRATIONS
+    directory = tmp_path / "phone"
+    directory.mkdir(mode=0o700)
+    conn = sqlite3.connect(directory / "phone.db", isolation_level=None)
+    for statement in MIGRATIONS[1]:
+        conn.execute(statement)
+    conn.execute("PRAGMA user_version = 1")
+    ended = time.time() - 600
+    old = {**written(reason="the boiler"), "known_name": "", "number_tail":
+           "5678", "caller_class": "unknown", "language": "nl",
+           "returned": False, "outcome": "caller_hung_up", "actions": [],
+           "duration_s": 30, "started_at": "x"}
+    conn.execute(
+        "INSERT INTO calls (id, session_id, started_at, ended_at, number, "
+        "name, caller_class, language, returned, outcome, actions, record, "
+        "delivered) VALUES (?, ?, ?, ?, ?, '', 'unknown', 'nl', 0, "
+        "'caller_hung_up', '[]', ?, 0)",
+        ("c1", "live_c1", ended - 30, ended, NUMBER, json.dumps(old)))
+    conn.close()
+    store = PhoneStore(str(directory))
+    assert store.open(), store.unavailable_reason
+    op = Operator()
+    bus = assistant_bus()
+    op.bus = bus
+    service.configure(store=store, contacts=lambda: None, notify=op,
+                      read_secret=lambda title, field: KEY, http=http,
+                      base_url=fake.base_url, bus=bus)
+    try:
+        await service.redeliver()
+        assert op.lines == [opens(ended) + "the caller hung up"]
+        assert op.handed_before == [0]
+        [msg] = received(bus)
+        rec = record_in(msg)
+        assert rec["number"] == NUMBER and "number_tail" not in rec
+        assert rec["when"] == controller.when_words(ended - 30)
+        assert rec["reason"] == "the boiler"
+        assert responses(fake) == []
+        await service.redeliver()
+        assert received(bus) == [] and len(op.lines) == 1
+    finally:
+        await service.stop()
+
+
+async def test_a_first_line_delivered_on_a_second_try_is_sent_once(
+        line, fake, phone_store) -> None:
+    configure, op, bus = line
+    op.answers = [False]
+    ended_call(phone_store, "c1", transcript="Caller: hi")
+    fake.responses_queue = [answer(written())]
+    await service.finish("c1")
+    first = opens() + "the caller hung up"
+    assert op.lines == [first, first]
+    assert op.delivered == [first]
+    assert op.handed_before == [0, 0]
+    [msg] = received(bus)
+    assert record_in(msg)["reason"] == "about the parcel"
+    stored = row(phone_store, "c1")
+    assert stored["headline_sent"] == 1 and stored["delivered"] == 1
+
+
+async def test_the_stop_ends_the_wait_between_two_tries(
+        line, fake, phone_store, monkeypatch) -> None:
+    configure, op, bus = line
+    monkeypatch.setattr(service, "HEADLINE_RETRY_S", (30.0, 30.0))
+    op.answer = False
+    ended = time.time() - 60
+    ended_call(phone_store, "c1", transcript="Caller: hi", ended_at=ended)
+    task = asyncio.create_task(service.finish("c1"))
+    while not op.lines:
+        await asyncio.sleep(0.01)
+    service.begin_stop()
+    # The wait ends at once and nothing more is sent.
+    await asyncio.wait_for(task, 1.0)
+    assert len(op.lines) == 1 and op.delivered == []
+    assert received(bus) == [] and responses(fake) == []
+    stored = row(phone_store, "c1")
+    assert stored["delivered"] == 0 and stored["headline_sent"] == 0
+    # The next boot: one first line, then the record.
+    configure()
+    op.answer = True
+    op.lines.clear()
+    op.handed_before.clear()
+    fake.responses_queue = [answer(written())]
+    await service.redeliver()
+    assert op.delivered == [opens(ended) + "the caller hung up"]
+    assert op.handed_before == [0]
+    assert len(received(bus)) == 1

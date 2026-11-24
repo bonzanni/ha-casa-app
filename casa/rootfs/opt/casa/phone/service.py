@@ -2,19 +2,35 @@
 two callbacks, the call slots, the record of an ended call and its hand-off
 to the assistant (:mod:`phone.record`), the stop and the nightly purge.
 
-The API key and the webhook signing secret are the fields
-:data:`KEY_FIELD` and :data:`SECRET_FIELD` of the vault item
-:data:`ITEM_TITLE`, read through the blocking ``op`` front in a worker thread,
-never on the event loop. A value read is kept in memory for
+The API key and the webhook signing secret are the values
+:data:`KEY_FIELD` and :data:`SECRET_FIELD` of the login :data:`LOGIN` of
+:mod:`logins`: the vault item chosen for it, or else the one under its
+default title. They are read through the blocking ``op`` front in a worker
+thread, never on the event loop. A value read is kept in memory for
 :data:`CACHE_S`, so a call does not wait on the vault; a missing value is
-never kept, and concurrent readers of one field share one read.
+never kept, and concurrent readers of one value share one read. What is kept
+is kept per vault item, and a choice of item (a new one, or the same one
+taken again) drops all of it, so after a choice a key and a secret never
+come from two different items. Each value is kept on its own, so under the
+default title an item replaced in the vault can serve the two from different
+items until :data:`CACHE_S` runs out. A read already under way when the choice is made is thrown
+away when it ends and the value is read once more.
+
+When a call has ended, Casa's own first line about it
+(``phone.controller.headline``: who, the number, when, how it ended) is sent
+to the operator before the record is written, and the record is handed to
+the assistant only once that line was delivered. A line that was not is
+tried again after each of :data:`HEADLINE_RETRY_S`, in the same task and
+never once the stop has begun; one that still was not leaves the call
+undelivered, for :func:`redeliver`.
 
 At most :data:`MAX_CALLS` calls run at once. The webhook's callback
 (:func:`on_incoming`) is synchronous: it reserves a slot and starts one task,
 which reads the key and runs the call, or, when both slots are taken, only
 answers busy. Without a key nothing at all is sent to the provider (the
-caller falls to the carrier's fallback) and the operator is told, at most
-once an hour.
+caller falls to the carrier's fallback); without a signing secret the
+webhook answers 503. Either way the operator is told what is wrong with the
+login (:meth:`logins.Check.sentence`), at most once an hour.
 """
 from __future__ import annotations
 
@@ -26,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import aiohttp
 from aiohttp import web
 
-import vault_read
+import logins
 from contacts import service as contacts_service
 from contacts.store import ContactsStore
 from live_voice.api import ApiError, LiveApi
@@ -46,14 +62,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ITEM_TITLE = "OpenAI Voice"
+#: The login of :mod:`logins` that holds the key and the signing secret.
+LOGIN = "openai_voice"
 KEY_FIELD = "credential"
 SECRET_FIELD = "webhook_secret"
 #: Seconds a value read from the vault is kept in memory.
 CACHE_S = 600.0
 MAX_CALLS = 2
-#: The shortest time between two missing-key lines to the operator.
-MISSING_KEY_EVERY_S = 3600.0
+#: The shortest time between two lines to the operator about a login that
+#: cannot be read.
+MISSING_EVERY_S = 3600.0
 #: How long the stop waits for the hung-up calls to end, then for the tasks
 #: it cancels after that.
 STOP_WAIT_S = 5.0
@@ -62,22 +80,51 @@ RATE_PER_MIN = 30
 #: How long after its end an undelivered call is still handed on at a boot.
 REDELIVER_WITHIN_S = 24 * 3600.0
 
-MISSING_KEY_LINE = (f"A phone call came in but could not be answered: the "
-                    f"'{ITEM_TITLE}' item with the API key is not in the "
-                    f"vault.")
+#: How the operator's line opens, and what it says when the check itself
+#: finds nothing wrong (the read failed for a moment).
+NO_KEY_LINE = "A phone call came in but could not be answered."
+NO_KEY_UNKNOWN = "The API key could not be read from the vault."
+NO_SECRET_LINE = "The phone line cannot check incoming calls."
+NO_SECRET_UNKNOWN = ("The webhook signing secret could not be read from the "
+                     "vault.")
+#: What follows the first line about a call whose record could not be handed
+#: to the assistant.
+NOT_DELIVERED = "The summary could not be delivered."
+#: Seconds to wait before each further try of a first line that was not
+#: delivered.
+HEADLINE_RETRY_S: tuple[float, ...] = (20.0, 120.0)
+
+
+def _read_login(item: str, field: str) -> str | None:
+    """The value *field* of the login in the vault item *item*. Blocking."""
+    return logins.read_from(LOGIN, item, field)
+
+
+def _check_login() -> logins.Check:
+    """What is wrong with the login, if anything. Blocking."""
+    return logins.check(LOGIN)
+
 
 _store: PhoneStore | None = None
 _contacts: Callable[[], ContactsStore | None] = lambda: None
 _notify: Notify | None = None
 _read_secret: Callable[[str, str], str | None] | None = None
+_check: Callable[[], logins.Check] = _check_login
 _http: aiohttp.ClientSession | None = None
 _timing = Timing()
 _clock: Callable[[], float] = time.monotonic
+#: Wall-clock time, for the day a first line's time is told against.
+_now: Callable[[], float] = time.time
 _base_url = ""
-#: field -> (value, monotonic expiry)
-_cache: dict[str, tuple[str, float]] = {}
-#: field -> the read in flight
-_reading: dict[str, asyncio.Future] = {}
+#: (vault item: the chosen id or the default title, field)
+#: -> (value, monotonic expiry)
+_cache: dict[tuple[str, str], tuple[str, float]] = {}
+#: (vault item, field) -> the read in flight
+_reading: dict[tuple[str, str], asyncio.Future] = {}
+#: Counts the choices of a vault item for the login. A read belongs to the
+#: choice it began under, and its value is used only while that choice is
+#: still the one in force.
+_generation = 0
 #: session id -> its client once the call has one; a key here holds a slot.
 _running: dict[str, LiveApi | None] = {}
 _tasks: set[asyncio.Task] = set()
@@ -86,6 +133,8 @@ _call_tasks: set[asyncio.Task] = set()
 #: True from :func:`begin_stop` (or :func:`stop`): no call is admitted or
 #: accepted, and no record is handed on, any more.
 _stopping = False
+#: Set with :data:`_stopping`, so a wait between two tries ends at once.
+_stop_signal = asyncio.Event()
 #: The ids of the call rows this process wrote that have no outcome yet: a
 #: row with no outcome that is not among them was cut off by an earlier Casa.
 _ours: set[str] = set()
@@ -104,8 +153,8 @@ _finishing: set[str] = set()
 def configure(*, store: PhoneStore | None,
               contacts: Callable[[], ContactsStore | None],
               notify: Notify | None,
-              read_secret: Callable[[str, str], str | None]
-              = vault_read.read_field,
+              read_secret: Callable[[str, str], str | None] = _read_login,
+              check: Callable[[], logins.Check] = _check_login,
               http: aiohttp.ClientSession,
               timing: Timing = Timing(),
               clock: Callable[[], float] = time.monotonic,
@@ -115,19 +164,25 @@ def configure(*, store: PhoneStore | None,
     """Set up the service. ``http`` is the one client session of the phone
     line; :func:`stop` closes it. ``bus`` and ``route_for`` (the Telegram
     transport's, when Telegram is configured) carry an ended call's record to
-    the assistant; without a bus every ended call gets only the fallback
-    line. ``base_url`` overrides the API's address (tests)."""
-    global _store, _contacts, _notify, _read_secret, _http, _timing
+    the assistant; without a bus every ended call gets only its first line
+    and :data:`NOT_DELIVERED`. ``read_secret`` reads one value of the login
+    from a vault item and ``check`` says what is wrong with the login; both
+    are blocking.
+    ``base_url`` overrides the API's address (tests)."""
+    global _store, _contacts, _notify, _read_secret, _check, _http, _timing
     global _clock, _base_url, _missing_told_at, _bus, _route_for
-    global _stopping
+    global _stopping, _stop_signal
     _store, _contacts, _notify, _read_secret = store, contacts, notify, \
         read_secret
+    _check = check
+    logins.on_change(LOGIN, _login_changed)
     _http, _timing, _clock, _base_url = http, timing, clock, base_url
     _bus, _route_for = bus, route_for
     _cache.clear()
     _reading.clear()
     _missing_told_at = None
     _stopping = False
+    _stop_signal = asyncio.Event()
     _ours.clear()
     _accepted.clear()
     _cut.clear()
@@ -137,33 +192,65 @@ def enabled() -> bool:
     return settings.options().enabled
 
 
+def active_store() -> PhoneStore | None:
+    """The configured store while it is available; otherwise None."""
+    store = _store
+    return store if store is not None and store.available else None
+
+
 # --- the vault ---------------------------------------------------------------
 
-async def _fetch(field: str) -> str | None:
+def _login_changed() -> None:
+    """A vault item was chosen for the login (another one, or the same one
+    again, whose values may be new), or the choice was dropped: nothing read
+    so far is used again, a read in flight is no longer joined, and what
+    such a read finds is thrown away when it ends."""
+    global _generation
+    _generation += 1
+    _cache.clear()
+    _reading.clear()
+
+
+async def _fetch(item: str, field: str,
+                 generation: int) -> tuple[str | None, bool]:
+    """Read *field* from *item* for a reader that began under choice number
+    *generation*: ``(value, True)``, or ``(None, False)`` when the login was
+    chosen again while the vault was read. Such a value is neither kept nor
+    handed on: it may be the one the new choice replaced."""
     read = _read_secret
     if read is None:
-        return None
+        return None, True
     try:
-        value = await asyncio.to_thread(read, ITEM_TITLE, field)
+        value = await asyncio.to_thread(read, item, field)
     except Exception:  # noqa: BLE001 — an unreadable value is a missing one
-        logger.warning("phone: %s of %r not read", field, ITEM_TITLE,
-                       exc_info=True)
+        logger.warning("phone: %s of the vault item %r not read", field,
+                       item, exc_info=True)
         value = None
+    if generation != _generation:
+        return None, False
     if value:
-        _cache[field] = (value, _clock() + CACHE_S)
-    return value or None
+        _cache[(item, field)] = (value, _clock() + CACHE_S)
+    return value or None, True
 
 
 async def _field(field: str) -> str | None:
-    hit = _cache.get(field)
-    if hit is not None and _clock() < hit[1]:
-        return hit[0]
-    reading = _reading.get(field)
-    if reading is None or reading.done():
-        reading = asyncio.ensure_future(_fetch(field))
-        _reading[field] = reading
-    # A reader that gives up does not cancel the read the others share.
-    return await asyncio.shield(reading)
+    # The read, and one more when the login was chosen again meanwhile. A
+    # second read that is overtaken as well gives nothing: never a value
+    # read under a choice that no longer holds, and never a loop.
+    for _attempt in range(2):
+        slot = (logins.selection(LOGIN), field)
+        hit = _cache.get(slot)
+        if hit is not None and _clock() < hit[1]:
+            return hit[0]
+        reading = _reading.get(slot)
+        if reading is None or reading.done():
+            reading = asyncio.ensure_future(_fetch(*slot, _generation))
+            _reading[slot] = reading
+        # A reader that gives up does not cancel the read the others share.
+        value, current = await asyncio.shield(reading)
+        if current:
+            return value
+    return None
 
 
 async def key() -> str | None:
@@ -177,13 +264,6 @@ async def secret() -> str | None:
 
 
 # --- lines to the operator --------------------------------------------------
-
-def fallback_line(row: dict) -> str:
-    """The operator's line about an ended call, from its row: who (the known
-    name, the number's last four digits or a withheld number), the class,
-    the outcome and the duration."""
-    return controller.describe(row)
-
 
 async def _send(text: str) -> bool:
     """One line to the operator; True when it was delivered."""
@@ -201,19 +281,43 @@ async def _send(text: str) -> bool:
     return False
 
 
-async def _tell_missing_key() -> None:
+async def _login_sentence() -> str:
+    """What is wrong with the login, for the operator; ``""`` when the
+    check finds nothing wrong or cannot be made."""
+    try:
+        return (await asyncio.to_thread(_check)).sentence()
+    except Exception:  # noqa: BLE001 — the line is still sent without it
+        logger.warning("phone: the login could not be checked", exc_info=True)
+        return ""
+
+
+async def _tell_missing(opening: str, unknown: str) -> None:
+    """Tell the operator that a value of the login could not be read:
+    *opening*, then what is wrong with the login (*unknown* when the check
+    does not say). At most one such line every :data:`MISSING_EVERY_S`."""
     global _missing_told_at
     now = _clock()
     before = _missing_told_at
-    if before is not None and now - before < MISSING_KEY_EVERY_S:
+    if before is not None and now - before < MISSING_EVERY_S:
         return
-    # Taken before the send, so a call arriving meanwhile sends no second
-    # line; given back when the line did not go, so the next call tries.
+    # Taken before the check and the send, so a call arriving meanwhile
+    # sends no second line; given back when the line did not go, so the
+    # next call tries.
     _missing_told_at = now
-    logger.warning("phone: a call came in and the vault item %r has no %s; "
-                   "it was not answered", ITEM_TITLE, KEY_FIELD)
-    if not await _send(MISSING_KEY_LINE) and _missing_told_at == now:
+    line = f"{opening} {await _login_sentence() or unknown}"
+    logger.warning("phone: %s", line)
+    if not await _send(line) and _missing_told_at == now:
         _missing_told_at = before
+
+
+async def _webhook_secret() -> str | None:
+    """The signing secret, for the webhook. With none the webhook answers
+    its own 503, and the operator is told what is wrong with the login."""
+    value = await secret()
+    if not value and not _stopping:
+        _start(_tell_missing(NO_SECRET_LINE, NO_SECRET_UNKNOWN),
+               "phone missing secret")
+    return value
 
 
 async def _written(transcript: str | None) -> dict:
@@ -255,6 +359,45 @@ async def _deliver(store: PhoneStore, call_id: str, rec: dict) -> bool:
     return True
 
 
+async def _stopped_within(seconds: float) -> bool:
+    """Wait *seconds*, or less when the stop begins; True once it has."""
+    try:
+        await asyncio.wait_for(_stop_signal.wait(), seconds)
+    except asyncio.TimeoutError:
+        pass
+    return _stopping
+
+
+async def _headline(store: PhoneStore, row: dict) -> bool:
+    """Send the call's first line to the operator, trying again after each
+    of :data:`HEADLINE_RETRY_S` while it is not delivered; True when it was.
+    Nothing is sent once the stop has begun. The call is then marked (a
+    failed mark is only logged: the line has gone, and the next boot may
+    send it once more)."""
+    for wait in (0.0, *HEADLINE_RETRY_S):
+        if wait and await _stopped_within(wait):
+            return False
+        if _stopping:
+            return False
+        # Built at each try: a try after midnight dates the time.
+        if await _send(controller.headline(row, now=_now())):
+            break
+        logger.info("phone: the first line of call %s was not delivered",
+                    row["id"])
+    else:
+        return False
+
+    def mark() -> None:
+        with store.transaction(write=True) as conn:
+            pstore.mark_headline_sent(conn, row["id"])
+    try:
+        await asyncio.to_thread(mark)
+    except Exception:  # noqa: BLE001 — the line already reached the operator
+        logger.warning("phone: the first line of call %s was sent but not "
+                       "marked", row["id"], exc_info=True)
+    return True
+
+
 async def _finish(call_id: str, *, again: bool) -> None:
     store = _store
     if store is None or not store.available:
@@ -275,32 +418,44 @@ async def _finish(call_id: str, *, again: bool) -> None:
         return
     if row["delivered"]:
         return
+    # The first line goes before the record is written, so a record that
+    # fails is still announced; the assistant, told the operator has seen
+    # it, is given the record only once it was delivered.
+    told_now = not row.get("headline_sent") and await _headline(store, row)
+    told = told_now or bool(row.get("headline_sent"))
+    if not told and _stopping:
+        logger.info("phone: call %s is handed on by the next boot", call_id)
+        return
     # At a boot, a record written before the stop is handed on as it is.
     stored = again and isinstance(row.get("record"), dict)
     try:
         if stored:
-            rec = row["record"]
+            written = row["record"]
         else:
-            rec = precord.full(row, await _written(transcript))
+            written = await _written(transcript)
 
             def keep() -> None:
                 with store.transaction(write=True) as conn:
-                    pstore.set_record(conn, call_id, rec)
+                    pstore.set_record(conn, call_id, written)
             await asyncio.to_thread(keep)
+        if not told:
+            logger.warning("phone: call %s is not handed on: its first line "
+                           "did not reach the operator", call_id)
+            return
         if _stopping:
             logger.info("phone: call %s is handed on by the next boot",
                         call_id)
             return
         # Nothing is awaited between the check above and the hand-off.
-        if await _deliver(store, call_id, rec):
+        if await _deliver(store, call_id, precord.present(row, written)):
             return
-    except Exception:  # noqa: BLE001 — the fallback line below
+    except Exception:  # noqa: BLE001 — the note below
         logger.warning("phone: call %s was not handed on", call_id,
                        exc_info=True)
-    # The operator already had a line about a stored record when it failed
-    # to go on the first time.
-    if not stored:
-        await _send(fallback_line(row))
+    # The operator already had the note about a stored record when it failed
+    # to go on after its first line.
+    if told and (told_now or not stored):
+        await _send(NOT_DELIVERED)
 
 
 async def _once(call_id: str, *, again: bool) -> None:
@@ -317,11 +472,13 @@ async def _once(call_id: str, *, again: bool) -> None:
 
 
 async def finish(call_id: str) -> None:
-    """Hand on the record of an ended call: the record is written from the
-    transcript, kept on the row and given to the assistant, and the call is
-    marked delivered. When it cannot be given (no bus, no assistant, any
-    failure) the operator gets :func:`fallback_line` instead and the row
-    stays undelivered. Never raises."""
+    """Report an ended call: its first line goes to the operator, the record
+    is written from the transcript and kept on the row, and, once that line
+    was delivered, given to the assistant and the call marked delivered.
+    When it cannot be given (no bus, no assistant, any failure) the operator
+    gets :data:`NOT_DELIVERED` after the first line, and the row stays
+    undelivered; when the first line was not delivered, nothing is given
+    and the row stays undelivered. Never raises."""
     await _once(call_id, again=False)
 
 
@@ -334,10 +491,11 @@ async def _finish_later(call_id: str) -> None:
 
 async def redeliver() -> None:
     """At a boot: hand on every undelivered call that ended within
-    :data:`REDELIVER_WITHIN_S`. A call with a stored record is handed on as
-    it is; one whose record was never written (Casa stopped first) is
-    finished now; one that never ended (Casa was killed during it) is
-    ended now as ``interrupted`` and then finished. Never raises."""
+    :data:`REDELIVER_WITHIN_S`. A call whose first line has not reached the
+    operator gets it first. A call with a stored record is handed on as it
+    is; one whose record was never written (Casa stopped first) is finished
+    now; one that never ended (Casa was killed during it) is ended now as
+    ``interrupted`` and then finished. Never raises."""
     try:
         store = _store
         if store is None or not store.available:
@@ -412,7 +570,7 @@ async def _admit(incoming: Incoming, reserved: bool) -> None:
             logger.info("phone: call %s not answered: Casa is stopping", sid)
             return
         if not api_key or _http is None:
-            await _tell_missing_key()
+            await _tell_missing(NO_KEY_LINE, NO_KEY_UNKNOWN)
             return
         api = LiveApi(key=api_key, host=settings.options().api_host,
                       http=_http, base_url=_base_url)
@@ -470,6 +628,7 @@ def begin_stop() -> None:
     stop can declare it before anything it closes."""
     global _stopping
     _stopping = True
+    _stop_signal.set()
 
 
 async def stop() -> None:
@@ -481,6 +640,7 @@ async def stop() -> None:
     client session. Does nothing when the line was never set up."""
     global _stopping
     _stopping = True
+    _stop_signal.set()
     hangups = [asyncio.ensure_future(_hangup(sid, api))
                for sid, api in list(_running.items()) if api is not None]
     calls = [task for task in _call_tasks if not task.done()]
@@ -543,7 +703,7 @@ def add_routes(app: web.Application, *,
     if not enabled():
         return False
     app.router.add_post(PHONE_WEBHOOK_PATH, make_handler(
-        secret=secret, on_incoming=on_incoming,
+        secret=_webhook_secret, on_incoming=on_incoming,
         limiter=RateLimiter(capacity=RATE_PER_MIN, window_s=60.0),
         default_region=default_region))
     return True
@@ -551,15 +711,17 @@ def add_routes(app: web.Application, *,
 
 async def _boot_check(public_url: str) -> None:
     try:
-        found = {KEY_FIELD: await key(), SECRET_FIELD: await secret()}
+        # Both are read, so the first call does not wait on the vault.
+        found = (await key(), await secret())
+        wrong = "" if all(found) else (
+            await _login_sentence()
+            or "the login could not be read from the vault.")
     except Exception:  # noqa: BLE001 — a boot check never raises
         logger.warning("phone: the vault could not be checked", exc_info=True)
         return
-    missing = [name for name, value in found.items() if not value]
-    if missing:
-        logger.warning("phone: enabled, but the vault item %r was not found "
-                       "or lacks %s; calls are not answered", ITEM_TITLE,
-                       " and ".join(missing))
+    if wrong:
+        logger.warning("phone: enabled, but calls are not answered: %s",
+                       wrong)
     elif not public_url:
         logger.warning("phone: enabled, but public_url is not set; the "
                        "provider cannot reach %s", PHONE_WEBHOOK_PATH)
@@ -569,6 +731,13 @@ async def _boot_check(public_url: str) -> None:
 
 
 def start_boot_check(public_url: str) -> None:
-    """Check the vault item in the background and log the line's state;
-    the boot does not wait for it."""
+    """Check the login in the background and log the line's state; the
+    boot does not wait for it."""
+    line = settings.options().line_number
+    if line:
+        logger.info("phone: the line's own number ends %s",
+                    controller.number_tail(line))
+    else:
+        logger.info("phone: phone_line_number is not set; a call put "
+                    "through that comes back is not recognised")
     _start(_boot_check(public_url), "phone boot check")
