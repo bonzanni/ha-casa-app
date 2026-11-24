@@ -1,4 +1,4 @@
-"""Tests for the bidirectional name↔role registry."""
+"""Tests for the role-keyed agent registry."""
 
 from __future__ import annotations
 
@@ -25,21 +25,6 @@ def test_role_to_name_basic():
     )
     assert reg.role_to_name("assistant") == "Ellen"
     assert reg.role_to_name("finance") == "Alex"
-
-
-def test_name_to_role_case_insensitive():
-    reg = AgentRegistry.build(
-        residents={"butler": _cfg("butler", "Tina")},
-        specialists={},
-    )
-    assert reg.name_to_role("Tina") == "butler"
-    assert reg.name_to_role("tina") == "butler"
-    assert reg.name_to_role("TINA") == "butler"
-
-
-def test_name_to_role_unknown_returns_none():
-    reg = AgentRegistry.build(residents={}, specialists={})
-    assert reg.name_to_role("nobody") is None
 
 
 def test_role_to_name_unknown_returns_role_itself():

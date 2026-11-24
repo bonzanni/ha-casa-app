@@ -1,4 +1,4 @@
-"""Pinning tests for observability/persistent-state/eval invariants (docs corpus).
+"""Pinning tests for observability and persistent-state invariants (docs corpus).
 
 Each test names the corpus invariant it pins and records, in its docstring, the
 red case that was demonstrated: the code edit that made it fail. A pinning test
@@ -9,13 +9,10 @@ import re
 import subprocess
 import sys
 
-import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import casa_eval
 from casa_core_middleware import cid_middleware
-from casa_eval.base import Suite, Tester
 from log_redact import RedactingFilter
 from session_registry import SessionRegistry
 
@@ -145,42 +142,3 @@ async def test_pin_inv_state_002_missing_is_empty_corrupt_is_per_loader(tmp_path
     sessions.write_text("{broken", encoding="utf-8")
     assert SessionRegistry(str(sessions)).all_entries() == {}
     assert (tmp_path / "sessions.json.corrupt").exists()
-
-
-def test_pin_inv_eval_001_shipped_registry_is_empty():
-    """INV-EVAL-001: the tester registry ships empty — checked on the
-    unmodified registry, not a cleared copy.
-
-    Red case demonstrated: registering a tester in casa_eval's import path
-    fails this test.
-    """
-    assert casa_eval.list_testers() == []
-    with pytest.raises(KeyError):
-        casa_eval.get_tester("any-tester")
-
-
-def test_pin_inv_eval_002_sweep_forwards_caller_selected_value():
-    """INV-EVAL-002: bank/axis selection for a check comes from the caller;
-    the framework forwards it and confines nothing.
-
-    Red case demonstrated: making Tester.sweep substitute its own value for
-    the caller's fails this test.
-    """
-    class CallerBankTester(Tester):
-        id = "caller-bank"
-        optimization_axes = ["bank"]
-        optimization_bounds = {}
-
-        def load_suite(self, path):
-            raise AssertionError("not used")
-
-        def run(self, suite, **opts):
-            return opts["bank"]
-
-        def recommend_from_sweep(self, reports):
-            raise AssertionError("not used")
-
-    suite = Suite(suite_id="s", description="", cases=[])
-    assert CallerBankTester().sweep(suite, "bank", ["live-memory"]) == {
-        "live-memory": "live-memory",
-    }

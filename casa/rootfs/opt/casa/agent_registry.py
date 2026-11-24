@@ -1,11 +1,10 @@
-"""Bidirectional name↔role map across residents and specialists.
+"""Role-keyed index of display names and tiers across residents and specialists.
 
 Built once at boot from the loaded AgentConfig dicts and rebuilt on
 casa_reload. Read-only at runtime. Used by:
 
-- `agent.py` to render `<delegates>` / `<executors>` system-prompt blocks
-  with display names (e.g. "Tina (role: butler)").
-- Future code paths that need programmatic name resolution.
+- `agent.py` to render the `<delegates>` system-prompt block with display
+  names (e.g. "butler (Tina)").
 
 Internal addressing in tools and registries stays role-keyed; this
 module is a rendering / utility layer only.
@@ -39,10 +38,8 @@ class AgentRegistry:
         self,
         *,
         role_to_known: dict[str, KnownAgent],
-        name_lower_to_role: dict[str, str],
     ) -> None:
         self._role_to_known = role_to_known
-        self._name_lower_to_role = name_lower_to_role
 
     # --- factory --------------------------------------------------------
 
@@ -54,14 +51,12 @@ class AgentRegistry:
         specialists: dict[str, AgentConfig],
     ) -> "AgentRegistry":
         role_to_known: dict[str, KnownAgent] = {}
-        name_lower_to_role: dict[str, str] = {}
 
         def _register(role: str, cfg: AgentConfig, tier: Tier) -> None:
             name = (getattr(cfg.character, "name", "") or role).strip()
             role_to_known[role] = KnownAgent(
                 role=role, name=name, tier=tier,
             )
-            name_lower_to_role.setdefault(name.lower(), role)
 
         for role, cfg in residents.items():
             _register(role, cfg, "resident")
@@ -82,7 +77,6 @@ class AgentRegistry:
 
         return cls(
             role_to_known=role_to_known,
-            name_lower_to_role=name_lower_to_role,
         )
 
     # --- queries --------------------------------------------------------
@@ -90,9 +84,6 @@ class AgentRegistry:
     def role_to_name(self, role: str) -> str:
         known = self._role_to_known.get(role)
         return known.name if known else role
-
-    def name_to_role(self, name: str) -> str | None:
-        return self._name_lower_to_role.get((name or "").strip().lower())
 
     def tier_for_role(self, role: str) -> str | None:
         """'resident' | 'specialist' for a known role, else None (unified

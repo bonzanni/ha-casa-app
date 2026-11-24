@@ -27,7 +27,7 @@
     - casa/rootfs/opt/casa/casa_core.py::_build_role_registry
   tests:
     - tests/test_agent_registry.py::test_role_to_name_basic
-    - tests/test_agent_registry.py::test_name_to_role_unknown_returns_none
+    - tests/test_agent_registry.py::test_role_to_name_unknown_returns_role_itself
     - tests/test_agent_loader.py::test_duplicate_role_across_residents_and_specialists_fails
   related: [architecture/overview.md, architecture/turn-loop.md]
   defines_invariants: [INV-AGENT-001, INV-AGENT-002, INV-AGENT-003, INV-AGENT-004]

@@ -84,5 +84,4 @@ def test_pin_inv_agent_004_registry_performs_no_filesystem_access(monkeypatch):
         specialists={"finance": cfg("Alex")},
     )
     assert registry.role_to_name("assistant") == "Ellen"
-    assert registry.name_to_role("alex") == "finance"
     assert registry.tier_for_role("finance") == "specialist"

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.384.2] - 2026-11-24
+
+### Removed
+
+- The evaluation scaffolding (`casa_eval`), whose registry of evaluators was always empty and which nothing used, and an unused name lookup on the agent registry. Nothing you can see changes.
+
 ## [0.384.1] - 2026-11-24
 
 ### Fixed
