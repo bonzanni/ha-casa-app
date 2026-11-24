@@ -15,7 +15,6 @@ from casa_browser.policy import Lease
 from casa_browser.protocol import ProviderBinding, is_email_identifier
 from casa_browser.credential_rpc import UnixServer
 
-GUEST_ORIGINS = frozenset("https://my.1password." + suffix for suffix in ("com", "eu", "ca"))
 EXTENSION_ORIGIN = "chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa"
 # Slice 5v, measured on the real extension (8.12.42.36): its popup, opened as a tab the driver
 # owns, shows the lock screen or the vault list; its in-page notification frame carries the

@@ -7,9 +7,6 @@ from datetime import datetime, timezone
 
 from casa_browser.broker import BrokerError
 
-SAVE_STATES = ('intent', 'attempt', 'vault_written', 'vault_failed', 'vault_unknown')
-CAPTURE_STATES = ('capture_pending', 'capture_saved', 'capture_declined', 'capture_warned')
-
 @dataclass
 class Journal:
     path: Path
@@ -113,12 +110,6 @@ class Journal:
         with self._db:
             self._db.execute('INSERT INTO captures VALUES (?,?,?,?)',
                              (capture_id, run, site, 'capture_pending'))
-
-    def capture_reopen(self, capture_id):
-        """A manual save may follow a review with no changed fields."""
-        with self._db:
-            self._db.execute("UPDATE captures SET state='capture_pending' "
-                             "WHERE capture_id=? AND state='capture_declined'", (capture_id,))
 
     def capture_finish(self, capture_id, state, unsaved='password'):
         if state not in ('capture_declined', 'capture_warned'):

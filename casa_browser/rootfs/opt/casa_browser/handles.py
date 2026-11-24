@@ -56,11 +56,6 @@ class HandleRegistry:
             raise StaleHandle()
         return entry.target
 
-    def invalidate_page(self, generation: int | None = None) -> None:
-        """Drop every handle of ``generation`` and older (all handles when ``None``)."""
-        self._entries = {h: e for h, e in self._entries.items()
-                         if generation is not None and e.generation > generation}
-
     def drop_run(self, run_id: str) -> None:
         self._entries = {h: e for h, e in self._entries.items() if e.run_id != run_id}
 

@@ -72,7 +72,7 @@ old one at once.
 
 **Input.** All of it arrives on `/ctl` as fixed operations — tap, scroll (wheel
 notches, ≤ 40), drag, text (≤ 256 characters a message, never empty; the viewer sends a
-long paste in pieces of whole characters), ten keys, fit, and reveal (bring the remote focused
+long paste in pieces of whole characters), seven keys, fit, and reveal (bring the remote focused
 element into view, following the focus into frames, open shadow roots included —
 `liveview.reveal`; it carries nothing and reads nothing back) — clamped to
 Chrome's window as last probed (nothing before the first probe), and is injected at the X level

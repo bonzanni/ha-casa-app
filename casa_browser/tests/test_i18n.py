@@ -44,8 +44,8 @@ def test_language_for(tag, expected):
 
 def test_html_escapes_the_template_and_keeps_the_values():
     t = Text("en")
-    out = t.html("run.summary", state='<strong>S</strong>', requester="&lt;t&gt;", mode="m")
-    assert out == 'State: <strong>S</strong>. Requested by &lt;t&gt; · m.'
+    out = t.html("run.by", requester='<strong>S</strong>', mode="&lt;t&gt;")
+    assert out == 'Requested by <strong>S</strong> · &lt;t&gt;'
 
 
 def test_option_translations_agree_with_the_schema():

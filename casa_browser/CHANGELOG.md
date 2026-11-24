@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.19] - 2026-11-24
+
+### Changed
+
+- Unused internal code was removed, with no change in how the app behaves.
+
 ## [0.1.18] - 2026-11-23
 
 ### Fixed

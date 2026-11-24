@@ -10,6 +10,13 @@ from casa_browser import netfloor
 from casa_browser.netfloor import FloorError, is_public_address, resolve_public
 
 
+def chain_text(text: str, chain: str) -> str:
+    """The body of one chain of a rendered ruleset."""
+    start = text.index(f"chain {chain} {{") + len(f"chain {chain} {{")
+    end = text.index("\n  }", start)
+    return text[start:end]
+
+
 def ip4(*octets: int) -> str:
     """A dotted IPv4 address built from its octets (the publication guard refuses dotted
     private-range literals in source; these are synthetic examples, not real addresses)."""
@@ -169,18 +176,18 @@ def test_ruleset_confines_each_service_user():
     assert text.count("delete table inet casa_browser") == 1
     for uid in (1100, 1101, 1102, 1103):
         assert f"meta skuid {uid} jump" in text
-    browser = netfloor.chain_text(text, "browser_out")
+    browser = chain_text(text, "browser_out")
     assert 'oif "lo" ip daddr 127.0.0.1 tcp dport 3128 accept' in browser
     assert browser.strip().splitlines()[-1].strip() == "reject"
     assert "3130" not in browser and "3129" not in browser
-    broker = netfloor.chain_text(text, "broker_out")
+    broker = chain_text(text, "broker_out")
     assert "tcp dport 3129 accept" in broker and "3128" not in broker and "3130" not in broker
     # The controller's one proxy use is its downloader, on its own listener (S4-5).
-    controller = netfloor.chain_text(text, "controller_out")
+    controller = chain_text(text, "controller_out")
     assert 'oif "lo" ip daddr 127.0.0.1 tcp dport 3130 accept' in controller
     assert "ct direction reply tcp sport 8098 accept" in controller
     assert "3129" not in controller and "3128" not in controller
-    proxy = netfloor.chain_text(text, "proxy_out")
+    proxy = chain_text(text, "proxy_out")
     assert "ct direction reply tcp sport { 3128, 3129, 3130 } accept" in proxy
     assert netfloor.PROXY_DOWNLOAD_PORT == 3130
 
@@ -189,18 +196,18 @@ def test_floor_new_users():
     """Task 13's service users each have their own chain: x11vnc opens no connection at all,
     nginx only answers on the ingress port (an unlisted user would be accepted by default)."""
     text = netfloor.ruleset(["127.0.0.11"])
-    output = netfloor.chain_text(text, "output")
+    output = chain_text(text, "output")
     assert "meta skuid 1104 jump vnc_out" in output and "meta skuid 1105 jump ingress_out" in output
-    vnc = [line.strip() for line in netfloor.chain_text(text, "vnc_out").strip().splitlines()]
+    vnc = [line.strip() for line in chain_text(text, "vnc_out").strip().splitlines()]
     assert vnc == ["reject"]
-    ingress = [line.strip() for line in netfloor.chain_text(text, "ingress_out").strip().splitlines()]
+    ingress = [line.strip() for line in chain_text(text, "ingress_out").strip().splitlines()]
     assert ingress == ["ct direction reply tcp sport 8099 accept", "reject"]
     assert set(netfloor.CHAINS) == {"browser_out", "proxy_out", "broker_out", "controller_out",
                                     "vnc_out", "ingress_out"}
 
 
 def test_ruleset_proxy_dns_rule_matches_the_original_port():
-    proxy = netfloor.chain_text(netfloor.ruleset(["127.0.0.11"]), "proxy_out")
+    proxy = chain_text(netfloor.ruleset(["127.0.0.11"]), "proxy_out")
     lines = [l.strip() for l in proxy.strip().splitlines()]
     dns = lines.index("ip daddr 127.0.0.11 ct original proto-dst 53 accept")
     deny = next(i for i, l in enumerate(lines) if l.startswith("ip daddr {"))
@@ -211,7 +218,7 @@ def test_ruleset_proxy_dns_rule_matches_the_original_port():
 
 
 def test_ruleset_proxy_deny_set_covers_the_table():
-    proxy = netfloor.chain_text(netfloor.ruleset(["127.0.0.11"]), "proxy_out")
+    proxy = chain_text(netfloor.ruleset(["127.0.0.11"]), "proxy_out")
     for net in (ip4(10, 0, 0, 0) + "/8", "127.0.0.0/8", "169.254.0.0/16", ip4(172, 16, 0, 0) + "/12",
                 ip4(192, 168, 0, 0) + "/16", "100.64.0.0/10", "224.0.0.0/4", "240.0.0.0/4"):
         assert net in proxy
