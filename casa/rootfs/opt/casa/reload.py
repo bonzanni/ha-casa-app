@@ -2533,7 +2533,8 @@ register_handler("full", reload_full)
 # residents' staged persona bindings, which only a restart activates — an
 # in-process reload refuses them with `restart_required` (INV-CFG-003); and
 # nothing reads `agents/executors/` any more (the configurator ships with Casa
-# since v0.351.0), so a leftover file there reloads nothing.
+# since v0.351.0), so a leftover file there reloads nothing; `phone/` holds the
+# phone agent's prompts, read afresh for every call, so nothing reloads.
 # `unit` is the resident's or specialist's directory name. A specialist's link
 # (`agents/specialists/<slug>`) changes on install, upgrade, rollback and
 # uninstall; its content lives in `.<slug>.material-<hex>/`.
@@ -2541,6 +2542,7 @@ _COMMIT_RELOAD_ROWS: "tuple[tuple[re.Pattern[str], str | None], ...]" = tuple(
     (re.compile(pattern), kind) for pattern, kind in (
         (r"plugins/registry\.json", None),
         (r"bindings/.+", None),
+        (r"phone/.+", None),
         (r"policies/.+", "policies"),
         (r"agents/executors/.+", None),
         (r"agents/specialists/(?P<unit>[^./][^/]*)", "specialist_link"),

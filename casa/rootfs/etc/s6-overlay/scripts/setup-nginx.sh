@@ -65,6 +65,12 @@ http {
             proxy_set_header Connection \$connection_upgrade;
             proxy_read_timeout 300;
         }
+
+        # The phone line's call webhook is served on the external listener
+        # only; through ingress it does not exist.
+        location = /phone/incoming {
+            return 404;
+        }
 NGINX
 
 # Terminal on ingress

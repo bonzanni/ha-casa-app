@@ -147,6 +147,11 @@ just its name inside `/data/memory/exports/`.
 | `webhook_secret` | Optional manual override for the HMAC secret that authenticates webhook, invoke and voice requests. Leave empty and Casa generates one in `/data/webhook_secret`, retrievable through the web terminal. Authentication is always on. |
 | `engagement_reap_days` | Auto-close background jobs after this many days without activity (a daily sweep cancels them; the assistant is told). Set `0` to disable. Default: `7`. |
 | `contacts_default_region` | The country to assume for phone numbers in your contacts written without a country code, as a two-letter code such as `NL` (see [Contacts](#contacts)). Leave empty to skip such numbers. Default: empty. |
+| `phone_enabled` | Let Casa answer your phone line (see [Phone](#phone)). Default: `false`. |
+| `phone_transfer_number` | The number Casa may put callers through to, with country code (or without one, using `contacts_default_region`). Leave empty and nobody is put through. Default: empty. |
+| `phone_owner_name` | How the phone assistant names you to callers. Leave empty to say "the person you called". Default: empty. |
+| `live_voices` | Voices per language for calls, like `nl=voice_abc,en=marin`: a value starting with `voice_` is a custom voice id, anything else a stock voice name. Default: empty (a stock voice). |
+| `live_api_host` | The OpenAI API host for calls. Leave empty for `api.openai.com`; use `eu.api.openai.com` for a project with EU data residency. Default: empty. |
 | `log_level` | Log verbosity: `debug`, `info`, `warning`, or `error`. Default: `info`. Flip to `debug` for verbose troubleshooting without rebuilding the image. |
 | `specialist_max_concurrency` | Max specialist delegations in flight fleet-wide at once (see [Delegation limits](#delegation-limits)). Range 1-20. Default: `2`. |
 | `specialist_cost_alert_threshold` | Cumulative per-specialist USD spend past which Casa logs a warning on further delegations (see [Delegation limits](#delegation-limits)). Default: `5.0`. |
@@ -246,6 +251,7 @@ All endpoints are accessible through the ingress proxy.
 | `POST` | `/webhook/{name}` | Fire-and-forget named webhook |
 | `POST` | `/invoke/{agent}` | Synchronous agent invocation (returns response) |
 | `POST` | `/telegram/update/{bot_id}` | Telegram updates for one bot, in webhook mode only. Casa registers this URL with Telegram itself (your `public_url` joined with the path), signed with a secret derived for that bot; you never enter it anywhere |
+| `POST` | `/phone/incoming` | Incoming calls from OpenAI, only when `phone_enabled` is on. Not through the ingress proxy: on the external API port only, signed by OpenAI (see [Phone](#phone)) |
 
 Webhook and invoke endpoints accept JSON bodies (capped at 64 KiB; a plugin
 trigger may declare a larger cap, see below). Auth is
@@ -1995,3 +2001,71 @@ nothing. An empty address book counts as a failure only when Casa already had
 contacts. Casa tells you once, with the reason, and not again until a refresh
 has worked; the same goes when Casa cannot refresh for a reason of its own,
 such as a damaged contacts file.
+
+## Phone
+
+Casa can answer your phone line when you cannot pick up. It greets people it
+knows from your [contacts](#contacts) by name, takes a message, puts urgent
+calls through to you, and afterwards the assistant tells you in your chat who
+called and what it was about. The feature is **off by default**.
+
+**Calls are processed by OpenAI.** The caller's voice and the conversation go
+to OpenAI's live voice service, which does the talking; Casa follows the call
+and decides what happens. You need an OpenAI API account, and calls are billed
+to it.
+
+**What callers get.** The assistant answers in the caller's language (from
+your contacts, else from the country of their number), says whose phone it is
+and takes a message: who is calling, what about, how urgent, whether they want
+a call back. Whether a caller is put through to you depends on who they are:
+a priority contact when they ask to speak to you, any other contact when it is
+urgent, someone unknown only in an emergency. Before putting a call through,
+Casa sends you a line in your chat saying who it is, because your phone will
+show your own line's number. If you do not pick up and the call comes back to
+the line, the assistant tells the caller, takes a message, and sends you an
+urgent alert if they say it is an emergency. Casa ends a call itself after a
+long silence, after ten minutes, or when the connection is lost. Up to two
+calls are answered at once; a third caller hears busy.
+
+**After the call.** The assistant gets a short summary of the call (never the
+transcript) and tells you about it in your chat. Phone
+numbers appear there only as their last four digits. Casa keeps a transcript
+of each call for 30 days, then deletes it; it never records audio.
+
+**Setting it up.** Most of this happens outside Casa:
+
+1. **A phone number on a SIP trunk.** At a phone carrier that offers SIP
+   trunks, get a number (or move yours) and point its trunk at the SIP address
+   of your OpenAI project. On the trunk, also set a fallback (your voicemail,
+   or a forward) for calls Casa does not answer, and a maximum call duration.
+2. **Make Casa reachable for OpenAI.** Set `public_url` and publish the
+   external API port (`18065/tcp`) through your reverse proxy, as for
+   [callbacks](#plugins-v0710); the path is `/phone/incoming`. It is not
+   served through Home Assistant's ingress.
+3. **Register the webhook at OpenAI.** In your OpenAI project, add a webhook
+   for incoming calls with the URL `<public_url>/phone/incoming`, and note its
+   signing secret.
+4. **Add the vault item.** In 1Password, in the vault named in
+   `onepassword_default_vault`, create an item named exactly `OpenAI Voice`
+   with two fields: `credential`, the project's API key, and `webhook_secret`,
+   the signing secret. Casa reads the same item from the
+   [built-in store](#secrets-without-1password) when you have no 1Password
+   token, but that store has no page for adding items yet.
+5. **Set the options** and restart: `phone_enabled` on, `phone_transfer_number`
+   (your mobile, for example), and optionally `phone_owner_name`,
+   `live_voices` and `live_api_host`. After the restart the log says
+   `phone: enabled, webhook at …`, or names what is missing.
+
+**Changing what the assistant says.** The instructions for the call are files
+in `/config/phone/prompts/` (`agent.md` for the voice, `lines.yaml` for the
+fixed lines). Edits take effect on the next call; a file Casa cannot use is
+ignored, with a warning in the log, and the shipped version is used.
+
+**When something is missing.** Without the vault item, calls are not answered
+and go to your carrier's fallback; the log says what is missing at every start,
+and when a call comes in without the API key Casa tells you, at most once an
+hour. If
+Casa's phone records cannot be opened, calls are still answered and messages
+taken, but nobody is put through, and you get one short line per call instead
+of the assistant's summary. If Casa restarts during a call, the call ends and
+is reported as cut off.

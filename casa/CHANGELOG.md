@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.384.0] - 2026-11-24
+
+### Added
+
+- Casa can answer a phone line for you. It is off by default and needs a phone number on a SIP trunk and an OpenAI project, which you set up outside Casa; calls are handled by OpenAI's live voice service, and Casa keeps no audio. When a call comes in, Casa recognises the caller from your contacts, greets known callers by name in their language, takes a message, and puts a call through to your own phone when the rules allow it: priority contacts unless they prefer to leave a message, other contacts when it cannot wait, strangers only for a real emergency. If you do not pick up a call that was put through, the caller is told so and a message is taken; for an emergency Casa alerts you on Telegram at once. Casa itself ends a call that goes silent or runs longer than ten minutes. When a call ends, the assistant tells you on Telegram who called and what they wanted. Casa keeps the call transcript for 30 days. See "Phone" in the documentation for the setup.
+- Five options for the phone line: `phone_enabled`, `phone_transfer_number` (the number calls are put through to; empty means nobody is put through), `phone_owner_name` (how the phone assistant names you), `live_voices` (the voice to use per language) and `live_api_host` (set it to `eu.api.openai.com` for an OpenAI project with European data residency).
+- The wording the phone assistant works from is in `phone/prompts/` in your Casa configuration folder, and you can edit it there; your edits are kept across upgrades like your other configuration.
+
+### Changed
+
+- A webhook trigger can no longer be named `casa-phone`; Casa uses that name for the report of a call.
+
 ## [0.383.2] - 2026-11-24
 
 ### Changed

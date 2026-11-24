@@ -1,7 +1,7 @@
 # Manifest shard: a specialist summoned in a group (born in its own shard: the own-voice
 # shard and the T-Z shard stand close to the 40 KB index ceiling).
 - doc: architecture/guest-summons.md
-  summary: A specialist's own bot summoned in a chat it is not a member of (Telegram guest mode) — who is answered, the operator's summons as a turn of the agent's own conversation whose final text alone edits the group's one inline message, a friend's summons in an allowed group as a bounded guest run on locked-down options (the guest tools only, no memory, no session, a cap with a busy line), the placeholder, ticker and terminal edit, the reserved summons markers, the guest_access tool (the group's face and the resident's list and revoke) and the per-role, per-component record of allowed groups.
+  summary: A specialist's own bot summoned in a chat it is not a member of (Telegram guest mode) — the operator's summons as a turn of the agent's own conversation, a friend's summons in an allowed group as a bounded guest run on locked-down options, the group's one inline message and its edits, the reserved summons markers, the guest_access tool and the record of allowed groups.
   when_changing: a guest summons — the guest_message update or its handler, who a summons is answered for, the summoned turn or its markers, a guest run (guest_run.py, Agent._guest_turn, _build_guest_options, the guest frame, the cap or busy line), the group's inline message, its placeholder, ticker or terminal edit, guest_finish, the guest_access tool, or the allowed-groups file
   covers:
     - casa/rootfs/opt/casa/channels/guest_reply.py

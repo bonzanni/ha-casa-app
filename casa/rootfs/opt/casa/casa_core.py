@@ -49,7 +49,7 @@ from ha_mcp_facade import HomeAssistantFacade
 from mcp_registry import McpServerRegistry
 from policies import load_policies
 import private_state
-from output_boundary import casa_text
+from output_boundary import WEBHOOK_DELIVER_ALWAYS_LINE, casa_text
 from provenance import carry_route, sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
@@ -564,13 +564,9 @@ WEBHOOK_DELIVER_LINE = (
 )
 
 
-# #1158: the line for a `deliver: operator_always` fire. It never invites
-# <silent/>: such a fire always ends in one operator message, and a reply that
-# is silent anyway is replaced by Casa's own fallback line (INV-TRIG-021).
-WEBHOOK_DELIVER_ALWAYS_LINE = (
-    "(Casa: your final reply is delivered to the operator on Telegram, and "
-    "every fire must reach them — always reply, even if only briefly.)"
-)
+# #1158: the line for a `deliver: operator_always` fire lives in
+# output_boundary (WEBHOOK_DELIVER_ALWAYS_LINE, imported above), beside the
+# predicate it states, so the phone line's call record appends the same words.
 
 
 def _make_webhook_handler(
@@ -2580,6 +2576,20 @@ async def main() -> None:
         logger.warning("contacts unavailable: %s",
                        contacts_store.unavailable_reason)
 
+    # 2a''. The phone store, only with the phone line on. A failure leaves
+    # calls answered with the defaults and unrecorded; Casa boots either way.
+    from phone import service as phone_service
+    phone_store = None
+    if phone_service.enabled():
+        try:
+            from phone.store import PhoneStore
+            phone_store = PhoneStore()
+            if not await asyncio.to_thread(phone_store.open):
+                logger.warning("phone store unavailable: %s",
+                               phone_store.unavailable_reason)
+        except Exception:  # noqa: BLE001 — the phone line must not stop the boot
+            logger.warning("phone store not opened", exc_info=True)
+
     def _agent_home_dir(role: str) -> str:
         """Resident transcript cwd (encoded-cwd dir for delete_session). Matches agent.py's agent_home WHEN ``config.cwd`` is
         unset — the prod default (all shipped configs have ``cwd: ""``). If a
@@ -3465,6 +3475,14 @@ async def main() -> None:
     ))
     app.router.add_post("/invoke/{agent}", invoke_handler)
     app.router.add_post("/telegram/update/{bot_id}", telegram_update_handler)
+    # The phone line's call webhook, only with the line on.
+    if phone_service.enabled():
+        try:
+            phone_service.add_routes(
+                app, default_region=contacts_service.default_region)
+        except Exception:  # noqa: BLE001 — the phone line must not stop the boot
+            logger.warning("phone: the call webhook was not registered",
+                           exc_info=True)
     # 13b. Per-agent trigger registration. Registry + scheduler were
     # constructed earlier (needed by init_tools for get_schedule).
     # Register before runner.setup() so webhook routes land in *app*
@@ -3723,6 +3741,23 @@ async def main() -> None:
         if telegram_channel is not None else None,
         model=contacts_notes.NoteModel(),
         read_secret=contacts_service.read_icloud_secret)
+    # The phone line: its own client session (closed by its stop), and the
+    # vault check in the background so the boot does not wait on it.
+    if phone_service.enabled():
+        try:
+            import aiohttp as _aiohttp
+            phone_service.configure(
+                store=phone_store,
+                contacts=contacts_service.active_store,
+                notify=telegram_channel.notify_operator
+                if telegram_channel is not None else None,
+                http=_aiohttp.ClientSession(),
+                bus=bus,
+                route_for=tg_transport.route_for
+                if tg_transport is not None else None)
+            phone_service.start_boot_check(public_url)
+        except Exception:  # noqa: BLE001 — the phone line must not stop the boot
+            logger.warning("phone: the line was not set up", exc_info=True)
     if _maintenance_intent is not None:
         await memory_maintenance.request_restart(
             kind=_maintenance_intent.get("kind"))
@@ -4130,6 +4165,35 @@ async def main() -> None:
             replace_existing=True,
             misfire_grace_time=3600,
         )
+    # The phone line: call transcripts are deleted once their time is up.
+    if phone_service.enabled():
+        try:
+            scheduler.add_job(
+                phone_service.purge,
+                trigger="cron",
+                id="phone_transcript_purge",
+                hour=4, minute=40,
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+        except Exception:  # noqa: BLE001 — the phone line must not stop the boot
+            logger.warning("phone: the transcript purge was not scheduled",
+                           exc_info=True)
+        # Records of calls that did not reach the assistant before the last
+        # stop are handed on once, after the boot has settled.
+        try:
+            from datetime import timedelta as _td
+            scheduler.add_job(
+                phone_service.redeliver,
+                trigger="date",
+                id="phone_boot_redeliver",
+                run_date=_dt.now(_tz.utc) + _td(seconds=90),
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+        except Exception:  # noqa: BLE001 — the phone line must not stop the boot
+            logger.warning("phone: the boot hand-off was not scheduled",
+                           exc_info=True)
 
     scheduler.start()
 
@@ -4221,6 +4285,16 @@ async def _shutdown_cleanup(
     # turn, and a specialist installed after this point, must both see it.
     import agent as _agent_mod
     _agent_mod.begin_process_stop()
+    # The phone line's twin of the line above, as early and as synchronous:
+    # from here no call is accepted and no call record is handed to the bus,
+    # whose consumers are cancelled below; a record not handed on stays for
+    # the next boot. The calls themselves are hung up further down.
+    from phone import service as _phone_service
+    try:
+        if _phone_service.enabled():
+            _phone_service.begin_stop()
+    except Exception:  # noqa: BLE001 — shutdown must complete
+        logger.warning("phone stop not declared", exc_info=True)
 
     import tools as _tools_mod
     await _tools_mod.stop_engagement_launches(engagement_registry)
@@ -4319,6 +4393,19 @@ async def _shutdown_cleanup(
         await asyncio.wait_for(own_voice_lifecycle.close_current(), timeout=5)
     except Exception:  # noqa: BLE001 — shutdown must complete
         logger.warning("own-chat lifecycle close failed", exc_info=True)
+
+    # The phone line, before the channels stop: no new call is admitted from
+    # here (the listeners still stand, so one that arrives is left to the
+    # carrier's fallback), running calls are hung up and each records its
+    # outcome and transcript while the store is open and Telegram can still
+    # carry the line about an unrecorded call. Bounded (phone.service
+    # STOP_WAIT_S, twice); a record still being written is cancelled and
+    # handed on by the next boot. It needs nothing the steps above closed.
+    if _phone_service.enabled():
+        try:
+            await _phone_service.stop()
+        except Exception:  # noqa: BLE001 — shutdown must complete
+            logger.warning("phone stop failed", exc_info=True)
 
     # Channel teardown (Telegram bot, voice, etc.) — resolve in-flight broker
     # work first, then stop the channels.

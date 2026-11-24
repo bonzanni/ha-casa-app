@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-22
+last_reviewed: 2026-11-24
 ---
 
 # Persistent state
@@ -138,6 +138,14 @@ transaction per connection: a read-only copy of each address-book source and the
 keeps about people. Boot creates or migrates it; a failure leaves an existing file as it was
 and contacts unavailable, and Casa boots either way. A failed sync leaves the people,
 numbers and marks as they were ([`contacts.md`](contacts.md), INV-CONTACTS-002).
+
+**The phone line has a directory of its own.** `/data/phone/` (0700, in the private-state
+inventory) holds `phone.db`, a SQLite store in WAL mode with one transaction per
+connection: the phone line's stored settings, voices and grants, a row per call (its
+outcome, action log and record), and each call's transcript until it expires 30 days after
+the call, when a nightly job deletes it; audio is never kept. Boot opens it only with
+`phone_enabled` on. A failure leaves an existing file as it was and the line answering calls
+unrecorded ([`phone.md`](phone.md)), and Casa boots either way.
 
 ## Contracts & invariants
 

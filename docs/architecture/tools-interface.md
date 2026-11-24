@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-13
+last_reviewed: 2026-11-24
 ---
 
 # The tool interface
@@ -176,8 +176,9 @@ or a specialist's link, `agents`; an edit inside a present specialist its `agent
 `policies/` `policies`; a mix of kinds, an unknown path or unreadable paths one `full`.
 Nothing reloads for a plugins-only commit (the plugin tools reload and commit their own
 change), a resident's staged binding under `bindings/` (only a restart activates it,
-INV-CFG-003), or anything left under `agents/executors/` (read by nothing: the configurator
-ships with Casa, [`configurator.md`](configurator.md)). Each runs through
+INV-CFG-003), anything left under `agents/executors/` (read by nothing: the configurator
+ships with Casa, [`configurator.md`](configurator.md)), or the phone line's prompts under
+`phone/` (read for every call, [`phone.md`](phone.md)). Each runs through
 `tools.py::_run_reload`, as `casa_reload` does (INV-CFG-011). Two commits reload twice,
 and a cancelled task's commits stay live: nothing reads the caller's engagement.
 

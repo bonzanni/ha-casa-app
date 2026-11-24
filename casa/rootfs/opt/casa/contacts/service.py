@@ -21,20 +21,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
+import subprocess  # noqa: F401 — tests patch service.subprocess.run
 from typing import Awaitable, Callable
 
 from contacts import notes, sync
 from contacts import store as cstore
 from contacts.carddav import ICloudSource
 from contacts.store import ContactsStore
+import vault_read
 from output_boundary import casa_text
 
 logger = logging.getLogger(__name__)
 
 ITEM_TITLE = "iCloud Contacts"
 SOURCE = ICloudSource.name
-OP_TIMEOUT_S = 10
 
 FAILED_LINE = "Contacts could not be refreshed from iCloud: {error}."
 SERVICE_FAILED_LINE = "Contacts could not be refreshed: {error}."
@@ -91,27 +91,8 @@ def mirror_empty() -> bool:
 
 def read_icloud_secret(field: str) -> str | None:
     """One field of :data:`ITEM_TITLE` in the default vault, or None when it
-    cannot be read. Blocking; ``op`` output is never logged or returned
-    except the value itself."""
-    vault = os.environ.get("ONEPASSWORD_DEFAULT_VAULT", "")
-    if not vault:
-        return None
-    try:
-        result = subprocess.run(
-            ["op", "item", "get", ITEM_TITLE, "--vault", vault,
-             "--fields", f"label={field}", "--reveal"],
-            capture_output=True, text=True, timeout=OP_TIMEOUT_S,
-            stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError) as exc:
-        logger.info("contacts: %s of %r not read (%s)", field, ITEM_TITLE,
-                    type(exc).__name__)
-        return None
-    if result.returncode != 0:
-        logger.info("contacts: %s of %r not read (op exited %d)", field,
-                    ITEM_TITLE, result.returncode)
-        return None
-    value = (result.stdout or "").strip()
-    return value or None
+    cannot be read. Blocking."""
+    return vault_read.read_field(ITEM_TITLE, field)
 
 
 def _failed(error: str) -> sync.Result:

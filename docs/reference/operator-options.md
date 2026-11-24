@@ -35,8 +35,8 @@ system covers repository and plugin configuration, not the manifest.
 
 **Every option read is "null"-normalized.** bashio returns the literal string "null" for a
 key absent from the stored options; every read in the run script guards that sentinel
-before exporting. One group exports conditionally — the Telegram API base, the webhook secret, the timezone, the contacts country, the log level and the reap TTL
-are exported only when set to a real value; the public URL is normalized the same way but
+before exporting. One group exports conditionally — the Telegram API base, the webhook secret, the timezone, the contacts country, the phone options, the log level and the reap TTL
+are exported only when set to a real value (`PHONE_ENABLED` only when the option is on); the public URL is normalized the same way but
 always exported, empty when unset. The rest export unconditionally after normalization —
 empty (or the script-side fallback) when the key is deleted, never the "null" literal.
 Only the webhook secret is explicitly unset before its export decision, so an inherited
@@ -60,6 +60,11 @@ container variable can survive an empty option elsewhere.
 | `enable_terminal` | `ENABLE_TERMINAL` | nginx setup, ttyd service, dashboard | false | restart |
 | `casa_tz` | `CASA_TZ` | timekeeping — both scheduler wall-clock and the current-time block every agent turn sees | empty → `TZ` (Home Assistant's zone), then UTC | restart |
 | `contacts_default_region` | `CONTACTS_DEFAULT_REGION` | the contacts service, upper-cased: the country a phone number written without `+` is read as dialled from, by the sync, `find_contact` and `set_contact_marks` (the caller lookup takes the region from its caller; [`contacts.md`](../architecture/contacts.md)) | empty → such numbers are skipped | restart |
+| `phone_enabled` | `PHONE_ENABLED` | the phone line ([`phone.md`](../architecture/phone.md)): on registers the call webhook, opens the phone store and schedules its jobs; off leaves all of it absent | false | restart |
+| `phone_transfer_number` | `PHONE_TRANSFER_NUMBER` | the phone line: the number a call is put through to, read as E.164 with `contacts_default_region` for a number without `+`; an unusable value is dropped with one warning | empty → nobody is put through | restart |
+| `phone_owner_name` | `PHONE_OWNER_NAME` | the phone line's prompts: how the voice agent names the person whose phone it answers | empty → "the person you called" | restart |
+| `live_voices` | `LIVE_VOICES` | the phone line: seed voices per language, `nl=voice_abc,en=marin`; a value starting `voice_` is sent as a custom voice id, anything else as a stock name; a voice stored in the phone store wins | empty → a stock voice | restart |
+| `live_api_host` | `LIVE_API_HOST` | the live voice client: the OpenAI API host for calls and their records | empty → `api.openai.com` | restart |
 | `engagement_reap_days` | `ENGAGEMENT_REAP_DAYS` | engagement reaper | 7 (0 disables) | restart |
 | `log_level` | `LOG_LEVEL` | main startup logging; the standalone MCP service's logging | info (runtime falls back to INFO when absent/empty) | restart |
 | `specialist_max_concurrency` | `SPECIALIST_MAX_CONCURRENCY` | specialist limiter (clamped 1–20) — the *fleet-wide* cap; a separate hard-coded rule allows exactly one active delegation per scope regardless; a specialist's `hand_off` takes only the per-scope slot, so a hand-off chain counts once (`architecture/specialist-handoff.md`) | 2 | restart |

@@ -170,3 +170,15 @@ def test_terminal_proxies_over_unix_socket_not_tcp():
     assert "proxy_pass http://unix:/run/casa-term/ttyd.sock:/terminal/;" in text
     assert "7681" not in text, "TCP terminal port 7681 still referenced"
     assert "127.0.0.1:7681" not in text
+
+
+def test_phone_webhook_is_refused_on_ingress_only():
+    """The call webhook is reached from outside on the external listener;
+    the ingress server refuses the path, the external one proxies it."""
+    text = _SCRIPT.read_text()
+    ingress = _ingress_block(text)
+    assert "location = /phone/incoming {" in ingress
+    block = ingress[ingress.index("location = /phone/incoming {"):]
+    assert block[:block.index("}")].strip().endswith("return 404;")
+    external = text[text.index("# --- External API server"):]
+    assert "/phone/incoming" not in external

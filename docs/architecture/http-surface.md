@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-13
+last_reviewed: 2026-11-24
 ---
 
 # The HTTP surface
@@ -74,6 +74,15 @@ Telegram update sink each perform their own route-specific check against the one
 configured webhook secret — the update sink against the secret derived from it for the bot its
 path names (INV-TG-001). Do not read
 this invariant as describing what protects any route other than a webhook trigger.
+
+**The phone line's call webhook has a check of its own.** `POST /phone/incoming` exists only
+with `phone_enabled` on, and is authenticated by the provider's Standard Webhooks signature
+against a secret read from the vault — not `verify`, not the shared webhook secret: no
+secret is a 503, a bad or stale signature a 401, and it has its own rate limit of 30 a
+minute. It produces no agent turn: it starts a call that Casa follows, and the turn that
+reports the call later is raised by core itself ([`phone.md`](phone.md), INV-PHONE-005). It
+is served on the external listener only; an exact-path rule on the ingress server answers
+it 404 (INV-PHONE-007).
 
 **INV-HTTP-002**: Every secret comparison inside `verify` uses a constant-time primitive, and an absent or empty secret returns false rather than passing.
 

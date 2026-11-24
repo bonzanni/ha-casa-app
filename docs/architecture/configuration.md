@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-02
+last_reviewed: 2026-11-24
 ---
 
 # Configuration, reload and secrets
@@ -88,7 +88,7 @@ runs after it. Only the last describes the routing the reload left behind; the e
 runs before the reconcile that decides it.
 
 **The config tree is a git repository, but only a whitelist is tracked.** Agents, policies,
-bindings, schema, and specific registry files are versioned; plugin stores, staging areas,
+bindings, schema, the phone line's prompts (`phone/`) and specific registry files are versioned; plugin stores, staging areas,
 the environment file and general working state are not. The whitelist is the authority, and
 it is duplicated in the boot script — both must agree. Boot commits
 `bindings/` again after the agents load, so a re-bind gets its own commit.

@@ -74,6 +74,17 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# #1158: the line Casa appends to a `deliver: operator_always` webhook-trigger
+# turn (:attr:`TurnScope.silence_forbidden`). It never invites <silent/>: such
+# a turn always ends in one operator message, and a reply that is silent anyway
+# is replaced by Casa's own fallback line (INV-TRIG-021). Here, beside the
+# predicate, so every producer of such a turn (the `/webhook/{name}` handler,
+# the phone line's call record) appends the same words.
+WEBHOOK_DELIVER_ALWAYS_LINE = (
+    "(Casa: your final reply is delivered to the operator on Telegram, and "
+    "every fire must reach them — always reply, even if only briefly.)"
+)
+
 
 class IntentKind(Enum):
     """The closed set of operator-visible effects model text can take."""

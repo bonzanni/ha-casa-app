@@ -91,6 +91,10 @@ CASA_TEXT_SITES = {
     ("own_voice_lifecycle.py", "post_card"): "an own-chat card in the resident's chat (offer, bound, released), Casa template",
     ("own_voice_lifecycle.py", "_post"): "the own-chat question naming a new bot, Casa template",
     ("contacts/service.py", "run_daily"): "the contacts refresh failure line, Casa template; the error is a source's own fixed text",
+    ("phone/abilities.py", "_transfer"): "the put-through notice, Casa template over the contact's name or the number",
+    ("phone/abilities.py", "_alert"): "the returned-call emergency alert, Casa template over the caller's label; the model's reason is not sent",
+    ("phone/controller.py", "_tell"): "the line about a call the phone store could not record, Casa template over the contact's name or the number's last four digits, the class, the outcome and the duration",
+    ("phone/service.py", "_send"): "the phone line's operator lines (the missing API key, the ended-call fallback), Casa templates over the contact's name or the number's last four digits, the class, the outcome and the duration",
 }
 
 EDIT_DM_MESSAGE_CALLERS = {
