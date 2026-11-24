@@ -10045,8 +10045,6 @@ async def set_contact_marks(args: dict) -> dict:
     priority = args.get("priority")
     relation = args.get("relation")
     language = args.get("language")
-    if priority is True:
-        return _error("not available yet")
     if not contact:
         return _error("Name the contact to change. Nothing was changed.")
     if priority is not None and not isinstance(priority, bool):
@@ -10069,7 +10067,10 @@ async def set_contact_marks(args: dict) -> dict:
         changes["language"] = code
     if priority is False:
         changes["priority"] = False
-    if not changes:
+    # Making someone priority is never applied here: it waits for the
+    # operator's Approve on Casa's card (_contact_priority_card).
+    wants_priority = priority is True
+    if not changes and not wants_priority:
         return _error("Nothing to change: give relation, language or "
                       "priority.")
     region = contacts_service.default_region()
@@ -10079,7 +10080,7 @@ async def set_contact_marks(args: dict) -> dict:
             found = cstore.find(conn, contact, default_region=region,
                                 limit=_CONTACTS_CANDIDATES)
             if len(found) != 1:
-                return found
+                return found, False
             person = found[0]
             for field, value in changes.items():
                 if field == "priority":
@@ -10091,10 +10092,12 @@ async def set_contact_marks(args: dict) -> dict:
                 else:
                     cstore.clear_mark(conn, person.source, person.uid, field,
                                       "operator")
-            return found
+            already = wants_priority and cstore.marks_for(
+                conn, person.source, person.uid).priority
+            return found, already
 
     try:
-        found = await asyncio.to_thread(_apply)
+        found, already = await asyncio.to_thread(_apply)
     except Exception:  # noqa: BLE001 — reported, never a fake success
         logger.warning("set_contact_marks: marks could not be written",
                        exc_info=True)
@@ -10109,8 +10112,121 @@ async def set_contact_marks(args: dict) -> dict:
         return _error(f'More than one contact matches "{contact}": {names}. '
                       "Nothing was changed; ask which one is meant, then "
                       "name them in full or give their number.")
-    return _result({"status": "ok", "contact": found[0].name,
-                    "applied": changes})
+    person = found[0]
+    if not wants_priority:
+        return _result({"status": "ok", "contact": person.name,
+                        "applied": changes})
+    if already:
+        return _result({"status": "ok", "contact": person.name,
+                        "applied": {**changes, "priority": "already"}})
+    return _result(await _contact_priority_card(person, changes))
+
+
+_PRIORITY_CARD_OPTIONS = ["Approve", "Cancel"]
+_PRIORITY_NOT_CHANGED = "Not changed."
+
+
+async def _contact_priority_card(person, applied: dict) -> dict:
+    """Ask the operator, on Casa's own card in his chat, to make *person*
+    priority. The card's words are Casa's, written from the stored contact;
+    the change it carries (source, uid, name, numbers) is frozen here, and
+    only the operator's Approve applies it, from the broker's finish hook,
+    outside any turn. A card already waiting for the same person is not
+    posted twice. *applied* is what the same call already changed."""
+    from verdict_broker import BROKER
+
+    def _reply(status: str, message: str, **more) -> dict:
+        return {"status": status, **more, "message": message,
+                "contact": person.name, "applied": applied}
+
+    channel, address, problem = _casa_card_target()
+    if problem is not None:
+        return _reply("unavailable", (
+            f"{person.name} was not made priority: the confirmation card "
+            f"cannot be posted ({_CASA_CARD_PROBLEMS[problem]})."))
+    bot_id, chat_id = address.bot_id, address.chat_id
+    scope = tg_scope("authz", bot_id, chat_id)
+    source, uid, name = person.source, person.uid, person.name
+    # The duplicate scan and the register below run with no await between
+    # them, so two calls for one person cannot both post a card.
+    for live in BROKER.pending(namespace="resident_ask", scope=scope):
+        meta = BROKER.get_meta(namespace="resident_ask", scope=scope,
+                               request_id=live) or {}
+        held = meta.get("change") or {}
+        if (meta.get("kind") == "contact_priority"
+                and (held.get("source"), held.get("uid")) == (source, uid)):
+            return _reply("awaiting_user", (
+                "A card asking the operator to confirm is already waiting."),
+                request_id=live)
+    rid = uuid.uuid4().hex
+    body = "\n".join(["Make priority?", "", name, *person.numbers, "",
+                      "Priority callers are put through to you."])
+    req, _created = BROKER.register(
+        namespace="resident_ask", scope=scope, request_id=rid,
+        timeout_s=86400.0, detached=True, supersede=False,
+        meta={
+            "options": list(_PRIORITY_CARD_OPTIONS),
+            "bot_id": bot_id,
+            "chat_id": chat_id,
+            "operator_id": chat_id,     # a private chat's id is its user's
+            "kind": "contact_priority",
+            "_scope": scope,
+            "change": {"source": source, "uid": uid, "name": name,
+                       "numbers": list(person.numbers)},
+        },
+    )
+
+    async def _post_priority_card():
+        return await channel.post_dm_keyboard(
+            chat_id=chat_id, request_id=rid, text=casa_text(body),
+            options=list(_PRIORITY_CARD_OPTIONS))
+
+    def _apply_priority():
+        """True when applied, False when the person is gone, None when
+        the store is unavailable."""
+        from contacts import service as contacts_service
+        from contacts import store as cstore
+        store = contacts_service.active_store()
+        if store is None:
+            return None
+        with store.transaction(write=True) as conn:
+            if conn.execute("SELECT 1 FROM people WHERE source = ? AND uid = ?",
+                            (source, uid)).fetchone() is None:
+                return False
+            cstore.set_mark(conn, source, uid, "priority", "1", "operator")
+            return True
+
+    def _finish_factory(message_id: int):
+        async def _settle_priority_card(outcome: dict) -> None:
+            line = _PRIORITY_NOT_CHANGED
+            try:
+                if (outcome.get("outcome") == "answered"
+                        and outcome.get("option_index") == 0):
+                    done = await asyncio.to_thread(_apply_priority)
+                    if done is True:
+                        line = f"{name} is now priority."
+                    elif done is False:
+                        line = (f"{name} is no longer in your contacts. "
+                                "Nothing was changed.")
+            except Exception:  # noqa: BLE001 — the card says what happened
+                logger.warning("contact priority could not be applied",
+                               exc_info=True)
+                line = _PRIORITY_NOT_CHANGED
+            try:
+                await channel.edit_dm_message(chat_id, message_id,
+                                              f"{body}\n\n{line}")
+            except Exception:  # noqa: BLE001 — outside any turn: never raise
+                logger.warning("contact priority card could not be edited",
+                               exc_info=True)
+        return _settle_priority_card
+
+    await BROKER.ensure_posted(req, _post_priority_card, _finish_factory)
+    if "message_id" not in req.meta:
+        return _reply("error", (
+            f"{name} was not made priority: the confirmation card could not "
+            "be posted."))
+    return _reply("awaiting_user", "Asked the operator to confirm on a card.",
+                  request_id=rid)
 
 
 # ---------------------------------------------------------------------------

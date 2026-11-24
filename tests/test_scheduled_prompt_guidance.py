@@ -424,6 +424,10 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::offer_own_chat":
         "posts Casa's own card that creates or opens an agent's chat, in the "
         "resident's chat; none of it is the calling turn's message",
+    "tools.py::set_contact_marks":
+        "making a contact priority posts Casa's confirmation card to the "
+        "operator's DM, and every change is refused unless the turn is a "
+        "direct DM or button turn; it has no scheduled arm",
     "tools.py::stop_work":
         "stops a specialist's own work (browsing) and may mark that request's card; it "
         "is refused on every turn but the operator's own live message, so it has no "
@@ -519,7 +523,6 @@ NOT_A_DELIVERY = {
     "tools.py::resident_persona_reset",
     "tools.py::resident_persona_swap",
     "tools.py::search_memory",
-    "tools.py::set_contact_marks",
     "tools.py::set_plugin_env_reference",
     "tools.py::set_reminder",
     "tools.py::share_inbound_file",

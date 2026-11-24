@@ -64,8 +64,10 @@ def _marks(store: ContactsStore, uid: str) -> cstore.Marks:
 
 
 @contextmanager
-def _turn(clearance: str = "private", *, engagement=None, **overrides):
-    """A turn in the operator's direct Telegram chat, stamped *clearance*."""
+def _turn(clearance: str = "private", *, engagement=None,
+          drop: tuple[str, ...] = (), **overrides):
+    """A turn in the operator's direct Telegram chat, stamped *clearance*;
+    *drop* removes keys from that origin."""
     import agent as agent_mod
     import tools as tools_mod
     origin = {
@@ -76,6 +78,8 @@ def _turn(clearance: str = "private", *, engagement=None, **overrides):
         "_origin_clearance": clearance,
     }
     origin.update(overrides)
+    for key in drop:
+        del origin[key]
     tok = agent_mod.origin_var.set(origin)
     eng_tok = tools_mod.engagement_var.set(engagement)
     try:
@@ -143,16 +147,32 @@ async def test_tools_refuse_below_private_clearance(
                       note_changed=(), error="", tell_operator=False)
 
     monkeypatch.setattr(service, "refresh", refresh)
+    calls = [("find_contact", {"query": "marco"}),
+             ("refresh_contacts", {}),
+             ("set_contact_marks", {"contact": "marco", "relation": "brother",
+                                    "priority": True})]
     for clearance in ("family", "public"):
         with _turn(clearance):
-            for name, args in [
-                    ("find_contact", {"query": "marco"}),
-                    ("refresh_contacts", {}),
-                    ("set_contact_marks", {"contact": "marco",
-                                           "relation": "brother"})]:
+            for name, args in calls:
                 got = await _call(name, args)
                 assert got == {"status": "error", "message": NOT_PRIVATE}, \
                     (clearance, name, got)
+    # Origins that never read at private, whatever else they carry.
+    origins = [
+        ("telegram, no clearance stamp", {}, ("_origin_clearance",)),
+        ("guest chat", {"_origin_route": "telegram_guest",
+                        "channel": "telegram_guest"}, ()),
+        ("voice, no route", {"channel": "voice"},
+         ("_origin_route", "_origin_clearance")),
+        ("webhook trigger claiming private",
+         {"_origin_route": "webhook_trigger"}, ()),
+    ]
+    for label, overrides, drop in origins:
+        with _turn(drop=drop, **overrides):
+            for name, args in calls:
+                got = await _call(name, args)
+                assert got == {"status": "error", "message": NOT_PRIVATE}, \
+                    (label, name, got)
     assert refreshed == []
     assert _rows(opened) == []
 
@@ -228,20 +248,24 @@ async def test_priority_false_applies_at_once(opened: ContactsStore) -> None:
                            groups=("Priority",))],
           [("A", "priority", "1", "group")])
     with _turn():
-        # Making someone priority is not applied by this call, and nothing
-        # else in the same call is either.
+        # Already priority (the group): no card, the rest applies. Asking the
+        # operator on a card is pinned in test_contacts_priority_card.py.
         got = await _call("set_contact_marks",
                           {"contact": "marco", "priority": True,
                            "relation": "brother"})
-        assert got == {"status": "error", "message": "not available yet"}
-        assert _rows(opened) == [("A", "priority", "group", "1")]
+        assert got == {"status": "ok", "contact": "Marco Example",
+                       "applied": {"relation": "brother",
+                                   "priority": "already"}}
+        assert _rows(opened) == [("A", "priority", "group", "1"),
+                                 ("A", "relation", "operator", "brother")]
 
         got = await _call("set_contact_marks",
                           {"contact": "marco", "priority": False})
     assert got == {"status": "ok", "contact": "Marco Example",
                    "applied": {"priority": False}}
     assert _marks(opened, "A") == cstore.Marks(
-        priority=False, priority_origin="operator", relation="", language="")
+        priority=False, priority_origin="operator", relation="brother",
+        language="")
     assert ("A", "priority", "operator", "0") in _rows(opened)
 
 
