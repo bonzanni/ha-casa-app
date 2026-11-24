@@ -120,6 +120,10 @@
   kind: meta
   summary: Manifest shard — the built-in secrets store document, born in its own shard because the A-D shard stands near the 40 KB index ceiling.
 
+- doc: manifest.d/architecture-contacts.yaml
+  kind: meta
+  summary: Manifest shard — the contacts document, born in its own shard because the A-D shard stands near the 40 KB index ceiling.
+
 - doc: manifest.yaml
   kind: meta
   summary: The publication allowlist for this corpus.

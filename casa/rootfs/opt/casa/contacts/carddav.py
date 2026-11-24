@@ -7,10 +7,14 @@ whose resource type is ``addressbook``, then one ``REPORT addressbook-query``
 on it for every card's ``address-data``. The absolute URLs iCloud answers with
 are followed (the home set lives on a ``pNN-contacts`` host).
 
-The fetch is all-or-nothing: any failed step, any member resource without a
-readable card, or any card with no content raises
-:class:`~contacts.sync.SourceError`, because a card missing from the result
-would read as a deleted contact. Error text never holds the credentials.
+The fetch is all-or-nothing: any failed step, a REPORT response that cannot
+be accounted for (no href or several, a failing status, the collection's own
+entry included), a member resource without exactly one readable, well-formed
+card body holding exactly one card, a card with no content, or a member href
+or uid that appears twice raises
+:class:`~contacts.sync.SourceError` before any card is returned, because a
+card missing from the result would read as a deleted contact. Error text never
+holds the credentials.
 """
 from __future__ import annotations
 
@@ -57,10 +61,13 @@ REFUSED = "iCloud refused the sign-in; check the app-specific password"
 INCOMPLETE = "iCloud returned an incomplete address book"
 
 
-def _status_ok(element: ET.Element) -> bool:
-    status = element.findtext(f"{_DAV}status") or ""
-    parts = status.split()
+def _is_200(status: str | None) -> bool:
+    parts = (status or "").split()
     return len(parts) >= 2 and parts[1] == "200"
+
+
+def _status_ok(element: ET.Element) -> bool:
+    return _is_200(element.findtext(f"{_DAV}status"))
 
 
 def _ok_props(response: ET.Element) -> list[ET.Element]:
@@ -160,33 +167,58 @@ class ICloudSource:
 
     @staticmethod
     def _cards(root: ET.Element, collection: str) -> list[vcard.Card]:
-        """Every card in a REPORT multistatus; SourceError unless each member
-        resource yields complete cards."""
+        """Every card in a REPORT multistatus; SourceError unless every
+        response is accounted for: each names exactly one href, carries no
+        failing response-level status, and is either the collection's own
+        entry or a member resource with exactly one readable, well-formed
+        card body holding exactly one card with content. No member href and
+        no uid (after the href fallback) may appear twice."""
+        if root.tag != f"{_DAV}multistatus":
+            raise SourceError(INCOMPLETE)
         cards: list[vcard.Card] = []
-        for response in root.findall(f"{_DAV}response"):
-            href = (response.findtext(f"{_DAV}href") or "").strip()
-            if _path(urljoin(collection, href)) == _path(collection):
+        seen_hrefs: set[str] = set()
+        seen_uids: set[str] = set()
+        for response in root:
+            if response.tag.rpartition("}")[2] != "response":
+                continue    # responsedescription, sync-token
+            if response.tag != f"{_DAV}response":
+                raise SourceError(INCOMPLETE)
+            hrefs = response.findall(f"{_DAV}href")
+            if len(hrefs) != 1 or not (hrefs[0].text or "").strip():
+                raise SourceError(INCOMPLETE)
+            href = (hrefs[0].text or "").strip()
+            if not all(_is_200(status.text)
+                       for status in response.findall(f"{_DAV}status")):
+                raise SourceError(INCOMPLETE)
+            member = _path(urljoin(collection, href))
+            if member == _path(collection):
                 continue
-            data = None
-            for propstat in response.findall(f"{_DAV}propstat"):
-                found = propstat.find(f"{_DAV}prop/{_CARD}address-data")
-                if found is not None:
-                    if not _status_ok(propstat):
-                        raise SourceError(INCOMPLETE)
-                    data = found.text or ""
-            if data is None:
+            if member in seen_hrefs:
+                raise SourceError(INCOMPLETE)
+            seen_hrefs.add(member)
+            found = [(propstat, data) for propstat in
+                     response.findall(f"{_DAV}propstat")
+                     for data in propstat.findall(
+                         f"{_DAV}prop/{_CARD}address-data")]
+            if len(found) != 1 or not _status_ok(found[0][0]):
+                raise SourceError(INCOMPLETE)
+            data = found[0][1].text or ""
+            if not vcard.well_formed(data):
                 raise SourceError(INCOMPLETE)
             parsed = vcard.parse_cards(data)
-            blocks = vcard.count_blocks(data)
-            if blocks == 0 or len(parsed) != blocks:
+            # An address-book resource is one vCard.
+            if len(parsed) != 1:
                 raise SourceError(INCOMPLETE)
-            fallback_uid = unquote(href.rstrip("/").rsplit("/", 1)[-1])
-            if fallback_uid.lower().endswith(".vcf"):
-                fallback_uid = fallback_uid[:-len(".vcf")]
-            for card in parsed:
-                if not (card.is_group or card.name or card.org or card.tels):
-                    raise SourceError(INCOMPLETE)
-                if card.uid == "":
-                    card = dataclasses.replace(card, uid=fallback_uid)
-                cards.append(card)
+            card = parsed[0]
+            if not (card.is_group or card.name or card.org or card.tels):
+                raise SourceError(INCOMPLETE)
+            if card.uid == "":
+                fallback_uid = unquote(href.rstrip("/").rsplit("/", 1)[-1])
+                if fallback_uid.lower().endswith(".vcf"):
+                    fallback_uid = fallback_uid[:-len(".vcf")]
+                card = dataclasses.replace(card, uid=fallback_uid)
+            if card.uid in seen_uids:
+                raise SourceError(INCOMPLETE)
+            seen_uids.add(card.uid)
+            cards.append(card)
         return cards

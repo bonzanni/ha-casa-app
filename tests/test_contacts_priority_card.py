@@ -30,7 +30,8 @@ ASKED = ("Asked the operator to confirm on a card. "
          "The card expires after five minutes.")
 CARD = ("Make priority?\n\n"
         "Marco Example\n+31201110001\n+31201110009\n\n"
-        "Priority callers are put through to you.")
+        "Casa treats priority contacts as people you always want to hear "
+        "from.")
 
 
 @pytest.fixture(autouse=True)

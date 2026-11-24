@@ -9967,6 +9967,9 @@ async def find_contact(args: dict) -> dict:
         return _result(refusal)
     query = args.get("query")
     query = query if isinstance(query, str) else ""
+    if not query.strip():
+        return _result({"status": "error", "message": (
+            "Give a name, an organisation or a phone number to look for.")})
     region = contacts_service.default_region()
 
     def _read():
@@ -10164,7 +10167,8 @@ async def _contact_priority_card(person, applied: dict) -> dict:
                 request_id=live)
     rid = uuid.uuid4().hex
     body = "\n".join(["Make priority?", "", name, *person.numbers, "",
-                      "Priority callers are put through to you."])
+                      "Casa treats priority contacts as people you always "
+                      "want to hear from."])
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
         timeout_s=_PRIORITY_CARD_TIMEOUT_S, detached=True, supersede=False,
@@ -10194,8 +10198,7 @@ async def _contact_priority_card(person, applied: dict) -> dict:
         if store is None:
             return None
         with store.transaction(write=True) as conn:
-            if conn.execute("SELECT 1 FROM people WHERE source = ? AND uid = ?",
-                            (source, uid)).fetchone() is None:
+            if not cstore.exists(conn, source, uid):
                 return False
             cstore.set_mark(conn, source, uid, "priority", "1", "operator")
             return True

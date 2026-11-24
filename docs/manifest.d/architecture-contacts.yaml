@@ -1,0 +1,45 @@
+# Manifest shard — the contacts document, born in its own shard because the A-D shard stands
+# near the 40 KB index ceiling. Loaded with the root docs/manifest.yaml by
+# scripts/verify_docs.py; same entry format.
+
+- doc: architecture/contacts.md
+  summary: The contacts store — a read-only copy of the iCloud address book, the marks Casa keeps about people, the note reading, the caller lookup, the assistant's three contact tools and the priority card.
+  when_changing: the contacts store or its schema, the iCloud sync or vCard reading, how address-book notes are read, the caller lookup, find_contact, refresh_contacts or set_contact_marks, or the priority confirmation card
+  covers:
+    - casa/rootfs/opt/casa/contacts/__init__.py
+    - casa/rootfs/opt/casa/contacts/schema.py
+    - casa/rootfs/opt/casa/contacts/store.py
+    - casa/rootfs/opt/casa/contacts/sync.py
+    - casa/rootfs/opt/casa/contacts/carddav.py
+    - casa/rootfs/opt/casa/contacts/vcard.py
+    - casa/rootfs/opt/casa/contacts/numbers.py
+    - casa/rootfs/opt/casa/contacts/notes.py
+    - casa/rootfs/opt/casa/contacts/prompts/note_reader.md
+    - casa/rootfs/opt/casa/contacts/lookup.py
+    - casa/rootfs/opt/casa/contacts/service.py
+    - casa/rootfs/opt/casa/tools.py::find_contact
+    - casa/rootfs/opt/casa/tools.py::refresh_contacts
+    - casa/rootfs/opt/casa/tools.py::set_contact_marks
+    - casa/rootfs/opt/casa/tools.py::_contacts_gate
+    - casa/rootfs/opt/casa/tools.py::_contact_priority_card
+  tests:
+    - tests/test_contacts_store.py
+    - tests/test_contacts_sync.py
+    - tests/test_contacts_carddav.py
+    - tests/test_contacts_vcard.py
+    - tests/test_contacts_numbers.py
+    - tests/test_contacts_notes.py
+    - tests/test_contacts_lookup.py
+    - tests/test_contacts_service.py
+    - tests/test_contacts_tools.py
+    - tests/test_contacts_priority_card.py
+  related: [architecture/persistent-state.md, architecture/builtin-secrets-store.md, architecture/tools-interface.md, architecture/memory-scoping.md, architecture/tool-questions.md, reference/operator-options.md]
+  defines_invariants: [INV-CONTACTS-001, INV-CONTACTS-002, INV-CONTACTS-003, INV-CONTACTS-004, INV-CONTACTS-005, INV-CONTACTS-006, INV-CONTACTS-007]
+  invariant_tests:
+    INV-CONTACTS-001: [tests/test_contacts_lookup.py::test_callerinfo_has_exactly_five_fields, tests/test_contacts_lookup.py::test_withheld_and_garbage_never_raise, tests/test_contacts_lookup.py::test_store_unavailable_is_unknown, tests/test_contacts_lookup.py::test_store_read_that_raises_is_unknown]
+    INV-CONTACTS-002: [tests/test_contacts_sync.py::test_source_error_leaves_store_untouched_and_tells_once, tests/test_contacts_sync.py::test_empty_result_is_a_failure_when_mirror_has_people, tests/test_contacts_sync.py::test_partial_report_deletes_nobody, tests/test_contacts_sync.py::test_card_cut_short_keeps_the_stored_person, tests/test_contacts_sync.py::test_duplicate_in_the_report_overwrites_nobody]
+    INV-CONTACTS-003: [tests/test_contacts_store.py::test_priority_never_from_note, tests/test_contacts_notes.py::test_priority_is_never_written_from_a_reading]
+    INV-CONTACTS-004: [tests/test_contacts_priority_card.py::test_priority_true_posts_card_and_changes_nothing_yet, tests/test_contacts_priority_card.py::test_approve_applies_the_stored_change_once]
+    INV-CONTACTS-005: [tests/test_contacts_store.py::test_replace_keeps_operator_marks_and_other_sources, tests/test_contacts_store.py::test_operator_wins_over_group_and_note]
+    INV-CONTACTS-006: [tests/test_contacts_tools.py::test_tools_refuse_below_private_clearance]
+    INV-CONTACTS-007: [tests/test_contacts_notes.py::test_unread_note_is_retried_on_the_next_sync, tests/test_contacts_notes.py::test_sync_without_model_leaves_notes_for_a_later_sync]

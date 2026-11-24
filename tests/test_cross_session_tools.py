@@ -501,6 +501,8 @@ EXPECTED_SITES = {
     ("action_judgement.py", "_ask_check"): "test_action_judgement_options",
     ("memory/model_port.py", "writer_options"): "test_memory_writer_options",
     ("approval_card.py", "_ask"): "test_approval_card_writer.py",
+    ("contacts/notes.py", "model_options"):
+        "test_contacts_notes.py::test_note_model_uses_the_small_model_and_no_tools",
 }
 
 # The calls whose result carries the denial: the helper itself, and the

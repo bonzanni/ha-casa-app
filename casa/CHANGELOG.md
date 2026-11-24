@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.383.0] - 2026-11-24
+
+### Added
+
+- Casa can keep a copy of your iCloud contacts, and you can tell the assistant who is a priority contact. Add a vault item named `iCloud Contacts` with your Apple ID (`username`) and an app-specific password (`password`); Casa then copies your address book once a day, and whenever you ask the assistant to refresh it. The assistant can look people up, and you can tell it how someone relates to you and which language they speak; it also reads that from the notes on your contacts, but what you tell it wins. People in a group named `Priority` in your Contacts app are priority contacts; when you ask the assistant to make someone else priority, Casa asks you to confirm on a card that expires after five minutes. If iCloud fails, Casa keeps the last good copy and tells you once. See "Contacts" in the documentation.
+- A new option, `contacts_default_region`: the country to assume for phone numbers in your contacts written without a country code. Leave it empty to skip such numbers.
+
 ## [0.382.1] - 2026-11-23
 
 ### Removed

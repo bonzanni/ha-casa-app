@@ -178,3 +178,126 @@ async def test_failed_propstat_with_a_readable_card_is_a_source_error() -> None:
         "</multistatus>", failed + "</multistatus>")
     with pytest.raises(SourceError, match=INCOMPLETE):
         await _source(report).fetch()
+
+
+GOOD = "BEGIN:VCARD\r\nFN:Zoe Example\r\nUID:U1\r\nEND:VCARD\r\n"
+COLLECTION = "/1234567/carddav/card/"
+
+
+def _with(report: str, *responses: str) -> str:
+    """*report* with *responses* appended to its multistatus."""
+    return report.replace("</multistatus>",
+                          "".join(responses) + "</multistatus>")
+
+
+async def test_collection_own_entry_is_skipped_when_it_did_not_fail() -> None:
+    own = (f"<response><href>{COLLECTION}</href><propstat><prop>"
+           "<getetag/></prop><status>HTTP/1.1 404 Not Found</status>"
+           "</propstat></response>")
+    cards = await _source(_with(_report({"U1.vcf": GOOD}), own)).fetch()
+    assert [c.uid for c in cards] == ["U1"]
+
+
+async def test_response_without_href_is_a_source_error() -> None:
+    for bare in ("<response/>", "<response><href>  </href><status>"
+                 "HTTP/1.1 200 OK</status></response>"):
+        source = _source(_with(_report({"U1.vcf": GOOD}), bare))
+        with pytest.raises(SourceError, match=INCOMPLETE):
+            await source.fetch()
+
+
+async def test_collection_level_failure_status_is_a_source_error() -> None:
+    truncated = (f"<response><href>{COLLECTION}</href>"
+                 "<status>HTTP/1.1 507 Insufficient Storage</status>"
+                 "</response>")
+    source = _source(_with(_report({"U1.vcf": GOOD}), truncated))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()
+
+
+async def test_member_level_failure_status_is_a_source_error() -> None:
+    failed = ("<response><href>/1234567/carddav/card/U2.vcf</href>"
+              "<status>HTTP/1.1 404 Not Found</status></response>")
+    source = _source(_with(_report({"U1.vcf": GOOD}), failed))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()
+
+
+async def test_response_naming_more_than_one_href_is_a_source_error() -> None:
+    # The DAV form ``href, href*, status``: the collection's own href first
+    # must not hide a member named after it.
+    several = (f"<response><href>{COLLECTION}</href>"
+               f"<href>{COLLECTION}U2.vcf</href>"
+               "<status>HTTP/1.1 200 OK</status></response>")
+    source = _source(_with(_report({"U1.vcf": GOOD}), several))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()
+
+
+async def test_member_with_two_address_data_is_a_source_error() -> None:
+    second = ("<propstat><prop>"
+              '<address-data xmlns="urn:ietf:params:xml:ns:carddav">'
+              "BEGIN:VCARD\r\nFN:Adam Sample\r\nUID:U2\r\nEND:VCARD\r\n"
+              "</address-data></prop><status>HTTP/1.1 200 OK</status>"
+              "</propstat></response>")
+    report = _report({"U1.vcf": GOOD}).replace("</response>", second, 1)
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await _source(report).fetch()
+
+
+async def test_answer_that_is_not_a_dav_multistatus_is_a_source_error() -> None:
+    for report in (
+            '<error xmlns="DAV:"><number-of-matches-within-limits/></error>',
+            _with(_report({"U1.vcf": GOOD}),
+                  '<response xmlns="urn:example:other">'
+                  f"<href>{COLLECTION}U2.vcf</href></response>")):
+        with pytest.raises(SourceError, match=INCOMPLETE):
+            await _source(report).fetch()
+
+
+@pytest.mark.parametrize("data", [
+    "BEGIN:VCARD\r\nUID:U1\r\nFN:Zoe Example\r\n",
+    "BEGIN:VCARD\r\nUID:U1\r\nFN:Zoe Example\r\n"
+    "BEGIN:VCARD\r\nUID:U1\r\nFN:Zoe Example\r\nEND:VCARD\r\n",
+], ids=["unterminated", "nested"])
+async def test_card_that_is_not_well_formed_is_a_source_error(
+    data: str,
+) -> None:
+    source = _source(_report({"U2.vcf": GOOD.replace("U1", "U2"),
+                              "U1.vcf": data}))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()
+
+
+async def test_two_responses_for_one_href_are_a_source_error() -> None:
+    again = ("<response><href>/1234567/carddav/card/U1.vcf</href><propstat>"
+             '<prop><address-data xmlns="urn:ietf:params:xml:ns:carddav">'
+             "BEGIN:VCARD\r\nFN:Adam Sample\r\nUID:U9\r\nEND:VCARD\r\n"
+             "</address-data></prop><status>HTTP/1.1 200 OK</status>"
+             "</propstat></response>")
+    source = _source(_with(_report({"U1.vcf": GOOD}), again))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()
+
+
+async def test_two_resources_with_one_uid_are_a_source_error() -> None:
+    clash = "BEGIN:VCARD\r\nFN:Adam Sample\r\nUID:U1\r\nEND:VCARD\r\n"
+    source = _source(_report({"U1.vcf": GOOD, "U2.vcf": clash}))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()
+
+
+async def test_blank_uid_falling_back_onto_a_taken_uid_is_a_source_error(
+) -> None:
+    # U2's card has no UID, so it takes "U1" from its href, which is taken.
+    blank = "BEGIN:VCARD\r\nFN:Adam Sample\r\nEND:VCARD\r\n"
+    source = _source(_report({"U2.vcf": GOOD, "U1.vcf": blank}))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()
+
+
+async def test_resource_with_two_cards_is_a_source_error() -> None:
+    two = GOOD + GOOD.replace("U1", "U2").replace("Zoe", "Adam")
+    source = _source(_report({"U1.vcf": two}))
+    with pytest.raises(SourceError, match=INCOMPLETE):
+        await source.fetch()

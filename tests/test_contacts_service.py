@@ -41,7 +41,7 @@ class FakeSource:
 
     name = "icloud"
 
-    def __init__(self, *answers: list[Card] | SourceError,
+    def __init__(self, *answers: list[Card] | Exception,
                  gate: asyncio.Event | None = None) -> None:
         self._answers = list(answers)
         self.gate = gate
@@ -54,7 +54,7 @@ class FakeSource:
             await self.gate.wait()
         answer = self._answers.pop(0) if len(self._answers) > 1 \
             else self._answers[0]
-        if isinstance(answer, SourceError):
+        if isinstance(answer, Exception):
             raise answer
         return answer
 
@@ -76,11 +76,15 @@ class Operator:
     def __init__(self, delivered: bool | Exception = True) -> None:
         self.delivered = delivered
         self.lines: list[str] = []
+        #: The lines that reached the operator (the answer was True).
+        self.received: list[str] = []
 
     async def __call__(self, text: str) -> bool:
         self.lines.append(text)
         if isinstance(self.delivered, Exception):
             raise self.delivered
+        if self.delivered:
+            self.received.append(text)
         return self.delivered
 
 
@@ -163,33 +167,159 @@ async def test_run_daily_never_raises_when_notify_or_store_fails(
         await service.run_daily()
     assert "could not be refreshed" in caplog.text
 
-    # A store that cannot be written: refresh fails, run_daily returns.
-    broken = ContactsStore(opened.directory)
-    operator = Operator()
-    _configure(monkeypatch, broken, FakeSource([_card("U1", "Marco")]),
-               notify=operator)
-    result = await service.refresh(reason="test")
-    assert result is not None and result.ok is False and result.error
-    assert result.tell_operator is False
-    await service.run_daily()
-    assert operator.lines == []
-
-    # A source that breaks in an unexpected way.
-    class Exploding(FakeSource):
-        async def fetch(self) -> list[Card]:
-            raise ValueError("not a SourceError")
-    _configure(monkeypatch, opened, Exploding([]), notify=operator)
-    result = await service.refresh(reason="test")
-    assert result is not None and result.ok is False
-    await service.run_daily()
-
-    # A secret reader that raises.
+    # A store that cannot be written, a source that breaks in an unexpected
+    # way, a secret reader that raises: each is a failed result, never an
+    # exception, and run_daily returns after telling the operator.
     def raising(field: str) -> str | None:
         raise OSError("no op")
-    _configure(monkeypatch, opened, FakeSource([]), read_secret=raising,
+    for store, source, read_secret, line in (
+            (ContactsStore(opened.directory), FakeSource([_card("U1", "M")]),
+             ICLOUD, UNAVAILABLE_LINE),
+            (opened, FakeSource(ValueError("not a SourceError")), ICLOUD,
+             UNEXPECTED_LINE + " No contacts are stored yet."),
+            (opened, FakeSource([]), raising,
+             UNEXPECTED_LINE + " No contacts are stored yet.")):
+        operator = Operator()
+        _configure(monkeypatch, store, source, read_secret=read_secret,
+                   notify=operator)
+        result = await service.refresh(reason="test")
+        assert result is not None and result.ok is False and result.error
+        # That refresh began the streak; configuring again starts afresh.
+        _configure(monkeypatch, store, source, read_secret=read_secret,
+                   notify=operator)
+        await service.run_daily()
+        assert operator.lines == [line]
+
+
+UNAVAILABLE_LINE = ("Contacts could not be refreshed: the contacts store is "
+                    "unavailable.")
+UNEXPECTED_LINE = ("Contacts could not be refreshed: the refresh stopped on "
+                   "an unexpected error.")
+
+
+async def test_service_failure_tells_operator_once_per_streak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A corrupt file: the store is unavailable, the credentials are there.
+    store = ContactsStore(str(tmp_path / "contacts"))
+    Path(store.directory).mkdir(mode=0o700)
+    Path(store.path).write_bytes(b"not a database file " * 64)
+    assert store.open() is False
+    source = FakeSource([_card("U1", "Marco Example")],
+                        RuntimeError("a bug"))
+    operator = Operator()
+    _configure(monkeypatch, store, source, notify=operator)
+
+    await service.run_daily()
+    await service.run_daily()
+    # Two failing nights, one line; nothing can be said about the copy.
+    assert operator.lines == [UNAVAILABLE_LINE]
+
+    # The file is repaired by hand: the next night works and ends the streak.
+    Path(store.path).unlink()
+    assert store.open() is True
+    await service.run_daily()
+    assert operator.lines == [UNAVAILABLE_LINE]
+
+    # A new failure is a new streak, told again.
+    await service.run_daily()
+    assert operator.lines == [
+        UNAVAILABLE_LINE,
+        UNEXPECTED_LINE + " The last good copy is still in use."]
+    assert source.fetches == 2
+
+
+SYNC_LINE = ("Contacts could not be refreshed from iCloud: iCloud did not "
+             "answer. No contacts are stored yet.")
+
+
+def _failing(kind: str, tmp_path: Path):
+    """A store and a source that fail tonight, the line they cause, and a
+    callable that makes the next night succeed."""
+    store = ContactsStore(str(tmp_path / "contacts"))
+    if kind == "sync":
+        assert store.open() is True
+        source = FakeSource(SourceError("iCloud did not answer"))
+
+        def recover() -> None:
+            source._answers = [[_card("U1", "Marco Example")]]
+        return store, source, SYNC_LINE, recover
+    # Never opened: the store is unavailable until it opens.
+    source = FakeSource([_card("U1", "Marco Example")])
+    return store, source, UNAVAILABLE_LINE, store.open
+
+
+@pytest.mark.parametrize("kind", ["sync", "service"])
+@pytest.mark.parametrize("first", [RuntimeError("Telegram is down"), False],
+                         ids=["notify-raises", "notify-false"])
+async def test_undelivered_notice_is_sent_on_the_next_failing_night(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
+    first: Exception | bool,
+) -> None:
+    store, source, line, _recover = _failing(kind, tmp_path)
+    operator = Operator(first)
+    _configure(monkeypatch, store, source, notify=operator)
+
+    await service.run_daily()
+    assert operator.lines == [line] and operator.received == []
+
+    operator.delivered = True
+    await service.run_daily()
+    assert operator.received == [line]
+
+    # Delivered: the rest of the streak stays quiet.
+    await service.run_daily()
+    assert operator.lines == [line, line]
+    assert operator.received == [line]
+
+
+@pytest.mark.parametrize("kind", ["sync", "service"])
+async def test_undelivered_notice_is_dropped_once_a_sync_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    store, source, line, recover = _failing(kind, tmp_path)
+    operator = Operator(False)
+    _configure(monkeypatch, store, source, notify=operator)
+
+    await service.run_daily()
+    assert operator.lines == [line]
+
+    recover()
+    operator.delivered = True
+    await service.run_daily()
+    await service.run_daily()
+    assert operator.lines == [line]
+    assert operator.received == []
+
+
+async def test_failure_line_says_when_no_contacts_are_stored(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = Operator()
+    _configure(monkeypatch, opened,
+               FakeSource(SourceError("iCloud did not answer")),
                notify=operator)
     await service.run_daily()
-    assert operator.lines == []
+    assert operator.lines == [
+        "Contacts could not be refreshed from iCloud: iCloud did not answer. "
+        "No contacts are stored yet."]
+
+
+async def test_missing_username_reads_no_password(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Home Vault")
+    fake = _Op({"username": _done(1, "", "[ERROR] no such item"),
+                "password": _done(0, "abcd-efgh\n")})
+    monkeypatch.setattr(service.subprocess, "run", fake)
+    source = FakeSource([_card("U1", "Marco Example")])
+    _configure(monkeypatch, opened, source,
+               read_secret=service.read_icloud_secret)
+
+    assert await service.refresh(reason="test") is None
+    assert [call[call.index("--fields") + 1] for call in fake.calls] == [
+        "label=username"]
+    assert source.fetches == 0
 
 
 async def test_concurrent_refresh_runs_one_sync(

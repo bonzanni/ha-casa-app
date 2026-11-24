@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-07-31
+last_reviewed: 2026-11-24
 ---
 
 # Operator options
@@ -35,7 +35,7 @@ system covers repository and plugin configuration, not the manifest.
 
 **Every option read is "null"-normalized.** bashio returns the literal string "null" for a
 key absent from the stored options; every read in the run script guards that sentinel
-before exporting. One group exports conditionally — the Telegram API base, the webhook secret, the timezone, the log level and the reap TTL
+before exporting. One group exports conditionally — the Telegram API base, the webhook secret, the timezone, the contacts country, the log level and the reap TTL
 are exported only when set to a real value; the public URL is normalized the same way but
 always exported, empty when unset. The rest export unconditionally after normalization —
 empty (or the script-side fallback) when the key is deleted, never the "null" literal.
@@ -59,6 +59,7 @@ container variable can survive an empty option elsewhere.
 | `voice_agent_model` | `VOICE_AGENT_MODEL` | role-slot model options → role model resolution | haiku | restart |
 | `enable_terminal` | `ENABLE_TERMINAL` | nginx setup, ttyd service, dashboard | false | restart |
 | `casa_tz` | `CASA_TZ` | timekeeping — both scheduler wall-clock and the current-time block every agent turn sees | empty → `TZ` (Home Assistant's zone), then UTC | restart |
+| `contacts_default_region` | `CONTACTS_DEFAULT_REGION` | the contacts service, upper-cased: the country a phone number written without `+` is read as dialled from, by the sync, `find_contact` and `set_contact_marks` (the caller lookup takes the region from its caller; [`contacts.md`](../architecture/contacts.md)) | empty → such numbers are skipped | restart |
 | `engagement_reap_days` | `ENGAGEMENT_REAP_DAYS` | engagement reaper | 7 (0 disables) | restart |
 | `log_level` | `LOG_LEVEL` | main startup logging; the standalone MCP service's logging | info (runtime falls back to INFO when absent/empty) | restart |
 | `specialist_max_concurrency` | `SPECIALIST_MAX_CONCURRENCY` | specialist limiter (clamped 1–20) — the *fleet-wide* cap; a separate hard-coded rule allows exactly one active delegation per scope regardless; a specialist's `hand_off` takes only the per-scope slot, so a hand-off chain counts once (`architecture/specialist-handoff.md`) | 2 | restart |

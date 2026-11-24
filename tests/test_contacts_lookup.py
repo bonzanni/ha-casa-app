@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,24 @@ def test_shared_number_picks_priority_person(opened: ContactsStore) -> None:
 def test_store_unavailable_is_unknown(tmp_path: Path) -> None:
     never_opened = ContactsStore(str(tmp_path / "nothing"))
     assert lookup(never_opened, "+31201110001", default_region="NL") == \
+        CallerInfo(False, False, "", "", "nl")
+
+
+@pytest.mark.parametrize("error", [
+    sqlite3.OperationalError("database is locked"),
+    RuntimeError("an unexpected bug"),
+], ids=["sqlite-error", "unexpected-error"])
+def test_store_read_that_raises_is_unknown(
+        opened: ContactsStore, monkeypatch: pytest.MonkeyPatch,
+        error: Exception) -> None:
+    _fill(opened, [_person("A", "Zoe Example", "+31201110001")],
+          [("A", "priority", "1", "operator")])
+
+    def failing(conn, e164):
+        raise error
+
+    monkeypatch.setattr(cstore, "by_number", failing)
+    assert lookup(opened, "+31201110001", default_region="NL") == \
         CallerInfo(False, False, "", "", "nl")
 
 

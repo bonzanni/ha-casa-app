@@ -11,7 +11,6 @@ from dataclasses import dataclass
 
 _ESCAPE = re.compile(r"\\([nN,;\\])")
 _ITEM_PREFIX = re.compile(r"^item\d+\.", re.IGNORECASE)
-_BEGIN = re.compile(r"^BEGIN:VCARD\s*$", re.IGNORECASE | re.MULTILINE)
 _NOT_LABELS = {"VOICE", "PREF"}
 
 
@@ -26,11 +25,6 @@ class Card:
     related: tuple[str, ...]
     is_group: bool
     members: tuple[str, ...]
-
-
-def count_blocks(text: str) -> int:
-    """Number of ``BEGIN:VCARD`` lines in ``text``."""
-    return len(_BEGIN.findall(text))
 
 
 def _unfold(text: str) -> list[str]:
@@ -120,6 +114,26 @@ def _build(lines: list[str]) -> Card:
         is_group=is_group,
         members=tuple(members),
     )
+
+
+def well_formed(text: str) -> bool:
+    """True when ``text`` holds at least one block and its ``BEGIN:VCARD``
+    and ``END:VCARD`` lines strictly alternate, starting with BEGIN and
+    ending with END: no block left open, none nested, no stray END."""
+    open_block = False
+    blocks = 0
+    for line in _unfold(text):
+        tag = line.strip().upper()
+        if tag == "BEGIN:VCARD":
+            if open_block:
+                return False
+            open_block = True
+        elif tag == "END:VCARD":
+            if not open_block:
+                return False
+            open_block = False
+            blocks += 1
+    return blocks > 0 and not open_block
 
 
 def parse_cards(text: str) -> list[Card]:

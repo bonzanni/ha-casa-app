@@ -267,3 +267,75 @@ async def test_duplicate_uid_keeps_the_last_card_and_its_group_priority(
         assert conn.execute(
             "SELECT count(*) FROM marks WHERE origin = 'group'"
         ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("extra", [
+    "<response/>",
+    "<response><href>/1234567/carddav/card/</href>"
+    "<status>HTTP/1.1 507 Insufficient Storage</status></response>",
+], ids=["response-without-href", "collection-507"])
+async def test_partial_report_deletes_nobody(
+    opened: ContactsStore, extra: str,
+) -> None:
+    before = await _mirror_u1_u2_with_operator_mark(opened)
+    report = _report({"U1.vcf": U1_CARD}).replace(
+        "</multistatus>", extra + "</multistatus>")
+    source = _icloud(report)
+
+    first = await sync.run(opened, source, default_region="NL")
+    second = await sync.run(opened, source, default_region="NL")
+
+    assert (first.ok, first.tell_operator) == (False, True)
+    assert first.error == "iCloud returned an incomplete address book"
+    assert (second.ok, second.tell_operator) == (False, False)
+    assert _snapshot(opened) == before
+
+
+@pytest.mark.parametrize("cut", [
+    "BEGIN:VCARD\r\nFN:Zoe Example\r\nUID:U1\r\n",
+    "BEGIN:VCARD\r\nFN:Zoe Example\r\nUID:U1\r\n"
+    "BEGIN:VCARD\r\nFN:Zoe Example\r\nUID:U1\r\nEND:VCARD\r\n",
+], ids=["cut-before-end", "nested"])
+async def test_card_cut_short_keeps_the_stored_person(
+    opened: ContactsStore, cut: str,
+) -> None:
+    await _mirror_u1_u2_with_operator_mark(opened)
+    with opened.transaction(write=True) as conn:
+        cstore.set_mark(conn, "icloud", "U1", "language", "it", "note")
+    before = _snapshot(opened)
+    source = _icloud(_report({"U1.vcf": cut, "U2.vcf": U2_CARD}))
+
+    result = await sync.run(opened, source, default_region="NL")
+
+    assert (result.ok, result.tell_operator) == (False, True)
+    assert result.error == "iCloud returned an incomplete address book"
+    assert _snapshot(opened) == before
+    with opened.transaction() as conn:
+        (zoe,) = cstore.by_number(conn, "+31201110001")
+        assert zoe.uid == "U1"
+        assert cstore.marks_for(conn, "icloud", "U1").language == "it"
+
+
+_U2_CONFLICT = ("BEGIN:VCARD\r\nFN:Adam Sample\r\nTEL:+31 20 111 0099\r\n"
+                "UID:U2\r\nEND:VCARD\r\n")
+_U3_CARD = ("BEGIN:VCARD\r\nFN:Bea Fictional\r\nTEL:+31 20 111 0003\r\n"
+            "UID:U3\r\nEND:VCARD\r\n")
+
+
+@pytest.mark.parametrize("report", [
+    _report({"U1.vcf": U1_CARD, "U2.vcf": U2_CARD}).replace(
+        "</multistatus>", _report({"U2.vcf": _U2_CONFLICT}).split(
+            '<multistatus xmlns="DAV:">')[1]),
+    _report({"U1.vcf": U1_CARD, "U2.vcf": U2_CARD, "U3.vcf": _U2_CONFLICT}),
+    _report({"U1.vcf": U1_CARD, "U2.vcf": U2_CARD + _U3_CARD}),
+], ids=["same-href-twice", "same-uid-twice", "two-cards-in-one-resource"])
+async def test_duplicate_in_the_report_overwrites_nobody(
+    opened: ContactsStore, report: str,
+) -> None:
+    before = await _mirror_u1_u2_with_operator_mark(opened)
+
+    result = await sync.run(opened, _icloud(report), default_region="NL")
+
+    assert (result.ok, result.tell_operator) == (False, True)
+    assert result.error == "iCloud returned an incomplete address book"
+    assert _snapshot(opened) == before

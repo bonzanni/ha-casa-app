@@ -35,6 +35,20 @@ U3 = _person("U3", "Bea Fictional", "+31201110003", note="new friend")
 F1 = _person("F1", "Carl Invented", "+31201110009", source="file")
 
 
+def test_exists_names_one_person_of_one_source(
+    opened: ContactsStore,
+) -> None:
+    with opened.transaction(write=True) as conn:
+        cstore.replace_source(conn, "icloud", [U1])
+        cstore.replace_source(conn, "file", [F1])
+    with opened.transaction() as conn:
+        assert cstore.exists(conn, "icloud", "U1") is True
+        assert cstore.exists(conn, "file", "F1") is True
+        assert cstore.exists(conn, "icloud", "U2") is False
+        assert cstore.exists(conn, "file", "U1") is False
+        assert cstore.exists(conn, "icloud", "F1") is False
+
+
 def test_replace_keeps_operator_marks_and_other_sources(
     opened: ContactsStore,
 ) -> None:

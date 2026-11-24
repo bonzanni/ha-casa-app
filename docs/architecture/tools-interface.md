@@ -266,6 +266,11 @@ are described in [`memory-tools.md`](memory-tools.md) (INV-MEM-010, INV-MEM-019)
 `get_schedule` lists the calling role's own triggers and reminders, not the operator's
 calendar.
 
+`find_contact`, `refresh_contacts` and `set_contact_marks` — the assistant's reads and
+marks over the operator's synced address book, refused below private clearance, with a
+priority contact applied only by the operator's tap on Casa's card — are described in
+[`contacts.md`](contacts.md) (INV-CONTACTS-004, INV-CONTACTS-006).
+
 The assistant's `start_job` and a job session's `report_job_progress` are described in
 [`background-jobs.md`](background-jobs.md); a specialist job's `ask_operator`, and the start
 line `start_job` posts for a job the operator started, in

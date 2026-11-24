@@ -26,4 +26,23 @@ def test_folded_lines_and_odd_blocks_are_kept():
     assert [c.uid for c in cards] == ["U1", "U2", "", "U4"]
     assert cards[0].note.endswith("continued on the next line")
     assert cards[3].name == "Acme Plumbing"
-    assert vcard.count_blocks(text) == len(cards) == 4
+    assert vcard.well_formed(text) and len(cards) == 4
+
+
+ONE = "BEGIN:VCARD\r\nUID:U1\r\nFN:Zoe Example\r\nEND:VCARD\r\n"
+
+
+def test_well_formed_single_and_multi():
+    assert vcard.well_formed(ONE)
+    assert vcard.well_formed(ONE + ONE.replace("U1", "U2"))
+    assert vcard.well_formed((FIX / "apple_person.vcf").read_text())
+
+
+def test_well_formed_refuses_unterminated_nested_stray_end_and_empty():
+    assert not vcard.well_formed("BEGIN:VCARD\r\nUID:U1\r\nFN:Zoe Example\r\n")
+    assert not vcard.well_formed(
+        "BEGIN:VCARD\r\nUID:U1\r\n" + ONE)
+    assert not vcard.well_formed("UID:U1\r\nEND:VCARD\r\n")
+    assert not vcard.well_formed(ONE + "END:VCARD\r\n")
+    assert not vcard.well_formed("")
+    assert not vcard.well_formed("garbage")

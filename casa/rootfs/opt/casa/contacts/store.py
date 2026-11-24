@@ -275,6 +275,13 @@ def replace_source(conn: sqlite3.Connection, source: str,
             "note_changed": note_changed}
 
 
+def exists(conn: sqlite3.Connection, source: str, uid: str) -> bool:
+    """True when the mirror holds *uid* of *source*."""
+    return conn.execute(
+        "SELECT 1 FROM people WHERE source = ? AND uid = ?",
+        (source, uid)).fetchone() is not None
+
+
 def count(conn: sqlite3.Connection, source: str | None = None) -> int:
     """How many people the mirror holds, for one source or all."""
     if source is None:

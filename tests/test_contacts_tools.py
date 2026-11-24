@@ -136,6 +136,17 @@ async def test_find_returns_marks_and_caps_at_ten(
         assert [c["name"] for c in by_number["contacts"]] == ["Wanda Example"]
 
 
+async def test_find_with_a_blank_query_asks_for_one(
+        opened: ContactsStore) -> None:
+    _fill(opened, [_person("A", "Marco Example", "+31201110001")])
+    with _turn():
+        for args in ({"query": ""}, {"query": "   "}, {}, {"query": 7}):
+            got = await _call("find_contact", args)
+            assert got == {"status": "error", "message": (
+                "Give a name, an organisation or a phone number to look "
+                "for.")}, args
+
+
 async def test_tools_refuse_below_private_clearance(
         opened: ContactsStore, monkeypatch: pytest.MonkeyPatch) -> None:
     _fill(opened, [_person("A", "Marco Example", "+31201110001")])
