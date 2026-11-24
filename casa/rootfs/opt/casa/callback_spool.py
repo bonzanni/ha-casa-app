@@ -43,9 +43,9 @@ Same-uid processes are outside the threat model (as for ``plugin_outbox``):
 all plugin processes run as root in one container. Dirs are 0770 and files
 0600 as defence in depth, not as an inter-plugin boundary.
 
-Leaf module (stdlib plus the pure ``callback_attempts`` sibling): importable
-from the reconciler, the HTTP handler, the sweeper job and a consumer test
-alike.
+Leaf module (stdlib plus the pure ``callback_attempts`` and ``spool_fs``
+siblings): importable from the reconciler, the HTTP handler, the sweeper job
+and a consumer test alike.
 """
 from __future__ import annotations
 
@@ -55,7 +55,6 @@ import fcntl
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -67,6 +66,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import callback_attempts
+from spool_fs import (  # noqa: F401 — re-exported for existing callers
+    DIR_ID_NAME, DIR_MODE, REPLACE_TEMP_INFIX, _DIR_FLAGS, _DIR_ID_RE,
+    _MARKER_READ_FLAGS, _TOKEN_ERROR, _classify_dir_token, _is_clock,
+    _is_replace_temp, _listdir_quiet, _lstat_quiet, _mkdir, _open_dir,
+    canonical_marker_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,26 +118,15 @@ REMOVALS_DIR = ".removals"   # root-level removal-record store — a reserved
 #                              dot-root name, like every dot-prefixed root entry
 ACK_PREFIX = ".ack-"         # consumer receipt-token grammar under attempts/
 READY_NAME = "ready.json"
-DIR_ID_NAME = ".dir-id"      # per-plugin-dir identity token (see Claim)
 TEMP_PREFIX = ".tmp-"        # reserved result-temp grammar under .claims/
 COLLECT_PREFIX = ".collect-"  # consumer-held claim under results/
 PART_SUFFIX = ".part"
-REPLACE_TEMP_INFIX = ".tmp-"  # staging grammar of _replace_json: `.<name>.tmp-…`
 
-DIR_MODE = 0o770
 FILE_MODE = 0o600
 
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _NEW_FILE_FLAGS = (os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
                    | os.O_CLOEXEC)
-#: Marker reads are NON-BLOCKING: O_NONBLOCK means opening a FIFO (or any other
-#: pipe/device masquerading as ready.json) returns immediately instead of
-#: blocking for a writer, so a hostile/garbage on-disk marker can never hang
-#: the reconciler; the ``S_ISREG`` gate then rejects it before any read.
-_MARKER_READ_FLAGS = (os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
-                      | os.O_CLOEXEC)
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-_DIR_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 #: The ONLY attempt fields the delivery worker may set
 #: (:meth:`CallbackSpool.update_attempt_nudge`). Status, outcome, identity and
 #: the opaque ``meta`` stay the spool's own derivation.
@@ -176,32 +170,6 @@ class SpoolClosed(RuntimeError):
 # ---------------------------------------------------------------------------
 # names / keys
 # ---------------------------------------------------------------------------
-
-
-def canonical_marker_bytes(payload: dict) -> bytes:
-    """The ONE canonical on-disk form of a durable marker's payload — the exact
-    bytes the marker WRITER (:meth:`CallbackSpool._replace_json`, i.e.
-    ``write_ready`` / ``write_index_entry``) emits, and the exact bytes the
-    reconcile compares an on-disk marker against.
-
-    Sorted keys + the most compact separators + no ASCII-escaping, UTF-8. Because
-    writer and compare share this single helper, casa's own freshly-written
-    marker is always byte-identical to ``canonical_marker_bytes(desired)`` — a
-    steady-state pass finds it unchanged (no churn, no serialization-drift
-    footgun) while ANY on-disk drift (a key reorder, a ``true``/``1.0`` type
-    diff, an extra key, a whitespace diff) differs and is rewritten.
-
-    ``allow_nan=False`` (in lockstep with ``callback_attempts._canonical_text``,
-    its pure-side twin): a non-finite float would otherwise be emitted as the
-    NON-STANDARD ``NaN``/``Infinity`` literal — bytes no conforming reader
-    accepts and no fail-closed validator takes back, so the record would be
-    write-only. Raising here instead is what every writer already handles
-    (``TypeError``/``ValueError`` ⇒ the write is refused, nothing is
-    published)."""
-    return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
 
 
 def state_hash(state: str) -> str:
@@ -248,27 +216,10 @@ def _is_hash(name: str) -> bool:
     return bool(_HASH_RE.match(name))
 
 
-def _is_replace_temp(name: str) -> bool:
-    """True for :meth:`CallbackSpool._replace_json` staging residue
-    (``.ready.json.tmp-<pid>-<uuid>``, ``.<index-key>.json.tmp-…``) — a crash
-    between staging and the rename leaves one, and nothing else would ever
-    remove it."""
-    return name.startswith(".") and REPLACE_TEMP_INFIX in name
-
-
 def _hash_of_pending(name: str) -> str | None:
     if name.endswith(".json") and _is_hash(name[:-5]):
         return name[:-5]
     return None
-
-
-def _is_clock(value) -> bool:
-    """A usable clock field: a real, FINITE number (never a bool). Finiteness
-    is not pedantry — a ``NaN`` slipped into ``ts``/``noted_ts`` makes every
-    age comparison False, which would make the record immortal in exactly the
-    store whose whole point is a hard age bound."""
-    return (not isinstance(value, bool) and isinstance(value, (int, float))
-            and math.isfinite(value))
 
 
 def _is_removal_name(name: str) -> bool:
@@ -370,17 +321,6 @@ def _fsync_strict(fd: int, what: str) -> None:
             f"fsync of {what} failed") from exc
 
 
-def _open_dir(name: str, dir_fd: int) -> int:
-    return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
-
-
-def _lstat_quiet(name: str, dir_fd: int):
-    try:
-        return os.lstat(name, dir_fd=dir_fd)
-    except OSError:
-        return None
-
-
 #: Sentinel for :func:`_marker_lstat`: a metadata read that FAILED (any OSError
 #: other than ENOENT), so the entry's presence is UNKNOWN — distinct from a
 #: genuine absence (``None``). Never conflated with "gone".
@@ -420,13 +360,6 @@ def _regular_stat(name: str, dir_fd: "int | None"):
         return None
     st = _lstat_quiet(name, dir_fd)
     return st if st is not None and stat.S_ISREG(st.st_mode) else None
-
-
-def _listdir_quiet(dir_fd: int) -> list[str]:
-    try:
-        return os.listdir(dir_fd)
-    except OSError:
-        return []
 
 
 def _unlink_quiet(name: str, dir_fd: int) -> bool:
@@ -500,58 +433,12 @@ def _write_new_file(name: str, dir_fd: int, data: bytes) -> None:
         os.close(fd)
 
 
-#: Sentinel for a token whose state could not be ESTABLISHED (an I/O failure
-#: mid-probe). Distinct from ``None`` (positively absent or malformed) for the
-#: same reason ``_LSTAT_ERROR`` is distinct from ENOENT: an unknowable state
-#: is never grounds for the repair path to retire a possibly-valid token.
-_TOKEN_ERROR = object()
-
 #: Sentinel for an inventory scan whose subject could not be ESTABLISHED (a
 #: directory that would not open for anything but ENOENT). Distinct from
 #: ``None`` (genuinely absent, i.e. provably nothing to settle) for the same
-#: reason the two sentinels above are: an unknowable state is never grounds
-#: for the purge it would license.
+#: reason ``_LSTAT_ERROR`` and ``_TOKEN_ERROR`` are: an unknowable state is
+#: never grounds for the purge it would license.
 _SCAN_ERROR: object = object()
-
-
-def _classify_dir_token(dir_fd: int):
-    """Three-state probe of the plugin dir's identity token (``.dir-id``):
-    a valid token string; ``None`` when the entry is POSITIVELY absent or
-    malformed (non-regular, wrong size, bad grammar — safe to repair); or
-    :data:`_TOKEN_ERROR` when an ``open``/``fstat``/``read`` failure left its
-    state unknowable (never safe to repair). A stat-pair compare alone cannot
-    carry directory identity — ext4 recycles a freed inode number
-    immediately, so a recreated directory can present the exact
-    ``(st_dev, st_ino)`` of the one it replaced."""
-    try:
-        fd = os.open(DIR_ID_NAME, _MARKER_READ_FLAGS, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return None                          # positively absent
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            return None                      # positively a symlink — malformed
-        return _TOKEN_ERROR
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size != 32:
-            return None                      # positively malformed
-        chunks = bytearray()
-        while len(chunks) < 33:
-            piece = os.read(fd, 33 - len(chunks))
-            if not piece:
-                break
-            chunks += piece
-        # A regular 32-byte file with no legitimate concurrent writer must
-        # read back exactly 32 bytes; anything else means the probe raced
-        # something and the state is unknowable, not proven malformed.
-        if len(chunks) != 32:
-            return _TOKEN_ERROR
-    except OSError:
-        return _TOKEN_ERROR
-    finally:
-        os.close(fd)
-    token = chunks.decode("ascii", errors="replace")
-    return token if _DIR_ID_RE.match(token) else None
 
 
 def _read_dir_token(dir_fd: int) -> str | None:
@@ -1122,15 +1009,7 @@ class CallbackSpool:
         finally:
             fcntl.flock(pfd, fcntl.LOCK_UN)
 
-    @staticmethod
-    def _mkdir(name: str, dir_fd: int) -> bool:
-        """Create *name* if absent; True when this call created it (so the
-        caller can fsync the parent exactly once, when it matters)."""
-        try:
-            os.mkdir(name, DIR_MODE, dir_fd=dir_fd)
-            return True
-        except FileExistsError:
-            return False
+    _mkdir = staticmethod(_mkdir)
 
     @staticmethod
     def _chmod_dir(fd: int, what: str) -> None:

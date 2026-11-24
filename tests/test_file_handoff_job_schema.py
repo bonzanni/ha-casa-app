@@ -102,7 +102,7 @@ def test_the_typed_surface_mirrors_the_three_keys():
 
 # --- the typed upsert refuses what the resident cannot start and what the launcher would refuse ---
 
-from test_config_trigger_tools import configurator_origin, runtime, _payload, _read, _write, HEARTBEAT  # noqa: F401,E402
+from test_config_trigger_tools import runtime, _payload, _read, _write, HEARTBEAT  # noqa: F401,E402
 
 
 async def test_the_upsert_refuses_an_unstartable_job_and_a_non_telegram_channel_before_writing(runtime, configurator_origin, monkeypatch):

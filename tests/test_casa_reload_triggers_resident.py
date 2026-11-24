@@ -37,17 +37,6 @@ import pytest
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
-@pytest.fixture
-def configurator_origin():
-    """Set origin_var so the L26 role guard lets the call through."""
-    import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})
-    try:
-        yield
-    finally:
-        agent_mod.origin_var.reset(tok)
-
-
 def _w(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(text), encoding="utf-8")

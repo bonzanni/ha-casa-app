@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.383.2] - 2026-11-24
+
+### Changed
+
+- Internal restructuring only; nothing you can see changes. The vault tools, the memory reading tools and the wording of question buttons now live in their own files, and a few helpers that existed in several identical copies exist once.
+
 ## [0.383.1] - 2026-11-24
 
 ### Removed

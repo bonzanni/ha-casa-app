@@ -20,10 +20,9 @@ import agent as agent_mod
 import approval_card
 import authz_grants
 import output_boundary as ob
-import verdict_broker
 from approval_card import Card, CardLine, CardRequest, render_card
 from text_util import utf16_len
-from verdict_broker import VerdictBroker
+from broker_helpers import _fresh_broker  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,13 +52,6 @@ def _request(**over) -> CardRequest:
                   fallback=FALLBACK)
     fields.update(over)
     return CardRequest(**fields)
-
-
-@pytest.fixture(autouse=True)
-def _fresh_broker(monkeypatch):
-    fresh = VerdictBroker()
-    monkeypatch.setattr(verdict_broker, "BROKER", fresh)
-    return fresh
 
 
 @pytest.fixture(autouse=True)

@@ -27,8 +27,8 @@ from authz_grants import GrantIdentity
 from channels import DeliveryOutcome
 from channels.tg_address import TgAddress
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
-from telegram_channel_double import make_transport
 from two_endpoints import CASA_BOT as BOT
+from operator_delivery_support import _Manager
 
 ARTIFACT = "6" * 64
 SEG = "probe"
@@ -106,12 +106,6 @@ class _Recorder:
 
     async def send_response(self, message, context):
         self.other.append(("send_response", message)); return DeliveryOutcome.DELIVERED
-
-
-def _Manager(channel):
-    """The channel manager with Telegram's transport over *channel*, Casa's
-    endpoint on bot 111; ``None`` (no Telegram) for no channel."""
-    return make_transport(channel) if channel is not None else None
 
 
 @pytest.fixture

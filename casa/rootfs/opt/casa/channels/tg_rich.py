@@ -1245,6 +1245,13 @@ async def edit_rich(bot: Any, markdown: str, *, chat_id: Any = None, message_id:
         return await edit({"blocks": plain_blocks(markdown)})
 
 
+def retry_after_seconds(exc: RetryAfter) -> float:
+    """The seconds a flood wait asks for, whether the library states them as a
+    number or as a ``timedelta``."""
+    wait = exc.retry_after
+    return wait.total_seconds() if hasattr(wait, "total_seconds") else float(wait)
+
+
 async def send_rich_draft(bot: Any, chat_id: Any, draft_id: int, markdown: str, *,
                           can_stop: bool, keep_on_stop: bool) -> float | None:
     """Show *markdown* as the rich draft *draft_id* in *chat_id*.
@@ -1258,6 +1265,5 @@ async def send_rich_draft(bot: Any, chat_id: Any, draft_id: int, markdown: str, 
                                    draft_id=draft_id, can_stop=can_stop,
                                    keep_on_stop=keep_on_stop))
     except RetryAfter as exc:
-        wait = exc.retry_after
-        return wait.total_seconds() if hasattr(wait, "total_seconds") else float(wait)
+        return retry_after_seconds(exc)
     return None

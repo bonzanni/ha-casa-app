@@ -4,8 +4,8 @@ import pytest
 
 from log_redact import redact
 
-# Without this marker the tier2 unit gate (-m "unit and not docker and not
-# slow") silently skips this whole file.
+# The unit gate selects -m "not docker and not slow"; the legacy ``unit``
+# marker is optional.
 pytestmark = pytest.mark.unit
 
 

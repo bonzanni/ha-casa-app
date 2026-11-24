@@ -10,17 +10,6 @@ import pytest
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
-@pytest.fixture
-def configurator_origin():
-    """Set origin_var so the L26 role guard lets the call through."""
-    import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})
-    try:
-        yield
-    finally:
-        agent_mod.origin_var.reset(tok)
-
-
 def _runtime_with(tmp_path, *, trigger_registry=None):
     from runtime import CasaRuntime
     return CasaRuntime(

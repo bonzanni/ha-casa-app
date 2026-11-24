@@ -12,35 +12,16 @@ from contextvars import ContextVar
 
 import pytest
 from claude_agent_sdk import (
-    AssistantMessage as _SDKAssistantMessage,
     ResultMessage as _SDKResultMessage,
-    TextBlock as _SDKTextBlock,
 )
 
 from agent import ResumeDecision
+from sdk_messages import _mk_assistant
 
 # Contextvars for testing
 test_origin: ContextVar = ContextVar("test_origin", default=None)
 test_cid: ContextVar = ContextVar("test_cid", default="-")
 test_engagement: ContextVar = ContextVar("test_engagement", default=None)
-
-
-def _mk_text_block(text: str) -> _SDKTextBlock:
-    """Instantiate whatever TextBlock shape the installed SDK uses."""
-    try:
-        return _SDKTextBlock(text=text)
-    except TypeError:
-        return _SDKTextBlock(text)  # type: ignore[call-arg]
-
-
-def _mk_assistant(text: str) -> _SDKAssistantMessage:
-    block = _mk_text_block(text)
-    try:
-        return _SDKAssistantMessage(content=[block])
-    except TypeError:
-        m = _SDKAssistantMessage.__new__(_SDKAssistantMessage)
-        m.content = [block]  # type: ignore[attr-defined]
-        return m
 
 
 def _mk_result(sid, *, is_error=False, result="", subtype="success"):

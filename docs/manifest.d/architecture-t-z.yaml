@@ -24,6 +24,8 @@
     - casa/rootfs/opt/casa/result_broker.py::PostRecord
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._reply_note_for
+    - casa/rootfs/opt/casa/channels/ask_labels.py::resolve_button_labels
+    - casa/rootfs/opt/casa/channels/ask_labels.py::render_ask_body
   tests:
     - tests/test_telegram_update_handler.py
     - tests/test_reply_note.py
@@ -100,7 +102,7 @@
   when_changing: adding a tool, a tool's result contract, or completion semantics
   covers:
     - casa/rootfs/opt/casa/tools.py::create_casa_tools
-    - casa/rootfs/opt/casa/tools.py::_result
+    - casa/rootfs/opt/casa/tool_result.py::_result
     - casa/rootfs/opt/casa/tools.py::select_casa_tools
     - casa/rootfs/opt/casa/tools.py::emit_completion
     - casa/rootfs/opt/casa/tools.py::config_git_commit
@@ -218,8 +220,8 @@
   covers:
     - casa/rootfs/opt/casa/vault_drop_off.py
     - casa/rootfs/opt/casa/plugin_store.py::manifest_drop_offs
-    - casa/rootfs/opt/casa/tools.py::_tool_vault_drop_off
-    - casa/rootfs/opt/casa/tools.py::_drop_off_target
+    - casa/rootfs/opt/casa/vault_tools.py::_tool_vault_drop_off
+    - casa/rootfs/opt/casa/vault_tools.py::_drop_off_target
   tests:
     - tests/test_vault_drop_off.py
     - tests/test_assistant_prompts.py

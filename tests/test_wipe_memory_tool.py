@@ -10,9 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import supervisor_restart
-import verdict_broker
 from memory import maintenance
-from verdict_broker import VerdictBroker
+from broker_helpers import _fresh_broker  # noqa: F401
 
 WIPE_TOOL = "mcp__casa-framework__wipe_memory"
 
@@ -25,13 +24,6 @@ SETTLED_WIPE_MESSAGE = (
     "the consent request settled before wipe_memory returned; "
     "no outcome is reported"
 )
-
-
-@pytest.fixture(autouse=True)
-def _fresh_broker(monkeypatch):
-    fresh = VerdictBroker()
-    monkeypatch.setattr(verdict_broker, "BROKER", fresh)
-    return fresh
 
 
 @pytest.fixture(autouse=True)

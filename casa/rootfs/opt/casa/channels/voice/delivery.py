@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 import voice_phrases
+from channels.voice.routes import _identifier
 from job_registry import DeliveryState, JobTransitionError, VoiceJob
 from voice_job_result import (
     VoiceJobResultError,
@@ -55,15 +56,6 @@ _PARK_REASONS = frozenset({
     # the correct end state.
     "satellite_not_found", "satellite_ambiguous", "no_text_endpoint",
 })
-
-
-def _identifier(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    if not normalized or len(normalized) > 512:
-        return None
-    return normalized
 
 
 def _is_current_protocol(value: Any) -> bool:

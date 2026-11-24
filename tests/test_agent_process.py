@@ -30,7 +30,6 @@ from session_reg_helpers import (
 from claude_agent_sdk import (
     AssistantMessage as _SDKAssistantMessage,
     ResultMessage as _SDKResultMessage,
-    TextBlock as _SDKTextBlock,
     ToolResultBlock as _SDKToolResultBlock,
     ToolUseBlock as _SDKToolUseBlock,
     UserMessage as _SDKUserMessage,
@@ -43,6 +42,7 @@ try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
 except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
+from sdk_messages import _mk_assistant
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -64,24 +64,6 @@ def patch_retry_sleep():
     ns = SimpleNamespace(sleep=sleep, CancelledError=asyncio.CancelledError)
     with patch.object(retry_mod, "asyncio", ns):
         yield sleep
-
-
-def _mk_text_block(text: str) -> _SDKTextBlock:
-    """Instantiate whatever TextBlock shape the installed SDK uses."""
-    try:
-        return _SDKTextBlock(text=text)
-    except TypeError:
-        return _SDKTextBlock(text)  # type: ignore[call-arg]
-
-
-def _mk_assistant(text: str) -> _SDKAssistantMessage:
-    block = _mk_text_block(text)
-    try:
-        return _SDKAssistantMessage(content=[block])
-    except TypeError:
-        m = _SDKAssistantMessage.__new__(_SDKAssistantMessage)
-        m.content = [block]  # type: ignore[attr-defined]
-        return m
 
 
 def _mk_tool_use(

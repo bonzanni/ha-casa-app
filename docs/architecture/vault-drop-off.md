@@ -100,8 +100,8 @@ itself never widens what it writes.
 **Source**
 - `casa/rootfs/opt/casa/vault_drop_off.py`
 - `casa/rootfs/opt/casa/plugin_store.py::manifest_drop_offs`
-- `casa/rootfs/opt/casa/tools.py::_tool_vault_drop_off`
-- `casa/rootfs/opt/casa/tools.py::_drop_off_target`
+- `casa/rootfs/opt/casa/vault_tools.py::_tool_vault_drop_off`
+- `casa/rootfs/opt/casa/vault_tools.py::_drop_off_target`
 
 **Tests**
 - `tests/test_vault_drop_off.py`

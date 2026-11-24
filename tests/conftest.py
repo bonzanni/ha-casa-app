@@ -1045,3 +1045,14 @@ def pytest_timeout_set_timer(item, settings):
     from pending_awaits import wrap_timeout_handler
     wrap_timeout_handler(settings)
     return installed
+
+
+@pytest.fixture
+def configurator_origin():
+    """Set origin_var so the configurator role guard lets the call through."""
+    import agent as agent_mod
+    tok = agent_mod.origin_var.set({"role": "configurator"})
+    try:
+        yield
+    finally:
+        agent_mod.origin_var.reset(tok)

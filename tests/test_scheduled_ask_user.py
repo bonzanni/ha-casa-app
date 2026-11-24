@@ -28,6 +28,7 @@ import verdict_broker
 from broker_helpers import deliver, wait_until
 from verdict_broker import VerdictBroker
 from output_boundary_testing import with_scope
+from broker_helpers import _fresh_broker  # noqa: F401
 
 OPERATOR = 4242
 LABEL = "cron-invoices"
@@ -47,13 +48,6 @@ _EDIT_FOR = {
 # ---------------------------------------------------------------------------
 # fixtures / doubles
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _fresh_broker(monkeypatch):
-    fresh = VerdictBroker()
-    monkeypatch.setattr(verdict_broker, "BROKER", fresh)
-    return fresh
 
 
 @pytest.fixture(autouse=True)

@@ -318,6 +318,26 @@ def _live_agent_directory() -> dict[str, str] | None:
     return agent_display_names()
 
 
+def _role_lookups(registry, live_names):
+    """Return the ``(known, display_name)`` role lookups the prompt blocks use.
+
+    ``live_names`` (role → display name of every dispatchable agent) decides
+    when supplied; otherwise ``registry``; with neither, every role is known
+    and named by its role id.
+    """
+    def _known(role: str) -> bool:
+        if live_names is not None:
+            return role in live_names
+        return registry is None or registry.is_known(role)
+
+    def _display_name(role: str) -> str:
+        if live_names is not None:
+            return live_names.get(role, role)
+        return registry.role_to_name(role) if registry is not None else role
+
+    return _known, _display_name
+
+
 def _render_delegates_block(delegates, registry, *, live_names=None) -> str:
     """Render the <delegates> system-prompt block.
 
@@ -350,15 +370,7 @@ def _render_delegates_block(delegates, registry, *, live_names=None) -> str:
     # delegate_to_agent tool rejects it with unknown_agent — so do not advertise
     # it. Both sources hold exactly residents + ENABLED specialists; filter on
     # that. (Neither → back-compat: render every declared delegate.)
-    def _known(role: str) -> bool:
-        if live_names is not None:
-            return role in live_names
-        return registry is None or registry.is_known(role)
-
-    def _display_name(role: str) -> str:
-        if live_names is not None:
-            return live_names.get(role, role)
-        return registry.role_to_name(role) if registry is not None else role
+    _known, _display_name = _role_lookups(registry, live_names)
 
     visible = [d for d in delegates if _known(d.agent)]
     if not visible:
@@ -388,15 +400,7 @@ def _render_jobs_block(caller_role, delegates, registry, *, live_names=None,
             "mcp__casa-framework__start_job" not in allowed_tools):
         return ""
 
-    def _known(role: str) -> bool:
-        if live_names is not None:
-            return role in live_names
-        return registry is None or registry.is_known(role)
-
-    def _display_name(role: str) -> str:
-        if live_names is not None:
-            return live_names.get(role, role)
-        return registry.role_to_name(role) if registry is not None else role
+    _known, _display_name = _role_lookups(registry, live_names)
 
     from background_jobs import own_job_hosts, startable_jobs
     visible_roles = [delegate.agent for delegate in delegates

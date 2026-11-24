@@ -317,7 +317,7 @@ that distinction is the contract.
 
 **Source**
 - `casa/rootfs/opt/casa/tools.py::create_casa_tools`
-- `casa/rootfs/opt/casa/tools.py::_result`
+- `casa/rootfs/opt/casa/tool_result.py::_result`
 - `casa/rootfs/opt/casa/tools.py::select_casa_tools`
 - `casa/rootfs/opt/casa/tools.py::emit_completion`
 - `casa/rootfs/opt/casa/tools.py::config_git_commit`

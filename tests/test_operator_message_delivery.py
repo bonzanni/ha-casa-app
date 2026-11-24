@@ -26,8 +26,8 @@ from own_voice_fixtures import open_own_chats, with_delivery
 from channels import DeliveryOutcome
 from channels import tg_rich
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
-from telegram_channel_double import make_transport
 from two_endpoints import CASA_BOT as BOT
+from operator_delivery_support import _Clock, _Manager
 
 ARTIFACT = "5" * 64
 PLUGIN = "probe"
@@ -51,14 +51,6 @@ def _map() -> ResultContractMap:
     }
     plugins = {PLUGIN: PluginContract(ARTIFACT, True, frozenset())}
     return ResultContractMap(tools=tools, plugins=plugins)
-
-
-class _Clock:
-    def __init__(self, t=1000.0):
-        self.t = t
-
-    def __call__(self):
-        return self.t
 
 
 class _Recorder:
@@ -94,12 +86,6 @@ class _Recorder:
     async def send(self, message, context):
         self.other_sends.append(("send", message, context))
         return DeliveryOutcome.DELIVERED
-
-
-def _Manager(channel):
-    """The channel manager with Telegram's transport over *channel*, Casa's
-    endpoint on bot 111; ``None`` (no Telegram) for no channel."""
-    return make_transport(channel) if channel is not None else None
 
 
 @pytest.fixture(autouse=True)

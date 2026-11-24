@@ -34,6 +34,7 @@ from channels.voice.catalog import (
 )
 from channels.voice.prosodic import Block, ProsodicSplitter
 from channels.voice.routes import VoiceRouteRegistry, VoiceWsConnection
+from channels.voice.routes import _identifier as _nonempty_identifier
 from channels.voice.session import VoiceSessionPool
 from channels.voice.tts_adapter import TagDialectAdapter, has_speech
 import voice_phrases
@@ -297,16 +298,6 @@ class VoiceHandoffCoordinator:
             )
             return
         logger.info("voice handoff ACKNOWLEDGED job=%s", job_id[:8])
-
-
-def _nonempty_identifier(value: Any) -> str | None:
-    """Normalize one trusted voice identifier without logging its value."""
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    if not normalized or len(normalized) > 512:
-        return None
-    return normalized
 
 
 def _connection_voice_route(
