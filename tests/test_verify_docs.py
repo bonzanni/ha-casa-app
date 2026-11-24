@@ -55,9 +55,12 @@ SKELETON_MANIFEST = """
 - doc: doctrine/invariants-e.md
   kind: generated
   summary: Generated invariant index (families E).
-- doc: doctrine/invariants-f-m.md
+- doc: doctrine/invariants-f-j.md
   kind: generated
-  summary: Generated invariant index (families F-M).
+  summary: Generated invariant index (families F-J).
+- doc: doctrine/invariants-k-m.md
+  kind: generated
+  summary: Generated invariant index (families K-M).
 - doc: doctrine/invariants-n-pk.md
   kind: generated
   summary: Generated invariant index (families N-PK).
@@ -87,7 +90,8 @@ SKELETON_FILES = {
     "doctrine/invariants.md": "",
     "doctrine/invariants-c-d.md": "",
     "doctrine/invariants-e.md": "",
-    "doctrine/invariants-f-m.md": "",
+    "doctrine/invariants-f-j.md": "",
+    "doctrine/invariants-k-m.md": "",
     "doctrine/invariants-n-pk.md": "",
     "doctrine/invariants-pl-pq.md": "",
     "doctrine/invariants-pr-r.md": "",
@@ -770,6 +774,15 @@ def test_llms_links_resolve_relative_to_the_docs_directory(tmp_path):
         assert (root / "docs" / target).exists()
 
 
+def test_llms_row_names_the_document_under_its_section_and_links_the_full_path(tmp_path):
+    """The directory is in the section heading and in the target, not repeated in the
+    link text of every row."""
+    out = verify_docs.render_llms(_corpus(tmp_path))
+    assert "## Architecture" in out
+    assert "- [turn-loop.md](architecture/turn-loop.md): " in out
+    assert "[architecture/turn-loop.md]" not in out
+
+
 def test_routing_is_keyed_on_the_task_and_omits_indexes(tmp_path):
     out = verify_docs.render_routing(_corpus(tmp_path))
     assert "the turn lifecycle or turn timeouts" in out
@@ -1034,7 +1047,8 @@ INV_SHARD_ENTRY = """
   covers: [casa/a.py::A.b]
   tests: [tests/test_a.py::test_b]
   related: [doctrine/publishing.md]
-  defines_invariants: [INV-BZ-001, INV-C-001, INV-DZ-001, INV-E-001, INV-EVAL-001, INV-F-001, INV-MEM-001,
+  defines_invariants: [INV-BZ-001, INV-C-001, INV-DZ-001, INV-E-001, INV-EVAL-001, INV-F-001, INV-JZ-001,
+                       INV-K-001, INV-MEM-001,
                        INV-N-001, INV-OBS-001, INV-PKZ-001, INV-PL-001, INV-PQZ-001,
                        INV-PR-001, INV-PUB-001,
                        INV-R-001, INV-RZ-001, INV-S-001, INV-VOICE-001]
@@ -1045,6 +1059,8 @@ INV_SHARD_ENTRY = """
     INV-E-001: [tests/test_a.py::test_b]
     INV-EVAL-001: [tests/test_a.py::test_b]
     INV-F-001: [tests/test_a.py::test_b]
+    INV-JZ-001: [tests/test_a.py::test_b]
+    INV-K-001: [tests/test_a.py::test_b]
     INV-MEM-001: [tests/test_a.py::test_b]
     INV-N-001: [tests/test_a.py::test_b]
     INV-OBS-001: [tests/test_a.py::test_b]
@@ -1070,20 +1086,22 @@ INV_SHARD_DOC = {
         "**INV-E-001**: first family of the third shard, exactly at the bound.\n\n"
         "**INV-EVAL-001**: last family of the third shard.\n\n"
         "**INV-F-001**: first family of the fourth shard.\n\n"
-        "**INV-MEM-001**: last family of the fourth shard.\n\n"
-        "**INV-N-001**: first family of the fifth shard.\n\n"
-        "**INV-OBS-001**: an ordinary family of the fifth shard.\n\n"
-        "**INV-PKZ-001**: last family of the fifth shard, just below its bound.\n\n"
-        "**INV-PL-001**: first family of the sixth shard, exactly at the bound.\n\n"
-        "**INV-PQZ-001**: last family of the sixth shard, just below its bound.\n\n"
-        "**INV-PR-001**: first family of the seventh shard, exactly at the bound.\n\n"
-        "**INV-PUB-001**: an ordinary family of the seventh shard.\n\n"
-        "**INV-R-001**: the seventh shard owns the whole range up to its bound.\n\n"
-        "**INV-RZ-001**: last family of the seventh shard, just below the bound.\n\n"
-        "**INV-S-001**: first family of the eighth shard.\n\n"
-        "**INV-SZ-001**: last family of the eighth shard, just below its bound.\n\n"
-        "**INV-T-001**: first family of the ninth shard, exactly at the bound.\n\n"
-        "**INV-VOICE-001**: an ordinary family of the ninth shard.\n"
+        "**INV-JZ-001**: last family of the fourth shard, just below its bound.\n\n"
+        "**INV-K-001**: first family of the fifth shard, exactly at the bound.\n\n"
+        "**INV-MEM-001**: last family of the fifth shard.\n\n"
+        "**INV-N-001**: first family of the sixth shard.\n\n"
+        "**INV-OBS-001**: an ordinary family of the sixth shard.\n\n"
+        "**INV-PKZ-001**: last family of the sixth shard, just below its bound.\n\n"
+        "**INV-PL-001**: first family of the seventh shard, exactly at the bound.\n\n"
+        "**INV-PQZ-001**: last family of the seventh shard, just below its bound.\n\n"
+        "**INV-PR-001**: first family of the eighth shard, exactly at the bound.\n\n"
+        "**INV-PUB-001**: an ordinary family of the eighth shard.\n\n"
+        "**INV-R-001**: the eighth shard owns the whole range up to its bound.\n\n"
+        "**INV-RZ-001**: last family of the eighth shard, just below the bound.\n\n"
+        "**INV-S-001**: first family of the ninth shard.\n\n"
+        "**INV-SZ-001**: last family of the ninth shard, just below its bound.\n\n"
+        "**INV-T-001**: first family of the tenth shard, exactly at the bound.\n\n"
+        "**INV-VOICE-001**: an ordinary family of the tenth shard.\n"
         + SOURCEMAP
     )
 }
@@ -1096,14 +1114,15 @@ INV_SHARD_PATHS = (
     "doctrine/invariants.md",
     "doctrine/invariants-c-d.md",
     "doctrine/invariants-e.md",
-    "doctrine/invariants-f-m.md",
+    "doctrine/invariants-f-j.md",
+    "doctrine/invariants-k-m.md",
     "doctrine/invariants-n-pk.md",
     "doctrine/invariants-pl-pq.md",
     "doctrine/invariants-pr-r.md",
     "doctrine/invariants-s.md",
     "doctrine/invariants-t-z.md",
 )
-INV_SHARD_LABELS = ("A-B", "C-D", "E", "F-M", "N-PK", "PL-PQ", "PR-R", "S", "T-Z")
+INV_SHARD_LABELS = ("A-B", "C-D", "E", "F-J", "K-M", "N-PK", "PL-PQ", "PR-R", "S", "T-Z")
 
 
 def _shard_rows(root: Path) -> dict[str, list[str]]:
@@ -1119,19 +1138,21 @@ def _shard_rows(root: Path) -> dict[str, list[str]]:
     }
 
 
-def test_every_family_lands_in_exactly_one_shard_at_the_c_e_f_n_pl_pr_s_and_t_boundaries(tmp_path):
-    """#843, then #953, then #1218, then #998, then #1275, then PL-R, then the A-D split: each
-    shard outgrew the index ceiling in turn and the index now shards NINE ways. A
-    family sorting exactly AT a boundary (`C`, `E`, `F`, `N`, `PL`, `PR`, `S`, `T`) opens the
-    later shard, one sorting just below it (`BZ`, `DZ`, `EVAL`, `MEM`, `PKZ`, `PQZ`,
-    `RZ`, `SZ`) closes the earlier one, and every row appears exactly once across the
-    nine — so a boundary compared with the wrong inequality, a bound moved off `C`
+def test_every_family_lands_in_exactly_one_shard_at_the_c_e_f_k_n_pl_pr_s_and_t_boundaries(tmp_path):
+    """#843, then #953, then #1218, then #998, then #1275, then PL-R, then the A-D split,
+    then the F-M split (#1697): each shard outgrew the index ceiling in turn and the
+    index now shards TEN ways. A family sorting exactly AT a boundary (`C`, `E`, `F`,
+    `K`, `N`, `PL`, `PR`, `S`, `T`) opens the later shard, one sorting just below it
+    (`BZ`, `DZ`, `EVAL`, `JZ`, `MEM`, `PKZ`, `PQZ`, `RZ`, `SZ`) closes the earlier one,
+    and every row appears exactly once across the ten — so a boundary compared with
+    the wrong inequality, a bound moved off `C`
     to anywhere in `BZ`..`C` or up to `DZ`, a bound moved off `E` to anywhere in
-    `DZ`..`E` or up to `EVAL`, a bound moved off `PL` to anywhere in `PKZ`..`PL` or
+    `DZ`..`E` or up to `EVAL`, a bound moved off `K` to anywhere in `JZ`..`K` or up
+    to `MEM`, a bound moved off `PL` to anywhere in `PKZ`..`PL` or
     up to `PQZ`, a bound moved off `PR` to anywhere in `PQZ`..`PR` or up to `PUB`, a
     bound moved off `S` to anywhere in `R`..`RZ` or up to `SZ`, a
     bound moved off `T` to anywhere in `S`..`SZ` or up to `VOICE`, a shard table
-    left at seven rows, or a family the table assigns nowhere is caught here. The
+    left at nine rows, or a family the table assigns nowhere is caught here. The
     expected layout is literal test data, never read back from `_INV_SHARDS`."""
     root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
     rows = _shard_rows(root)
@@ -1139,7 +1160,8 @@ def test_every_family_lands_in_exactly_one_shard_at_the_c_e_f_n_pl_pr_s_and_t_bo
         "doctrine/invariants.md": ["INV-BZ-001"],
         "doctrine/invariants-c-d.md": ["INV-C-001", "INV-DZ-001"],
         "doctrine/invariants-e.md": ["INV-E-001", "INV-EVAL-001"],
-        "doctrine/invariants-f-m.md": ["INV-F-001", "INV-MEM-001"],
+        "doctrine/invariants-f-j.md": ["INV-F-001", "INV-JZ-001"],
+        "doctrine/invariants-k-m.md": ["INV-K-001", "INV-MEM-001"],
         "doctrine/invariants-n-pk.md": ["INV-N-001", "INV-OBS-001", "INV-PKZ-001"],
         "doctrine/invariants-pl-pq.md": ["INV-PL-001", "INV-PQZ-001"],
         "doctrine/invariants-pr-r.md": ["INV-PR-001", "INV-PUB-001", "INV-R-001",
@@ -1148,16 +1170,17 @@ def test_every_family_lands_in_exactly_one_shard_at_the_c_e_f_n_pl_pr_s_and_t_bo
         "doctrine/invariants-t-z.md": ["INV-T-001", "INV-VOICE-001"],
     }
     assert sorted(sum(rows.values(), [])) == [
-        "INV-BZ-001", "INV-C-001", "INV-DZ-001", "INV-E-001", "INV-EVAL-001", "INV-F-001", "INV-MEM-001", "INV-N-001", "INV-OBS-001",
+        "INV-BZ-001", "INV-C-001", "INV-DZ-001", "INV-E-001", "INV-EVAL-001", "INV-F-001", "INV-JZ-001",
+        "INV-K-001", "INV-MEM-001", "INV-N-001", "INV-OBS-001",
         "INV-PKZ-001", "INV-PL-001", "INV-PQZ-001", "INV-PR-001", "INV-PUB-001", "INV-R-001", "INV-RZ-001",
         "INV-S-001", "INV-SZ-001", "INV-T-001", "INV-VOICE-001"]
-    assert len(sum(rows.values(), [])) == 20
+    assert len(sum(rows.values(), [])) == 22
 
 
 def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
-    """A reader landing on any shard can reach the other eight in one hop, the
+    """A reader landing on any shard can reach the other nine in one hop, the
     title states the range the shard OWNS, and no shard links to itself. Counted
-    across the nine: seventy-two sibling links, zero self-links."""
+    across the ten: ninety sibling links, zero self-links."""
     root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
     targets = verify_docs.nav_targets(root)
     rendered = sorted(p for p in targets if p.startswith("doctrine/invariants"))
@@ -1174,7 +1197,7 @@ def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
             want = 0 if other == path else 1
             assert see_also[0].count(f"[`{other}`]({href})") == want
             siblings += see_also[0].count(f"[`{other}`]({href})")
-    assert siblings == 72
+    assert siblings == 90
 
 
 # One literal lead per family on each side of each real bound pinned below, quoted
@@ -1206,6 +1229,18 @@ AB_CD_SPLIT_LEADS = {
         "| `INV-CONC-001` | The bus dequeues per role in priority order",
         "| `INV-DESK-004` | A Telegram DM text message that replies to another message",
         "| `INV-DOC-001` | Every document repeats the code-wins line verbatim",
+    ],
+}
+
+FJ_KM_SPLIT_LEADS = {
+    "doctrine/invariants-f-j.md": [
+        "| `INV-FILE-002` | A role's hooks carry the inbound-file read grant",
+        "| `INV-GUEST-001` | A summons of an agent's own bot from anyone but the operator",
+        "| `INV-JOB-001` | Every job mutation writes the complete snapshot to disk",
+    ],
+    "doctrine/invariants-k-m.md": [
+        "| `INV-MCP-002` | The internal endpoint is reachable only from inside the container",
+        "| `INV-MEM-003` | An unrecognised channel reads at the least-sensitive tier.",
     ],
 }
 
@@ -1296,6 +1331,18 @@ def test_the_real_index_keeps_a_b_apart_from_c_d_and_every_row_once():
     assert (docs / "doctrine/invariants-c-d.md").read_text().startswith("# Invariants (C-D)\n")
 
 
+
+def test_the_real_index_keeps_f_j_apart_from_k_m_and_every_row_once():
+    """#1697: the F-M shard outgrew the index ceiling and splits at `K`; the
+    manifest declares `doctrine/invariants-f-j.md` and `doctrine/invariants-k-m.md`
+    in place of `doctrine/invariants-f-m.md`. See `_assert_real_split`."""
+    index = _assert_real_split("F", "K", "N", "doctrine/invariants-f-j.md",
+                               "doctrine/invariants-k-m.md", FJ_KM_SPLIT_LEADS)
+    assert "doctrine/invariants-f-m.md" not in index
+    docs = REPO_ROOT / "docs"
+    assert (docs / "doctrine/invariants-f-j.md").read_text().startswith("# Invariants (F-J)\n")
+    assert (docs / "doctrine/invariants-k-m.md").read_text().startswith("# Invariants (K-M)\n")
+
 # --- a manifest that fails to load renders nothing (#812) ---------------------------
 
 BROKEN_SHARD = "- doc: [unclosed\n"
@@ -1306,7 +1353,8 @@ GENERATED = [
     "contributing/doc-contract.md",
     "doctrine/invariants-c-d.md",
     "doctrine/invariants-e.md",
-    "doctrine/invariants-f-m.md",
+    "doctrine/invariants-f-j.md",
+    "doctrine/invariants-k-m.md",
     "doctrine/invariants-n-pk.md",
     "doctrine/invariants-pl-pq.md",
     "doctrine/invariants-pr-r.md",

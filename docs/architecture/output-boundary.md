@@ -19,7 +19,7 @@ whether its final reply is closing silence and where an untrusted webhook turn's
 file arrives or who may read it ([`inbound-files.md`](inbound-files.md)), how a reply is
 sent as rich messages and split ([`telegram-rendering.md`](telegram-rendering.md)), the turn loop
 itself ([`turn-loop.md`](turn-loop.md)), or the tools' other result contracts
-([`tools-interface.md`](tools-interface.md)).
+([`tool-outcomes.md`](tool-outcomes.md)).
 
 ## Mental model
 
@@ -303,7 +303,7 @@ model-text methods with that method's own failure value; the voice channel has n
 - [`architecture/inbound-files.md`](../architecture/inbound-files.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
-- [`architecture/tools-interface.md`](../architecture/tools-interface.md)
+- [`architecture/tool-outcomes.md`](../architecture/tool-outcomes.md)
 - [`architecture/reminders.md`](../architecture/reminders.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)

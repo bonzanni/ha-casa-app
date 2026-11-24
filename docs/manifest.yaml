@@ -108,6 +108,10 @@
   kind: meta
   summary: Manifest shard — architecture documents T-Z.
 
+- doc: manifest.d/architecture-tools.yaml
+  kind: meta
+  summary: Manifest shard — the tool interface and tool outcome documents, in their own shard so the T-Z shard keeps room under the 40 KB index ceiling.
+
 - doc: manifest.d/architecture-telegram-bots.yaml
   kind: meta
   summary: Manifest shard — the Telegram bots and reply-draft documents, in their own shard because the T-Z shard stands just under the 40 KB index ceiling.
@@ -172,9 +176,13 @@
   kind: generated
   summary: Every INV-* id in families E, its statement, and the file that defines it.
 
-- doc: doctrine/invariants-f-m.md
+- doc: doctrine/invariants-f-j.md
   kind: generated
-  summary: Every INV-* id in families F-M, its statement, and the file that defines it.
+  summary: Every INV-* id in families F-J, its statement, and the file that defines it.
+
+- doc: doctrine/invariants-k-m.md
+  kind: generated
+  summary: Every INV-* id in families K-M, its statement, and the file that defines it.
 
 - doc: doctrine/invariants-n-pk.md
   kind: generated

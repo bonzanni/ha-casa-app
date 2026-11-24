@@ -92,36 +92,10 @@
     - tests/test_scheduled_ask_attention_lane.py
     - tests/test_wipe_memory_tool.py
     - tests/test_scheduled_ask_user.py
-  related: [architecture/tools-interface.md, architecture/scheduled-asks.md, architecture/memory-wipe.md]
+  related: [architecture/tools-interface.md, architecture/tool-outcomes.md, architecture/scheduled-asks.md, architecture/memory-wipe.md]
   defines_invariants: [INV-TOOL-008]
   invariant_tests:
     INV-TOOL-008: [tests/test_scheduled_ask_attention_lane.py::test_plain_text_during_human_post_cancels_replacement_not_scheduled, tests/test_scheduled_ask_attention_lane.py::test_a_live_plain_ask_still_returns_the_unchanged_awaiting_payload, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_during_post_returns_neutral_settlement, tests/test_wipe_memory_tool.py::TestConsentFlow::test_a_live_consent_request_returns_the_unchanged_payload, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_during_live_state_save_returns_awaiting_and_restores]
-
-- doc: architecture/tools-interface.md
-  summary: The mutation interface — the one tool registry, result envelopes, and which failures roll back versus report.
-  when_changing: adding a tool, a tool's result contract, or completion semantics
-  covers:
-    - casa/rootfs/opt/casa/tools.py::create_casa_tools
-    - casa/rootfs/opt/casa/tool_result.py::_result
-    - casa/rootfs/opt/casa/tools.py::select_casa_tools
-    - casa/rootfs/opt/casa/tools.py::emit_completion
-    - casa/rootfs/opt/casa/tools.py::config_git_commit
-    - casa/rootfs/opt/casa/tools.py::_run_reload
-    - casa/rootfs/opt/casa/reload.py::commit_reload_scopes
-    - casa/rootfs/opt/casa/tools.py::_reload_after_untracked_write
-  tests:
-    - tests/test_casa_reload_role_forms.py
-    - tests/test_internal_handlers.py
-    - tests/test_emit_completion_tool.py
-    - tests/test_config_git_commit_reload.py
-    - tests/test_configurator_doctrine_commit_reloads.py
-    - tests/test_1095_change_load_timing.py
-  related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md, architecture/tool-questions.md, architecture/configuration.md, architecture/configurator.md]
-  defines_invariants: [INV-TOOL-001, INV-TOOL-006, INV-TOOL-014]
-  invariant_tests:
-    INV-TOOL-014: [tests/test_config_git_commit_reload.py::test_commit_reload_table, tests/test_config_git_commit_reload.py::test_trigger_edit_reloads_the_roles_triggers, tests/test_config_git_commit_reload.py::test_character_edit_rebuilds_that_resident, tests/test_config_git_commit_reload.py::test_two_commits_reload_twice, tests/test_config_git_commit_reload.py::test_policies_edit_reloads_policies, tests/test_config_git_commit_reload.py::test_fleet_scopes_run_through_the_entry_point_fence, tests/test_config_git_commit_reload.py::test_mixed_commit_reloads_full_once, tests/test_config_git_commit_reload.py::test_plugins_only_commit_reloads_nothing, tests/test_config_git_commit_reload.py::test_executor_prompt_edit_reloads_nothing, tests/test_config_git_commit_reload.py::test_unreadable_paths_reload_full, tests/test_config_git_commit_reload.py::test_a_failed_reload_is_reported_and_the_commit_stands, tests/test_config_git_commit_reload.py::test_a_reported_subordinate_failure_is_surfaced, tests/test_config_git_commit_reload.py::test_inside_an_engagement_it_reloads_the_same_way]
-    INV-TOOL-001: [tests/test_internal_handlers.py::test_pin_inv_tool_001_result_marks_errors_only_for_error_status]
-    INV-TOOL-006: [tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_nonvoice_abort_reaches_both_consumers, tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_abort_write_failure_reconciles_original_failure_only, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_nonvoice_abort_matrix, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_empty_text_completed_run_is_still_successful, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_abort_write_failure_retries_the_original_failure]
 
 - doc: architecture/trigger-secrets.md
   summary: The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.
