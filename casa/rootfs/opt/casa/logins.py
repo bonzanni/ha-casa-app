@@ -25,8 +25,10 @@ Two kinds of words leave this module. What an agent may see
 (:meth:`Check.for_model`, :func:`candidates`) holds a problem code, Casa's
 own name for a value and, for the candidates, each item's title: never a
 field label, never a value. What the operator is told (:meth:`Check.sentence`,
-:func:`chosen_line`) is for Casa's own lines and the log, and may name a
-field label; it never goes into a tool result.
+:func:`chosen_line`) is for Casa's own lines and the log, and never goes into
+a tool result. It names a value by Casa's own name too and never a field
+label: the operator may answer such a line, and the line quoted in the
+answer reaches the assistant.
 
 With no default vault configured nothing here runs ``op``: without
 ``--vault`` it would look in whatever vault the CLI defaults to. Everything
@@ -330,18 +332,13 @@ def read_all(service: str) -> dict[str, str] | None:
 @dataclass(frozen=True)
 class Check:
     """What :func:`check` found. ``field`` is the value (a key of
-    :attr:`Service.fields`) a field problem is about. ``label`` and ``found``
-    are for the operator's sentence only: the vault label the problem is
-    about, and ``(value, label)`` for each value held under a label other
-    than the first accepted one."""
+    :attr:`Service.fields`) a field problem is about."""
 
     ok: bool
     problem: Problem
     field: str
     item_is_default: bool
     service: str = ""
-    label: str = ""
-    found: tuple[tuple[str, str], ...] = ()
 
     def for_model(self) -> dict:
         """What a tool may return: the problem's code and Casa's own name
@@ -355,8 +352,9 @@ class Check:
 
     def sentence(self) -> str:
         """What is wrong, in one sentence for the OPERATOR (``""`` when
-        nothing is). It may name a vault field: it goes into Casa's own
-        lines and the log, never into a tool result."""
+        nothing is). It goes into Casa's own lines and the log, never into a
+        tool result, and names a value by Casa's own name, never by a vault
+        field label."""
         if self.ok:
             return ""
         svc = _service(self.service)
@@ -375,11 +373,11 @@ class Check:
                         f"for {svc.label}.")
             return (f"The vault item chosen for {svc.label} is no longer in "
                     "the vault.")
-        said = (f"The vault item for {svc.label} has no "
-                f"{_bare(svc.names[self.field])} in `{self.label}`")
+        name = svc.names[self.field]
         if self.problem == "field_empty":
-            return f"{said}: the field is empty."
-        return f"{said}."
+            return (f"{name[:1].upper()}{name[1:]} in the vault item for "
+                    f"{svc.label} is empty.")
+        return f"The vault item for {svc.label} has no {_bare(name)}."
 
 
 def _asked(ask: Callable[..., dict], *args: str) -> dict:
@@ -391,15 +389,14 @@ def _asked(ask: Callable[..., dict], *args: str) -> dict:
         return {"error": "op_unrunnable"}
 
 
-def _locate(doc: dict, labels: tuple[str, ...]) -> tuple[str, str]:
-    """Where an item's document holds a value: ``("found", label)`` for the
-    first accepted label with something in it; else ``("empty", label)`` for
-    the first accepted label that is there with nothing in it; else
-    ``("missing", <the first accepted label>)``. *label* is the accepted
-    label, as :data:`SERVICES` writes it. A field's label is matched
-    whatever its case, as ``op`` matches it when the value is read, so a
-    field labelled ``Password`` is the ``password`` the read will find. The
-    value itself is only looked at for emptiness."""
+def _locate(doc: dict, labels: tuple[str, ...]) -> str:
+    """Whether an item's document holds a value under one of the accepted
+    *labels*: ``"found"`` when one of them has something in it; else
+    ``"empty"`` when one of them is there with nothing in it; else
+    ``"missing"``. A field's label is matched whatever its case, as ``op``
+    matches it when the value is read, so a field labelled ``Password`` is
+    the ``password`` the read will find. The value itself is only looked at
+    for emptiness."""
     filled: dict[str, bool] = {}
     for entry in doc.get("fields") or []:
         if not isinstance(entry, dict) or not isinstance(entry.get("label"),
@@ -409,13 +406,11 @@ def _locate(doc: dict, labels: tuple[str, ...]) -> tuple[str, str]:
         has_value = isinstance(value, str) and bool(value.strip())
         held = entry["label"].casefold()
         filled[held] = filled.get(held, False) or has_value
-    for label in labels:
-        if filled.get(label.casefold()):
-            return "found", label
-    for label in labels:
-        if label.casefold() in filled:
-            return "empty", label
-    return "missing", labels[0]
+    if any(filled.get(label.casefold()) for label in labels):
+        return "found"
+    if any(label.casefold() in filled for label in labels):
+        return "empty"
+    return "missing"
 
 
 def check(service: str, *, item: str | None = None) -> Check:
@@ -438,9 +433,9 @@ def check(service: str, *, item: str | None = None) -> Check:
     ref = chosen(service) if item is None else item
     default = ref is None
 
-    def wrong(problem: Problem, field: str = "", label: str = "") -> Check:
+    def wrong(problem: Problem, field: str = "") -> Check:
         return Check(ok=False, problem=problem, field=field,
-                     item_is_default=default, service=service, label=label)
+                     item_is_default=default, service=service)
 
     vault = vault_tools._default_vault()
     if not vault:
@@ -457,16 +452,13 @@ def check(service: str, *, item: str | None = None) -> Check:
         listed_there = any(isinstance(row, dict) and row.get(key) == wanted
                            for row in listed["rows"])
         return wrong("vault_unreadable" if listed_there else "item_not_found")
-    elsewhere: list[tuple[str, str]] = []
     for field, labels in svc.fields.items():
-        state, label = _locate(got["doc"], labels)
+        state = _locate(got["doc"], labels)
         if state != "found":
             return wrong("field_missing" if state == "missing"
-                         else "field_empty", field, label)
-        if label != labels[0]:
-            elsewhere.append((field, label))
+                         else "field_empty", field)
     return Check(ok=True, problem="", field="", item_is_default=default,
-                 service=service, found=tuple(elsewhere))
+                 service=service)
 
 
 # --- the candidates -----------------------------------------------------------
@@ -536,7 +528,7 @@ def candidates(service: str, *, mark_in_use: bool = False) -> list[dict]:
                 "category": category if isinstance(category, str)
                 and _CATEGORY.fullmatch(category) else None,
                 "has": {svc.names[field]:
-                        _locate(got["doc"], labels)[0] == "found"
+                        _locate(got["doc"], labels) == "found"
                         for field, labels in svc.fields.items()},
             }
             if mark_in_use:
@@ -550,14 +542,10 @@ def candidates(service: str, *, mark_in_use: bool = False) -> list[dict]:
 def chosen_line(service: str, title: str, found: Check) -> str:
     """Casa's line to the operator when the item titled *title* is taken for
     *service*, *found* being the check of that item: which item it is and
-    its state. When a value is held under a label other than the first
-    accepted one, the line says under which."""
+    its state, never a field label."""
     svc = _service(service)
     if not found.ok:
         said = found.sentence()
         return (f"{svc.set_to_use} the vault item '{title}', but "
                 f"{said[:1].lower()}{said[1:]}")
-    elsewhere = "".join(
-        f", {_bare(svc.names[field])} from its `{label}` field"
-        for field, label in found.found)
-    return f"{svc.now_uses} the vault item '{title}'{elsewhere}."
+    return f"{svc.now_uses} the vault item '{title}'."

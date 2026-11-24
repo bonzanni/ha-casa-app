@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -415,7 +416,8 @@ async def test_purge_never_raises(running, phone_store, tmp_path) -> None:
         pstore.put_transcript(conn, "c1", "Caller: hi", 1.0)
     await service.purge()
     with phone_store.transaction() as conn:
-        assert pstore.transcript(conn, "c1") is None
+        # Read as of before its expiry: gone because it was purged.
+        assert pstore.transcript(conn, "c1", 0.0) is None
     configure(store=PhoneStore(str(tmp_path / "never-opened")))
     await service.purge()
 
@@ -472,7 +474,7 @@ async def test_a_call_cut_by_the_stop_keeps_its_outcome(
     assert took < 2.0
     with phone_store.transaction() as conn:
         [row] = pstore.recent_calls(conn)
-        text = pstore.transcript(conn, row["id"])
+        text = pstore.transcript(conn, row["id"], row["ended_at"])
     assert row["outcome"] == "interrupted"
     assert row["ended_at"] is not None
     assert text == "Assistant: Hello\nCaller: Hi there"
@@ -796,8 +798,57 @@ async def test_a_call_without_a_key_tells_the_operator_what_is_wrong(
     await idle()
     assert fake.requests == []
     assert op.lines == [
-        "A phone call came in but could not be answered. The vault item for "
-        "OpenAI voice has no API key in `credential`: the field is empty."]
+        "A phone call came in but could not be answered. The API key in the "
+        "vault item for OpenAI voice is empty."]
+
+
+@pytest.mark.parametrize("state", [
+    "no-key", "empty-key", "no-secret", "empty-secret", "chosen-gone",
+    "default-gone", "vault-down", "choice-unreadable", "no-vault"])
+async def test_the_missing_login_line_holds_no_label(
+        vaulted, fake, monkeypatch, state: str) -> None:
+    # The operator may answer Casa's line, and the quoted line then reaches
+    # the assistant: in every state it names values by Casa's names only.
+    op, vault, clock = vaulted
+    monkeypatch.setitem(logins.SERVICES, VOICE, dataclasses.replace(
+        logins.SERVICES[VOICE], fields={
+            "credential": ("zzlabel-key", "zzlabel-apikey"),
+            "webhook_secret": ("zzlabel-sec", "zzlabel-whsec")}))
+    fields = {"zzlabel-apikey": "ZZVALUE-key", "zzlabel-whsec": "ZZVALUE-sec"}
+    if state == "no-key":
+        del fields["zzlabel-apikey"]
+    elif state == "empty-key":
+        fields["zzlabel-apikey"] = ""
+    elif state == "no-secret":
+        del fields["zzlabel-whsec"]
+    elif state == "empty-secret":
+        fields["zzlabel-whsec"] = ""
+    vault.items = [] if state == "default-gone" else [
+        item("oai1", "OpenAI Voice", "API_CREDENTIAL", **fields)]
+    if state == "chosen-gone":
+        logins.choose(VOICE, "gone1")
+    elif state == "vault-down":
+        vault.down = True
+    elif state == "choice-unreadable":
+        Path(logins.PATH).write_text("{ damaged")
+        monkeypatch.setattr(logins, "_choices", None)
+    elif state == "no-vault":
+        monkeypatch.delenv("ONEPASSWORD_DEFAULT_VAULT")
+    if state.endswith("-key"):
+        service.on_incoming(Incoming("live_a", "+31612345678", LINE))
+    else:
+        assert await service._webhook_secret() is None
+    await idle()
+    assert fake.requests == []
+    [line] = op.lines
+    assert "zzlabel" not in line.lower() and "ZZVALUE" not in line
+    assert "`" not in line and "field" not in line
+    # Casa's own key for a value is an accepted vault label too.
+    assert all(key not in line.lower() for key in logins.SERVICES[VOICE].fields)
+    if state == "empty-secret":
+        assert line.endswith("The webhook signing secret in the vault item "
+                             "for OpenAI voice is empty.")
+    assert "could not be read from the vault" not in line
 
 
 async def test_a_deleted_login_answers_503_and_tells_once_an_hour(
@@ -918,5 +969,5 @@ async def test_the_boot_log_says_what_is_wrong_with_the_login(
         service.start_boot_check("https://casa.example")
         await idle()
     assert ("calls are not answered: The vault item for OpenAI voice has no "
-            "webhook signing secret in `webhook_secret`.") in caplog.text
+            "webhook signing secret.") in caplog.text
     assert KEY not in caplog.text and op.lines == []

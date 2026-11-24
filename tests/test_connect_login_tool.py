@@ -249,7 +249,7 @@ async def test_a_fitting_item_is_announced_and_then_stored(
                                        "password": "abcd-efgh"}
 
 
-async def test_the_line_says_which_field_holds_the_password(
+async def test_the_line_names_the_item_whatever_field_holds_a_value(
         channel: Channel, monkeypatch: pytest.MonkeyPatch) -> None:
     install(monkeypatch, item(
         "icl1", "iCloud app password", "API_CREDENTIAL",
@@ -262,8 +262,7 @@ async def test_the_line_says_which_field_holds_the_password(
         assert (await _call({"service": VOICE, "item": "oai2"}))[
             "status"] == "connected"
     assert channel.lines == [
-        "Contacts now use the vault item 'iCloud app password', "
-        "app-specific password from its `credential` field.",
+        "Contacts now use the vault item 'iCloud app password'.",
         "OpenAI voice now uses the vault item 'OpenAI key'."]
     assert (logins.chosen(ICLOUD), logins.chosen(VOICE)) == ("icl1", "oai2")
 
@@ -402,8 +401,7 @@ async def test_an_incomplete_item_is_stored_and_the_operator_told_why(
         assert logins.chosen(ICLOUD) == "apl1"
         assert channel.lines == [
             "Contacts are set to use the vault item 'Apple account', but "
-            "the vault item for iCloud contacts has no Apple ID in "
-            "`username`."]
+            "the vault item for iCloud contacts has no Apple ID."]
 
         # The operator fills the field in: the next refresh signs in with
         # it, and nothing more needs saying.
@@ -456,11 +454,44 @@ async def test_no_result_holds_a_label_or_a_value(
         "error"]
     text = json.dumps(results)
     assert "zzlabel" not in text.lower() and "ZZVALUE" not in text
-    # The titles are there (the assistant judges by them), and the operator's
-    # own lines are where a field may be named.
+    # The titles are there (the assistant judges by them); the operator's
+    # lines name no field either.
     assert "iCloud login" in text and "iCloud spare" in text
-    assert any("`zzlabel-user`" in line for line in channel.lines)
-    assert "ZZVALUE" not in "".join(channel.lines)
+    told = "".join(channel.lines)
+    assert "zzlabel" not in told.lower() and "ZZVALUE" not in told
+
+
+@pytest.mark.parametrize(("fields", "problem"), [
+    ({"zzlabel-mail": "ZZVALUE-a", "zzlabel-cred": "ZZVALUE-b"}, ""),
+    ({"zzlabel-cred": "ZZVALUE-b"}, "field_missing"),
+    ({"zzlabel-mail": "ZZVALUE-a"}, "field_missing"),
+    ({"zzlabel-user": "", "zzlabel-pass": "ZZVALUE-b"}, "field_empty"),
+    ({"zzlabel-user": "ZZVALUE-a", "zzlabel-cred": ""}, "field_empty"),
+], ids=["ok", "no-user", "no-password", "empty-user", "empty-password"])
+async def test_no_line_to_the_operator_holds_a_label(
+        channel: Channel, monkeypatch: pytest.MonkeyPatch, fields: dict,
+        problem: str) -> None:
+    # The operator may answer Casa's line, and the quoted line then reaches
+    # the assistant: in every state it names values by Casa's names only.
+    import atomic_io
+    monkeypatch.setitem(logins.SERVICES, ICLOUD, dataclasses.replace(
+        logins.SERVICES[ICLOUD], fields={
+            "username": ("zzlabel-user", "zzlabel-mail"),
+            "password": ("zzlabel-pass", "zzlabel-cred")}))
+    install(monkeypatch, item("icl1", "iCloud login", **fields))
+    with _turn():
+        got = await _call({"service": ICLOUD, "item": "icl1"})
+        assert got.get("problem", "") == problem
+        # The same item once more, with the choice failing to be saved: the
+        # line taking it back names no label either.
+        monkeypatch.setattr(atomic_io, "atomic_write_json",
+                            MagicMock(side_effect=OSError("disk full")))
+        again = await _call({"service": ICLOUD, "item": "icl1"})
+        assert again == {"status": "not_stored", "problem": "store_failed"}
+    assert len(channel.lines) == 3
+    told = "\n".join(channel.lines)
+    assert "zzlabel" not in told.lower() and "ZZVALUE" not in told
+    assert "`" not in told and "field" not in told
 
 
 async def test_a_damaged_choice_file_is_repaired_by_connecting_again(
@@ -519,8 +550,7 @@ async def test_a_damaged_choice_file_is_repaired_by_connecting_again(
         results.append(await _call({"service": ICLOUD, "item": "apl2"}))
         assert results[-1] == {"status": "connected", "ok": True}
         assert channel.lines == [
-            "Contacts now use the vault item 'Apple account', app-specific "
-            "password from its `zzlabel-cred` field."]
+            "Contacts now use the vault item 'Apple account'."]
         assert channel.stored_when_sent == [(None, None)]
         assert logins.chosen(ICLOUD) == "apl2"
         assert logins.read_all(ICLOUD) == {"username": "ZZVALUE-c",

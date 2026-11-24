@@ -397,6 +397,36 @@ async def test_transcript_is_sent_as_a_file_never_returned(
     assert len(channel.files) == 1
 
 
+async def test_a_transcript_past_its_expiry_is_not_sent(
+        opened: PhoneStore, channel: Channel) -> None:
+    # The nightly purge has not run: the row is there, past its expiry.
+    now = time.time()
+    _add_call(opened, "old", now - 7200, transcript=WORDS)
+    with opened.transaction(write=True) as conn:
+        pstore.put_transcript(conn, "old", WORDS, now - 1)
+    with _turn():
+        got = await _call("read_call", {"which": "old", "part": "transcript"})
+    assert got == {"status": "expired"}
+    assert channel.files == []
+    with opened.transaction() as conn:
+        assert conn.execute("SELECT count(*) FROM transcripts").fetchone()[0] \
+            == 1
+
+
+async def test_a_transcript_not_yet_expired_is_sent(
+        opened: PhoneStore, channel: Channel) -> None:
+    now = time.time()
+    _add_call(opened, "near", now - 7200, transcript=WORDS)
+    with opened.transaction(write=True) as conn:
+        pstore.put_transcript(conn, "near", WORDS, now + 600)
+    with _turn():
+        got = await _call("read_call", {"which": "near",
+                                        "part": "transcript"})
+    assert got == {"status": "sent"}
+    assert len(channel.files) == 1
+    assert channel.files[0]["content"] == WORDS.encode("utf-8")
+
+
 class Endpoint(Channel):
     """One bot's endpoint in a real transport: a positive chat id makes the
     operator resolve."""

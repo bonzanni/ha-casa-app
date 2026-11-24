@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.385.1] - 2026-11-24
+
+### Changed
+
+- When a login is missing something, Casa's line names what is missing in plain words ("has no app-specific password"), not the name of a vault field. The line confirming which item a login uses no longer says which field a value came from. The field names Casa accepts are listed in the documentation.
+- A call transcript is no longer sent once its 30 days have passed. Before, the assistant could still send it until the nightly clean-up had removed it.
+
 ## [0.385.0] - 2026-11-24
 
 ### Added

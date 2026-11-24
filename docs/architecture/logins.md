@@ -41,15 +41,18 @@ secrets backends answer it, and `op` output is never logged or returned except t
 itself.
 
 **The check says what is wrong.** While the choice is unknown, `logins.check` answers
-`choice_unreadable` without asking the vault, and the operator's sentence asks him to have
-the assistant connect the login again. Otherwise it reads the item's document once and looks
+`choice_unreadable` without asking the vault, and the operator's sentence asks the operator to
+have the assistant connect the login again. Otherwise it reads the item's document once and looks
 only at its labels and whether their values are empty, and answers a `Check` with one
 problem: `no_vault`, `vault_unreadable`, `item_not_found`, `field_missing` or `field_empty`. `op` exits
 the same way for a missing item and an unreachable vault, so after a failed read the vault is
 listed once, and the item is `item_not_found` only when that listing works and lacks it.
 `Check.for_model` is what a tool may return: the problem and Casa's own name for the value
 concerned ("the app-specific password"), never a vault label. `Check.sentence` is the
-operator's line and the log's, and may name a label.
+operator's line and the log's, and names the value by Casa's own name too ("The vault item
+for iCloud contacts has no app-specific password."): no operator line and no tool result
+carries a vault field label, since the operator may answer such a line and the quoted line
+then reaches the assistant. The accepted labels are documentation, not runtime text.
 
 **The assistant chooses; code never searches on its own.** `connect_login`, granted to the
 resident assistant alone, refuses unless the turn reads at private clearance and is a direct
@@ -59,20 +62,20 @@ turn in the operator's own chat outside any engagement (the contact tools' guard
 (`icloud` or `apple`; `openai`), at most five items tried in all (an item whose document
 cannot be read counts), each with its id, its title on one line cut to
 80 characters, its category and, per value, whether it holds one under an accepted label. It
-is the one tool that shows an agent the titles of vault items, because a title is all she can
-judge an item by; no result of it carries a field label or a value. Its description tells her
-to take an item only when its title clearly belongs to that login, and to ask the operator
+is the one tool that shows an agent the titles of vault items, because a title is all the assistant
+can judge an item by; no result of it carries a field label or a value. Its description tells the
+assistant to take an item only when its title clearly belongs to that login, and to ask the operator
 when none does or several could. With `show_candidates` a connected login also gets its
 candidates, each marked `in_use` when it is the item the login really resolves to now (no
-row is, when that is no item: two items under the default title, none, or an unknown choice), so she can find
+row is, when that is no item: two items under the default title, none, or an unknown choice), so the assistant can find
 another item when the operator wants one; without it a connected login searches nothing.
 Nothing at boot or in a scheduled sync looks for an item.
 
 **The operator is told first, then the choice is stored.** With `item`, the id must be among
 the candidates the login's own search finds at that moment; anything else is refused and
 nothing is stored. Casa checks the item, sends the operator its own line naming it by title
-(`logins.chosen_line`: "Contacts now use the vault item '…'", saying from which field a value
-came when it is not the first accepted label, or what is wrong with the item), and stores the
+(`logins.chosen_line`: "Contacts now use the vault item '…'.", or what is wrong with the item, never a field
+label), and stores the
 choice in `/data/logins.json` only once that line was delivered. Storing a choice ends an
 unknown choice for that login only; another whose choice is unknown stays so, as `null` in
 the file. An unsent line answers
@@ -106,7 +109,7 @@ a restart; when that write fails the damaged file stays and is found again at th
 start. A file that cannot be opened is left as it is, and every choice is unknown. Either
 way no login reads any vault item until `connect_login` stores a choice for it: the phone
 line answers webhook requests 503 and tells the operator, at most once an hour; contacts
-that synced before fail their refresh and tell him once per streak; contacts that never
+that synced before fail their refresh and tell the operator once per streak; contacts that never
 synced stay silent, and `refresh_contacts` and `connect_login` answer `choice_unreadable`.
 A file damaged while Casa runs is noticed at the next start, since the choices are held in
 memory after the first read.

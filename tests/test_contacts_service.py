@@ -8,6 +8,7 @@ items are invented.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -427,9 +428,62 @@ async def test_a_login_that_stops_working_is_told_once_per_streak(
     op.get("chosen1")["fields"]["password"] = ""
     await service.run_daily()
     assert operator.lines == [line, (
-        f"{LOGIN_LINE} The vault item for iCloud contacts has no "
-        "app-specific password in `password`: the field is empty. The last "
-        "good copy is still in use.")]
+        f"{LOGIN_LINE} The app-specific password in the vault item for "
+        "iCloud contacts is empty. The last good copy is still in use.")]
+
+
+#: Accepted labels that are words Casa itself never writes.
+_MARKED = {"username": ("zzlabel-user", "zzlabel-mail"),
+           "password": ("zzlabel-pass", "zzlabel-cred")}
+
+
+@pytest.mark.parametrize("state", [
+    "no-user", "no-password", "empty-user", "empty-password", "chosen-gone",
+    "default-gone", "vault-down", "choice-unreadable", "no-vault"])
+async def test_the_failure_line_holds_no_label(
+    opened: ContactsStore, monkeypatch: pytest.MonkeyPatch, op: FakeOp,
+    state: str,
+) -> None:
+    # The operator may answer Casa's line, and the quoted line then reaches
+    # the assistant: in every state it names values by Casa's names only.
+    monkeypatch.setitem(logins.SERVICES, LOGIN, dataclasses.replace(
+        logins.SERVICES[LOGIN], fields=_MARKED))
+    whole = {"zzlabel-mail": "ZZVALUE-a", "zzlabel-cred": "ZZVALUE-b"}
+    op.items = [item("dflt1", "iCloud Contacts", **whole)]
+    if state != "default-gone":
+        op.items.append(item("chosen1", "Apple account", **whole))
+        logins.choose(LOGIN, "chosen1")
+    source = FakeSource([_card("U1", "Marco Example")])
+    operator = Operator()
+    _configure(monkeypatch, opened, source, read_login=THROUGH_LOGINS,
+               notify=operator)
+    await service.run_daily()                   # a successful start
+    assert operator.lines == [] and source.fetches == 1
+
+    fields = op.items[-1]["fields"]
+    if state == "no-user":
+        del fields["zzlabel-mail"]
+    elif state == "no-password":
+        del fields["zzlabel-cred"]
+    elif state == "empty-user":
+        fields["zzlabel-mail"] = ""
+    elif state == "empty-password":
+        fields["zzlabel-cred"] = ""
+    elif state in ("chosen-gone", "default-gone"):
+        op.items.pop()
+    elif state == "vault-down":
+        op.down = True
+    elif state == "choice-unreadable":
+        Path(logins.PATH).write_text("{ damaged")
+        monkeypatch.setattr(logins, "_choices", None)
+    else:
+        monkeypatch.delenv("ONEPASSWORD_DEFAULT_VAULT")
+    await service.run_daily()
+    [line] = operator.lines
+    assert line.startswith(LOGIN_LINE) and line != f"{LOGIN_LINE} " \
+        "The last good copy is still in use."
+    assert "zzlabel" not in line.lower() and "ZZVALUE" not in line
+    assert "`" not in line and "field" not in line
 
 
 async def test_a_damaged_choice_file_is_a_lost_login_told_once(

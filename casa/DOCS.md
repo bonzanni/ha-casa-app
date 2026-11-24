@@ -2053,8 +2053,8 @@ who called (the name from your contacts, or "Unknown caller"), their full
 number so you can call back, the time and how the call ended. Then the
 assistant's summary of what they wanted and what happened. The assistant gets
 a short summary of the call, never the transcript. Casa keeps a transcript of
-each call for 30 days; a nightly clean-up removes it after that, and until then
-the assistant can still send it to you. Casa never records audio.
+each call for 30 days, and until then the assistant can send it to you; after
+that it is no longer sent, and a nightly clean-up removes it. Casa never records audio.
 
 **Asking about calls.** Ask the assistant about your calls ("who called
 today?", "what did the last caller want?"), or for a call's transcript: it

@@ -311,9 +311,13 @@ def put_transcript(conn: sqlite3.Connection, call_id: str, text: str,
         (call_id, text, expires_at))
 
 
-def transcript(conn: sqlite3.Connection, call_id: str) -> str | None:
-    row = conn.execute("SELECT text FROM transcripts WHERE call_id = ?",
-                       (call_id,)).fetchone()
+def transcript(conn: sqlite3.Connection, call_id: str,
+               now: float) -> str | None:
+    """The call's transcript while it is kept at *now*; None once it has
+    expired, whether or not :func:`purge_transcripts` has removed it yet."""
+    row = conn.execute(
+        "SELECT text FROM transcripts WHERE call_id = ? AND expires_at > ?",
+        (call_id, now)).fetchone()
     return row[0] if row else None
 
 

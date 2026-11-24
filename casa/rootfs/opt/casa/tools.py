@@ -9634,9 +9634,9 @@ async def refresh_contacts(args: dict) -> dict:
 # vault. The one tool that shows an agent the TITLES of vault items: the few
 # that match a service's search terms, to the resident assistant, in a direct
 # turn in the operator's own chat at private clearance, because a title is
-# all she can judge an item by. It never returns a field label or a value,
-# and an item is stored only after Casa's own line naming it reached the
-# operator. Granted to the assistant only; NEVER add to
+# all the assistant can judge an item by. It never returns a field label or
+# a value, and an item is stored only after Casa's own line naming it reached
+# the operator. Granted to the assistant only; NEVER add to
 # SPECIALIST_CASA_TOOL_ALLOWLIST or the restricted webhook tools.
 
 _LOGINS_NOT_PRIVATE = "Logins are only available in the operator's own chat."
@@ -9682,8 +9682,8 @@ CONNECT_LOGIN_SCHEMA = {
     "sent and nothing changed, so try again. Look before asking: read the "
     "titles. When one candidate is clearly this service's login and has "
     "everything needed, take it and tell the operator which one. When none "
-    "clearly is, or several could be, ask him. Never take an item whose "
-    "title is about something else, whatever it has. When the operator "
+    "clearly is, or several could be, ask the operator. Never take an item "
+    "whose title is about something else, whatever it has. When the operator "
     "wants a different item for a login that is connected, ask for the "
     "candidates with `show_candidates`.",
     CONNECT_LOGIN_SCHEMA,
@@ -10161,7 +10161,7 @@ async def read_call(args: dict) -> dict:
                 call = found[0] if found else None
             else:
                 call = pstore.get_call(conn, which)
-            words = (pstore.transcript(conn, call["id"])
+            words = (pstore.transcript(conn, call["id"], time.time())
                      if call is not None and part == "transcript" else None)
             return call, words
 
@@ -10444,7 +10444,7 @@ async def _phone_settings_show(store) -> dict:
 
 async def _phone_grant_card(caller_class: str, ability: str, before: str,
                             after: str) -> dict:
-    """Ask the operator, on Casa's own card in his chat, to widen
+    """Ask the operator, on Casa's own card in the operator's chat, to widen
     *caller_class*'s grant for *ability* from *before* to *after*. The card's
     words are Casa's, written from the change; the change is frozen here,
     and only the operator's Approve applies it, from the broker's finish
