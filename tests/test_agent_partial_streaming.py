@@ -27,7 +27,6 @@ from claude_agent_sdk import (
     AssistantMessage as _SDKAssistantMessage,
     ResultMessage as _SDKResultMessage,
     StreamEvent,
-    TextBlock as _SDKTextBlock,
     ToolResultBlock as _SDKToolResultBlock,
     ToolUseBlock as _SDKToolUseBlock,
     UserMessage as _SDKUserMessage,
@@ -45,19 +44,13 @@ try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
 except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
+from sdk_messages import _mk_text_block
 
 
 # ---------------------------------------------------------------------------
 # SDK-message helpers (SDK-shape-tolerant, mirror test_agent_pooling.py /
 # test_agent_process.py's ``_mk_*`` idioms)
 # ---------------------------------------------------------------------------
-
-
-def _mk_text_block(text: str) -> _SDKTextBlock:
-    try:
-        return _SDKTextBlock(text=text)
-    except TypeError:
-        return _SDKTextBlock(text)  # type: ignore[call-arg]
 
 
 def _mk_assistant_content(blocks: list) -> _SDKAssistantMessage:

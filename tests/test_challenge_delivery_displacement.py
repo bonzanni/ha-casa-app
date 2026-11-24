@@ -29,8 +29,6 @@ import pytest
 
 import authz_grants
 import scheduled_asks
-import verdict_broker
-from verdict_broker import VerdictBroker
 
 from test_scheduled_ask_attention_lane import OTHER, _ask_on, _dm_origin, _register
 from test_scheduled_ask_user import (
@@ -40,15 +38,9 @@ from test_scheduled_ask_user import (
     _FakeChannel,
     _scheduled_origin,
 )
+from broker_helpers import _fresh_broker  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture(autouse=True)
-def _fresh_broker(monkeypatch):
-    fresh = VerdictBroker()
-    monkeypatch.setattr(verdict_broker, "BROKER", fresh)
-    return fresh
 
 
 @pytest.fixture(autouse=True)

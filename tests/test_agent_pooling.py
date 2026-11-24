@@ -15,10 +15,7 @@ import time
 
 import pytest
 from claude_agent_sdk import (
-    AssistantMessage as _SDKAssistantMessage,
     ClaudeAgentOptions,
-    ResultMessage as _SDKResultMessage,
-    TextBlock as _SDKTextBlock,
 )
 
 from agent import Agent
@@ -33,38 +30,12 @@ try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
 except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
+from sdk_messages import _mk_assistant, _mk_result
 
 
 # --------------------------------------------------------------------------
 # SDK-message helpers (SDK-shape-tolerant, mirror test_sdk_client_pool_*)
 # --------------------------------------------------------------------------
-
-
-def _mk_text_block(text: str) -> _SDKTextBlock:
-    try:
-        return _SDKTextBlock(text=text)
-    except TypeError:
-        return _SDKTextBlock(text)  # type: ignore[call-arg]
-
-
-def _mk_assistant(text: str) -> _SDKAssistantMessage:
-    block = _mk_text_block(text)
-    try:
-        return _SDKAssistantMessage(content=[block])
-    except TypeError:
-        m = _SDKAssistantMessage.__new__(_SDKAssistantMessage)
-        m.content = [block]  # type: ignore[attr-defined]
-        return m
-
-
-def _mk_result(sid, usage=None, *, is_error=False, result=""):
-    m = _SDKResultMessage.__new__(_SDKResultMessage)
-    m.session_id = sid
-    m.is_error = is_error
-    m.result = result
-    if usage is not None:
-        m.usage = usage
-    return m
 
 
 class ScriptedClient:

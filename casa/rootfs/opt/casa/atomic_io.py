@@ -28,7 +28,8 @@ import json
 import logging
 import os
 import tempfile
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -134,3 +135,32 @@ def atomic_write_json(
         mode=mode,
         prefix=prefix,
     )
+
+
+def load_json_or_set_aside(
+    path: Path,
+    valid: Callable[[Any], bool],
+    log: logging.Logger,
+) -> Any | None:
+    """The JSON held at *path* when *valid* accepts it; ``None`` otherwise.
+
+    A missing file yields ``None``. A file that cannot be read or parsed, or
+    whose content *valid* rejects, is logged on *log* at ERROR, moved aside to
+    ``<path>.corrupt`` (best-effort) and yields ``None``, so the caller's store
+    starts empty.
+    """
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not valid(data):
+            raise ValueError("record set rejected")
+    except (OSError, ValueError):
+        log.error("%s is corrupt or unreadable; moving it to .corrupt and "
+                  "starting empty", path)
+        try:
+            os.replace(path, f"{path}.corrupt")
+        except OSError:
+            pass
+        return None
+    return data

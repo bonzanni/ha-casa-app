@@ -20,23 +20,15 @@ import asyncio
 import pytest
 
 import scheduled_asks
-import verdict_broker
-from verdict_broker import VerdictBroker
 
 from broker_helpers import wait_until
 from test_scheduled_ask_attention_lane import _ask_on, _ask_on_raw, _dm_origin
 from test_scheduled_ask_user import (
     CASA_BOT, LABEL, OPERATOR, _FakeChannel, _transport,
 )
+from broker_helpers import _fresh_broker  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture(autouse=True)
-def _fresh_broker(monkeypatch):
-    fresh = VerdictBroker()
-    monkeypatch.setattr(verdict_broker, "BROKER", fresh)
-    return fresh
 
 
 @pytest.fixture(autouse=True)

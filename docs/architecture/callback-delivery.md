@@ -258,6 +258,7 @@ must leave an attempt file, or it can silently drop.
 - `casa/rootfs/opt/casa/callback_spool.py::mint`
 - `casa/rootfs/opt/casa/callback_spool.py::collect`
 - `casa/rootfs/opt/casa/callback_spool.py::ack`
+- `casa/rootfs/opt/casa/spool_fs.py`
 - `casa/rootfs/opt/casa/callback_attempts.py::parse_envelope`
 - `casa/rootfs/opt/casa/callback_attempts.py::terminalize`
 - `casa/rootfs/opt/casa/callback_attempts.py::next_nudge_after_accept`

@@ -21,16 +21,6 @@ pytestmark = [pytest.mark.asyncio]
 
 
 @pytest.fixture
-def configurator_origin():
-    import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})
-    try:
-        yield
-    finally:
-        agent_mod.origin_var.reset(tok)
-
-
-@pytest.fixture
 def bound_runtime(monkeypatch):
     import agent as agent_mod
     runtime = MagicMock()

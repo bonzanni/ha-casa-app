@@ -22,6 +22,7 @@ import result_broker as rb
 from authz_grants import GrantIdentity
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from _fixture_a import install_casa_bot
+from operator_delivery_support import _Clock
 
 ARTIFACT = "1" * 64
 OTHER_ARTIFACT = "2" * 64
@@ -61,14 +62,6 @@ def _map() -> ResultContractMap:
         "legacy": PluginContract(OTHER_ARTIFACT, False, frozenset()),
     }
     return ResultContractMap(tools=tools, plugins=plugins)
-
-
-class _Clock:
-    def __init__(self, t=1000.0):
-        self.t = t
-
-    def __call__(self):
-        return self.t
 
 
 def _store():

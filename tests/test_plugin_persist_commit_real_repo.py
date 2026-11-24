@@ -71,16 +71,6 @@ def _config_repo(tmp_path: Path, slugs: tuple[str, ...]) -> _Repo:
     return repo
 
 
-@pytest.fixture
-def configurator_origin():
-    import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})
-    try:
-        yield
-    finally:
-        agent_mod.origin_var.reset(tok)
-
-
 def _redirect_commit_tool(monkeypatch, repo: _Repo, *, changed_paths_dir=None):
     import agent_loader
     import config_git

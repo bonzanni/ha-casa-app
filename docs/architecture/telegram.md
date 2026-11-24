@@ -327,6 +327,8 @@ none of which will tell you the others were missed.
 - `casa/rootfs/opt/casa/result_broker.py::PostRecord`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._reply_note_for`
+- `casa/rootfs/opt/casa/channels/ask_labels.py::resolve_button_labels`
+- `casa/rootfs/opt/casa/channels/ask_labels.py::render_ask_body`
 
 **Tests**
 - `tests/test_telegram_update_handler.py`

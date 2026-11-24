@@ -51,6 +51,8 @@
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_spool.py
   doc: architecture/callback-delivery.md
+- item: casa/rootfs/opt/casa/spool_fs.py
+  doc: architecture/callback-delivery.md
 - item: casa/rootfs/opt/casa/callback_urls.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/canonical_bytes.py
@@ -64,6 +66,8 @@
 - item: casa/rootfs/opt/casa/casa_eval/base.py
   doc: architecture/eval-framework.md
 - item: casa/rootfs/opt/casa/channels/telegram.py
+  doc: architecture/telegram.md
+- item: casa/rootfs/opt/casa/channels/ask_labels.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram_supervisor.py
   doc: architecture/telegram.md
@@ -369,6 +373,12 @@
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/tools.py
   doc: architecture/tools-interface.md
+- item: casa/rootfs/opt/casa/tool_result.py
+  doc: architecture/tools-interface.md
+- item: casa/rootfs/opt/casa/memory_tools.py
+  doc: architecture/memory-tools.md
+- item: casa/rootfs/opt/casa/vault_tools.py
+  doc: architecture/plugin-secret-exploration.md
 - item: casa/rootfs/opt/casa/trigger_acks.py
   doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/resident_trigger_secrets.py

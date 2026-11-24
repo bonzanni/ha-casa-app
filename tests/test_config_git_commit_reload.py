@@ -214,16 +214,6 @@ class _World:
 
 
 @pytest.fixture
-def configurator_origin():
-    import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})
-    try:
-        yield
-    finally:
-        agent_mod.origin_var.reset(tok)
-
-
-@pytest.fixture
 def world(tmp_path, monkeypatch, configurator_origin):
     import agent as agent_mod
     import agent_loader

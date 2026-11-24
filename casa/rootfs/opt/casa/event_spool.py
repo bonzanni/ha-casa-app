@@ -13,7 +13,8 @@ Filesystem discipline (0o770 dirs / 0o600 files, ``.dir-id`` identity,
 atomic temp+rename+fsync, unique staging) and most of the low-level FD
 plumbing below are a direct mirror of ``callback_spool.py`` — read that
 module's docstring and ``:73-206``/``:885-960``/``:1173-1366``/``:1907``/
-``:3368-3660`` before touching this one. Two protocol differences from
+``:3368-3660`` before touching this one. The helpers both spools share
+outright live in ``spool_fs``. Two protocol differences from
 callbacks explain the rest of the shape:
 
 * **No claim/publish handshake.** An emission is casa-owned from the
@@ -78,7 +79,6 @@ import errno
 import fcntl
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -90,6 +90,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import event_attempts
+from spool_fs import (  # noqa: F401 — re-exported for existing callers
+    DIR_ID_NAME, DIR_MODE, REPLACE_TEMP_INFIX, _DIR_FLAGS, _DIR_ID_RE,
+    _MARKER_READ_FLAGS, _TOKEN_ERROR, _classify_dir_token, _is_clock,
+    _is_replace_temp, _listdir_quiet, _lstat_quiet, _mkdir, _open_dir,
+    canonical_marker_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,22 +121,15 @@ EMISSIONS_DIR = "emissions"
 STATE_DIR = "state"
 DELIVERY_DIR = "delivery"
 REMOVALS_DIR = ".removals"
-DIR_ID_NAME = ".dir-id"
 READY_NAME = "ready.json"
 PART_PREFIX = ".part-"
 CORRUPT_PREFIX = ".corrupt-"
-REPLACE_TEMP_INFIX = ".tmp-"
 
-DIR_MODE = 0o770
 FILE_MODE = 0o600
 
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _NEW_FILE_FLAGS = (os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
                    | os.O_CLOEXEC)
-_MARKER_READ_FLAGS = (os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
-                      | os.O_CLOEXEC)
 
-_DIR_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _U32HEX_RE = re.compile(r"^[0-9a-f]{8}$")
 
 _STATE_KEYS = frozenset({"v", "event", "gen", "cohort", "folded", "opened_ts"})
@@ -206,18 +205,6 @@ class RecoveryReport:
 # ---------------------------------------------------------------------------
 
 
-def canonical_marker_bytes(payload: dict) -> bytes:
-    """The ONE canonical on-disk form of a durable record — sorted keys,
-    compact separators, no ASCII-escaping, UTF-8. Mirrors
-    ``callback_spool.canonical_marker_bytes`` exactly, including
-    ``allow_nan=False`` (a non-finite float must never be written as the
-    non-standard ``NaN``/``Infinity`` JSON literal)."""
-    return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
-
-
 def spool_root() -> Path:
     return Path(os.environ.get(SPOOL_ROOT_ENV) or ROOT)
 
@@ -239,15 +226,6 @@ def _split_effective(name_no_ext: str) -> "tuple[str, str] | None":
     if idx <= 0:
         return None
     return name_no_ext[:idx], name_no_ext[idx + 2:]
-
-
-def _is_replace_temp(name: str) -> bool:
-    return name.startswith(".") and REPLACE_TEMP_INFIX in name
-
-
-def _is_clock(value) -> bool:
-    return (not isinstance(value, bool) and isinstance(value, (int, float))
-            and math.isfinite(value))
 
 
 def _is_removal_name(name: str) -> bool:
@@ -368,24 +346,6 @@ def _fsync_strict(fd: int, what: str) -> None:
             f"fsync of {what} failed") from exc
 
 
-def _open_dir(name: str, dir_fd: int) -> int:
-    return os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
-
-
-def _lstat_quiet(name: str, dir_fd: int):
-    try:
-        return os.lstat(name, dir_fd=dir_fd)
-    except OSError:
-        return None
-
-
-def _listdir_quiet(dir_fd: int) -> list:
-    try:
-        return os.listdir(dir_fd)
-    except OSError:
-        return []
-
-
 def _listdir_strict(dir_fd: int) -> "list | None":
     """The PROVING counterpart of :func:`_listdir_quiet`: ``None`` (never
     ``[]``) when the listing itself fails, so a caller that licenses an
@@ -433,37 +393,7 @@ def _write_new_file(name: str, dir_fd: int, data: bytes) -> None:
         os.close(fd)
 
 
-_TOKEN_ERROR: object = object()
 _SCAN_ERROR: object = object()
-
-
-def _classify_dir_token(dir_fd: int):
-    try:
-        fd = os.open(DIR_ID_NAME, _MARKER_READ_FLAGS, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            return None
-        return _TOKEN_ERROR
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size != 32:
-            return None
-        chunks = bytearray()
-        while len(chunks) < 33:
-            piece = os.read(fd, 33 - len(chunks))
-            if not piece:
-                break
-            chunks += piece
-        if len(chunks) != 32:
-            return _TOKEN_ERROR
-    except OSError:
-        return _TOKEN_ERROR
-    finally:
-        os.close(fd)
-    token = chunks.decode("ascii", errors="replace")
-    return token if _DIR_ID_RE.match(token) else None
 
 
 def _retire_marker_entry(name: str, dir_fd: int) -> bool:
@@ -705,13 +635,7 @@ class EventSpool:
         finally:
             fcntl.flock(efd, fcntl.LOCK_UN)
 
-    @staticmethod
-    def _mkdir(name: str, dir_fd: int) -> bool:
-        try:
-            os.mkdir(name, DIR_MODE, dir_fd=dir_fd)
-            return True
-        except FileExistsError:
-            return False
+    _mkdir = staticmethod(_mkdir)
 
     @staticmethod
     def _chmod_dir(fd: int, what: str) -> None:

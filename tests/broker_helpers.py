@@ -1,4 +1,4 @@
-"""Shared test helper for resolving verdict_broker requests.
+"""Shared test helpers for verdict_broker: resolving requests, and a fresh broker per test.
 
 #469 removed ``VerdictBroker.deliver`` from production — the internal
 ``/internal/channel/permission_verdict`` endpoint was its only caller, and
@@ -9,6 +9,11 @@ replicates the old claim→commit composition and return contract
 """
 
 from __future__ import annotations
+
+import pytest
+
+import verdict_broker
+from verdict_broker import VerdictBroker
 
 
 def deliver(
@@ -38,3 +43,10 @@ async def wait_until(predicate, *, timeout: float = 5.0) -> None:
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_broker(monkeypatch):
+    fresh = VerdictBroker()
+    monkeypatch.setattr(verdict_broker, "BROKER", fresh)
+    return fresh

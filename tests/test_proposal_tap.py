@@ -26,6 +26,7 @@ from bus import MessageBus
 from channels.tg_address import TgAddress
 from telegram_channel_double import make_transport
 from two_endpoints import CASA_BOT as BOT
+from operator_delivery_support import _Manager
 
 OPERATOR = 42
 RID = "f" * 32
@@ -523,11 +524,6 @@ async def test_the_settled_memory_keeps_a_chats_latest_entries_only(env):
 
 
 # --- #1305: a card whose landing is unconfirmed keeps working buttons ------------------
-
-def _Manager(channel):
-    """The channel manager with Telegram's transport over *channel*, Casa's
-    endpoint on bot 111; ``None`` (no Telegram) for no channel."""
-    return make_transport(channel) if channel is not None else None
 
 
 def _post_args(revision=""):

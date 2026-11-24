@@ -41,27 +41,9 @@ except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
 
 from claude_agent_sdk import (
-    AssistantMessage as _SDKAssistantMessage,
     ResultMessage as _SDKResultMessage,
-    TextBlock as _SDKTextBlock,
 )
-
-
-def _mk_text_block(text: str) -> _SDKTextBlock:
-    try:
-        return _SDKTextBlock(text=text)
-    except TypeError:
-        return _SDKTextBlock(text)  # type: ignore[call-arg]
-
-
-def _mk_assistant(text: str) -> _SDKAssistantMessage:
-    block = _mk_text_block(text)
-    try:
-        return _SDKAssistantMessage(content=[block])
-    except TypeError:
-        m = _SDKAssistantMessage.__new__(_SDKAssistantMessage)
-        m.content = [block]  # type: ignore[attr-defined]
-        return m
+from sdk_messages import _mk_assistant
 
 
 def _mk_result(sid):

@@ -483,7 +483,7 @@ NOT_A_DELIVERY = {
     "tools.py::report_job_progress",  # saves a job's note on its record; it posts nothing
     "tools.py::ack_event",
     "tools.py::callback_ack_revoke",
-    "tools.py::browse_memory_day",
+    "memory_tools.py::browse_memory_day",
     "tools.py::cancel_reminder",
     "tools.py::cancel_voice_job",
     "tools.py::casa_reload",
@@ -493,16 +493,16 @@ NOT_A_DELIVERY = {
     "tools.py::config_trigger_delete",
     "tools.py::config_trigger_upsert",
     "tools.py::continue_voice_job",
-    "tools.py::correct_memory",
+    "memory_tools.py::correct_memory",
     "tools.py::delegate_to_agent",
     "tools.py::event_ack_revoke",
     "tools.py::find_contact",
-    "tools.py::get_item_fields",
+    "vault_tools.py::get_item_fields",
     "tools.py::get_schedule",
     "tools.py::guest_access",
     "tools.py::list_inbound_files",
-    "tools.py::list_vault_items",
-    "tools.py::open_memory",
+    "vault_tools.py::list_vault_items",
+    "memory_tools.py::open_memory",
     "tools.py::persona_ack_revoke",
     "tools.py::persona_apply",
     "tools.py::persona_install_commit",
@@ -522,7 +522,7 @@ NOT_A_DELIVERY = {
     "tools.py::remove_plugin_env_reference",
     "tools.py::resident_persona_reset",
     "tools.py::resident_persona_swap",
-    "tools.py::search_memory",
+    "memory_tools.py::search_memory",
     "tools.py::set_plugin_env_reference",
     "tools.py::set_reminder",
     "tools.py::share_inbound_file",
@@ -535,7 +535,7 @@ NOT_A_DELIVERY = {
     "tools.py::start_job",
     "tools.py::trigger_ack_revoke",
     "tools.py::verify_plugin_secrets",
-    "tools.py::vault_drop_off",
+    "vault_tools.py::vault_drop_off",
     "tools.py::verify_plugin_state",
     "tools.py::voice_job_status",
 }
@@ -609,7 +609,7 @@ def test_no_declared_tool_is_unclassified_for_the_closing_convention():
 
     # The one registration path the decorator scan cannot see: a tool handed to
     # the framework server without a decorator. `CASA_TOOLS` must list exactly
-    # the functions `tools.py` declares.
+    # the functions `tools.py` and the tool modules it imports from declare.
     tree = ast.parse((_CODE_ROOT / "tools.py").read_text(encoding="utf-8"))
     registry = [
         node for node in tree.body
@@ -619,7 +619,9 @@ def test_no_declared_tool_is_unclassified_for_the_closing_convention():
     assert len(registry) == 1, ("CASA_TOOLS", len(registry))
     registered = [e.id if isinstance(e, ast.Name) else ast.dump(e)
                   for e in registry[0].value.elts]
-    in_tools_py = {key.split("::", 1)[1] for key in declared if key.startswith("tools.py::")}
+    casa_tool_modules = {"tools.py", "memory_tools.py", "vault_tools.py"}
+    in_tools_py = {key.split("::", 1)[1] for key in declared
+                   if key.split("::", 1)[0] in casa_tool_modules}
     assert sorted(set(registered) ^ in_tools_py) == []
     assert len(registered) == len(set(registered))
 

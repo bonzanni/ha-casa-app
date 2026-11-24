@@ -18,11 +18,11 @@
     - casa/rootfs/opt/casa/memory/browse.py
     - casa/rootfs/opt/casa/memory/view.py::open_objects
     - casa/rootfs/opt/casa/memory/corrections.py::mark_operator_event
-    - casa/rootfs/opt/casa/tools.py::search_memory
-    - casa/rootfs/opt/casa/tools.py::browse_memory_day
-    - casa/rootfs/opt/casa/tools.py::open_memory
-    - casa/rootfs/opt/casa/tools.py::correct_memory
-    - casa/rootfs/opt/casa/tools.py::_read_memory
+    - casa/rootfs/opt/casa/memory_tools.py::search_memory
+    - casa/rootfs/opt/casa/memory_tools.py::browse_memory_day
+    - casa/rootfs/opt/casa/memory_tools.py::open_memory
+    - casa/rootfs/opt/casa/memory_tools.py::correct_memory
+    - casa/rootfs/opt/casa/memory_tools.py::_read_memory
     - casa/rootfs/opt/casa/tools.py::_engager_context
     - casa/rootfs/opt/casa/tools.py::query_engager
     - casa/rootfs/opt/casa/timekeeping.py::resolve_period

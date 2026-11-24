@@ -10,16 +10,6 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
-def configurator_origin():
-    import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})
-    try:
-        yield
-    finally:
-        agent_mod.origin_var.reset(tok)
-
-
 class TestCasaRestartSupervised:
     async def test_happy_path_posts_supervisor(self, configurator_origin):
         from tools import casa_restart_supervised

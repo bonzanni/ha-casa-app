@@ -14,9 +14,7 @@ starts empty.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +22,7 @@ from typing import Literal
 
 import specialist_install
 import specialist_registry
-from atomic_io import PRIVATE, atomic_write_json
+from atomic_io import PRIVATE, atomic_write_json, load_json_or_set_aside
 
 logger = logging.getLogger(__name__)
 
@@ -95,19 +93,8 @@ class GuestStore:
         self._load()
 
     def _load(self) -> None:
-        if not self.path.exists():
-            return
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            if not _valid(data):
-                raise ValueError("not a guest-group record set")
-        except (OSError, ValueError):
-            logger.error("%s is corrupt or unreadable; moving it to .corrupt and "
-                         "starting empty", self.path)
-            try:
-                os.replace(self.path, f"{self.path}.corrupt")
-            except OSError:
-                pass
+        data = load_json_or_set_aside(self.path, _valid, logger)
+        if data is None:
             return
         for role, chats in data.items():
             for key, rec in chats.items():

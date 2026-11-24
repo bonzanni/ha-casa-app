@@ -60,7 +60,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote_plus
 
-from atomic_io import PRIVATE, atomic_write_json, fsync_directory
+from atomic_io import (PRIVATE, atomic_write_json, fsync_directory,
+                       load_json_or_set_aside)
 from channels.tg_address import AddressError, TgAddress
 
 logger = logging.getLogger(__name__)
@@ -244,19 +245,8 @@ class VoiceStore:
         self._load()
 
     def _load(self) -> None:
-        if not self.path.exists():
-            return
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            if not _valid_store(data):
-                raise ValueError("not an agent-voices record set")
-        except (OSError, ValueError):
-            logger.error("%s is corrupt or unreadable; moving it to .corrupt and "
-                         "starting empty", self.path)
-            try:
-                os.replace(self.path, f"{self.path}.corrupt")
-            except OSError:
-                pass
+        data = load_json_or_set_aside(self.path, _valid_store, logger)
+        if data is None:
             return
         self.agents = {role: dict(rec) for role, rec in data["agents"].items()}
         self.bots = {int(key): dict(rec) for key, rec in data["bots"].items()}
