@@ -208,7 +208,7 @@ A raise carries the same question and cannot answer it through a return value, s
 fact is stamped on the turn context and consulted on the exception path.
 
 What it does not cover: channels that have not adopted the contract. They return nothing,
-which reads as `UNKNOWN` and preserves their existing behavior. That case is deliberately
+which preserves their existing behavior. That case is deliberately
 distinct from a negative — treating "cannot report" as "failed" would re-offer a notice on
 every turn forever.
 

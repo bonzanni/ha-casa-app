@@ -677,31 +677,6 @@ class TriggerRegistry:
         """
         return sorted(n for n, r in self._webhook_routes.items() if r["role"] == role)
 
-    def get_clearance(self, name: str) -> str:
-        """Return the declared memory read-clearance for webhook trigger
-        ``name`` (default ``"public"``). Stamped onto the dispatched turn's
-        ``_origin_clearance`` so the recall gate reads at the declared tier.
-        """
-        record = self._webhook_routes.get(name)
-        if record is not None:
-            return record["clearance"]
-        if self._plugin_overlay is ROUTING_UNAVAILABLE:
-            return "public"                              # #606: closed ingress
-        entry = self._plugin_overlay.get(name)
-        return entry["clearance"] if entry is not None else "public"
-
-    def get_auth_policy(self, name: str) -> dict | None:
-        """Return the per-trigger auth policy for webhook ``name`` (mode/header/
-        tolerance_secs/secret_owner), or ``None`` if the name is unregistered.
-        The wildcard handler verifies the request with this policy."""
-        record = self._webhook_routes.get(name)
-        if record is not None:
-            return record["auth"]
-        if self._plugin_overlay is ROUTING_UNAVAILABLE:
-            return None                                  # #606: closed ingress
-        entry = self._plugin_overlay.get(name)
-        return entry["auth"] if entry is not None else None
-
     def replace_plugin_overlay(self, overlay: dict[str, dict]) -> None:
         """Atomically replace the ENTIRE plugin-trigger overlay (Release B).
 
@@ -753,13 +728,6 @@ class TriggerRegistry:
         if self._callback_overlay is ROUTING_UNAVAILABLE:
             return None                                  # #606: closed ingress
         return self._callback_overlay.get(name)
-
-    def callback_overlay_names(self) -> list[str]:
-        """Effective names currently live in the callback overlay. Empty under
-        :data:`ROUTING_UNAVAILABLE` — nothing routes."""
-        if self._callback_overlay is ROUTING_UNAVAILABLE:
-            return []
-        return list(self._callback_overlay)
 
     def plugin_overlay_names(self) -> list[str]:
         """Effective names currently live in the plugin overlay. Empty under

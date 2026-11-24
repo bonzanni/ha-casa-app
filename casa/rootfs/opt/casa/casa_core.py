@@ -56,7 +56,7 @@ from session_sweeper import SessionSweeper
 from rate_limit import RateLimiter, rate_limit_response
 from timekeeping import resolve_tz
 from trigger_registry import TriggerRegistry
-from voice_delivery_config import load_voice_delivery_config
+from voice_delivery_config import DELIVERY_TTL_S, ROUTE_CAP, ROUTE_FRESHNESS_S
 
 logger = logging.getLogger(__name__)
 
@@ -1848,7 +1848,7 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
         return  # not marked → retried next boot/mutation
     # #556: the is_ready pre-check above is a cheap early-out, not proof — the
     # app can be torn down between that check and this send. Only a PROVEN
-    # negative withholds the mark; UNKNOWN (a channel not on the contract,
+    # negative withholds the mark; no outcome (a channel not on the contract,
     # returning None) keeps today's behavior, or a non-reporting channel would
     # re-DM the same issue on every boot forever.
     if outcome is DeliveryOutcome.NOT_DELIVERED:
@@ -2021,7 +2021,7 @@ async def _resume_background_jobs(registry, channel, skip=frozenset(),
             logger.warning("not resuming job %s: its specialist is disabled and "
                            "closing it failed", rec.id[:8])
             continue
-        if rec.driver == "in_casa" and rec.origin.get("job"):
+        if rec.origin.get("job"):
             try:
                 await runner.resume_at_boot(rec)
             except Exception:  # noqa: BLE001 — one job must not stop the boot
@@ -2488,8 +2488,6 @@ async def main() -> None:
     # never here.
     validate_ingress_identity_table()
 
-    voice_delivery_config = load_voice_delivery_config()
-
     observed_cli = await asyncio.to_thread(verify_effective_cli)
     observed_version = observed_cli.split(maxsplit=1)[0]
     logger.info(
@@ -2683,7 +2681,7 @@ async def main() -> None:
     # second lifecycle table can observe or publish a divergent state.
     job_registry = JobRegistry(
         os.path.join(DATA_DIR, "jobs.json"),
-        result_ttl_seconds=voice_delivery_config.delivery_ttl_s,
+        result_ttl_seconds=DELIVERY_TTL_S,
     )
     await job_registry.load()
     recovered_jobs = await job_registry.recover_after_restart()
@@ -2762,7 +2760,7 @@ async def main() -> None:
     # the channels and agents are up belongs to its launch, not to boot.
     boot_job_ids = frozenset(
         r.id for r in engagement_registry.active_and_idle()
-        if r.driver == "in_casa" and (r.origin or {}).get("job"))
+        if (r.origin or {}).get("job"))
 
     # Scheduler + trigger registry constructed here so the get_schedule
     # tool can see the registry via init_tools. The per-role
@@ -2881,14 +2879,12 @@ async def main() -> None:
         agents={},                            # populated below at line ~984
         role_configs=role_configs,
         specialist_registry=specialist_registry,
-        engagement_registry=engagement_registry,
         agent_registry=agent_registry,
         trigger_registry=trigger_registry,
         mcp_registry=mcp_registry,
         session_registry=session_registry,
         channel_manager=channel_manager,
         bus=bus,
-        engagement_driver=None,               # set after step 10 InCasaDriver build
         policy_lib=policy_lib,
         config_dir=CONFIG_DIR,
         agents_dir=agents_dir,
@@ -2933,7 +2929,7 @@ async def main() -> None:
         specialist_limiter=specialist_limiter,
         specialist_telemetry=specialist_telemetry,
         agent_spawn_limiter=agent_spawn_limiter,  # #283 — same instance load() restored into
-        voice_job_route_cap=voice_delivery_config.route_cap,
+        voice_job_route_cap=ROUTE_CAP,
     )
     mcp_registry.register_sdk_factory(
         "casa-framework",
@@ -3030,11 +3026,10 @@ async def main() -> None:
         bus.register(role, agent.handle_message)
         agents[role] = agent
         logger.info(
-            "Agent '%s' registered (name=%s, model=%s, memory=%s)",
+            "Agent '%s' registered (name=%s, model=%s)",
             role,
             cfg.character.name,
             cfg.model,
-            cfg.memory.read_strategy,
         )
 
     ha_facade = await _start_butler_ha_facade(
@@ -3239,7 +3234,6 @@ async def main() -> None:
     memory_capture.configure(notify=_memory_spool_notice)
     memory_writer.active().notify = _memory_spool_notice
     agent_mod.active_session_registry = session_registry  # #411 — wipe orchestrator input
-    runtime.engagement_driver = engagement_driver
 
     # Stash runtime on agent module so reload handlers and tools find it.
     agent_mod.active_runtime = runtime
@@ -3320,7 +3314,7 @@ async def main() -> None:
         voice_routes = VoiceRouteRegistry(
             secret_present=bool(webhook_secret),
             agent_configs=role_configs,
-            freshness_s=voice_delivery_config.route_freshness_s,
+            freshness_s=ROUTE_FRESHNESS_S,
         )
         voice_delivery = VoiceDeliveryCoordinator(job_registry, voice_routes)
         voice_handoff = VoiceHandoffCoordinator(job_registry, voice_routes)

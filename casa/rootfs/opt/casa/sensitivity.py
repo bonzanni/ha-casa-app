@@ -43,16 +43,6 @@ CLEARANCE_BY_CHANNEL: dict[str, str] = {
 _DEFAULT_CLEARANCE = "public"
 
 
-def _rank(tier: str) -> int:
-    return TIERS.index(tier)
-
-
-def readable_tiers(clearance: str) -> list[str]:
-    """Tiers a context at ``clearance`` may read: its own tier + all less sensitive."""
-    ceiling = _rank(clearance)
-    return [t for t in TIERS if _rank(t) <= ceiling]
-
-
 def clearance_for_channel(channel: str) -> str:
     """Clearance for a channel. FAIL-CLOSED: an unmapped channel reads at the
     LEAST-sensitive tier (public) — see _DEFAULT_CLEARANCE (X2, 2026-07-10)."""

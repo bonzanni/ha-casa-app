@@ -44,11 +44,9 @@ def _runtime(tmp_path):
     from runtime import CasaRuntime
     return CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(), session_registry=MagicMock(),
         channel_manager=MagicMock(), bus=MagicMock(),
-        engagement_driver=MagicMock(),
         policy_lib=MagicMock(), config_dir=str(tmp_path),
         agents_dir=str(tmp_path / "agents"), home_root=str(tmp_path / "home"),
         defaults_root="/opt/casa",

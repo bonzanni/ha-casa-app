@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from provenance import APPROVAL_KEY
 from types import SimpleNamespace
 
 import pytest
@@ -81,7 +82,7 @@ class _Runs:
         import agent as agent_mod
         import log_cid
         origin = dict(agent_mod.origin_var.get(None) or {})
-        key = "continuation" if origin.get(approval_records.APPROVAL_KEY) is not None \
+        key = "continuation" if origin.get(APPROVAL_KEY) is not None \
             or origin.get("cid", "").startswith("appr-") else "ordinary"
         self.seen.append(SimpleNamespace(
             key=key, task=task_text, origin=origin, holder=configurator_run.holder(),
@@ -187,7 +188,7 @@ async def test_the_run_carries_the_approval_its_frozen_task_and_its_own_run_key(
     await _settled(env)
     (run,) = env.runs.seen
     (job,) = _jobs(env)
-    assert run.origin[approval_records.APPROVAL_KEY] == {"rid": record.rid,
+    assert run.origin[APPROVAL_KEY] == {"rid": record.rid,
                                                           "generation": record.generation}
     assert run.origin["_task_delivery"] is None
     # #1565: the operator's own words travel into the run, before the frozen values
@@ -198,7 +199,7 @@ async def test_the_run_carries_the_approval_its_frozen_task_and_its_own_run_key(
     assert run.holder["run_key"] == job.id == run.quota     # the lease's key is the row's id
     assert run.holder["via"] == "delegation"
     # the durable row carries no approval
-    assert approval_records.APPROVAL_KEY not in json.dumps(
+    assert APPROVAL_KEY not in json.dumps(
         json.loads(open(env.reg.job_registry.path).read()))
 
 

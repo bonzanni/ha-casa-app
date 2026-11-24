@@ -11,7 +11,7 @@ last_reviewed: 2026-11-09
 How a write is admitted into a live job's session: the registry decision taken immediately
 before the call that hands the write to the job's client, where the driver places that
 decision, and what it does and does not fence. The record itself, how an engagement is launched
-and the driver protocol are in [`architecture/engagements.md`](engagements.md); the one writer
+and the driver's lifecycle methods are in [`architecture/engagements.md`](engagements.md); the one writer
 per job and what it writes are in
 [`architecture/background-job-session.md`](background-job-session.md) (INV-BGJOB-016); the
 completion gate that refuses a success over input nobody read is

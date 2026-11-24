@@ -212,8 +212,7 @@ def test_a_malformed_receipt_reads_unproven_and_is_not_deleted(
         tmp_path: Path, payload: bytes):
     """A receipt this module cannot parse is reported, NEVER removed.
 
-    `_read_state` deletes a malformed rotation file; this deliberately does
-    not. Speculative deletion in this directory is the whole hazard.
+    Speculative deletion in this directory is the whole hazard.
     """
     webhook_auth.mint_resident_secret("vm", secrets_dir=tmp_path, role="assistant")
     (tmp_path / "vm.mint").write_bytes(payload)

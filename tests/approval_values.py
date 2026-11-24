@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterable, Mapping
+from provenance import APPROVAL_KEY
 from typing import Any
 
 from approval_records import values_digest
@@ -122,7 +123,7 @@ async def approved_run(tool: Any, args: dict, *, acks: Any = None,
                 kind, f"{inspection.component_id}:{inspection.slug}",
                 specialist_identity(inspection, values=values), values)
         record = approval_records.approve(record.rid)
-        run_origin[approval_records.APPROVAL_KEY] = {"rid": record.rid,
+        run_origin[APPROVAL_KEY] = {"rid": record.rid,
                                                      "generation": record.generation}
     token = agent_mod.origin_var.set(run_origin)
     try:

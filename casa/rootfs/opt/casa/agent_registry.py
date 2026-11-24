@@ -29,7 +29,6 @@ Tier = Literal["resident", "specialist"]
 class KnownAgent:
     role: str
     name: str
-    card: str
     tier: Tier
 
 
@@ -59,9 +58,8 @@ class AgentRegistry:
 
         def _register(role: str, cfg: AgentConfig, tier: Tier) -> None:
             name = (getattr(cfg.character, "name", "") or role).strip()
-            card = getattr(cfg.character, "card", "") or ""
             role_to_known[role] = KnownAgent(
-                role=role, name=name, card=card, tier=tier,
+                role=role, name=name, tier=tier,
             )
             name_lower_to_role.setdefault(name.lower(), role)
 

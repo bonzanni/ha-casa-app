@@ -300,7 +300,8 @@ class TestLane:
         payload, channel = await _ask(monkeypatch)
         rid = payload["request_id"]
 
-        assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 1
+        assert scheduled_asks.displace_scheduled_for_chat(
+            CASA_BOT, OPERATOR, "operator_challenge") == 1
         await _fresh_broker.drain_hooks()
         await wait_until(lambda: channel.scheduled_dispatches)
 
@@ -310,7 +311,7 @@ class TestLane:
         assert channel.scheduled_dispatches[0]["request_id"] == rid
         assert _fresh_store.all() == []
 
-    async def test_cancel_for_chat_leaves_an_operators_own_ask_alone(
+    async def test_displacement_leaves_an_operators_own_ask_alone(
         self, _fresh_broker,
     ):
         _fresh_broker.register(
@@ -318,7 +319,8 @@ class TestLane:
             request_id="human", timeout_s=300, detached=True,
             meta={"operator_id": OPERATOR},
         )
-        assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 0
+        assert scheduled_asks.displace_scheduled_for_chat(
+            CASA_BOT, OPERATOR, "operator_challenge") == 0
         assert _fresh_broker.pending(
             namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == ["human"]
 
@@ -982,10 +984,11 @@ class TestBootReconcile:
         it and every later one would have found nothing. Reproducing the live
         path's own answer is the whole point of the marker.
         """
-        await _fresh_store.put(self._rec())
-        # Both match this record; the chat marker is written first.
+        await _fresh_store.put(self._rec(session_scope="cron-invoices"))
+        # Both match this record; the trigger marker is written first.
         results = [
-            scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "new_session"),
+            scheduled_asks.revoke_trigger(
+                "assistant", "invoices", "trigger_cancelled"),
             scheduled_asks.revoke_role("assistant", "trigger_reloaded"),
         ]
         assert sum(n == 0 for n in results) == 2
@@ -998,7 +1001,7 @@ class TestBootReconcile:
         assert counts.get("restored", 0) == 0
         assert len(channel.edits) == 1
         assert len(channel.scheduled_dispatches) == 1
-        assert sum("(new_session)" in d["text"]
+        assert sum("(trigger_cancelled)" in d["text"]
                    for d in channel.scheduled_dispatches) == 1
         assert sum("trigger_reloaded" in d["text"]
                    for d in channel.scheduled_dispatches) == 0
@@ -1074,23 +1077,6 @@ class TestBootReconcile:
         assert _fresh_broker.pending(
             namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == ["sibling"]
 
-    async def test_a_pre_reconcile_challenge_cancellation_is_honoured(
-        self, _fresh_broker, _fresh_store,
-    ):
-        """An authorization challenge raised before Telegram is ready cancels
-        nothing (the broker is empty) — and if that challenge is itself gone by
-        reconcile time, `require_idle` has nothing to refuse against either, so
-        the machine question would be restored into a lane it had already
-        yielded (INV-JOB-008)."""
-        await _fresh_store.put(self._rec())
-        assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 0
-
-        channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
-        assert counts["revoked_before_reconcile"] == 1
-        assert counts.get("restored", 0) == 0
-        assert _fresh_store.all() == []
-
     async def test_markers_do_not_outlive_the_reconcile(
         self, _fresh_broker, _fresh_store,
     ):
@@ -1104,7 +1090,6 @@ class TestBootReconcile:
         # broker scan is authoritative from here on, and a marker that kept
         # accumulating would both leak and mis-settle a later record.
         scheduled_asks.revoke_role("assistant", "trigger_reloaded")
-        scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge")
         assert scheduled_asks._BOOT_REVOCATIONS == []
 
         await _fresh_store.put(self._rec(rid="later"))

@@ -87,8 +87,8 @@ One asymmetry is worth stating, because it is the seam between the two halves of
 design. Revocation reads the broker, never the record file (INV-JOB-008) — but from process
 start until this reconcile runs, records exist on disk and the broker is empty, so a
 revocation landing in that window cancels nothing. Each revocation therefore leaves a
-process-local MARKER carrying the selector it used — a role, a role and a trigger's labels,
-or a chat — and the reason it gave (INV-JOB-012), and the reconciler settles, rather than
+process-local MARKER carrying the selector it used — a role, or a role and a trigger's
+labels — and the reason it gave (INV-JOB-012), and the reconciler settles, rather than
 restores, a record that matches one.
 Not every retirement is a revocation, and only revocations mark. A DISPLACEMENT — a
 human question taking the lane — has nothing to settle: if the live map is empty, the

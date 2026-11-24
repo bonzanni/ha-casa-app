@@ -474,14 +474,14 @@ async def test_restored_scheduled_ask_survives_plain_text(
 
 
 # ---------------------------------------------------------------------------
-# 7. characterisation: the EXISTING cancel_for_chat selection, pinned first
+# 7. characterisation: the displacement selection, pinned first
 # ---------------------------------------------------------------------------
 
 
-async def test_cancel_for_chat_selects_only_same_dm_scheduled(_fresh_broker):
-    """GREEN pre-fix and after. `_is_scheduled` is about to be read by two new
-    siblings; this pins what its one shipped caller (`authz_grants.py`) gets,
-    so donating the predicate cannot silently change a live caller."""
+async def test_displacement_selects_only_same_dm_scheduled(_fresh_broker):
+    """`_is_scheduled` is read by several siblings; this pins what the
+    displacement `authz_grants.py` calls gets, so sharing the predicate
+    cannot silently change a live caller."""
     finishes: dict[str, list] = {}
     _register(_fresh_broker, finishes, rid="scheduled-same",
               scope=f"dm:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=True)
@@ -492,7 +492,8 @@ async def test_cancel_for_chat_selects_only_same_dm_scheduled(_fresh_broker):
     _register(_fresh_broker, finishes, rid="scheduled-other",
               scope=f"dm:{CASA_BOT}:{OTHER}", chat_id=OTHER, scheduled=True)
 
-    assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 1
+    assert scheduled_asks.displace_scheduled_for_chat(
+        CASA_BOT, OPERATOR, "operator_challenge") == 1
     await _fresh_broker.drain_hooks()
 
     same = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
@@ -543,7 +544,7 @@ async def test_failed_challenge_post_leaves_scheduled_live(
     operator is left with NEITHER question: the machine-timed one already
     expired and continued, and the human one never appeared.
 
-    Drives the REAL coordinator, never `scheduled_asks.cancel_for_chat` — the
+    Drives the REAL coordinator, never `scheduled_asks.displace_scheduled_for_chat` — the
     ordering is the defect, and every existing assertion about this seam calls
     the helper directly, which cannot see an ordering at all.
     """

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Mapping
 
 if TYPE_CHECKING:
     from agent import Agent
@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from bus import MessageBus
     from channels import ChannelManager
     from config import AgentConfig
-    from engagement_registry import EngagementRegistry
     from job_registry import JobRegistry
     from mcp_registry import McpServerRegistry
     from personality_binding import BindingRecord
@@ -49,7 +48,7 @@ class CasaRuntime:
       fresh read-only views) by :meth:`refresh_personality_maps`, which
       reload handlers call synchronously after every ``role_configs``
       mutation (GH #356).
-    - Channel/bus/driver attrs are read-only after boot.
+    - Channel/bus attrs are read-only after boot.
     - Path attrs (``config_dir``, ``agents_dir``, ``home_root``,
       ``defaults_root``) are read-only after boot.
     """
@@ -60,16 +59,14 @@ class CasaRuntime:
 
     # Registries (replaced by reloads; never mutated in place)
     specialist_registry: "SpecialistRegistry"
-    engagement_registry: "EngagementRegistry"
     agent_registry: "AgentRegistry"
     trigger_registry: "TriggerRegistry"
     mcp_registry: "McpServerRegistry"
     session_registry: "SessionRegistry"
 
-    # Channels + bus + drivers (boot-fixed)
+    # Channels + bus (boot-fixed)
     channel_manager: "ChannelManager"
     bus: "MessageBus"
-    engagement_driver: Any  # InCasaDriver — avoid import cycle
 
     # Policy (boot-fixed)
     policy_lib: "PolicyLibrary"

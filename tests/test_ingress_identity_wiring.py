@@ -35,14 +35,11 @@ def _make_registry(targets, clearances=None):
     reg.get_webhook_target = lambda name: targets.get(name)
     reg.webhook_route = lambda name: (
         None if name not in targets else {
-            "role": targets[name], "clearance": reg.get_clearance(name),
-            "auth": reg.get_auth_policy(name), "resident": True})
-    reg.get_clearance = lambda name: clearances.get(name, "public")
-    reg.get_auth_policy = lambda name: (
-        {"mode": "hmac_body", "header": "X-Webhook-Signature",
-         "tolerance_secs": 300, "secret_owner": "casa"}
-        if name in targets else None
-    )
+            "role": targets[name],
+            "clearance": clearances.get(name, "public"),
+            "auth": {"mode": "hmac_body", "header": "X-Webhook-Signature",
+                     "tolerance_secs": 300, "secret_owner": "casa"},
+            "resident": True})
     return reg
 
 

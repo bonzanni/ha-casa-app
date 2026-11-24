@@ -263,9 +263,9 @@ class TestWebhook:
         assert reg.get_webhook_target("a") == "assistant"
         assert reg.get_webhook_target("b") == "assistant"
 
-    async def test_get_clearance_returns_declared_and_defaults_public(self):
+    async def test_route_carries_declared_clearance_until_evicted(self):
         """Release A: per-trigger clearance is stored and readable; unknown
-        names default to public; reregister eviction clears it."""
+        names route nowhere; reregister eviction clears it."""
         from config import TriggerSpec
         from trigger_registry import TriggerRegistry
 
@@ -279,10 +279,10 @@ class TestWebhook:
                          clearance="family")],
             channels=["webhook"],
         )
-        assert reg.get_clearance("vm") == "family"
-        assert reg.get_clearance("never-registered") == "public"
+        assert reg.webhook_route("vm")["clearance"] == "family"
+        assert reg.webhook_route("never-registered") is None
         reg.reregister_for("assistant", [], channels=["webhook"])
-        assert reg.get_clearance("vm") == "public"  # evicted → default
+        assert reg.webhook_route("vm") is None  # evicted → routes nowhere
 
     # NOTE (Release A): the per-path route is removed, so path is no longer a
     # collision axis (duplicate-name rejection is covered by

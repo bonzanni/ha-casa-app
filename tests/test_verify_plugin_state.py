@@ -274,17 +274,6 @@ def test_verify_running_engagement_on_previous_artifact_is_informational(
         {"engagement_id": "eng1", "artifact_id": "old" * 21 + "o"}]
 
 
-def test_verify_provenance_warning_on_legacy_content(tmp_path):
-    store = tmp_path / "store"
-    rev = "legacy-content:" + "c" * 64
-    e = entry("probe", ["specialist:finance"], revision=rev)
-    mk_artifact(store, "probe", e["artifact_id"], revision=rev)
-    mk_registry(tmp_path, [e])
-    r = _verify(tmp_path)
-    assert r["ready"] is True                     # warning is not a blocker
-    assert r["artifact"]["provenance_warning"] is True
-
-
 def test_verify_plugin_secrets_shim(tmp_path, monkeypatch):
     import tools as tools_mod
     store = tmp_path / "store"

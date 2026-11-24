@@ -909,12 +909,12 @@ def test_publish_result_oversized_envelope_degrades_to_meta_none(spool):
 
 def test_read_side_helpers(spool):
     h, claim = _claimed(spool)
-    assert spool.list_results(PLUGIN) == []
+    assert os.listdir(_results(spool)) == []
     assert spool.has_result(PLUGIN, h) is False
 
     spool.publish_result(claim, _record(h))
 
-    assert spool.list_results(PLUGIN) == [h]
+    assert os.listdir(_results(spool)) == [f"{h}.json"]
     assert spool.has_result(PLUGIN, h) is True
     assert spool.has_result("ghost", h) is False
     assert spool.has_result(PLUGIN, "not-a-hash") is False
@@ -1566,7 +1566,6 @@ def test_operations_do_not_leak_file_descriptors(spool):
         spool.gc_orphan_dirs(registry_valid=True, member_plugins={PLUGIN}, now=now)
         spool.claim("ghost", h, now=now)          # error branches too
         spool.has_result(PLUGIN, h)
-        spool.list_results(PLUGIN)
 
     cycle(0)                                       # warm-up (lazy imports etc.)
     before = len(os.listdir("/proc/self/fd"))
@@ -1988,8 +1987,8 @@ def test_read_attempt_of_an_oversized_file_is_invalid(spool):
 
 def test_list_attempts_returns_only_valid_records(spool):
     """A malformed (possibly consumer-scribbled) attempt file is never
-    returned as truth — it is named by list_invalid_attempts so the caller
-    re-derives it from live artifacts."""
+    returned as truth — the attempts pass re-derives it from live artifacts,
+    or, with none left, retires it."""
     now = time.time()
     h_good, h_bad, h_fifo = (state_hash(s) for s in ("good", "bad", "worse"))
     rec = _attempt_rec(h_good, now)
@@ -1998,7 +1997,12 @@ def test_list_attempts_returns_only_valid_records(spool):
     os.mkfifo(_attempts(spool) / f"{h_fifo}.json")
 
     assert spool.list_attempts(PLUGIN) == [(h_good, rec)]
-    assert spool.list_invalid_attempts(PLUGIN) == sorted([h_bad, h_fifo])
+
+    report = spool.attempts_pass(now=now, boot=True)
+
+    assert report.anomalies == [
+        f"{PLUGIN}: unreadable attempt record retired"] * 2
+    assert sorted(os.listdir(_attempts(spool))) == [f"{h_good}.json"]
 
 
 def test_list_ack_tokens_accepts_only_the_exact_grammar(spool):
@@ -2010,17 +2014,6 @@ def test_list_ack_tokens_accepts_only_the_exact_grammar(spool):
     (att / f".ack-{h}.json").write_text("")            # trailing garbage
     (att / f"{h}.json").write_text("{}")               # an attempt, not a token
     assert spool.list_ack_tokens(PLUGIN) == [h]
-
-
-def test_collect_held_hashes_grammar_dedupe_sorted(spool):
-    h1, h2 = sorted(state_hash(s) for s in ("held-a", "held-b"))
-    res = _results(spool)
-    (res / f".collect-{h1}-{'a' * 32}").write_text("x")
-    (res / f".collect-{h1}-{'b' * 32}").write_text("x")   # same hash: dedupe
-    (res / f".collect-{h2}-{'c' * 32}").write_text("x")
-    (res / ".collect-nothex-uuid").write_text("x")        # not 64 hex
-    (res / f".collect-{h2}").write_text("x")              # no '-<uuid>' part
-    assert spool.collect_held_hashes(PLUGIN) == [h1, h2]
 
 
 def test_write_attempt_strict_staging_fsync_failure_keeps_previous(
@@ -2109,9 +2102,7 @@ def test_attempt_apis_are_empty_on_a_closed_spool(tmp_path):
     assert s.read_attempt(PLUGIN, h).state is cs.MarkerState.ABSENT
     assert s.write_attempt(PLUGIN, h, _attempt_rec(h, now)) is False
     assert s.list_attempts(PLUGIN) == []
-    assert s.list_invalid_attempts(PLUGIN) == []
     assert s.list_ack_tokens(PLUGIN) == []
-    assert s.collect_held_hashes(PLUGIN) == []
 
 
 # ---------------------------------------------------------------------------
@@ -2135,11 +2126,10 @@ def test_collect_renames_then_reads_and_never_unlinks(spool):
     assert {k: got[k] for k in rec} == rec
     assert not (_results(spool) / f"{h}.json").exists(), "base name gone"
     assert held.parent == _results(spool)
-    assert held.name.startswith(f".collect-{h}-")
+    assert held.name.startswith(f".collect-{h}-"), \
+        "the held name satisfies the .collect-<h>-<uuid> grammar"
     assert held.is_file(), "held file still exists after collect returns"
     assert json.loads(held.read_text()) == got
-    assert spool.collect_held_hashes(PLUGIN) == [h], \
-        "the held name satisfies the .collect-<h>-<uuid> grammar"
 
 
 def test_collect_of_an_absent_result_raises_filenotfound(spool):
@@ -3163,7 +3153,6 @@ def test_a_record_naming_another_flow_is_invalid_and_re_derived(spool):
     _forge_identity(spool, h, state_hash=other, meta={"b": "victim"})
 
     assert spool.list_attempts(PLUGIN) == [], "never truth"
-    assert spool.list_invalid_attempts(PLUGIN) == [h]
     assert spool.update_attempt_nudge(PLUGIN, h, nudges=1) is False, \
         "no worker bookkeeping merges into another flow's record"
 
@@ -3201,7 +3190,6 @@ def test_a_non_finite_meta_is_invalid_and_the_nudge_budget_advances(spool):
                                      meta=float("nan")))
 
     assert spool.list_attempts(PLUGIN) == [], "never truth"
-    assert spool.list_invalid_attempts(PLUGIN) == [h]
     assert spool.update_attempt_nudge(PLUGIN, h, nudges=1) is False, \
         "no bookkeeping merges into a record no writer can emit"
 

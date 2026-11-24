@@ -147,8 +147,9 @@ async def test_valid_acked_plugin_routes_and_mints_secret(tmp_path):
     assert issues == []
     eff = "plg-elevenlabs--voicemail"
     assert registry.get_webhook_target(eff) == "assistant"
-    assert registry.get_clearance(eff) == "public"
-    assert registry.get_auth_policy(eff)["mode"] == "static_header"
+    route = registry.webhook_route(eff)
+    assert route["clearance"] == "public"
+    assert route["auth"]["mode"] == "static_header"
     # the secret was minted EAGERLY (before any request) so the plugin's
     # setup tool can read it
     assert (tmp_path / "webhook_secrets" / eff).exists()

@@ -1753,30 +1753,6 @@ class CallbackSpool:
             finally:
                 os.close(pfd)
 
-    def list_results(self, plugin: str) -> list[str]:
-        """Published result hashes for *plugin* (the recovery invariant's
-        input: any result lacking a settled episode is re-enqueued)."""
-        with self._lock:
-            if self._closed or not _safe_component(plugin):
-                return []
-            try:
-                pfd = self._plugin_fd(plugin)
-            except (OSError, ValueError):
-                return []
-            try:
-                results = _open_dir(RESULTS_DIR, pfd)
-            except OSError:
-                os.close(pfd)
-                return []
-            try:
-                return sorted(
-                    h for h in (_hash_of_pending(n)
-                                for n in _listdir_quiet(results))
-                    if h is not None)
-            finally:
-                os.close(results)
-                os.close(pfd)
-
     def plugins(self) -> list[str]:
         with self._lock:
             if self._closed:
@@ -1947,17 +1923,10 @@ class CallbackSpool:
     def list_attempts(self, plugin: str) -> list[tuple[str, dict]]:
         """``(hash, validated record)`` for every readable, schema-valid
         ``attempts/<h>.json``, sorted by hash. Only VALID pairs — a malformed
-        file is never returned as truth; it is named by
-        :meth:`list_invalid_attempts` instead. ``[]`` on a closed spool or a
-        missing plugin/attempts dir."""
+        file is never returned as truth; the attempts pass re-derives or
+        retires it instead. ``[]`` on a closed spool or a missing
+        plugin/attempts dir."""
         return self._scan_attempts(plugin)[0]
-
-    def list_invalid_attempts(self, plugin: str) -> list[str]:
-        """Hashes whose attempt file EXISTS but is INVALID or schema-
-        malformed — the re-derivation worklist (rewritten from live
-        artifacts, or retired, by a later pass). ``[]`` on a closed spool or
-        a missing dir."""
-        return self._scan_attempts(plugin)[1]
 
     def _scan_attempts(self, plugin: str) -> tuple[list[tuple[str, dict]],
                                                    list[str]]:
@@ -2028,34 +1997,6 @@ class CallbackSpool:
                         and _is_hash(name[len(ACK_PREFIX):]))
                 finally:
                     os.close(afd)
-            finally:
-                os.close(pfd)
-
-    def collect_held_hashes(self, plugin: str) -> list[str]:
-        """Hashes named by live consumer-held ``results/.collect-<h>-<uuid>``
-        entries — exactly 64 hex after the prefix, then ``-`` (anything else
-        is residue, not a hold). Deduplicated and sorted; ``[]`` on a closed
-        spool or a missing dir. Enumeration is by NAME only — casa never
-        opens a consumer-held file."""
-        with self._lock:
-            if self._closed or not _safe_component(plugin):
-                return []
-            try:
-                pfd = self._plugin_fd(plugin)
-            except (OSError, ValueError):
-                return []
-            try:
-                try:
-                    results = _open_dir(RESULTS_DIR, pfd)
-                except OSError:
-                    return []
-                try:
-                    return sorted({
-                        h for h in (_hash_of_collect(name)
-                                    for name in _listdir_quiet(results))
-                        if h is not None})
-                finally:
-                    os.close(results)
             finally:
                 os.close(pfd)
 

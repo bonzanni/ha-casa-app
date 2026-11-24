@@ -189,9 +189,8 @@ days away would otherwise stay exposed.
 
 What it does not cover: the two roots themselves (`/data` and `/config`) stay traversable —
 this is a per-path mode boundary, not a filesystem namespace boundary. Repair failures are
-logged and stop nothing: the credential subset can be re-read from the filesystem at a point
-of use (`credential_modes_ok`), but nothing consumes that check today, so a bearer-credential
-path that cannot be made root-only refuses nothing. An already-open file descriptor is
+logged and stop nothing: a bearer-credential path that cannot be made root-only is logged at
+CRITICAL and refuses nothing. An already-open file descriptor is
 unaffected by a mode change, and one report file is deliberately left world-readable because
 a shipped configurator recipe reads it. The default mode of the shared atomic writer stays
 world-readable on purpose, so private call sites opt in explicitly.
@@ -282,7 +281,6 @@ the code writes.
 - `casa/rootfs/opt/casa/explanation_store.py`
 - `casa/rootfs/opt/casa/config_git.py::init_repo`
 - `casa/rootfs/opt/casa/private_state.py::enforce`
-- `casa/rootfs/opt/casa/private_state.py::credential_modes_ok`
 - `casa/rootfs/opt/casa/casa_core.py::_repair_private_state`
 
 **Tests**

@@ -8,7 +8,7 @@ last_reviewed: 2026-11-10
 
 ## Scope
 
-Durable engagements: their records, how one is launched, and the driver protocol. How a
+Durable engagements: their records, how one is launched, and the driver's lifecycle methods. How a
 turn is admitted to a live one is
 [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md). What a launch
 abort rolls back and what survives a restart are in
@@ -75,8 +75,8 @@ live driver survived to make `active` true.
 **Durable is not indefinite.** A daily sweep suspends a live session after a day idle (a job
 waiting on the operator is resumed by their next input);
 terminal tombstones age out after thirty days, bounding the post-mortem record (one whose
-completion time is not a finite number has no known age and is kept, and an `in_casa` one
-only once its transcripts are reaped, per `architecture/engagement-transcript-reaping.md`).
+completion time is not a finite number has no known age and is kept, and none ages out
+before its transcripts are reaped, per `architecture/engagement-transcript-reaping.md`).
 
 **A job's record carries its task fields.** `EngagementRecord.executor`, `requester` and
 `delivery` are stamped by the job launch owner at the job's birth and persisted: the delivery
@@ -104,10 +104,11 @@ ends after it is resumed once (INV-BGJOB-018).
 
 ## Extension points
 
-**A new driver** implements the driver protocol: `open`, `cancel`, `resume` and `is_alive`.
+**A new driver** offers the lifecycle methods `InCasaDriver` offers: `open`, `cancel`, `resume`
+and `is_alive`.
 `open` only opens the session; the launch queues the session's first input after it, so a
 failure in `open` is a launch abort and nothing it runs belongs to the launching tool call
-(INV-ENG-021). The protocol says nothing about OS identity or filesystem reach: a driver that
+(INV-ENG-021). Those methods say nothing about OS identity or filesystem reach: a driver that
 runs its agent as a separate OS process owes its own containment.
 
 **The brief is the job's first input.** For the in-process driver it is the opening user
@@ -142,7 +143,7 @@ persisting ledger checks it — is answered in the same document.
 
 **Source**
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRecord`
-- `casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver`
 - `casa/rootfs/opt/casa/tools.py::_launch_interactive_engagement`
 
 **Tests**

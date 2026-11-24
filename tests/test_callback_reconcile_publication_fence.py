@@ -117,10 +117,13 @@ class CountingRegistry(TriggerRegistry):
     def __init__(self):
         super().__init__(scheduler=None, app=None, bus=None)
         self.publications: list[str] = []
+        self.last_map: dict = {}
 
     def replace_callback_overlay(self, overlay):
         self.publications.append(
             "marker" if overlay is _treg.ROUTING_UNAVAILABLE else "map")
+        if overlay is not _treg.ROUTING_UNAVAILABLE:
+            self.last_map = dict(overlay)
         return super().replace_callback_overlay(overlay)
 
     def maps(self) -> int:
@@ -465,10 +468,12 @@ async def test_uncancelled_reconcile_preserves_publication_order_and_counts(
     issues = await f.reconcile()
     assert (len(issues), f.reg.maps(),
             f.reg.routing_generation() - before,
-            len(f.reg.callback_overlay_names()),
+            len(f.reg.last_map),
             f.n("ready"), f.n("index"),
             f.acks.prune_calls, f.acks.removed, f.kicks) == (
         0, 1, 1, 1, 1, 1, 1, 1, 2)
+    # the one proposed route is the one the registry actually serves
+    assert [f.reg.get_callback(name) is not None for name in f.reg.last_map] == [True]
     assert f.gaps() == 0
     assert f.events == ["kick", "kick"]
 

@@ -436,63 +436,6 @@ def test_reinstall_keeps_previous_generation_until_next_install(
         server.shutdown()
 
 
-def test_legacy_flat_dirs_swept_across_versions_but_never_other_plugins(
-        tmp_path: Path, fixture_tarball, monkeypatch) -> None:
-    """#308 (review round 3, Terra P2): pre-generation flat layouts of EVERY
-    version are reclaimed once they stop serving — while a name-prefix
-    sibling plugin's directories are never touched (manifest-guarded)."""
-    from system_requirements.manifest import add_plugin_entry
-
-    manifest_path = tmp_path / "system-requirements.yaml"
-    monkeypatch.setattr("system_requirements.manifest.MANIFEST_PATH",
-                        manifest_path)
-    tar_path, sha = fixture_tarball
-    url, _sha, server = _serve_local_file(tar_path)
-    tools = tmp_path / "tools"
-    try:
-        # Legacy residue from two old versions of THIS plugin…
-        (tools / "fakebin-0.9").mkdir(parents=True)
-        (tools / "fakebin-1.0").mkdir()
-        # …and a directory owned by a DIFFERENT, prefix-sharing plugin.
-        (tools / "fakebin-extra-1.0").mkdir()
-        add_plugin_entry({"name": "fakebin-extra", "winning_strategy": "tarball",
-                          "install_dir": str(tools / "fakebin-extra-1.0"),
-                          "verify_bin": "othertool",
-                          "declared_at": "2026-08-01T00:00:00Z"})
-
-        result = install_tarball(
-            plugin_name="fakebin", spec=_install_spec(url, sha),
-            tools_root=tools,
-        )
-        assert result.ok
-        assert not (tools / "fakebin-0.9").exists()
-        assert not (tools / "fakebin-1.0").exists()
-        assert (tools / "fakebin-extra-1.0").is_dir()   # other plugin's — kept
-
-        # Sol r4-2 (reverse direction): the LONGER-named plugin must still
-        # reclaim its OWN legacy dirs even though they also match the
-        # shorter sibling's prefix.
-        add_plugin_entry({"name": "fakebin", "winning_strategy": "tarball",
-                          "install_dir": str(result.install_dir),
-                          "verify_bin": "fakebin",
-                          "declared_at": "2026-08-01T00:00:00Z"})
-        (tools / "fakebin-extra-0.9").mkdir()
-        spec_extra = _install_spec(url, sha, verify_bin="othertool")
-        extra = install_tarball(
-            plugin_name="fakebin-extra", spec=spec_extra, tools_root=tools,
-        )
-        # othertool isn't in the archive, so the install itself doesn't
-        # resolve — but the start-of-install sweep already ran: BOTH of the
-        # plugin's own legacy dirs are reclaimed (neither is served by any
-        # launcher of fakebin-extra), despite matching sibling `fakebin`'s
-        # name prefix.
-        assert extra.verify_bin_resolves is False
-        assert not (tools / "fakebin-extra-0.9").exists()
-        assert not (tools / "fakebin-extra-1.0").exists()
-    finally:
-        server.shutdown()
-
-
 def test_verify_bin_rename_with_failed_install_keeps_old_launcher_serving(
         tmp_path: Path, fixture_tarball, monkeypatch) -> None:
     """#308 (review round 4, Terra P1-1): during a verify_bin RENAME the

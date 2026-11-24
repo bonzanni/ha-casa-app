@@ -551,9 +551,9 @@ class VoiceChannel(Channel):
         # inline on the request's transport. No-op for the ChannelManager's
         # outbound registration (kept so the Channel ABC is satisfied).
         #
-        # #990: it reports NOT_DELIVERED, not UNKNOWN. UNKNOWN means "this
-        # channel has not opted into the contract and cannot say" — which is
-        # not this channel's situation. This one knows: it delivered nothing,
+        # #990: it reports NOT_DELIVERED, not nothing. Returning nothing means
+        # "this channel has not opted into the contract and cannot say" — which
+        # is not this channel's situation. This one knows: it delivered nothing,
         # and it never will. A caller-selected `channel="voice"` on a
         # scheduled telegram turn is exactly where the difference is paid,
         # because `send_message` reports only a PROVEN negative as an error.

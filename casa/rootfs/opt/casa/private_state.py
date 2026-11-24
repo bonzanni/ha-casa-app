@@ -32,11 +32,9 @@ the ~198 files in there. What it must NOT do is tighten ``/data`` or
 ``/config`` themselves: a non-root process must still be able to traverse both
 to reach what it is meant to read, such as the plugin artifacts.
 
-The three ``CREDENTIAL`` entries are special only in what a *failure to repair
-them* means. :func:`credential_modes_ok` is the point-of-use check for them,
-rather than a latch set once at boot. It was consulted wherever a uid-dropped
-Claude Code engagement could start; that driver is gone and nothing consumes
-the check today.
+The ``CREDENTIAL`` entries are special only in what a *failure to repair them*
+means: :func:`enforce` lists them in ``Report.credential_failures`` and logs
+them at CRITICAL.
 """
 from __future__ import annotations
 
@@ -49,7 +47,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 #: Failure to repair one of these means Casa cannot honour the guarantee this
-#: module exists for; :func:`credential_modes_ok` reports it.
+#: module exists for; :func:`enforce` reports it at CRITICAL.
 CREDENTIAL = "credential"
 #: Confidentiality-only. A failure logs ERROR and refuses nothing.
 PRIVATE = "private"
@@ -223,8 +221,7 @@ def enforce(*, root: str = "/") -> Report:
     world-writable — so this is a guard against corruption and against a future
     writer, not a live race.)
 
-    Never raises. The caller decides what a credential-class failure means; see
-    :func:`credential_modes_ok`.
+    Never raises. The caller decides what a credential-class failure means.
     """
     report = Report()
     for path, entry in _targets(root):
@@ -278,28 +275,3 @@ def enforce(*, root: str = "/") -> Report:
         )
     return report
 
-
-def credential_modes_ok(*, root: str = "/") -> list[str]:
-    """The offending credential paths, or ``[]`` when all are private.
-
-    A point-of-use check rather than a boot-time latch; nothing consumes it
-    today (see the module docstring). Absence is not an offence: a path that does not exist exposes
-    nothing, and refusing on it would break a fresh install that has not
-    generated its webhook secret yet.
-    """
-    offenders: list[str] = []
-    for entry in FILES:
-        if entry.kind != CREDENTIAL:
-            continue
-        path = _resolve(root, entry.path)
-        try:
-            info = os.lstat(path)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            logger.error("private-state: lstat(%s) failed: %s", path, exc)
-            offenders.append(path)
-            continue
-        if stat.S_ISLNK(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
-            offenders.append(path)
-    return offenders

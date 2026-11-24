@@ -83,14 +83,13 @@ def test_every_plugin_accessor_closes_ingress_under_the_sentinel():
     r = _registry()
     r.replace_plugin_overlay(OVERLAY)
     assert r.get_webhook_target("plg-x--y") == "assistant"
-    assert r.get_clearance("plg-x--y") == "private"
-    assert r.get_auth_policy("plg-x--y") == AUTH
+    route = r.webhook_route("plg-x--y")
+    assert (route["clearance"], route["auth"]) == ("private", AUTH)
     assert r.plugin_overlay_names() == ["plg-x--y"]
 
     r.replace_plugin_overlay(ROUTING_UNAVAILABLE)
     assert r.get_webhook_target("plg-x--y") is None
-    assert r.get_auth_policy("plg-x--y") is None
-    assert r.get_clearance("plg-x--y") == "public"     # never a stale tier
+    assert r.webhook_route("plg-x--y") is None         # never a stale tier
     assert r.plugin_overlay_names() == []
 
 
@@ -98,11 +97,9 @@ def test_every_callback_accessor_closes_ingress_under_the_sentinel():
     r = _registry()
     r.replace_callback_overlay(CB_OVERLAY)
     assert r.get_callback("plg-x--auth") is not None
-    assert r.callback_overlay_names() == ["plg-x--auth"]
 
     r.replace_callback_overlay(ROUTING_UNAVAILABLE)
     assert r.get_callback("plg-x--auth") is None
-    assert r.callback_overlay_names() == []
 
 
 def test_resident_trigger_routing_is_untouched_by_the_sentinel():
@@ -113,8 +110,8 @@ def test_resident_trigger_routing_is_untouched_by_the_sentinel():
     r._webhook_routes["daily"] = {"role": "assistant", "clearance": "private", "auth": AUTH}
     r.replace_plugin_overlay(ROUTING_UNAVAILABLE)
     assert r.get_webhook_target("daily") == "assistant"
-    assert r.get_clearance("daily") == "private"
-    assert r.get_auth_policy("daily") == AUTH
+    route = r.webhook_route("daily")
+    assert (route["clearance"], route["auth"]) == ("private", AUTH)
 
 
 def test_the_snapshot_returns_the_singleton_by_identity():

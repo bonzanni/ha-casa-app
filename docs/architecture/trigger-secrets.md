@@ -30,8 +30,8 @@ why a resident secret's lifetime is defined by its **route**, not by its declara
 **A Casa-minted resident secret lives exactly as long as the route it was minted for.**
 A resident mint writes a **receipt** next to the slot before it links the value: a digest
 of the minted bytes — never the value — and the **role** the mint registered the name
-for. It certifies only while the live bytes still hash to it, so a hand replacement, a
-rotation promotion or a restore from backup silently stops it certifying, and a receipt
+for. It certifies only while the live bytes still hash to it, so a hand replacement or a
+restore from backup silently stops it certifying, and a receipt
 that is missing, malformed, from an earlier format or unreadable reads as *unproven*
 rather than as consent. That receipt is the only authority anything here ever acts on.
 Two things stand on it. The wildcard handler, for a Casa-owned resident route, reads the
@@ -70,7 +70,7 @@ that value. The mint only ever creates a file that is absent, and a receipt is w
 for a slot the mint itself created — a value a later pass merely finds is never certified.
 A receipt that cannot be written is a mint that does not happen, reported as one, and the
 next pass retries it. There is **no dual-accept window**: the verifier takes a single
-secret, and the rotation state machine has no caller outside its own tests.
+secret.
 
 ## Contracts & invariants
 

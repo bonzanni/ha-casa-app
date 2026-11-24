@@ -143,8 +143,7 @@ class TestResolveHooks:
         one) loads/reloads fine but previously blew up every in-casa
         executor's START with UnknownPolicyError, since the factories reject
         unexpected kwargs. Both keys must be stripped before the factory
-        call, exactly like build_policy_callbacks_from_hooks_yaml already
-        does."""
+        call."""
         from hooks import resolve_hooks
         from config import HooksConfig
 

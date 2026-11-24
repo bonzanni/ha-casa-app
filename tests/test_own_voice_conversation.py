@@ -628,10 +628,10 @@ def _reload_runtime(tmp_path, roles):
         (agents_dir / "specialists" / role).mkdir(parents=True)
     rt = CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(), agent_registry=MagicMock(),
+        agent_registry=MagicMock(),
         trigger_registry=MagicMock(), mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=MagicMock(), engagement_driver=MagicMock(), policy_lib=MagicMock(),
+        bus=MagicMock(), policy_lib=MagicMock(),
         config_dir=str(tmp_path), agents_dir=str(agents_dir),
         home_root=str(tmp_path / "home"), defaults_root="/opt/casa")
     rt.specialist_registry.load = MagicMock()

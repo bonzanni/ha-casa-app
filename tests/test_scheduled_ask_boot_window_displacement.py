@@ -1,7 +1,7 @@
 """#648 — the boot-window half of the on-delivery displacement.
 
-`displace_scheduled_for_chat` is `cancel_for_chat` minus the boot-window
-revocation marker, and this is the difference that makes. Between process start
+`displace_scheduled_for_chat` leaves no boot-window revocation marker, and this
+is the difference that makes. Between process start
 and `reconcile_at_boot`, the live map is empty and the durable records are still
 on disk: a displacement landing there selects nothing, edits nothing and tells
 nobody, so marking those records revoked would assert an event that did not

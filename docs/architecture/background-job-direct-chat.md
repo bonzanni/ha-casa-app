@@ -205,8 +205,8 @@ funnel (`tools._finalize_engagement`).
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.retire_job_keyboards`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.retire_ended_job_keyboards`
+- `casa/rootfs/opt/casa/channels/telegram_transport.py::TelegramTransport.retire_job_keyboards`
+- `casa/rootfs/opt/casa/channels/telegram_transport.py::TelegramTransport.retire_ended_job_keyboards`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._retire_job_post`
 - `casa/rootfs/opt/casa/channels/telegram.py::_parse_job_callback`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.record_job_post`

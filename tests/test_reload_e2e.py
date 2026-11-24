@@ -47,14 +47,12 @@ def _make_runtime(tmp_path: Path):
         agents={},
         role_configs={},
         specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(),
         trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(),
         channel_manager=MagicMock(),
         bus=MagicMock(),
-        engagement_driver=MagicMock(),
         policy_lib=MagicMock(),
         config_dir=str(tmp_path),
         agents_dir=str(tmp_path / "agents"),
@@ -91,14 +89,14 @@ class TestReloadE2E:
             character=SimpleNamespace(name="Ellen", card=""),
             triggers=[],
             channels=[],
-            memory=SimpleNamespace(read_strategy="per_turn"),
+            memory=SimpleNamespace(),
         )
         v2_cfg = SimpleNamespace(
             role="ellen",
             character=SimpleNamespace(name="Ellen-2", card=""),
             triggers=[],
             channels=[],
-            memory=SimpleNamespace(read_strategy="per_turn"),
+            memory=SimpleNamespace(),
         )
         v1_agent = MagicMock(name="agent_v1")
         v1_agent.handle_message = MagicMock()

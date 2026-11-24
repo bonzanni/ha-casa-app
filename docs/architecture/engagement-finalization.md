@@ -18,7 +18,7 @@ finished `in_casa` engagement's CLI transcripts are deleted is
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). What a terminal
 engagement's engager is told — the durable obligation to notify — is in
 [`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md). The record
-itself, how one is launched and the driver protocol are in
+itself, how one is launched and the driver's lifecycle methods are in
 [`architecture/engagements.md`](engagements.md); how a write is admitted to it is in
 [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md); what a restart rewrites is in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md).

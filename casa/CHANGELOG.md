@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.383.1] - 2026-11-24
+
+### Removed
+
+- More internal code that nothing used: the webhook secret rotation routines that no part of Casa ever called, readers for data layouts last written by versions 0.347 and earlier, and unused functions and fields. The `verify_plugin_state` result no longer carries `provenance_warning`, which could only be false. Nothing else you can see or configure changes; the `memory.read_strategy` setting is still accepted in agent files and still does nothing.
+
 ## [0.383.0] - 2026-11-24
 
 ### Added

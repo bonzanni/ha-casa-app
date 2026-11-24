@@ -192,7 +192,7 @@ async def test_resident_specialist_and_executor_options_use_verified_cli(
         system_prompt="You are Tina.",
         character=CharacterConfig(name="Tina"),
         tools=ToolsConfig(allowed=["Read"]),
-        memory=MemoryConfig(token_budget=800, read_strategy="cached"),
+        memory=MemoryConfig(token_budget=800),
     )
     resident = Agent(
         config=cfg,

@@ -122,7 +122,6 @@ what its runs enforce.
 
 **Source**
 - `casa/rootfs/opt/casa/hooks.py::resolve_hooks`
-- `casa/rootfs/opt/casa/hooks.py::build_policy_callbacks_from_hooks_yaml`
 - `casa/rootfs/opt/casa/hooks.py::guest_pin_matcher`
 
 **Tests**

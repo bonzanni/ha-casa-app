@@ -27,7 +27,7 @@ dot-prefixed root entry is casa-reserved):
 | Path | Created by | Mutated by | Deleted by |
 |---|---|---|---|
 | `.dir-id` | casa (`ensure_emitter_dirs`) | casa (repair, on detected corruption) | casa only — whole-tree orphan GC |
-| `ready.json` | casa (`write_ready`) | casa | casa (`delete_ready`, or orphan GC) |
+| `ready.json` | casa (`write_ready`) | casa | casa only — whole-tree orphan GC |
 | `emissions/<event>--<u32hex>.json` | emitter (`emit()`) | nobody | casa — fold (complete fan-out) or sweep (watermark/valve/unfoldable) |
 | `emissions/.part-<u32hex>` | emitter (`emit()` staging) | nobody | emitter (rename to final) or casa (`TEMP_TTL_S` sweep) |
 | `state/<event>.json` | casa (fold OPEN) | casa (fold OPEN/REPAIR/RECONSTRUCT) | never — retained for the emitter directory's whole lifetime |

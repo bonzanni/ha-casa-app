@@ -137,13 +137,11 @@ async def test_delivered_keeps_todays_success_text(monkeypatch):
     assert _text(await _send(monkeypatch, _CM(ch))) == "Message sent via telegram."
 
 
-@pytest.mark.parametrize("outcome", [None, DeliveryOutcome.UNKNOWN])
-async def test_a_channel_off_the_contract_keeps_todays_success_text(
-        monkeypatch, outcome):
+async def test_a_channel_off_the_contract_keeps_todays_success_text(monkeypatch):
     """#556's rule, applied here: a channel that cannot report is not a channel
-    that failed. Reporting UNKNOWN as an error would make every off-contract
-    channel's every send look lost."""
-    ch = _Channel(outcome=outcome)
+    that failed. Reporting its ``None`` as an error would make every
+    off-contract channel's every send look lost."""
+    ch = _Channel(outcome=None)
     assert _text(await _send(monkeypatch, _CM(ch))) == "Message sent via telegram."
 
 

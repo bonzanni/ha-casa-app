@@ -1310,12 +1310,6 @@ class _TearingRegistry(TriggerRegistry):
             self._transfer()
         return r
 
-    def get_auth_policy(self, name):
-        r = super().get_auth_policy(name)
-        if self._transfer_on == "policy":
-            self._transfer()
-        return r
-
     def webhook_route(self, name):
         rec = super().webhook_route(name)
         self.route_reads += 1

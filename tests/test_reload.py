@@ -32,11 +32,10 @@ def _make_runtime():
     from runtime import CasaRuntime
     return CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=MagicMock(), engagement_driver=MagicMock(),
+        bus=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/x", agents_dir="/x/agents",
         home_root="/x/home", defaults_root="/opt/casa",
@@ -120,8 +119,6 @@ class TestSecretReportNeverWedgesReloadAdmission:
         runtime.role_configs["assistant"] = SimpleNamespace(triggers=[spec])
         runtime.trigger_registry.webhook_names_for.return_value = ["vm"]
         runtime.trigger_registry.get_webhook_target.return_value = "assistant"
-        runtime.trigger_registry.get_clearance.return_value = "public"
-        runtime.trigger_registry.get_auth_policy.return_value = dict(spec.auth)
 
         probing = asyncio.create_task(
             dispatch("triggers", runtime=runtime, role="assistant"))
@@ -474,7 +471,7 @@ class TestReloadAgent:
             role="probe",
             character=SimpleNamespace(name="Probe", card=""),
             triggers=[], channels=[],
-            memory=SimpleNamespace(read_strategy="per_turn"),
+            memory=SimpleNamespace(),
         )
         monkeypatch.setattr(
             "agent_loader.load_agent_from_dir",
@@ -882,7 +879,7 @@ class TestReloadAgents:
             role="newcomer",
             character=SimpleNamespace(name="Newcomer", card=""),
             triggers=[], channels=[],
-            memory=SimpleNamespace(read_strategy="per_turn"),
+            memory=SimpleNamespace(),
         )
 
         def fake_load(d, **kw):
@@ -2080,7 +2077,7 @@ class TestGrantInvalidationSeams:
         new_cfg = SimpleNamespace(
             role="newcomer", character=SimpleNamespace(name="N", card=""),
             triggers=[], channels=[],
-            memory=SimpleNamespace(read_strategy="per_turn"))
+            memory=SimpleNamespace())
         new_agent = MagicMock()
 
         def fake_load(d, **kw):
@@ -2719,7 +2716,7 @@ class TestReloadIssue327:
             role=role,
             character=SimpleNamespace(name=role.title(), card=""),
             triggers=list(triggers or []), channels=list(channels or []),
-            memory=SimpleNamespace(read_strategy="per_turn"),
+            memory=SimpleNamespace(),
         )
 
     async def test_added_resident_registers_its_triggers(
@@ -3113,7 +3110,7 @@ class TestPersonalityMapRefresh:
             role=role, role_id=role,
             character=SimpleNamespace(name=role.title(), card=""),
             triggers=[], channels=[],
-            memory=SimpleNamespace(read_strategy="per_turn"),
+            memory=SimpleNamespace(),
             role_slot=SimpleNamespace(role_id=role),
             persona_pack=SimpleNamespace(persona_id=f"p-{role}", version="1"),
             binding=SimpleNamespace(persona_id=f"p-{role}", persona_version="1"),
@@ -3268,7 +3265,7 @@ class TestSpecialistGenerationRefresh:
             role=role_id.split(":", 1)[1], role_id=role_id,
             character=SimpleNamespace(name="Mtg", card=""),
             triggers=[], channels=[],
-            memory=SimpleNamespace(read_strategy="per_turn"),
+            memory=SimpleNamespace(),
             role_slot=SimpleNamespace(role_id=role_id),
             persona_pack=SimpleNamespace(persona_id="casa/judge", version="0.1.0"),
             binding=SimpleNamespace(persona_id="casa/judge", persona_version="0.1.0"),

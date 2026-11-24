@@ -171,7 +171,7 @@ def _make_agent(tmp_path) -> Agent:
         system_prompt="You are helpful.",
         character=CharacterConfig(name="Test"),
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
-        memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=1000),
     )
     return Agent(
         config=cfg,
@@ -283,8 +283,8 @@ async def test_row2_a_send_refused_before_admission_keeps_the_text(
 async def test_row2_an_unknown_outcome_keeps_the_text(
     tmp_path, monkeypatch, make_msg,
 ):
-    """A send whose channel cannot report (UNKNOWN) is never confirmed."""
-    agent, stub = await _resident(tmp_path, DeliveryOutcome.UNKNOWN)
+    """A send whose channel cannot report (returns ``None``) is never confirmed."""
+    agent, stub = await _resident(tmp_path, None)
     results: list = []
     factory = _Factory([[_send(results), _mk_assistant("Done."),
                          _mk_assistant("<silent/>")]])

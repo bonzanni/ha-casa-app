@@ -866,11 +866,11 @@ class EngagementRegistry:
                     # from, so the party that asked for the work would be
                     # permanently untold — the harm the marker exists to close.
                     and not rec.terminal_notification_pending
-                    # An in_casa record is the transcript reaper's only index
-                    # of its sessions: it ages out only once the reaper has
-                    # found nothing left to delete (whatever downtime came
+                    # A record is the transcript reaper's only index of its
+                    # sessions: it ages out only once the reaper has found
+                    # nothing left to delete (whatever downtime came
                     # between), never at a fixed age alone.
-                    and (rec.driver != "in_casa" or rec.transcripts_reaped)):
+                    and rec.transcripts_reaped):
                 continue
             snapshot.append({
                 "id": rec.id,
@@ -1778,7 +1778,7 @@ class EngagementRegistry:
     ) -> None:
         """Daily scan: tear down in_casa clients idle past the suspend threshold.
 
-        ``driver`` is the ``DriverProtocol`` instance for in_casa — used to
+        ``driver`` is the ``InCasaDriver`` instance — used to
         check is_alive, read session_id, and close the client. For tests,
         ``now_override`` short-circuits ``time.time()``.
         """
@@ -1791,11 +1791,11 @@ class EngagementRegistry:
         for rec in list(self.active_and_idle()):
             idle_s = now - rec.last_user_turn_ts
 
-            # Session suspension (in_casa only). A job whose session is in
+            # Session suspension. A job whose session is in
             # use — a turn is running (one turn can run for hours, with or
             # without activity) or Casa is recovering it — is not idle, and
             # is skipped.
-            if (rec.driver == "in_casa" and rec.status == "active"
+            if (rec.status == "active"
                     and idle_s > _SESSION_SUSPEND_IDLE_S
                     and driver.is_alive(rec)
                     and not background_jobs.session_in_use(driver, rec, now)):

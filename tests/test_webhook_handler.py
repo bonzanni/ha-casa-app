@@ -30,8 +30,8 @@ def _make_registry(
     clearances: dict[str, str] | None = None,
     policies: dict[str, dict] | None = None,
 ):
-    """Stand-in TriggerRegistry exposing get_webhook_target/get_clearance/
-    get_auth_policy. Default policy is hmac_body (global-secret HMAC)."""
+    """Stand-in TriggerRegistry exposing get_webhook_target/webhook_route.
+    Default policy is hmac_body (global-secret HMAC)."""
     clearances = clearances or {}
     policies = policies or {}
     default_policy = {
@@ -42,12 +42,9 @@ def _make_registry(
     reg.get_webhook_target = lambda name: targets.get(name)
     reg.webhook_route = lambda name: (
         None if name not in targets else {
-            "role": targets[name], "clearance": reg.get_clearance(name),
-            "auth": reg.get_auth_policy(name), "resident": True})
-    reg.get_clearance = lambda name: clearances.get(name, "public")
-    reg.get_auth_policy = lambda name: (
-        policies.get(name, default_policy) if name in targets else None
-    )
+            "role": targets[name],
+            "clearance": clearances.get(name, "public"),
+            "auth": policies.get(name, default_policy), "resident": True})
     return reg
 
 

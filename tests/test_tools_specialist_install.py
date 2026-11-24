@@ -10,6 +10,7 @@ surface the same structured kind, never raise."""
 import json
 
 import pytest
+from provenance import APPROVAL_KEY
 
 
 def _payload(result: dict) -> dict:
@@ -56,7 +57,7 @@ async def _approved_call(tool, args: dict, *, values: "dict | None" = None):
                 kind, f"{inspection.component_id}:{inspection.slug}",
                 identity_for_inspection(inspection, values=values), values)
         rec = approval_records.approve(rec.rid)
-        origin[approval_records.APPROVAL_KEY] = {"rid": rec.rid, "generation": rec.generation}
+        origin[APPROVAL_KEY] = {"rid": rec.rid, "generation": rec.generation}
     token = agent_mod.origin_var.set(origin)
     try:
         return await tool.handler(args)
@@ -2394,7 +2395,7 @@ async def test_an_approved_request_asked_again_continues_without_a_card(
     assert "Call specialist_install_commit with" in text
     # the run Casa started for it, asking again, is told to make the call
     record = card["record"]
-    payload = await _request(args, {"role": "assistant", approval_records.APPROVAL_KEY: {
+    payload = await _request(args, {"role": "assistant", APPROVAL_KEY: {
         "rid": record.rid, "generation": record.generation}})
     assert payload["approval"] == "in_progress" and len(started) == 1
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from provenance import APPROVAL_KEY
 import yaml
 
 import plugin_registry
@@ -231,7 +232,7 @@ class _World:
         rec = approval_records.approve(rec.rid)
         origin = {"role": "assistant", "execution_role": "configurator", "channel": "telegram",
                   "chat_id": 42, "cid": "c", "user_text": "upgrade it",
-                  approval_records.APPROVAL_KEY: {"rid": rec.rid, "generation": rec.generation}}
+                  APPROVAL_KEY: {"rid": rec.rid, "generation": rec.generation}}
         token = agent_mod.origin_var.set(origin)
         try:
             r = await tools.specialist_upgrade.handler(dict(

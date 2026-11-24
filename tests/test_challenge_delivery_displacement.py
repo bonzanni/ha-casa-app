@@ -17,7 +17,7 @@ Separate module on purpose: the accepted red case in
 `test_scheduled_ask_attention_lane.py` is FROZEN, and these are its siblings.
 
 Every case drives the REAL `ChallengeCoordinator`, never
-`scheduled_asks.cancel_for_chat` / `displace_scheduled_for_chat` — a helper-level
+`scheduled_asks.displace_scheduled_for_chat` — a helper-level
 test cannot see an ordering, which is the defect class in play. Counts are
 asserted, never statuses.
 """

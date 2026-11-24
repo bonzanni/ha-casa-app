@@ -185,9 +185,8 @@ async def test_no_channel_retains(wired, monkeypatch):
 
 @pytest.mark.parametrize(
     "outcome",
-    [DeliveryOutcome.NOT_DELIVERED, DeliveryOutcome.UNKNOWN, None,
-     RuntimeError("transport down")],
-    ids=["not-delivered", "unknown", "off-contract-none", "raises"],
+    [DeliveryOutcome.NOT_DELIVERED, None, RuntimeError("transport down")],
+    ids=["not-delivered", "off-contract-none", "raises"],
 )
 async def test_an_unconfirmed_send_message_then_silence_retains(
     wired, monkeypatch, outcome,

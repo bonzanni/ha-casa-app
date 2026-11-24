@@ -661,8 +661,6 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/casa_eval/__init__.py
   doc: architecture/eval-framework.md
-- item: casa/rootfs/opt/casa/cc_tool_pattern.py
-  doc: architecture/mcp-and-tools.md
 - item: casa/rootfs/opt/casa/channel_authz.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channel_policy.py
@@ -680,8 +678,6 @@
 - item: casa/rootfs/opt/casa/claude_runtime.py
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/drivers/__init__.py
-  doc: architecture/engagements.md
-- item: casa/rootfs/opt/casa/drivers/driver_protocol.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/error_kinds.py
   doc: architecture/turn-loop.md

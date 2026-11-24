@@ -348,7 +348,7 @@ async def test_the_line_is_sent_before_the_servers_teardown_ends(env):
 def test_the_parser_accepts_the_run_stop_namespace():
     data = f"v1|run_stop|{CID}|0"
     assert len(data.encode()) <= 64
-    assert _parse_callback_data(data) == ("run_stop", CID, 0, None)
+    assert _parse_callback_data(data) == ("run_stop", CID, 0)
 
 
 async def test_the_operators_stop_tap_stops_it_directly_and_tells_him_once(env):

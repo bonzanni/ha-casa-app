@@ -133,7 +133,7 @@ class TestCommitSizeGuardParamTypes:
 
 
 class TestMistypedParamFailsClosedThroughTheConfigPath:
-    """The two real build paths must both refuse, not just the make_* helper."""
+    """The real build path must refuse, not just the make_* helper."""
 
     def test_resolve_hooks_refuses_string_writable(self):
         from hooks import UnknownPolicyError, resolve_hooks
@@ -143,24 +143,6 @@ class TestMistypedParamFailsClosedThroughTheConfigPath:
         ])
         with pytest.raises(UnknownPolicyError):
             resolve_hooks(config, default_cwd="/config/workspace")
-
-    def test_executor_hooks_yaml_refuses_string_writable(self):
-        from hooks import (
-            UnknownPolicyError, build_policy_callbacks_from_hooks_yaml,
-        )
-        with pytest.raises(UnknownPolicyError):
-            build_policy_callbacks_from_hooks_yaml({"pre_tool_use": [
-                {"policy": "path_scope", "writable": "/config"},
-            ]})
-
-    def test_executor_hooks_yaml_refuses_string_forbid_write_paths(self):
-        from hooks import (
-            UnknownPolicyError, build_policy_callbacks_from_hooks_yaml,
-        )
-        with pytest.raises(UnknownPolicyError):
-            build_policy_callbacks_from_hooks_yaml({"pre_tool_use": [
-                {"policy": "casa_config_guard", "forbid_write_paths": "/data"},
-            ]})
 
 
 @pytest.mark.asyncio

@@ -379,7 +379,7 @@ async def stack(tmp_path, monkeypatch):
             ],
             permission_mode="acceptEdits",
         ),
-        memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
+        memory=MemoryConfig(token_budget=1000),
     )
     caller.delegates = [
         DelegateEntry(agent="judge", purpose="rules", when="rules question"),

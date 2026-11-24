@@ -91,12 +91,12 @@ async def test_reports_standing_issues_as_operator_sentences(store):
 async def test_reports_warnings_after_issues(store):
     set_health, _ = store
     set_health(issues=[_issue()],
-               warnings=[_issue(name="other", code="legacy_provenance",
+               warnings=[_issue(name="other", code="target_pending",
                                 detail=None, fp="fp-w")])
     out = await _call()
     assert len(out["standing"]) == 2
     assert out["standing"][0].startswith("fx-setup")
-    assert "usual provenance checks" in out["standing"][1]
+    assert "waiting for the specialist it belongs to" in out["standing"][1]
 
 
 async def test_history_carries_the_last_error_and_the_counts(store):

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from provenance import APPROVAL_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +40,7 @@ async def _approved_commit(args: dict) -> dict:
     rec = approval_records.approve(rec.rid)
     token = agent_mod.origin_var.set({
         "role": "assistant", "execution_role": "configurator",
-        approval_records.APPROVAL_KEY: {"rid": rec.rid, "generation": rec.generation}})
+        APPROVAL_KEY: {"rid": rec.rid, "generation": rec.generation}})
     try:
         return await tools_mod.persona_install_commit.handler(args)
     finally:
@@ -710,7 +711,7 @@ async def test_an_approved_persona_asked_again_continues_without_a_card(
                                                               "ref": "main"}))
     assert payload["approval"] == "already_approved" and len(calls) == 1
     assert started[0][1]["key"] == record.rid
-    token = agent_mod.origin_var.set({approval_records.APPROVAL_KEY: {
+    token = agent_mod.origin_var.set({APPROVAL_KEY: {
         "rid": record.rid, "generation": record.generation}})
     try:
         payload = _payload(await persona_install_inspect.handler(

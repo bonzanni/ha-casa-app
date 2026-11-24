@@ -494,6 +494,6 @@ def test_values_digest_is_canonical():
 
 def test_the_approval_key_is_reserved():
     import provenance
-    assert ar.APPROVAL_KEY == provenance.APPROVAL_KEY == "_approval"
+    assert provenance.APPROVAL_KEY == "_approval"
     assert "_approval" in provenance.RESERVED_CONTEXT_KEYS
     assert "_approval" not in provenance.sanitize_external_context({"_approval": {"rid": "x"}})

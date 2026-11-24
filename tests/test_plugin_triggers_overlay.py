@@ -29,8 +29,9 @@ def test_replace_overlay_registers_reads():
     reg.replace_plugin_overlay({
         "plg-elevenlabs--voicemail": _overlay_entry(clearance="family")})
     assert reg.get_webhook_target("plg-elevenlabs--voicemail") == "assistant"
-    assert reg.get_clearance("plg-elevenlabs--voicemail") == "family"
-    assert reg.get_auth_policy("plg-elevenlabs--voicemail")["mode"] == "static_header"
+    route = reg.webhook_route("plg-elevenlabs--voicemail")
+    assert route["clearance"] == "family"
+    assert route["auth"]["mode"] == "static_header"
 
 
 def test_replace_is_atomic_full_swap_stale_swept():

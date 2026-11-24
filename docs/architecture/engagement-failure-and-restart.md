@@ -12,7 +12,7 @@ What happens when a launch does not become a live engagement, and what a restart
 the records left behind: which gate refused a delegation, which failure arms answer the
 calling turn and which are reported by the launch-death reporter, what a graceful stop records against a launch
 it cancels, and what a restart does with a record. The record itself, how a launch is
-admitted and the driver protocol are in [`architecture/engagements.md`](engagements.md); how a
+admitted and the driver's lifecycle methods are in [`architecture/engagements.md`](engagements.md); how a
 turn is admitted to a live engagement is
 [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md). How an
 engagement *ends* once it is live is

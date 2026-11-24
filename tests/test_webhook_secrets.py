@@ -80,11 +80,12 @@ def test_orphan_tmp_files_swept(tmp_path: Path):
 
 
 def test_retire_secret_removes_live_next_and_rotation_state(tmp_path):
-    from webhook_auth import retire_secret, rotation_begin
+    from webhook_auth import retire_secret
 
     name = "plg-elevenlabs--voicemail"
     ensure_secret(name, owner="casa", secrets_dir=tmp_path)
-    rotation_begin(name, owner="casa", secrets_dir=tmp_path)
+    (tmp_path / f"{name}.next").write_bytes(b"n" * 43)
+    (tmp_path / f"{name}.rot.json").write_text('{"phase": "staged"}')
     assert (tmp_path / name).exists()
     assert (tmp_path / f"{name}.next").exists()
     assert (tmp_path / f"{name}.rot.json").exists()
@@ -109,11 +110,12 @@ def test_retire_secret_tolerates_missing_files_and_dir(tmp_path):
 def test_retire_secrets_with_prefix_sweeps_all_slots(tmp_path):
     """Sol shipB-r1 P1-4: revoke retires from the FILESYSTEM inventory by
     prefix — live + .next + .rot.json for every matching base, others kept."""
-    from webhook_auth import retire_secrets_with_prefix, rotation_begin
+    from webhook_auth import retire_secrets_with_prefix
 
     for base in ("plg-p--a", "plg-p--b", "plg-other--x", "resident-vm"):
         ensure_secret(base, owner="casa", secrets_dir=tmp_path)
-    rotation_begin("plg-p--a", owner="casa", secrets_dir=tmp_path)
+    (tmp_path / "plg-p--a.next").write_bytes(b"n" * 43)
+    (tmp_path / "plg-p--a.rot.json").write_text('{"phase": "staged"}')
 
     retired = retire_secrets_with_prefix("plg-p--", secrets_dir=tmp_path)
     assert retired == ["plg-p--a", "plg-p--b"]

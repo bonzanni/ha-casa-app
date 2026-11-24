@@ -262,41 +262,13 @@ def test_plugin_store_artifacts_stay_world_readable(tmp_path: Path) -> None:
     assert _mode(registry) == 0o644
 
 
-# --------------------------------------------------------------------------
-# credential_modes_ok() — the point-of-use check that replaced the latch.
-# --------------------------------------------------------------------------
-
-
-def test_credential_modes_ok_reports_a_world_readable_token(tmp_path: Path) -> None:
-    _touch(tmp_path, "/run/s6/container_environment/SUPERVISOR_TOKEN", 0o644)
-    offenders = private_state.credential_modes_ok(root=str(tmp_path))
-    assert offenders
-    assert any("SUPERVISOR_TOKEN" in o for o in offenders)
-
-
-def test_credential_modes_ok_accepts_repaired_tokens(tmp_path: Path) -> None:
-    _touch(tmp_path, "/run/s6/container_environment/SUPERVISOR_TOKEN", 0o644)
-    _touch(tmp_path, "/data/webhook_secret", 0o644)
-    private_state.enforce(root=str(tmp_path))
-    assert private_state.credential_modes_ok(root=str(tmp_path)) == []
-
-
-def test_credential_modes_ok_treats_absence_as_nothing_to_expose(
-    tmp_path: Path,
-) -> None:
-    """The mirror-image failure both r2 reviewers asked for: a fresh install
-    has no /data/webhook_secret yet, and must still start engagements. An
-    absent file exposes nothing."""
-    assert private_state.credential_modes_ok(root=str(tmp_path)) == []
-
-
-def test_credential_modes_ok_ignores_group_only_readability_of_private_files(
-    tmp_path: Path,
-) -> None:
-    """Only the three credential paths gate startup. A non-credential file left
-    world-readable is an ERROR in the log, not a refusal to run."""
-    _touch(tmp_path, "/data/scheduled_asks.json", 0o644)
-    assert private_state.credential_modes_ok(root=str(tmp_path)) == []
+def test_enforce_repairs_the_credential_tokens(tmp_path: Path) -> None:
+    token = _touch(tmp_path, "/run/s6/container_environment/SUPERVISOR_TOKEN", 0o644)
+    secret = _touch(tmp_path, "/data/webhook_secret", 0o644)
+    report = private_state.enforce(root=str(tmp_path))
+    assert report.credential_failures == []
+    assert _mode(token) == 0o600
+    assert _mode(secret) == 0o600
 
 
 # ---------------------------------------------------------------------------
