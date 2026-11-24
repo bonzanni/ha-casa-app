@@ -441,14 +441,8 @@ async def test_reconcile_lock_serializes_stale_compute(tmp_path,
     publication order is therefore slow-then-fast, and the final
     ``get_routed()`` content must be the FAST (later) map, never clobbered
     back to the stale (slow, earlier-issued) one."""
-    # A PRIVATE lock for this test: asyncio.Lock's cross-task-contention
-    # path binds to the CURRENTLY running loop on first genuine contention
-    # (asyncio internals) — reusing the process-wide singleton across two
-    # tests that BOTH create real contention on it would make the SECOND
-    # one crash with "bound to a different event loop" once pytest-asyncio
-    # hands it a fresh loop. Every OTHER test acquires the lock uncontended
-    # (no cross-task race), which never touches that binding at all.
-    monkeypatch.setattr(er, "_RECONCILE_LOCK", asyncio.Lock())
+    # ``_RECONCILE_LOCK`` is fresh per test (conftest ``_reset_event_routing``),
+    # so the contention below never meets a lock bound to another test's loop.
     runtime = SimpleNamespace(
         role_configs=_role_configs(assistant=["telegram"]),
         channel_manager=None)
@@ -1130,9 +1124,6 @@ async def test_revoke_takes_reconcile_lock_before_dispatch_lock(
     against an in-flight reconcile COMPUTE too (not just the dispatch
     lock) — proven by holding ``_RECONCILE_LOCK`` externally and observing
     the revoke call blocks until it releases."""
-    # Private lock — see the comment in test_reconcile_lock_serializes_
-    # stale_compute (asyncio.Lock's loop-binding on genuine contention).
-    monkeypatch.setattr(er, "_RECONCILE_LOCK", asyncio.Lock())
     held = asyncio.Event()
     release = asyncio.Event()
 

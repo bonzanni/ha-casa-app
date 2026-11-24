@@ -438,7 +438,11 @@ def test_request_log_has_no_argument_values_and_no_template(builtin_op, caplog):
     assert run_op("item", "get", "logged item", "--vault", "Elsewhere",
                   "--format", "json").returncode == 1
 
-    messages = [record.getMessage() for record in service_log(caplog)]
+    # The service writes its start line from its own thread after it signals
+    # ready, so that one line may or may not fall inside this capture.
+    start_line = f"serving the built-in store on {builtin_op.socket}"
+    messages = [record.getMessage() for record in service_log(caplog)
+                if record.getMessage() != start_line]
     assert messages == [
         "op item create: exit status 0",
         "op item edit: exit status 0",
