@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/1234567/carddav/card/AAAA-1111.vcf</href>
+    <propstat>
+      <prop>
+        <getetag>"e1"</getetag>
+        <address-data xmlns="urn:ietf:params:xml:ns:carddav">BEGIN:VCARD&#13;
+VERSION:3.0&#13;
+N:Example;Marco;;;&#13;
+FN:Marco Example&#13;
+item1.TEL;type=CELL;type=VOICE;type=pref:+39 333 0000001&#13;
+UID:AAAA-1111&#13;
+END:VCARD&#13;
+</address-data>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/1234567/carddav/card/ABC-123.vcf</href>
+    <propstat>
+      <prop>
+        <getetag>"e2"</getetag>
+        <address-data xmlns="urn:ietf:params:xml:ns:carddav">BEGIN:VCARD&#13;
+VERSION:3.0&#13;
+N:Sample;Nora;;;&#13;
+FN:Nora Sample&#13;
+TEL;type=HOME:+31 20 000 0002&#13;
+END:VCARD&#13;
+</address-data>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/1234567/carddav/card/GGGG-0001.vcf</href>
+    <propstat>
+      <prop>
+        <getetag>"e3"</getetag>
+        <address-data xmlns="urn:ietf:params:xml:ns:carddav">BEGIN:VCARD&#13;
+VERSION:3.0&#13;
+N:Priority;;;;&#13;
+FN:Priority&#13;
+X-ADDRESSBOOKSERVER-KIND:group&#13;
+X-ADDRESSBOOKSERVER-MEMBER:urn:uuid:AAAA-1111&#13;
+UID:GGGG-0001&#13;
+END:VCARD&#13;
+</address-data>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>

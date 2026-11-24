@@ -63,7 +63,9 @@ from the outcome kind alone and every non-answer read as an expiry, so an operat
 cancelled the reminder was told the question had timed out. The wording lives in
 `ask_retirement`, which serves every question in the `resident_ask` namespace — the scheduled
 ask, the human `ask_user`, the memory-wipe confirmation and the authorization and consent
-challenges — so the vocabulary cannot drift between them. A reason the renderer does not
+challenges — so the vocabulary cannot drift between them. The one exception is the card
+that asks the operator to confirm a priority contact, whose finish hook appends its own
+outcome line ([`contacts.md`](contacts.md)). A reason the renderer does not
 recognise renders a plain cancellation and never an expiry: the set of reasons is open, a new
 revocation path invents a new one without touching that module, and being vague about a
 cancellation is a smaller lie than inventing a timeout that did not happen. Because the text is

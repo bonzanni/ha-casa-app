@@ -122,6 +122,13 @@ if [ "$_casa_tz" != "null" ] && [ -n "$_casa_tz" ]; then
     export CASA_TZ="$_casa_tz"
 fi
 
+# Contacts: the country assumed for numbers written without one. Optional;
+# unset means such numbers are skipped.
+_contacts_region="$(bashio::config 'contacts_default_region')"
+if [ "$_contacts_region" != "null" ] && [ -n "$_contacts_region" ]; then
+    export CONTACTS_DEFAULT_REGION="$_contacts_region"
+fi
+
 # v0.18.1: operator-facing log level. install_logging() at
 # casa_core.py:743 reads LOG_LEVEL env when set; falls back to INFO
 # when unset/null/empty.

@@ -71,6 +71,12 @@ configuration:
     description: >-
       Engagements with no activity for this many days are automatically
       cancelled (daily sweep). Set 0 to disable. Defaults to 7.
+  contacts_default_region:
+    name: Contacts Country
+    description: >-
+      The country to assume for phone numbers in your contacts that are
+      written without a country code, as a two-letter code (for example NL).
+      Leave empty to skip such numbers.
   log_level:
     name: Log Level
     description: >-

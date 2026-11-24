@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/1234567/carddav/card/U1.vcf</href>
+    <propstat>
+      <prop>
+        <getetag>"e1"</getetag>
+        <address-data xmlns="urn:ietf:params:xml:ns:carddav">BEGIN:VCARD&#13;
+VERSION:3.0&#13;
+FN:Zoe Example&#13;
+TEL:+31 20 111 0001&#13;
+UID:U1&#13;
+END:VCARD&#13;
+</address-data>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/1234567/carddav/card/U2.vcf</href>
+    <propstat>
+      <prop>
+        <getetag>"e2"</getetag>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+    <propstat>
+      <prop>
+        <address-data xmlns="urn:ietf:params:xml:ns:carddav"/>
+      </prop>
+      <status>HTTP/1.1 404 Not Found</status>
+    </propstat>
+  </response>
+</multistatus>

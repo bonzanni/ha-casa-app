@@ -1,0 +1,24 @@
+BEGIN:VCARD
+VERSION:3.0
+N:Example;Una;;;
+FN:Una Example
+NOTE:Starts here and is long enough that the
+  line is folded and 
+	continued on the next line
+UID:U1
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Dos Example
+UID:U2
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:No Uid
+TEL;type=CELL:+31 6 0000 0000
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+ORG:Acme Plumbing;
+UID:U4
+END:VCARD

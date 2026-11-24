@@ -146,6 +146,7 @@ just its name inside `/data/memory/exports/`.
 | `enable_terminal` | Enable a web terminal accessible via the ingress panel. Default: `false`. |
 | `webhook_secret` | Optional manual override for the HMAC secret that authenticates webhook, invoke and voice requests. Leave empty and Casa generates one in `/data/webhook_secret`, retrievable through the web terminal. Authentication is always on. |
 | `engagement_reap_days` | Auto-close background jobs after this many days without activity (a daily sweep cancels them; the assistant is told). Set `0` to disable. Default: `7`. |
+| `contacts_default_region` | The country to assume for phone numbers in your contacts written without a country code, as a two-letter code such as `NL` (see [Contacts](#contacts)). Leave empty to skip such numbers. Default: empty. |
 | `log_level` | Log verbosity: `debug`, `info`, `warning`, or `error`. Default: `info`. Flip to `debug` for verbose troubleshooting without rebuilding the image. |
 | `specialist_max_concurrency` | Max specialist delegations in flight fleet-wide at once (see [Delegation limits](#delegation-limits)). Range 1-20. Default: `2`. |
 | `specialist_cost_alert_threshold` | Cumulative per-specialist USD spend past which Casa logs a warning on further delegations (see [Delegation limits](#delegation-limits)). Default: `5.0`. |
@@ -1947,3 +1948,50 @@ There is no page to manage the secrets yet. Items are created by Casa itself (yo
 agents' bot tokens, for example), by drop-offs and by plugins. `op://` references
 in the options work as they do with 1Password; the vault is the one named in
 `onepassword_default_vault`, `Casa` when that is empty.
+
+## Contacts
+
+Casa can keep a copy of your iCloud address book, so the assistant knows who
+people are when you mention them, and you can tell it who matters most. The
+copy is read-only: Casa never changes anything in iCloud.
+
+**Setting it up.** In 1Password, in the vault named in
+`onepassword_default_vault`, create an item named exactly `iCloud Contacts`
+with two fields: `username`, your Apple ID, and `password`, an app-specific
+password you create at account.apple.com (not your Apple ID password). Casa
+reads the same item from the [built-in store](#secrets-without-1password) when
+you have no 1Password token, but that store has no page for adding items yet.
+If some numbers in your contacts are written without a country code, set
+`contacts_default_region` to your country (for example `NL`); otherwise those
+numbers are skipped.
+
+**When it updates.** Casa fetches your contacts once a day, early in the
+morning, and shortly after it starts if it has no copy yet. To refresh now, ask
+the assistant (for example after you changed a contact). Names, numbers,
+organisations, groups and notes are copied.
+
+**What Casa knows about a person.** Besides the copy, Casa keeps three things
+about each person: whether they are a priority contact, how they relate to you
+(your sister, your plumber), and the language to speak with them. Relation and
+language are read from the notes on your contacts, and you can set them
+yourself by telling the assistant who someone is or which language they speak.
+What you tell the assistant wins over the notes, and stays when your contacts
+are refreshed.
+
+**Priority contacts.** A person is priority when they are in a group named
+`Priority` in your Contacts app, or when you say so. When you ask the assistant
+to make someone priority, Casa posts a card in your chat with the person's name
+and numbers and two buttons, Approve and Cancel; nothing changes until you tap
+Approve. The card expires after five minutes; ask again if you missed it.
+Taking someone off the priority list happens at once, without a card, even
+when they are in the `Priority` group. A note
+on a contact never makes anyone priority.
+
+The contact tools work only in your own chat with the assistant.
+
+**When iCloud fails.** If iCloud refuses the sign-in, does not answer, or sends
+back an incomplete address book, Casa keeps the copy it has and changes
+nothing. An empty address book counts as a failure only when Casa already had
+contacts. Casa tells you once, with the reason, and not again until a refresh
+has worked; the same goes when Casa cannot refresh for a reason of its own,
+such as a damaged contacts file.

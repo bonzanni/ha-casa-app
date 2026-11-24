@@ -49,6 +49,11 @@ tools:
     - mcp__casa-framework__send_media
     # lists the groups specialists answer in, and revokes one
     - mcp__casa-framework__guest_access
+    # the operator's address book: private clearance; changes only in his
+    # direct chat. Never granted to another agent.
+    - mcp__casa-framework__find_contact
+    - mcp__casa-framework__refresh_contacts
+    - mcp__casa-framework__set_contact_marks
   disallowed:
     # #460: the assistant is a router—all concrete work is delegated.
     # Broad Bash is unused authority and must be fenced via CLI-enforcement.

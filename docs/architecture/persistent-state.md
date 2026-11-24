@@ -132,6 +132,13 @@ exists and cannot be opened — no key, a wrong key, a damaged file — nothing 
 directory is created, replaced or removed (INV-VAULT-004,
 [`builtin-secrets-store.md`](builtin-secrets-store.md)).
 
+**The address book has a directory of its own.** `/data/contacts/` (0700, in the
+private-state inventory) holds `contacts.db`, a SQLite store in WAL mode with one
+transaction per connection: a read-only copy of each address-book source and the marks Casa
+keeps about people. Boot creates or migrates it; a failure leaves an existing file as it was
+and contacts unavailable, and Casa boots either way. A failed sync leaves the people,
+numbers and marks as they were ([`contacts.md`](contacts.md), INV-CONTACTS-002).
+
 ## Contracts & invariants
 
 **INV-STATE-001**: Only an explicit whitelist of the mapped configuration root is admitted into version control.

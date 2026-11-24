@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/1234567/carddav/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+        </resourcetype>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/1234567/carddav/card/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+          <addressbook xmlns="urn:ietf:params:xml:ns:carddav"/>
+        </resourcetype>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>

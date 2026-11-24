@@ -9871,6 +9871,373 @@ async def share_inbound_file(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# find_contact / refresh_contacts / set_contact_marks — the operator's
+# address book, for the resident assistant.
+#
+# Private-tier data: every call refuses unless the turn reads at "private"
+# (the derivation memory reads use), and a mark changes only in a direct turn
+# in the operator's own chat (the wipe_memory gate). Granted to the assistant
+# only; NEVER add to SPECIALIST_CASA_TOOL_ALLOWLIST or the restricted webhook
+# tools.
+# ---------------------------------------------------------------------------
+
+_CONTACTS_NOT_PRIVATE = "Contacts are only available in the operator's own chat."
+_CONTACTS_NOT_DIRECT = "Marks can only be changed in a direct chat with the operator."
+_CONTACTS_UNAVAILABLE = "The contacts store is unavailable right now."
+_CONTACTS_SHOWN = 10
+_CONTACTS_CANDIDATES = 6
+
+
+def _contacts_gate(origin: dict, *, changes: bool = False):
+    """``(store, refusal)``: the guards every contact tool runs, in order —
+    the turn's clearance is ``private``; for a change, a direct turn in the
+    operator's own chat outside any engagement; the store is available.
+    Synchronous, so a caller runs it before its first await."""
+    from contacts import service as contacts_service
+    if _memory_reader(origin) != "private":
+        return None, {"status": "error", "message": _CONTACTS_NOT_PRIVATE}
+    if changes:
+        from provenance import turn_provenance
+        prov = turn_provenance()
+        if (prov.transport not in ("dm", "button")
+                or prov.execution != "direct"
+                or engagement_var.get(None) is not None):
+            return None, {"status": "error", "message": _CONTACTS_NOT_DIRECT}
+    store = contacts_service.active_store()
+    if store is None:
+        return None, {"status": "unavailable", "message": _CONTACTS_UNAVAILABLE}
+    return store, None
+
+
+def _contact_entry(conn, person) -> dict:
+    from contacts import store as cstore
+    marks = cstore.marks_for(conn, person.source, person.uid)
+    return {"name": person.name, "numbers": list(person.numbers),
+            "org": person.org, "groups": list(person.groups),
+            "priority": marks.priority,
+            "priority_origin": marks.priority_origin,
+            "relation": marks.relation, "language": marks.language}
+
+
+FIND_CONTACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "description": (
+            "A name or part of one, an organisation, or a phone number.")},
+    },
+    "required": ["query"],
+}
+SET_CONTACT_MARKS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "contact": {"type": "string", "description": (
+            "Who to change: a name, organisation or number that matches "
+            "exactly one contact.")},
+        "priority": {"type": ["boolean", "null"], "description": (
+            "false takes the contact off the priority list at once; true "
+            "asks the operator to confirm first. Leave out to keep it.")},
+        "relation": {"type": ["string", "null"], "description": (
+            "Who they are to the operator, such as sister or plumber; \"\" "
+            "removes the operator's setting. Leave out to keep it.")},
+        "language": {"type": ["string", "null"], "description": (
+            "Two-letter language code such as en, it or nl; \"\" removes the "
+            "operator's setting. Leave out to keep it.")},
+    },
+    "required": ["contact"],
+}
+
+
+@tool(
+    "find_contact",
+    "Look someone up in the operator's address book, synced from iCloud, by "
+    "name, organisation or phone number. Returns up to 10 people, priority "
+    "contacts first, each with their numbers, organisation, groups and what "
+    "Casa knows about them: priority (and whether the operator or the "
+    "Priority group set it), relation and language. `more` is true when "
+    "more people matched: search again more precisely.",
+    FIND_CONTACT_SCHEMA,
+)
+async def find_contact(args: dict) -> dict:
+    from contacts import service as contacts_service
+    from contacts import store as cstore
+
+    origin = _snapshot_origin()
+    store, refusal = _contacts_gate(origin)
+    if refusal is not None:
+        return _result(refusal)
+    query = args.get("query")
+    query = query if isinstance(query, str) else ""
+    if not query.strip():
+        return _result({"status": "error", "message": (
+            "Give a name, an organisation or a phone number to look for.")})
+    region = contacts_service.default_region()
+
+    def _read():
+        with store.transaction() as conn:
+            found = cstore.find(conn, query, default_region=region,
+                                limit=_CONTACTS_SHOWN + 1)
+            return ([_contact_entry(conn, p) for p in found[:_CONTACTS_SHOWN]],
+                    len(found) > _CONTACTS_SHOWN)
+
+    try:
+        contacts, more = await asyncio.to_thread(_read)
+    except Exception:  # noqa: BLE001 — never a fake empty result
+        logger.warning("find_contact: contacts could not be read",
+                       exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _CONTACTS_UNAVAILABLE})
+    return _result({"status": "ok", "contacts": contacts, "more": more})
+
+
+@tool(
+    "refresh_contacts",
+    "Fetch the operator's contacts from iCloud now rather than at the "
+    "nightly refresh, for example after the operator says a contact "
+    "changed. "
+    "Reports how many people were added, removed and kept, and how many "
+    "numbers were skipped because they could not be read. It can take a "
+    "minute.",
+    {},
+)
+async def refresh_contacts(args: dict) -> dict:
+    from contacts import service as contacts_service
+
+    origin = _snapshot_origin()
+    _store, refusal = _contacts_gate(origin)
+    if refusal is not None:
+        return _result(refusal)
+    result = await contacts_service.refresh(reason="asked")
+    if result is None:
+        return _result({"status": "unavailable", "message": (
+            "Contacts are not set up: add a vault item named "
+            f'"{contacts_service.ITEM_TITLE}" with fields username and '
+            "password.")})
+    if not result.ok:
+        return _result({"status": "error", "message": result.error})
+    return _result({"status": "ok", "added": result.added,
+                    "removed": result.removed, "kept": result.kept,
+                    "skipped_numbers": result.skipped_numbers})
+
+
+@tool(
+    "set_contact_marks",
+    "Change what Casa knows about one contact: their relation to the "
+    "operator, the language to speak with them, and whether they are a "
+    "priority contact. Fields left out stay as they are; \"\" for relation "
+    "or language removes what the operator set. Relation and language apply "
+    "at once, and so does taking someone off the priority list; making "
+    "someone a priority contact asks the operator to confirm first. When "
+    "more than one contact matches, nothing changes and the matches are "
+    "listed so you can ask which one is meant.",
+    SET_CONTACT_MARKS_SCHEMA,
+)
+async def set_contact_marks(args: dict) -> dict:
+    from contacts import service as contacts_service
+    from contacts import store as cstore
+
+    origin = _snapshot_origin()
+    store, refusal = _contacts_gate(origin, changes=True)
+    if refusal is not None:
+        return _result(refusal)
+
+    def _error(message: str) -> dict:
+        return _result({"status": "error", "message": message})
+
+    contact = args.get("contact")
+    contact = contact.strip() if isinstance(contact, str) else ""
+    priority = args.get("priority")
+    relation = args.get("relation")
+    language = args.get("language")
+    if not contact:
+        return _error("Name the contact to change. Nothing was changed.")
+    if priority is not None and not isinstance(priority, bool):
+        return _error("priority must be true, false or left out. "
+                      "Nothing was changed.")
+    for name, value in (("relation", relation), ("language", language)):
+        if value is not None and not isinstance(value, str):
+            return _error(f"{name} must be text or left out. "
+                          "Nothing was changed.")
+    changes: dict = {}
+    if relation is not None:
+        changes["relation"] = relation.strip()
+    if language is not None:
+        code = language.strip().lower()
+        if code and not (len(code) == 2 and code.isascii()
+                         and code.isalpha()):
+            return _error('language must be a two-letter code such as "en", '
+                          '"it" or "nl", or "" to remove it. '
+                          "Nothing was changed.")
+        changes["language"] = code
+    if priority is False:
+        changes["priority"] = False
+    # Making someone priority is never applied here: it waits for the
+    # operator's Approve on Casa's card (_contact_priority_card).
+    wants_priority = priority is True
+    if not changes and not wants_priority:
+        return _error("Nothing to change: give relation, language or "
+                      "priority.")
+    region = contacts_service.default_region()
+
+    def _apply():
+        with store.transaction(write=True) as conn:
+            found = cstore.find(conn, contact, default_region=region,
+                                limit=_CONTACTS_CANDIDATES)
+            if len(found) != 1:
+                return found, False
+            person = found[0]
+            for field, value in changes.items():
+                if field == "priority":
+                    cstore.set_mark(conn, person.source, person.uid,
+                                    "priority", "0", "operator")
+                elif value:
+                    cstore.set_mark(conn, person.source, person.uid, field,
+                                    value, "operator")
+                else:
+                    cstore.clear_mark(conn, person.source, person.uid, field,
+                                      "operator")
+            already = wants_priority and cstore.marks_for(
+                conn, person.source, person.uid).priority
+            return found, already
+
+    try:
+        found, already = await asyncio.to_thread(_apply)
+    except Exception:  # noqa: BLE001 — reported, never a fake success
+        logger.warning("set_contact_marks: marks could not be written",
+                       exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _CONTACTS_UNAVAILABLE})
+    if not found:
+        return _error(f'No contact matches "{contact}". Nothing was changed.')
+    if len(found) > 1:
+        names = ", ".join(
+            f"{p.name} ({p.numbers[0]})" if p.numbers else p.name
+            for p in found)
+        return _error(f'More than one contact matches "{contact}": {names}. '
+                      "Nothing was changed; ask which one is meant, then "
+                      "name them in full or give their number.")
+    person = found[0]
+    if not wants_priority:
+        return _result({"status": "ok", "contact": person.name,
+                        "applied": changes})
+    if already:
+        return _result({"status": "ok", "contact": person.name,
+                        "applied": {**changes, "priority": "already"}})
+    return _result(await _contact_priority_card(person, changes))
+
+
+_PRIORITY_CARD_OPTIONS = ["Approve", "Cancel"]
+_PRIORITY_NOT_CHANGED = "Not changed."
+#: How long the priority card waits for a tap. Short on purpose: while it
+#: waits it holds the operator's authz lane, which a scheduled question needs
+#: free; he is in the chat when he asks, and can ask again.
+_PRIORITY_CARD_TIMEOUT_S = 300.0
+
+
+async def _contact_priority_card(person, applied: dict) -> dict:
+    """Ask the operator, on Casa's own card in his chat, to make *person*
+    priority. The card's words are Casa's, written from the stored contact;
+    the change it carries (source, uid, name, numbers) is frozen here, and
+    only the operator's Approve applies it, from the broker's finish hook,
+    outside any turn. A card already waiting for the same person is not
+    posted twice. *applied* is what the same call already changed."""
+    from verdict_broker import BROKER
+
+    def _reply(status: str, message: str, **more) -> dict:
+        return {"status": status, **more, "message": message,
+                "contact": person.name, "applied": applied}
+
+    channel, address, problem = _casa_card_target()
+    if problem is not None:
+        return _reply("unavailable", (
+            f"{person.name} was not made priority: the confirmation card "
+            f"cannot be posted ({_CASA_CARD_PROBLEMS[problem]})."))
+    bot_id, chat_id = address.bot_id, address.chat_id
+    scope = tg_scope("authz", bot_id, chat_id)
+    source, uid, name = person.source, person.uid, person.name
+    # The duplicate scan and the register below run with no await between
+    # them, so two calls for one person cannot both post a card.
+    for live in BROKER.pending(namespace="resident_ask", scope=scope):
+        meta = BROKER.get_meta(namespace="resident_ask", scope=scope,
+                               request_id=live) or {}
+        held = meta.get("change") or {}
+        if (meta.get("kind") == "contact_priority"
+                and (held.get("source"), held.get("uid")) == (source, uid)):
+            return _reply("awaiting_user", (
+                "A card asking the operator to confirm is already waiting."),
+                request_id=live)
+    rid = uuid.uuid4().hex
+    body = "\n".join(["Make priority?", "", name, *person.numbers, "",
+                      "Casa treats priority contacts as people you always "
+                      "want to hear from."])
+    req, _created = BROKER.register(
+        namespace="resident_ask", scope=scope, request_id=rid,
+        timeout_s=_PRIORITY_CARD_TIMEOUT_S, detached=True, supersede=False,
+        meta={
+            "options": list(_PRIORITY_CARD_OPTIONS),
+            "bot_id": bot_id,
+            "chat_id": chat_id,
+            "operator_id": chat_id,     # a private chat's id is its user's
+            "kind": "contact_priority",
+            "_scope": scope,
+            "change": {"source": source, "uid": uid, "name": name,
+                       "numbers": list(person.numbers)},
+        },
+    )
+
+    async def _post_priority_card():
+        return await channel.post_dm_keyboard(
+            chat_id=chat_id, request_id=rid, text=casa_text(body),
+            options=list(_PRIORITY_CARD_OPTIONS))
+
+    def _apply_priority():
+        """True when applied, False when the person is gone, None when
+        the store is unavailable."""
+        from contacts import service as contacts_service
+        from contacts import store as cstore
+        store = contacts_service.active_store()
+        if store is None:
+            return None
+        with store.transaction(write=True) as conn:
+            if not cstore.exists(conn, source, uid):
+                return False
+            cstore.set_mark(conn, source, uid, "priority", "1", "operator")
+            return True
+
+    def _finish_factory(message_id: int):
+        async def _settle_priority_card(outcome: dict) -> None:
+            line = _PRIORITY_NOT_CHANGED
+            try:
+                if (outcome.get("outcome") == "answered"
+                        and outcome.get("option_index") == 0):
+                    done = await asyncio.to_thread(_apply_priority)
+                    if done is True:
+                        line = f"{name} is now priority."
+                    elif done is False:
+                        line = (f"{name} is no longer in your contacts. "
+                                "Nothing was changed.")
+            except Exception:  # noqa: BLE001 — the card says what happened
+                logger.warning("contact priority could not be applied",
+                               exc_info=True)
+                line = _PRIORITY_NOT_CHANGED
+            try:
+                await channel.edit_dm_message(chat_id, message_id,
+                                              f"{body}\n\n{line}")
+            except Exception:  # noqa: BLE001 — outside any turn: never raise
+                logger.warning("contact priority card could not be edited",
+                               exc_info=True)
+        return _settle_priority_card
+
+    await BROKER.ensure_posted(req, _post_priority_card, _finish_factory)
+    if "message_id" not in req.meta:
+        return _reply("error", (
+            f"{name} was not made priority: the confirmation card could not "
+            "be posted."))
+    return _reply("awaiting_user", ("Asked the operator to confirm on a card. "
+                                    "The card expires after five minutes."),
+                  request_id=rid)
+
+
+# ---------------------------------------------------------------------------
 # get_schedule — Phase 3.3
 # ---------------------------------------------------------------------------
 
@@ -20423,6 +20790,9 @@ CASA_TOOLS: tuple = (
     wipe_memory,                   # #411 — operator-consented long-term wipe;
                                    # NEVER add to SPECIALIST_CASA_TOOL_ALLOWLIST
     get_schedule,
+    find_contact,                  # the operator's address book: private
+    refresh_contacts,              # clearance only, assistant only; NEVER add
+    set_contact_marks,             # to SPECIALIST_CASA_TOOL_ALLOWLIST
     list_inbound_files,            # #1036 — files the operator sent in Telegram
     share_inbound_file,            # #486 — one of those files, to a plugin
     set_reminder,                  # #396 — durable reminders
