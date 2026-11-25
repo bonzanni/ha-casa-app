@@ -12,7 +12,8 @@ calls ``fire(which)`` when a deadline passes:
 - ``undecided``: the decision for the latest agent line could not be made
   and nobody has been speaking for a while since;
 - ``max``: the session has lasted as long as one may;
-- ``pending``: accepted work has not finished.
+- ``pending``: accepted work has been pending for its time, and no word of
+  the other side has settled it.
 
 Three of these mean "nobody has been speaking for a while": ``check_in``,
 ``silence`` and ``undecided``. Each is counted from :meth:`Clock._silent_since`
@@ -30,13 +31,29 @@ and only keeps the closing ``silence`` from being counted before that line
 has been played. From the check-in until the other side speaks ``undecided``
 cannot come due, so nothing but ``silence`` and ``max`` ends a session that
 was checked on. Before the agent has said anything there is no silence to
-check on; ``first_speech`` covers that. While work is pending neither step
-can come due, and the silence starts afresh when that work is settled.
+check on; ``first_speech`` covers that.
+
+Accepted work owns the session. From :meth:`Clock.pending` until
+:meth:`Clock.settled` no deadline but ``pending`` can come due: the session
+allows for the work having taken the other side away, in which case nobody
+is left to speak to or to end the session on. Every time of the work is
+counted from the moment it became pending, whatever happens to the control
+channel meanwhile. For ``handover_s`` (the settle time) a word of the other
+side is taken to tell nothing, on the assumption that work which takes it
+away needs a while to do so; after that one word is taken to show it is
+still here (:meth:`Clock.word_counts`). ``pending`` fires
+``pending_s`` after the acceptance; the session then asks the other side
+whether it is there (:meth:`Clock.probing`), which makes every word count.
+When the work is settled as not done the session is given back, and what
+was suspended starts afresh as after a greeting: both steps of the silence,
+a first speech still owed, and ``max`` no earlier than ``resume_s`` from
+then.
 
 ``fire`` returns true when the session is over, which stops the clock. A
 ``fire`` that returns false must have moved the deadline it was called for
 (``check_in`` by :meth:`Clock.checked_in`, ``silence`` by the speech that
-cancelled it, ``pending`` by :meth:`Clock.settled`).
+cancelled it, ``pending`` by :meth:`Clock.settled`, ``max`` by the work
+that became pending meanwhile).
 """
 from __future__ import annotations
 
@@ -61,10 +78,17 @@ class Clock:
         self._plays_until = 0.0
         #: When the agent was asked to check on the other side.
         self._checked_in: float | None = None
+        #: From when the agent's first speech is owed: the first attach, or
+        #: the moment the session was last given back.
         self._attached: float | None = None
         self._agent_spoke = False
         self._undecided: float | None = None
+        #: When work became pending; ``None`` while none is.
         self._pending: float | None = None
+        #: The other side is being asked whether it is still there.
+        self._probing = False
+        #: ``max`` is not due before this; set when the session is given back.
+        self._max_not_before = 0.0
         # Set when a deadline may have moved, so the wait is taken up anew.
         self._changed = asyncio.Event()
 
@@ -105,20 +129,51 @@ class Clock:
             self._changed.set()
 
     def pending(self) -> None:
-        """Accepted work has not finished. While it is awaited, quiet is
-        expected: ``undecided`` is dropped and neither step of the silence
-        can come due, so only ``pending`` and ``max`` can before it
-        settles."""
+        """Accepted work has not finished; its times count from now. Until
+        it is settled no other deadline comes due, and ``undecided`` is
+        dropped."""
         if self._pending is None:
             self._pending = time.monotonic()
+            self._probing = False
             self._undecided = None
             self._changed.set()
 
+    def probing(self) -> None:
+        """The other side is being asked whether it is still there: from
+        here until the work is settled every word of it counts."""
+        self._probing = True
+
+    def word_counts(self) -> bool:
+        """Whether a word of the other side, heard now, is taken to show
+        that it is still here: it is being asked, or the settle time has
+        passed since the work became pending."""
+        if self._pending is None:
+            return False
+        return self._probing or time.monotonic() \
+            >= self._pending + self._timing.handover_s
+
     def settled(self) -> None:
-        """The pending work was settled; the silence starts afresh."""
+        """The pending work was settled as not done and the session goes
+        on: the silence starts afresh, a first speech still owed is owed
+        from now, and the ending for the longest session cannot come
+        before ``resume_s`` has passed. No other deadline is put off."""
+        now = time.monotonic()
         self._pending = None
+        self._probing = False
         self._checked_in = None
-        self._heard = time.monotonic()
+        self._heard = now
+        if self._attached is not None:
+            self._attached = now
+        self._max_not_before = now + self._timing.resume_s
+        self._changed.set()
+
+    def _max_at(self) -> float:
+        return max(self.started + self._timing.max_call_s, self._max_not_before)
+
+    def max_due(self) -> bool:
+        """Whether the session has lasted as long as one may, as things
+        stand now: never while work is pending."""
+        return self._pending is None and time.monotonic() >= self._max_at()
 
     def _silent_since(self, moment: float) -> float:
         """The moment from which nobody is speaking, for a quiet that began
@@ -127,10 +182,11 @@ class Clock:
 
     def _due(self) -> tuple[float, str]:
         timing = self._timing
-        due = [(self.started + timing.max_call_s, "max")]
         if self._pending is not None:
-            due.append((self._pending + timing.pending_s, "pending"))
-        elif self._checked_in is not None:
+            # The work owns the session: nothing else speaks or ends it.
+            return self._pending + timing.pending_s, "pending"
+        due = [(self._max_at(), "max")]
+        if self._checked_in is not None:
             due.append((self._silent_since(self._checked_in)
                         + timing.silence_s, "silence"))
         elif self._heard is not None and self._agent_spoke:

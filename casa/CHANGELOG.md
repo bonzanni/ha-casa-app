@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.385.4] - 2026-11-25
+
+### Fixed
+
+- When Casa put a call through to you and the conversation lasted longer than half a minute, Casa treated the transfer as failed: the phone assistant said its "nobody could be reached" line into a session the caller had already left, and the report gave another ending than "put through". Casa now tells the two cases apart by whether the caller is heard again after the transfer. If the caller is still there, the phone assistant says so and offers to take a message, as before. If nobody is heard, it asks once whether anyone is still there. The report says "it was put through to you" only when Casa heard that question asked, kept listening to the end, and nobody answered. Casa cannot know whether you picked up.
+
+### Changed
+
+- The report can now end with "it ended while being put through". Casa uses it when a call ended during a transfer and it cannot tell what happened: the call ended before Casa could ask, or Casa could not ask or could not listen to the end. This includes a call you answered and finished within about half a minute. A call cut off because Casa itself stopped is still reported as cut off.
+- While a call is being put through, Casa no longer ends it for reaching ten minutes or for losing its connection to the voice service.
+
 ## [0.385.3] - 2026-11-25
 
 ### Fixed

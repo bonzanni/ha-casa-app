@@ -116,9 +116,11 @@ number, or the number alone (the operator's phone shows the line, not the caller
 again, and asks the provider to refer the call to `tel:<phone_transfer_number>`, with
 nothing awaited between the second check and the request. A 4xx is a refusal the voice
 model hears. Success, no answer and a 5xx all mean the provider may have accepted it: the
-transfer is marked pending and is never placed a second time in that call. A session that
-closes while a transfer is pending was handed over; a transfer still pending after 30
-seconds is spent and the voice model is told it failed. A returned call has no `transfer`
+transfer is marked pending and is never placed a second time in that call. Casa treats it
+as inconclusive and goes by whether the caller is heard again (INV-PHONE-009,
+[`live-voice.md`](live-voice.md)): a word after the settle time is taken to mean it failed, the voice
+model is told so and takes a message; otherwise Casa asks into the session whether anyone
+is there and, with no answer, ends its side quietly. A returned call has no `transfer`
 but has `alert_operator`, which sends the operator a fixed urgent line naming the caller
 and no word of the model's.
 
@@ -130,8 +132,10 @@ name, class, language, returned flag, outcome, action log, record, delivered, an
 30 days, deleted by the `phone_transcript_purge` job at 04:40. Audio is never kept.
 
 **An ended call is reported in two messages.** The controller writes the outcome
-(`caller_hung_up`; `ended_by_casa` for a clock ending, a lost channel or an `end_call` that
-was done; `transferred`; `accept_failed`; `error`; `interrupted`) with the action log and
+(`caller_hung_up`; `ended_by_casa` for any other clock ending, a lost channel or an
+`end_call` that was done; `transferred` when that question was asked, watched and not
+answered; `ended_in_transfer` when the session ended, from either side, with the transfer
+unsettled; `accept_failed`; `error`; `interrupted`) with the action log and
 the transcript in one write, and logs the session's delays as one line of numbers. The
 report then runs in a task of its own, so the call's slot is free meanwhile. First Casa
 sends its own line, `controller.headline`: who (the contact's name, else "Unknown caller"),
