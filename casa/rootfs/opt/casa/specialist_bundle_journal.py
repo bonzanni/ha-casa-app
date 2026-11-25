@@ -469,6 +469,12 @@ class BundleTxn:
     # not say what it dropped is treated as having dropped nothing, which can
     # only under-claim.
     removed_owned_names: tuple[str, ...] = ()
+    # #1677: the mirror — the owned-plugin NAMES this swap added, present in
+    # the set it published and absent from the pre-swap one. The sequencer
+    # resets the callback consents and spool of both lists. Like the field
+    # above it is never written to the journal file: boot replay rebuilds its
+    # transaction without either. Default () resets nothing.
+    added_owned_names: tuple[str, ...] = ()
     # #372 (D9b): provenance the restore-side sanitizer needs. Defaults are
     # the fail-closed shape — a constructor that does not thread them gets
     # all-keys stripping for any secret-bearing capture, never plaintext.

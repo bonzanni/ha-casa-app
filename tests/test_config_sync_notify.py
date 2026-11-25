@@ -259,3 +259,35 @@ async def test_a_path_is_listed_once_even_when_several_outcomes_name_it(tmp_path
     await casa_core.notify_config_sync(_Manager(ep), report_path=path)
     assert ep.messages
     assert ep.messages[0].count(rel) == 1
+
+
+async def test_two_concurrent_callers_send_the_heads_up_once(
+        tmp_path, monkeypatch):
+    """#1688: notify_config_sync holds the operator notice lock and reads the
+    report after acquiring it, so a caller queued behind a send in flight
+    finds the report marked and does not send it again."""
+    monkeypatch.setattr(casa_core, "_OPERATOR_NOTICE_LOCK", asyncio.Lock())
+    rp = tmp_path / "config-sync-report.json"
+    _report(rp, conflicts=[{"path": "agents/assistant/runtime.yaml"}])
+    gate = asyncio.Event()
+
+    class _HeldEndpoint(_Endpoint):
+        async def send(self, text, context):
+            self.messages.append(text.text)
+            await gate.wait()
+            return DeliveryOutcome.DELIVERED
+
+    ep = _HeldEndpoint()
+    first = asyncio.create_task(
+        casa_core.notify_config_sync(_Manager(ep), report_path=str(rp)))
+    while not ep.messages:
+        await asyncio.sleep(0)
+    second = asyncio.create_task(
+        casa_core.notify_config_sync(_Manager(ep), report_path=str(rp)))
+    for _ in range(5):
+        await asyncio.sleep(0)       # let the second caller run to its await
+    gate.set()
+    await asyncio.gather(first, second)
+
+    assert len(ep.messages) == 1
+    assert _notified(rp)

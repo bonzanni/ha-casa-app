@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.385.2] - 2026-11-25
+
+### Fixed
+
+- Casa now withdraws the approval you gave for a plugin's authorization callback when the plugin leaves a specialist, for example when you uninstall the specialist, and again when a plugin joins one. Before, an approval could stay on file after an uninstall, and installing the specialist again later could switch its callback on without asking you. A plugin that stays through an upgrade or a rollback keeps its approval as long as its callback declaration is unchanged. If you reinstalled a specialist before this update and want to be asked again, tell the assistant to revoke that callback's approval.
+- With `log_level: debug`, the Telegram client's own debug records are no longer written to the app log. They contained the full text of messages sent and received.
+- When the schedule cannot be read, `get_schedule` now reports that as an error. Before, the assistant received it as an ordinary answer.
+- The assistant is now told the size limits when it hands work to another agent or starts a job (4,000 characters for the task, 8,000 for the context). Before, it learned of them only when a longer request was refused.
+- When Casa cleans up the event queue of a plugin that is no longer installed and cannot read a file's details while checking the queue's age, it leaves the queue for a later check. Before, it could remove the queue with events still in it.
+- An agent's settings file is now written to disk before it replaces the old one, so a power loss at that moment no longer leaves an empty file that needs repair by hand.
+- Casa now checks whether to send the notice that an update replaced some of your configuration edits one caller at a time, so two checks at the same moment no longer send it twice.
+
 ## [0.385.1] - 2026-11-24
 
 ### Changed

@@ -2284,3 +2284,65 @@ def test_get_spool_before_init_is_none_or_prior():
 def test_module_level_spool_issues_degrades_quietly_without_a_spool(monkeypatch):
     monkeypatch.setattr(es, "_SPOOL", None)
     assert es.spool_issues() == []
+
+
+# ---------------------------------------------------------------------------
+# marker retirement: only a confirmed ENOENT counts as gone (#1686)
+# ---------------------------------------------------------------------------
+
+
+def _lstat_failing_for(monkeypatch, target: str, *, after: int = 0):
+    """Make ``os.lstat`` of *target* raise EIO from its ``after``-th call on;
+    every other path is the real call."""
+    real = os.lstat
+    seen = {"n": 0}
+
+    def flaky(name, *args, **kwargs):
+        if name == target:
+            seen["n"] += 1
+            if seen["n"] > after:
+                raise OSError(errno.EIO, "injected I/O error")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", flaky)
+
+
+def test_retire_marker_reports_failure_when_presence_is_unknown(
+        tmp_path, monkeypatch):
+    (tmp_path / "m.json").write_text("{}")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        _lstat_failing_for(monkeypatch, "m.json")
+        assert es._retire_marker_entry("m.json", fd) is False
+        monkeypatch.undo()
+    finally:
+        os.close(fd)
+    assert (tmp_path / "m.json").exists()
+
+
+def test_retire_marker_reports_failure_when_removal_is_unconfirmed(
+        tmp_path, monkeypatch):
+    (tmp_path / "m.json").write_text("{}")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        monkeypatch.setattr(es, "_remove_entry", lambda *a: False)
+        _lstat_failing_for(monkeypatch, "m.json", after=1)
+        assert es._retire_marker_entry("m.json", fd) is False
+        monkeypatch.undo()
+    finally:
+        os.close(fd)
+    assert (tmp_path / "m.json").exists()
+
+
+def test_newest_in_reports_a_fault_when_an_entry_age_is_unknown(
+        spool, tmp_path, monkeypatch):
+    d = tmp_path / "tree"
+    d.mkdir()
+    (d / "entry").write_text("x")
+    fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        _lstat_failing_for(monkeypatch, "entry")
+        assert spool._newest_in(fd, depth=3) is None
+        monkeypatch.undo()
+    finally:
+        os.close(fd)

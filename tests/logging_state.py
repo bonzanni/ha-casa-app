@@ -48,8 +48,8 @@ from typing import Any, Iterator
 import pytest
 
 #: The loggers ``install_logging`` pins (``httpx``/``opentelemetry`` to WARNING,
-#: ``markdown_it`` to INFO).
-PINNED_LOGGERS = ("httpx", "opentelemetry", "markdown_it")
+#: ``markdown_it`` and ``telegram`` to INFO).
+PINNED_LOGGERS = ("httpx", "opentelemetry", "markdown_it", "telegram")
 
 #: The state the guard establishes before each guarded test. Every value is
 #: distinct from the one ``install_logging`` would leave (root DEBUG or INFO,
@@ -59,7 +59,7 @@ PINNED_LOGGERS = ("httpx", "opentelemetry", "markdown_it")
 GUARD_ROOT_LEVEL = logging.ERROR
 GUARD_PINNED_LEVELS = {
     "httpx": logging.DEBUG, "opentelemetry": logging.CRITICAL,
-    "markdown_it": logging.ERROR,
+    "markdown_it": logging.ERROR, "telegram": logging.ERROR,
 }
 
 

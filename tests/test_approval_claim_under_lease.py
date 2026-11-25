@@ -73,7 +73,8 @@ def lib(monkeypatch, tmp_path):
                         _library("commit_specialist_install"))
     monkeypatch.setattr(specialist_install, "upgrade_specialist", _library("upgrade_specialist"))
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         return {"ok": not state.verify_fails, "reloaded": [], "verify": {}}
 
     async def _seq_failure(txn, seq, *, slug):

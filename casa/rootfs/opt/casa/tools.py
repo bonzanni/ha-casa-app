@@ -7840,13 +7840,30 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
         await tell(reason)
 
 
+# #1678: the input bounds the launch paths enforce, stated where the model
+# reads them before it writes, so a long request is not composed only to be
+# refused.
+_TASK_FIELD = {"type": "string", "description": (
+    f"At most {specialist_limits._MAX_TASK_CHARS:,} characters; a longer one "
+    "is refused. Put long material in a file or your scratchpad and say "
+    "where it is.")}
+_CONTEXT_FIELD = {"type": "string", "description": (
+    f"At most {specialist_limits._MAX_CONTEXT_CHARS:,} characters.")}
+
+
 @tool(
     "start_job",
     "Start a background job: one listed in <jobs>, or, for a specialist, one its own "
     "plugins declare. A job <jobs> lists as a delegate's own is started by delegating the "
     "request to that delegate. It runs as one long session, and the chat's resident is "
     "notified when it ends.",
-    {"job": str, "task": str, "context": str},
+    {"type": "object",
+     "properties": {
+         "job": {"type": "string"},
+         "task": _TASK_FIELD,
+         "context": _CONTEXT_FIELD,
+     },
+     "required": ["job", "task", "context"]},
 )
 async def start_job(args: dict) -> dict:
     origin = _snapshot_origin()
@@ -7959,8 +7976,8 @@ def _delegation_mode_for(cfg: Any, mode: str) -> str:
     {"type": "object",
      "properties": {
          "agent": {"type": "string"},
-         "task": {"type": "string"},
-         "context": {"type": "string"},
+         "task": _TASK_FIELD,
+         "context": _CONTEXT_FIELD,
          "mode": {"type": "string",
                   "enum": ["sync", "async", "interactive"],
                   "description": (
@@ -8721,8 +8738,8 @@ def _handoff_target(agent_name: str) -> "tuple[str | None, dict | None]":
     {"type": "object",
      "properties": {
          "agent": {"type": "string"},
-         "task": {"type": "string"},
-         "context": {"type": "string"},
+         "task": _TASK_FIELD,
+         "context": _CONTEXT_FIELD,
          "expected_result": {"type": "string"},
      },
      "required": ["agent", "task"]},
@@ -9895,42 +9912,41 @@ _PRIORITY_NOT_CHANGED = "Not changed."
 _PRIORITY_CARD_TIMEOUT_S = 300.0
 
 
-async def _contact_priority_card(person, applied: dict) -> dict:
-    """Ask the operator, on Casa's own card in his chat, to make *person*
-    priority. The card's words are Casa's, written from the stored contact;
-    the change it carries (source, uid, name, numbers) is frozen here, and
-    only the operator's Approve applies it, from the broker's finish hook,
-    outside any turn. A card already waiting for the same person is not
-    posted twice. *applied* is what the same call already changed."""
-    from verdict_broker import BROKER
+async def _casa_confirm_card(*, kind: str, change: dict, same, body: str,
+                             apply, outcome_line, refused: str,
+                             what: str, reply) -> dict:
+    """Ask the operator, on Casa's own card in his chat (Approve, Cancel), to
+    confirm one change, and apply it only on his Approve. Shared by the
+    contact priority and phone grant cards.
 
-    def _reply(status: str, message: str, **more) -> dict:
-        return {"status": status, **more, "message": message,
-                "contact": person.name, "applied": applied}
+    *change* is frozen in the broker request's meta under *kind* when it is
+    registered. A card of the same *kind* already waiting whose stored change
+    satisfies ``same(held)`` is not posted again. On an answered Approve the
+    broker's finish hook, outside any turn, runs the blocking *apply* in a
+    thread and maps its result to the card's outcome line with
+    ``outcome_line(result)`` (None: not changed); it never raises, and edits
+    the card to keep *body* plus that line. *refused* opens the message of a
+    card that could not be posted, *what* names the change in log lines, and
+    ``reply(status, message, **more)`` builds the tool's answer."""
+    from verdict_broker import BROKER
 
     channel, address, problem = _casa_card_target()
     if problem is not None:
-        return _reply("unavailable", (
-            f"{person.name} was not made priority: the confirmation card "
-            f"cannot be posted ({_CASA_CARD_PROBLEMS[problem]})."))
+        return reply("unavailable", (
+            f"{refused}: the confirmation card cannot be posted "
+            f"({_CASA_CARD_PROBLEMS[problem]})."))
     bot_id, chat_id = address.bot_id, address.chat_id
     scope = tg_scope("authz", bot_id, chat_id)
-    source, uid, name = person.source, person.uid, person.name
     # The duplicate scan and the register below run with no await between
-    # them, so two calls for one person cannot both post a card.
+    # them, so two calls for one change cannot both post a card.
     for live in BROKER.pending(namespace="resident_ask", scope=scope):
         meta = BROKER.get_meta(namespace="resident_ask", scope=scope,
                                request_id=live) or {}
-        held = meta.get("change") or {}
-        if (meta.get("kind") == "contact_priority"
-                and (held.get("source"), held.get("uid")) == (source, uid)):
-            return _reply("awaiting_user", (
+        if meta.get("kind") == kind and same(meta.get("change") or {}):
+            return reply("awaiting_user", (
                 "A card asking the operator to confirm is already waiting."),
                 request_id=live)
     rid = uuid.uuid4().hex
-    body = "\n".join(["Make priority?", "", name, *person.numbers, "",
-                      "Casa treats priority contacts as people you always "
-                      "want to hear from."])
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
         timeout_s=_PRIORITY_CARD_TIMEOUT_S, detached=True, supersede=False,
@@ -9939,17 +9955,57 @@ async def _contact_priority_card(person, applied: dict) -> dict:
             "bot_id": bot_id,
             "chat_id": chat_id,
             "operator_id": chat_id,     # a private chat's id is its user's
-            "kind": "contact_priority",
+            "kind": kind,
             "_scope": scope,
-            "change": {"source": source, "uid": uid, "name": name,
-                       "numbers": list(person.numbers)},
+            "change": change,
         },
     )
 
-    async def _post_priority_card():
+    async def _post_confirm_card():
         return await channel.post_dm_keyboard(
             chat_id=chat_id, request_id=rid, text=casa_text(body),
             options=list(_PRIORITY_CARD_OPTIONS))
+
+    def _finish_factory(message_id: int):
+        async def _settle_confirm_card(outcome: dict) -> None:
+            line = _PRIORITY_NOT_CHANGED
+            try:
+                if (outcome.get("outcome") == "answered"
+                        and outcome.get("option_index") == 0):
+                    line = (outcome_line(await asyncio.to_thread(apply))
+                            or _PRIORITY_NOT_CHANGED)
+            except Exception:  # noqa: BLE001 — the card says what happened
+                logger.warning("%s could not be applied", what, exc_info=True)
+                line = _PRIORITY_NOT_CHANGED
+            try:
+                await channel.edit_dm_message(chat_id, message_id,
+                                              f"{body}\n\n{line}")
+            except Exception:  # noqa: BLE001 — outside any turn: never raise
+                logger.warning("%s card could not be edited", what,
+                               exc_info=True)
+        return _settle_confirm_card
+
+    await BROKER.ensure_posted(req, _post_confirm_card, _finish_factory)
+    if "message_id" not in req.meta:
+        return reply("error", (
+            f"{refused}: the confirmation card could not be posted."))
+    return reply("awaiting_user", ("Asked the operator to confirm on a card. "
+                                   "The card expires after five minutes."),
+                 request_id=rid)
+
+
+async def _contact_priority_card(person, applied: dict) -> dict:
+    """Ask the operator, on Casa's own card in his chat, to make *person*
+    priority. The card's words are Casa's, written from the stored contact;
+    the change it carries (source, uid, name, numbers) is frozen here, and
+    only the operator's Approve applies it, from the broker's finish hook,
+    outside any turn. A card already waiting for the same person is not
+    posted twice. *applied* is what the same call already changed."""
+    source, uid, name = person.source, person.uid, person.name
+
+    def _reply(status: str, message: str, **more) -> dict:
+        return {"status": status, **more, "message": message,
+                "contact": name, "applied": applied}
 
     def _apply_priority():
         """True when applied, False when the person is gone, None when
@@ -9965,38 +10021,25 @@ async def _contact_priority_card(person, applied: dict) -> dict:
             cstore.set_mark(conn, source, uid, "priority", "1", "operator")
             return True
 
-    def _finish_factory(message_id: int):
-        async def _settle_priority_card(outcome: dict) -> None:
-            line = _PRIORITY_NOT_CHANGED
-            try:
-                if (outcome.get("outcome") == "answered"
-                        and outcome.get("option_index") == 0):
-                    done = await asyncio.to_thread(_apply_priority)
-                    if done is True:
-                        line = f"{name} is now priority."
-                    elif done is False:
-                        line = (f"{name} is no longer in your contacts. "
-                                "Nothing was changed.")
-            except Exception:  # noqa: BLE001 — the card says what happened
-                logger.warning("contact priority could not be applied",
-                               exc_info=True)
-                line = _PRIORITY_NOT_CHANGED
-            try:
-                await channel.edit_dm_message(chat_id, message_id,
-                                              f"{body}\n\n{line}")
-            except Exception:  # noqa: BLE001 — outside any turn: never raise
-                logger.warning("contact priority card could not be edited",
-                               exc_info=True)
-        return _settle_priority_card
+    def _priority_line(done):
+        if done is True:
+            return f"{name} is now priority."
+        if done is False:
+            return f"{name} is no longer in your contacts. Nothing was changed."
+        return None
 
-    await BROKER.ensure_posted(req, _post_priority_card, _finish_factory)
-    if "message_id" not in req.meta:
-        return _reply("error", (
-            f"{name} was not made priority: the confirmation card could not "
-            "be posted."))
-    return _reply("awaiting_user", ("Asked the operator to confirm on a card. "
-                                    "The card expires after five minutes."),
-                  request_id=rid)
+    body = "\n".join(["Make priority?", "", name, *person.numbers, "",
+                      "Casa treats priority contacts as people you always "
+                      "want to hear from."])
+    return await _casa_confirm_card(
+        kind="contact_priority",
+        change={"source": source, "uid": uid, "name": name,
+                "numbers": list(person.numbers)},
+        same=lambda held: (held.get("source"), held.get("uid")) == (source,
+                                                                    uid),
+        body=body, apply=_apply_priority, outcome_line=_priority_line,
+        refused=f"{name} was not made priority", what="contact priority",
+        reply=_reply)
 
 
 # ---------------------------------------------------------------------------
@@ -10449,90 +10492,34 @@ async def _phone_grant_card(caller_class: str, ability: str, before: str,
     words are Casa's, written from the change; the change is frozen here,
     and only the operator's Approve applies it, from the broker's finish
     hook, outside any turn, and only while the level is still *before*. A
-    card already waiting for the same change is not posted twice. Sibling
-    of :func:`_contact_priority_card`, whose mechanics it follows."""
-    from verdict_broker import BROKER
+    card already waiting for the same change is not posted twice."""
 
     def _reply(status: str, message: str, **more) -> dict:
         return {"status": status, **more, "message": message,
                 "caller_class": caller_class, "level": after}
 
-    channel, address, problem = _casa_card_target()
-    if problem is not None:
-        return _reply("unavailable", (
-            "The grant was not widened: the confirmation card cannot be "
-            f"posted ({_CASA_CARD_PROBLEMS[problem]})."))
-    bot_id, chat_id = address.bot_id, address.chat_id
-    scope = tg_scope("authz", bot_id, chat_id)
+    def _apply_grant():
+        # Applied only while the level is still the one the card was about.
+        return _phone_set_grant_if(caller_class, ability, after,
+                                   lambda now: now == before)
+
+    def _grant_line(done):
+        if done is not None and done[0]:
+            return "Changed."
+        if done is not None:
+            return ("Not changed: the setting changed in the meantime. "
+                    + phone_grant_sentence(caller_class, done[1]))
+        return None
+
     change = {"caller_class": caller_class, "ability": ability,
               "before": before, "after": after}
-    # The duplicate scan and the register below run with no await between
-    # them, so two calls for one change cannot both post a card.
-    for live in BROKER.pending(namespace="resident_ask", scope=scope):
-        meta = BROKER.get_meta(namespace="resident_ask", scope=scope,
-                               request_id=live) or {}
-        if meta.get("kind") == "phone_grant" and meta.get("change") == change:
-            return _reply("awaiting_user", (
-                "A card asking the operator to confirm is already waiting."),
-                request_id=live)
-    rid = uuid.uuid4().hex
-    body = phone_grant_question(caller_class, before, after)
-    req, _created = BROKER.register(
-        namespace="resident_ask", scope=scope, request_id=rid,
-        timeout_s=_PRIORITY_CARD_TIMEOUT_S, detached=True, supersede=False,
-        meta={
-            "options": list(_PRIORITY_CARD_OPTIONS),
-            "bot_id": bot_id,
-            "chat_id": chat_id,
-            "operator_id": chat_id,     # a private chat's id is its user's
-            "kind": "phone_grant",
-            "_scope": scope,
-            "change": dict(change),
-        },
-    )
-
-    async def _post_grant_card():
-        return await channel.post_dm_keyboard(
-            chat_id=chat_id, request_id=rid, text=casa_text(body),
-            options=list(_PRIORITY_CARD_OPTIONS))
-
-    def _finish_factory(message_id: int):
-        async def _settle_grant_card(outcome: dict) -> None:
-            line = _PRIORITY_NOT_CHANGED
-            try:
-                if (outcome.get("outcome") == "answered"
-                        and outcome.get("option_index") == 0):
-                    # Applied only while the level is still the one the
-                    # card was about.
-                    done = await asyncio.to_thread(
-                        _phone_set_grant_if, caller_class, ability, after,
-                        lambda now: now == before)
-                    if done is not None and done[0]:
-                        line = "Changed."
-                    elif done is not None:
-                        line = ("Not changed: the setting changed in the "
-                                "meantime. "
-                                + phone_grant_sentence(caller_class, done[1]))
-            except Exception:  # noqa: BLE001 — the card says what happened
-                logger.warning("phone grant could not be applied",
-                               exc_info=True)
-                line = _PRIORITY_NOT_CHANGED
-            try:
-                await channel.edit_dm_message(chat_id, message_id,
-                                              f"{body}\n\n{line}")
-            except Exception:  # noqa: BLE001 — outside any turn: never raise
-                logger.warning("phone grant card could not be edited",
-                               exc_info=True)
-        return _settle_grant_card
-
-    await BROKER.ensure_posted(req, _post_grant_card, _finish_factory)
-    if "message_id" not in req.meta:
-        return _reply("error", (
-            "The grant was not widened: the confirmation card could not be "
-            "posted."))
-    return _reply("awaiting_user", ("Asked the operator to confirm on a card. "
-                                    "The card expires after five minutes."),
-                  request_id=rid)
+    return await _casa_confirm_card(
+        kind="phone_grant", change=dict(change),
+        same=lambda held: held == change,
+        body=phone_grant_question(caller_class, before, after),
+        apply=_apply_grant, outcome_line=_grant_line,
+        refused="The grant was not widened", what="phone grant",
+        reply=_reply)
 
 
 # ---------------------------------------------------------------------------
@@ -10551,18 +10538,17 @@ async def _phone_grant_card(caller_class: str, ability: str, before: str,
 )
 async def get_schedule(args: dict) -> dict:
     if _trigger_registry is None:
-        return {"content": [{"type": "text",
-                             "text": "Error: trigger registry not initialized"}]}
+        return _text_result("Error: trigger registry not initialized",
+                            is_error=True)
 
     origin = _snapshot_origin()
     if not origin:
-        return {"content": [{"type": "text",
-                             "text": "Error: get_schedule called outside a turn context"}]}
+        return _text_result("Error: get_schedule called outside a turn context",
+                            is_error=True)
 
     role = origin.get("role") or ""
     if not role:
-        return {"content": [{"type": "text",
-                             "text": "Error: turn origin has no role"}]}
+        return _text_result("Error: turn origin has no role", is_error=True)
 
     raw_hours = args.get("within_hours", 24)
     try:
@@ -13879,6 +13865,17 @@ def _swap_dropped_names(txn) -> "list[str]":
             if isinstance(n, str) and n]
 
 
+def _swap_added_names(txn) -> "list[str]":
+    """#1677: the owned-plugin names this transaction's registry swap ADDED,
+    or [] when it never swapped — the mirror of `_swap_dropped_names`. The
+    forward sequencer resets the callback consents and spool of both lists; a
+    name on both sides of the swap is in neither."""
+    if not getattr(txn, "owned_swap_committed", False):
+        return []
+    return [n for n in (getattr(txn, "added_owned_names", None) or ())
+            if isinstance(n, str) and n]
+
+
 def _swap_removal_disclosure(txn) -> dict:
     """#676 (INV-TOOL-007): the disclosure a SUCCESSFUL bundle owed for the
     owned plugins its registry swap dropped, or `{}` when it dropped none.
@@ -14726,7 +14723,8 @@ async def _run_bundle_transaction(operation: "Callable[[], Awaitable[Any]]") -> 
 
 
 async def _bundle_reload_and_verify(
-    slug: str, *, removed_artifact_ids: list, targets_removed: list) -> dict:
+    slug: str, *, removed_artifact_ids: list, targets_removed: list,
+    callback_reset_plugins: "list[str]" = ()) -> dict:
     """Task 10 bundle sequencer (spec §3.2d) — the post-mutation half of a
     specialist-bundle transaction, run by the tool layer while holding
     `_PLUGIN_TOOLS_LOCK` (the sync lifecycle function already committed the
@@ -14737,8 +14735,10 @@ async def _bundle_reload_and_verify(
       1. grant/challenge invalidation FIRST — per removed/replaced artifact id
          (the SAME `_invalidate_lifecycle` call plugin_update/plugin_remove use)
          AND the specialist role + any removed targets, BEFORE the first reload;
-         then the event consents held on a removed artifact, before the
-         reload reconciles;
+         then the event consents held on a removed artifact, and the
+         callback consents and spool of each name in `callback_reset_plugins`
+         (the names the swap dropped or added; a compensation passes none),
+         before the reload reconciles;
       2. ONE plugin-snapshot reload;
       3. ONE specialist-agent reload (only when the slug is installed — skipped
          for an uninstall or a still-pending specialist target);
@@ -14762,6 +14762,17 @@ async def _bundle_reload_and_verify(
     for name in sorted(event_acks.ACKS.subscribers_on(removed_artifact_ids)):
         await _settle_through_cancellation(
             _revoke_event_consents(name, "specialist bundle"))
+    # #1677: a plugin that left the owned set loses its callback consents and
+    # spool, and one that entered it starts with none. A callback consent is
+    # bound to the plugin NAME and its declaration, not to the artifact, so a
+    # reinstall of the same declaration would otherwise find the old consent
+    # and be routed with no consent card; the reconcile's prune cannot be
+    # relied on, since any resolver issue anywhere in the registry skips it.
+    # A name on both sides of the swap is not in the list: an upgrade or a
+    # rollback that keeps a plugin keeps its consent (INV-CB-003).
+    for name in sorted(set(callback_reset_plugins)):
+        await _settle_through_cancellation(
+            _remove_plugin_callbacks(name, "specialist bundle"))
 
     # 2. ONE snapshot reload.
     await asyncio.to_thread(plugin_registry.reload_snapshot)
@@ -16811,7 +16822,9 @@ async def specialist_install_commit(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=[])
+                targets_removed=[],
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -16989,7 +17002,9 @@ async def specialist_upgrade(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=[])
+                targets_removed=[],
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -17060,7 +17075,9 @@ async def specialist_rollback(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=[])
+                targets_removed=[],
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -17164,7 +17181,9 @@ async def specialist_uninstall(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=targets_removed)
+                targets_removed=targets_removed,
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -19221,21 +19240,24 @@ async def trigger_ack_revoke(args: dict) -> dict:
         })
 
 
-async def _remove_plugin_callbacks(name: str) -> None:
+async def _remove_plugin_callbacks(name: str, tool: str = "plugin_remove") -> None:
     """Durable callback teardown for a removed plugin: revoke its
     persisted callback consents and delete its spool dir. Best-effort — a
     failure here never fails the removal (the overlay was already swept by
-    absence in the sequencer's callback reconcile)."""
+    absence in the sequencer's callback reconcile). #1677: a specialist
+    bundle's sequencer runs the same teardown for each owned plugin its swap
+    dropped, and for each one it added, so a name entering the owned set
+    starts with no consent and no spool; *tool* names the caller in the log."""
     try:
         import callback_acks
         removed = await asyncio.to_thread(
             callback_acks.ACKS.revoke_plugin, name)
         if removed:
-            logger.info("plugin_remove: revoked %d callback ack(s) for %s",
-                        len(removed), name)
+            logger.info("%s: revoked %d callback ack(s) for %s",
+                        tool, len(removed), name)
     except Exception:  # noqa: BLE001
-        logger.warning("plugin_remove: callback ack revoke failed (%s)",
-                       name, exc_info=True)
+        logger.warning("%s: callback ack revoke failed (%s)",
+                       tool, name, exc_info=True)
     try:
         import callback_spool
         spool = callback_spool.get_spool()
@@ -19249,8 +19271,8 @@ async def _remove_plugin_callbacks(name: str) -> None:
             # operator can see.
             await asyncio.to_thread(spool.remove_plugin, name)
     except Exception:  # noqa: BLE001
-        logger.warning("plugin_remove: callback spool purge failed (%s)",
-                       name, exc_info=True)
+        logger.warning("%s: callback spool purge failed (%s)",
+                       tool, name, exc_info=True)
 
 
 @tool(

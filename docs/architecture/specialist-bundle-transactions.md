@@ -79,7 +79,11 @@ under the model resolution in force at rollback time: when only the resolved mod
 the binding is re-derived through the same three gates the loader uses before it is
 compiled and committed. Every bundle's post-swap sequencer revokes, before its reload, the
 event consents held on each removed artifact, approvals and denials alike, so a reinstall
-or rollback to it asks again (#1671).
+or rollback to it asks again (#1671). In the same step it revokes the callback consents and
+purges the callback spool of each owned plugin the swap dropped and of each one it added, by
+name: a plugin that left a bundle and comes back is asked about again, and a plugin on both
+sides of the swap keeps its consent (#1677; [`callbacks.md`](callbacks.md), INV-CB-003). The
+compensating sequencer of a failed transaction resets none.
 
 **An agent's own chat follows a committed change.** After a committed install, upgrade or
 rollback, once the transaction has released its lock, the own-chat lifecycle's hook runs

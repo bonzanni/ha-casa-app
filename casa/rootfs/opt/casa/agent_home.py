@@ -17,6 +17,8 @@ import stat
 import tempfile
 from pathlib import Path
 
+from atomic_io import fsync_directory
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,7 +64,9 @@ def provision_agent_home(
     # + os.replace never exposes a partial file; the try covers the WRITE as
     # well as the replace so no temp litter survives any failure; and the
     # destination's existing mode is preserved (an operator-tightened 0600
-    # must not widen to the umask default).
+    # must not widen to the umask default). The temp file is fsynced before
+    # the replace and the directory after it (#1689), as atomic_io does, so a
+    # power loss cannot bring the file back empty.
     claude_dir.mkdir(parents=True, exist_ok=True)
     try:
         prior_mode = stat.S_IMODE(os.stat(settings_path).st_mode)
@@ -73,6 +77,8 @@ def provision_agent_home(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(existing, indent=2, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
         os.chmod(tmp_name, prior_mode)
         os.replace(tmp_name, settings_path)
     except BaseException:
@@ -81,6 +87,7 @@ def provision_agent_home(
         except OSError:
             pass
         raise
+    fsync_directory(claude_dir)
     logger.info("agent-home provisioned: role=%s settings=%s", role, settings_path)
 
 

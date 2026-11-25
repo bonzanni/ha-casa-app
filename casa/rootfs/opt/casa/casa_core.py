@@ -1099,6 +1099,16 @@ async def notify_config_sync(
     boot sends it once the channel is up (see ``_after_telegram_ready``) or
     the next boot does. Non-fatal.
     """
+    async with _OPERATOR_NOTICE_LOCK:
+        await _notify_config_sync_locked(channel_manager, report_path)
+
+
+async def _notify_config_sync_locked(channel_manager: Any,
+                                     report_path: str) -> None:
+    """The body of :func:`notify_config_sync`, run under
+    ``_OPERATOR_NOTICE_LOCK``. The report is read HERE, after the lock is
+    acquired, so a caller that queued behind another sees ``notified`` set by
+    the first one instead of sending the heads-up again (#1688)."""
     try:
         with open(report_path, "r", encoding="utf-8") as fh:
             report = json.load(fh)

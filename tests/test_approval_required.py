@@ -91,7 +91,8 @@ async def test_uninstall_and_rollback_need_no_approval(env, monkeypatch):
     monkeypatch.setattr(specialist_install, "rollback_specialist",
                         lambda **kw: (SimpleNamespace(slug=kw["slug"], state="active"), _txn(**kw)))
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         return {"ok": True, "reloaded": [], "verify": {}}
 
     async def _nothing(*a, **k):

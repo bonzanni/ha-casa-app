@@ -107,6 +107,41 @@ def test_provision_write_replaces_atomically(tmp_path: Path,
     assert [p.name for p in settings_path.parent.iterdir()] == ["settings.json"]
 
 
+def test_provision_syncs_file_before_replace_and_directory_after(
+        tmp_path: Path, monkeypatch) -> None:
+    """#1689: the temp file's data reaches disk before the replace and the
+    rename itself is made durable by a directory fsync after it."""
+    import os
+    import stat
+    from agent_home import provision_agent_home
+
+    home_root = tmp_path / "agent-home"
+    claude_dir = home_root / "ellen" / ".claude"
+    events: list = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def _fsync(fd):
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            events.append(("fsync-dir", os.readlink(f"/proc/self/fd/{fd}")))
+        else:
+            events.append(("fsync-file",))
+        real_fsync(fd)
+
+    def _replace(src, dst):
+        events.append(("replace", os.path.basename(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", _fsync)
+    monkeypatch.setattr(os, "replace", _replace)
+    provision_agent_home(role="ellen", home_root=home_root,
+                         defaults_root=tmp_path)
+    monkeypatch.undo()
+
+    assert events == [("fsync-file",), ("replace", "settings.json"),
+                      ("fsync-dir", str(claude_dir))]
+
+
 def test_provision_preserves_existing_file_mode(tmp_path: Path) -> None:
     """Terra r1 (#355): replacing via a fresh temp file must not widen an
     operator-tightened mode (0600 settings must stay 0600)."""

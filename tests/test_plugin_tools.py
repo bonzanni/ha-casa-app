@@ -1499,9 +1499,10 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     # revocation that overstates what Casa did. Round 4 killed the unqualified
     # "Casa revoked nothing" (false — a removal DOES tear down Casa's own
     # grants and consents). Round 5 found the replacement equally wrong in two
-    # ways: `specialist_uninstall` never calls _remove_plugin_callbacks at all,
-    # and even on the direct path the revoke is best-effort and swallows its
-    # own failure. So the affirmative claim is CUT, not sharpened — neither
+    # ways: `specialist_uninstall` did not call _remove_plugin_callbacks at all
+    # then (since #1677 its sequencer does, for each owned plugin it dropped),
+    # and on either path the revoke is best-effort and swallows its own
+    # failure. So the affirmative claim is CUT, not sharpened — neither
     # recipe asserts a Casa-side revocation in either direction.
     for text in (remove, uninstall):
         assert "consents for the plugin are revoked" not in text

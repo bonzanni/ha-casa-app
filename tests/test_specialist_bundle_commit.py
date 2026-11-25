@@ -1285,6 +1285,89 @@ def test_a_pending_upgrade_records_no_dropped_names(
     assert len(pending_txn.before_entries) == 1
 
 
+# ---------------------------------------------------------------------------
+# #1677: the mirror recording. The sequencer resets the callback consents and
+# spool of every owned plugin the swap dropped AND of every one it added, so a
+# name entering the owned set starts with none. The tool-level tests use
+# doubles for the transaction; these pin `added_owned_names` against the REAL
+# install/upgrade/rollback/uninstall. A name on both sides of the swap is in
+# neither list — that is what lets an upgrade keep a plugin's consent.
+# ---------------------------------------------------------------------------
+
+def _real_rollback(ctx, tmp_path: Path):
+    return specialist_install.rollback_specialist(
+        slug="mtg", bundle=True, acks=ctx.acks,
+        specialists_dir=tmp_path / "specialists",
+        agents_specialists_dir=tmp_path / "agents",
+        registry_path=ctx.kw["registry_path"],
+        plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
+
+
+def test_a_real_install_records_every_owned_name_as_added(
+        tmp_path: Path, monkeypatch) -> None:
+    ctx = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"])
+    instance, txn = specialist_install.commit_specialist_install(**ctx.kw)
+
+    assert instance.state == "active"
+    assert txn.owned_swap_committed is True
+    assert sorted(txn.added_owned_names) == ["mtg.extra", "mtg.mtg"]
+    assert txn.removed_owned_names == ()
+
+
+def test_a_real_upgrade_and_rollback_record_the_owned_plugin_each_added(
+        tmp_path: Path, monkeypatch) -> None:
+    """v1 owns one plugin and v2 two: the upgrade adds `extra` and not the
+    plugin it kept; the rollback to v1 drops `extra` and adds nothing; the
+    rollback after it returns to v2 and adds `extra` again."""
+    ctx = _prep_multi(tmp_path, monkeypatch, ["mtg"])
+    _setup_install(ctx)
+
+    up = _prep_multi(tmp_path, monkeypatch, ["mtg", "extra"], root="v2", ref="v2",
+                     sha="b" * 40, base_ctx=ctx)
+    _, upgraded = specialist_install.upgrade_specialist(**up.kw)
+    specialist_bundle_journal.complete(upgraded.journal_path)
+    assert upgraded.added_owned_names == ("mtg.extra",)
+    assert upgraded.removed_owned_names == ()
+
+    _, back = _real_rollback(ctx, tmp_path)
+    specialist_bundle_journal.complete(back.journal_path)
+    assert back.added_owned_names == ()
+    assert back.removed_owned_names == ("mtg.extra",)
+
+    _, forth = _real_rollback(ctx, tmp_path)
+    assert sorted(e["name"] for e in _owned(ctx.kw["registry_path"], "mtg")) == [
+        "mtg.extra", "mtg.mtg"]
+    assert forth.added_owned_names == ("mtg.extra",)
+    assert forth.removed_owned_names == ()
+
+
+def test_a_real_uninstall_and_a_pending_upgrade_add_nothing(
+        tmp_path: Path, monkeypatch) -> None:
+    import specialist_lifecycle
+    ctx = _prep(tmp_path, monkeypatch)
+    _setup_install(ctx)
+    kw2 = _prep_v2(tmp_path, monkeypatch, ctx)
+    _, kept = _setup_upgrade(kw2)
+    assert kept.added_owned_names == ()          # the same name, re-published
+
+    kw3 = _prep_v2(tmp_path, monkeypatch, ctx, ref="v3", marker="v3")
+    with monkeypatch.context() as m:
+        m.setattr(specialist_lifecycle, "satisfy_config",
+                  lambda **kw: (False, ["API_KEY"]))
+        _, pending_txn = specialist_install.upgrade_specialist(**kw3)
+    specialist_bundle_journal.complete(pending_txn.journal_path)
+    assert pending_txn.owned_swap_committed is False
+    assert pending_txn.added_owned_names == ()
+
+    txn = specialist_install.uninstall_specialist(
+        slug="mtg", bundle=True, acks=ctx.acks,
+        specialists_dir=tmp_path / "specialists",
+        agents_specialists_dir=tmp_path / "agents",
+        registry_path=ctx.kw["registry_path"], ops_dir=tmp_path / "ops")
+    assert txn.owned_swap_committed is True
+    assert txn.added_owned_names == ()
+
+
 # ===========================================================================
 # #966 — an upgrade refusal must not rewrite the tuple files it never touched
 # ===========================================================================

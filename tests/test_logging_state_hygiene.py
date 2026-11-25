@@ -87,13 +87,14 @@ class TestGuardArms:
             left = residue(before)
         finally:
             restore(before)
-        assert len(left) == 6, left  # handler, factory, root, httpx, otel, markdown_it
+        assert len(left) == 7, left  # handler, factory, root, 4 pinned loggers
         assert any("_casa_owned handler" in r for r in left)
         assert any("LogRecord factory" in r for r in left)
         assert any("root logger level" in r for r in left)
         assert any("'httpx'" in r for r in left)
         assert any("'opentelemetry'" in r for r in left)
         assert any("'markdown_it'" in r for r in left)
+        assert any("'telegram'" in r for r in left)
 
     def test_restore_clears_every_effect(self):
         before = snapshot()

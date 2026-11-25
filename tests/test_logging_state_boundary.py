@@ -50,7 +50,7 @@ TESTS_DIR = Path(__file__).resolve().parent
 BASELINE_ROOT = logging.ERROR
 BASELINE_PINNED = {
     "httpx": logging.DEBUG, "opentelemetry": logging.CRITICAL,
-    "markdown_it": logging.ERROR,
+    "markdown_it": logging.ERROR, "telegram": logging.ERROR,
 }
 
 
