@@ -46,6 +46,8 @@ def test_html_escapes_the_template_and_keeps_the_values():
     t = Text("en")
     out = t.html("run.by", requester='<strong>S</strong>', mode="&lt;t&gt;")
     assert out == 'Requested by <strong>S</strong> · &lt;t&gt;'
+    # run.by has nothing to escape; a shipped template with a quote shows the escaping itself
+    assert t.html("sites.forgotten") == "The site&#x27;s sign-in was forgotten."
 
 
 def test_option_translations_agree_with_the_schema():

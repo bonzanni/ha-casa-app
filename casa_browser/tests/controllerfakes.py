@@ -959,7 +959,9 @@ class FakeScreen:
             raise self.inject_error
         if self.inject_gate is not None:
             await self.inject_gate.wait()
-        self.log.append(("injected", op["t"], op.get("s")))
+        # a key is logged as the X key name ChromeScreen hands xdotool (liveview.KEYS)
+        from casa_browser.liveview import KEYS
+        self.log.append(("injected", op["t"], KEYS.get(op["k"]) if op["t"] == "key" else op.get("s")))
 
     async def selection(self):
         return self.selections.pop(0) if self.selections else ""
