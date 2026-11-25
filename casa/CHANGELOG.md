@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.386.1] - 2026-11-25
+
+### Changed
+
+- Casa now removes old plugin and specialist files by itself. Each plugin update and each specialist upgrade used to leave the previous copy on disk for good, and so did removing a plugin or a specialist. Casa now notes when a stored copy is no longer named by the plugin list, by any installed specialist (its previous version included, so a rollback still works) or by a recorded job, and deletes it at a start once that has been the case for 30 days. Nothing needs to be run.
+- The 30 days exist because the plugin list can be restored from Casa's configuration history, which does not hold the plugin files. A plugin list restored to an entry whose copy was already deleted reports that plugin as not found. For a plugin you added yourself, updating it fetches it again, and so does removing it and adding it again; a plugin that came with a specialist cannot be updated or removed on its own.
+- Space is freed only when Casa starts. Casa stops starting new removals 30 seconds into that step, so a large backlog is cleared over a few starts. If Casa was stopped for more than two hours, the 30 days are counted again from that start.
+
 ## [0.386.0] - 2026-11-25
 
 ### Changed

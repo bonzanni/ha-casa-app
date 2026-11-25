@@ -191,3 +191,16 @@
     INV-SPEC-008: [tests/test_specialist_tool_ceiling.py::test_forbidden_grant_rejected_before_consent, tests/test_specialist_tool_ceiling.py::test_allowlisted_grants_load, tests/test_specialist_install_consent.py::test_render_message_discloses_role_casa_tool_grants, tests/test_agent_loader.py::TestLoadAllSpecialists::test_clamps_forbidden_casa_grants_from_pre_ceiling_installs]
     INV-SPEC-010: [tests/test_specialist_install_consent.py::test_a_continuation_that_could_not_start_keeps_the_approval, tests/test_specialist_install_consent.py::test_a_launcher_that_raises_keeps_the_approval_and_says_so, tests/test_specialist_install_consent.py::test_approve_approves_the_record_and_carries_the_configurator_on]
     INV-SPEC-017: [tests/test_specialist_bundled_inspect.py::test_consent_requires_exactly_what_the_withhold_gate_holds_on, tests/test_specialist_bundled_inspect.py::test_a_plugin_with_only_exempt_references_requires_nothing, tests/test_specialist_bundled_inspect.py::test_sibling_env_name_collision_sees_exempt_references, tests/test_tools_specialist_install.py::test_inspect_ok_payload_surfaces_receipt_and_plugins]
+- doc: architecture/store-cleanup.md
+  summary: How Casa removes old plugin artifacts and specialist components — textual naming by the reference files, the observation ledger and its 30-day wait, and the start pass that removes.
+  when_changing: the store cleanup — what names a store entry, the observation ledger or its wait, the hourly store_cleanup_observe job, or the start pass that removes entries
+  covers:
+    - casa/rootfs/opt/casa/store_gc.py
+  tests:
+    - tests/test_store_gc.py
+    - tests/test_plugin_boot.py
+    - tests/test_scheduled_sweeper_jobs.py
+  related: [architecture/plugins.md, architecture/specialist-lifecycle.md, architecture/specialist-bundle-recovery.md, architecture/engagements.md]
+  defines_invariants: [INV-PLUG-062]
+  invariant_tests:
+    INV-PLUG-062: [tests/test_store_gc.py::test_an_unnamed_entry_goes_after_the_wait_and_not_before, tests/test_store_gc.py::test_an_entry_named_by_any_reference_file_is_never_removed, tests/test_store_gc.py::test_an_entry_named_just_before_the_start_is_kept_whatever_its_ledger_says, tests/test_store_gc.py::test_being_named_again_between_two_starts_restarts_the_wait, tests/test_store_gc.py::test_a_gap_in_observation_restarts_every_wait, tests/test_store_gc.py::test_a_missing_or_broken_ledger_only_delays, tests/test_store_gc.py::test_the_sweep_is_skipped_when_boot_says_so, tests/test_store_gc.py::test_an_unreadable_reference_source_deletes_nothing, tests/test_store_gc.py::test_observe_never_deletes_and_never_raises, tests/test_plugin_boot.py::test_boot_runs_the_store_cleanup_last, tests/test_plugin_boot.py::test_boot_tells_the_cleanup_the_registry_is_not_valid, tests/test_plugin_boot.py::test_boot_tells_the_cleanup_reconciliation_is_not_finished]

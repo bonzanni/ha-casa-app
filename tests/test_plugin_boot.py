@@ -10,6 +10,7 @@ import plugin_health
 import plugin_registry
 import plugin_store
 import specialist_bundle_journal
+import store_gc
 from plugin_registry import PluginIssue, RegistryData, ResolutionResult
 
 pytestmark = pytest.mark.unit
@@ -44,6 +45,16 @@ def _wire(monkeypatch, tmp_path, *, valid=True, import_issues=None,
         # any test noticing.
         reports.setdefault("prune", []).append(prune)
     monkeypatch.setattr(plugin_health, "write_report", _write)
+    monkeypatch.setattr(specialist_bundle_journal, "reconcile_boot",
+                        lambda *a, **k: [])
+
+    def _sweep(**kw):
+        # After the health report: the cleanup is the last thing boot does.
+        reports.setdefault("sweeps", []).append(
+            {"registry_valid": kw["registry_valid"],
+             "reconcile_ok": kw["reconcile_ok"],
+             "after_report": "issues" in reports})
+    monkeypatch.setattr(store_gc, "run_boot_sweep", _sweep)
     return reports
 
 
@@ -216,3 +227,44 @@ def test_boot_partial_health_write_preserves_standing_mark_and_exposes_new_issue
     recurred = real_write_report(issues=[x], warnings=[], path=path,
                                  registry_path=registry_path)
     assert len(plugin_health.new_fingerprints(recurred)) == 1
+
+
+# -- #1679: the store cleanup at the end of boot ------------------------------
+
+
+def test_boot_runs_the_store_cleanup_last(monkeypatch, tmp_path):
+    reports = _wire(monkeypatch, tmp_path)
+    assert plugin_boot.main() == 0
+    assert reports["sweeps"] == [
+        {"registry_valid": True, "reconcile_ok": True, "after_report": True}]
+
+
+def test_boot_tells_the_cleanup_the_registry_is_not_valid(monkeypatch, tmp_path):
+    reports = _wire(monkeypatch, tmp_path, valid=False)
+    assert plugin_boot.main() == 0
+    assert [s["registry_valid"] for s in reports["sweeps"]] == [False]
+
+
+@pytest.mark.parametrize("outcome", ["raises", "deferred"])
+def test_boot_tells_the_cleanup_reconciliation_is_not_finished(
+        monkeypatch, tmp_path, outcome):
+    reports = _wire(monkeypatch, tmp_path)
+
+    def _reconcile(*a, **k):
+        if outcome == "raises":
+            raise RuntimeError("boom")
+        return [{"slug": "mtg", "action": "rolled_back"},
+                {"slug": None, "action": "deferred_age_sweeps",
+                 "reason": "journal_reconciliation_incomplete"}]
+    monkeypatch.setattr(specialist_bundle_journal, "reconcile_boot", _reconcile)
+    assert plugin_boot.main() == 0
+    assert [s["reconcile_ok"] for s in reports["sweeps"]] == [False]
+
+
+def test_a_reconciliation_that_acted_and_finished_lets_the_cleanup_run(
+        monkeypatch, tmp_path):
+    reports = _wire(monkeypatch, tmp_path)
+    monkeypatch.setattr(specialist_bundle_journal, "reconcile_boot",
+                        lambda *a, **k: [{"slug": "mtg", "action": "rolled_back"}])
+    assert plugin_boot.main() == 0
+    assert [s["reconcile_ok"] for s in reports["sweeps"]] == [True]

@@ -90,9 +90,15 @@ def main() -> int:
         # never block svc-casa (reconcile_boot already quarantines internally
         # and stashes its own module-level `last_boot_reconcile_actions`;
         # this try/except is belt-and-suspenders for a truly unexpected bug).
+        reconcile_ok = False
         try:
             import specialist_bundle_journal
-            specialist_bundle_journal.reconcile_boot()
+            actions = specialist_bundle_journal.reconcile_boot()
+            # `deferred_age_sweeps` is reconciliation's own word that a journal
+            # still stands (or that it could not tell): the store cleanup below
+            # waits for the same thing.
+            reconcile_ok = not any(
+                a.get("action") == "deferred_age_sweeps" for a in actions)
         except Exception:  # noqa: BLE001 — spec 3.6: never block svc-casa
             log.exception("bundle journal reconciliation failed")
 
@@ -111,6 +117,13 @@ def main() -> int:
         # standing problem on every boot.
         plugin_health.write_report(issues=issues, warnings=warnings,
                                    prune=False)
+
+        # #1679: remove store entries nothing has named for the waiting period.
+        # Last, and here: nothing publishes into a store or reads from one
+        # until svc-casa starts. It never raises.
+        import store_gc
+        store_gc.run_boot_sweep(registry_valid=data.valid,
+                                reconcile_ok=reconcile_ok, log=log)
     except Exception as exc:  # noqa: BLE001 — spec 3.6: never block svc-casa
         log.exception("plugin store boot degraded: %s", exc)
         try:

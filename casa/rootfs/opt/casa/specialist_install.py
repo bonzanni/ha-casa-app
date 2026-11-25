@@ -4350,9 +4350,9 @@ def _rollback_core(
     owned_doc: "dict | None" = None,
 ) -> "SpecialistInstance":
     """Restore the RETAINED active.prior.yaml as the new active tuple (spec
-    §2.4's rollback target — the prior binding's blobs stay pinned exactly
-    because a retained tuple still references them, see Task N1d's
-    cas_pin_roots). Rollback IS an upgrade to the prior tuple — reuse
+    §2.4's rollback target — the prior binding's blobs stay in the store
+    because a retained tuple file still names them, which is what the store
+    cleanup in `store_gc` reads). Rollback IS an upgrade to the prior tuple — reuse
     InstanceDir's own stage/commit, never a bespoke restore path.
 
     #815 (INV-SPEC-012): the retained prior's binding is compiled as stored
@@ -4725,11 +4725,10 @@ def _uninstall_core(
     agents_specialists_dir: Path = Path("/config/agents/specialists"),
 ) -> None:
     """Removes the instance and its legacy operational directory. Does NOT
-    delete CAS blobs (Task N1d's GC-root policy: a blob stays pinned while
-    ANY tuple of ANY installed specialist references it — deletion here
-    would need a full cross-specialist reference scan, which is exactly what
-    Task N1d's `cas_pin_roots` builds; the GC SWEEP itself stays deferred
-    per this plan's Global Constraints).
+    delete CAS blobs: a blob stays while any file of any installed specialist
+    names it, and deciding that takes a scan across all of them. `store_gc`
+    does that scan and removes the blobs nothing has named for its waiting
+    period (#1679).
 
     `agents_specialists_dir / slug` is a SYMLINK to a versioned content
     directory (materialize_specialist_operational_files) once the specialist
@@ -4778,55 +4777,3 @@ def _uninstall_core(
         else:
             shutil.rmtree(op_dir, ignore_errors=True)  # legacy real-dir layout, never migrated
         shutil.rmtree(specialists_dir / slug, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# CAS pin-reference roots (Task N1d, spec §4.4)
-# ---------------------------------------------------------------------------
-
-
-def cas_pin_roots(specialists_dir: Path = Path("/config/specialists")) -> frozenset[str]:
-    """Spec §4.4's CAS retention roots — every root_digest referenced by ANY
-    installed specialist's active, desired, OR retained-prior tuple. This is
-    the pin/reference AUTHORITY; a GC sweep that deletes anything NOT in
-    this set is deferred (Global Constraints) but the roots this function
-    returns are exactly what such a sweep would need.
-
-    Round-2 fix (finding #8, and a bug the finding #4 override fix exposed):
-    parses `tup.root` (the InstanceTuple-level field), NOT
-    `tup.binding.component_root` — for an OVERRIDE-mode specialist binding,
-    `BindingRecord.component_root` is always `None` (only component-default
-    mode populates it; override mode populates `override_source` instead),
-    but `InstanceTuple.root` still holds the real component CAS root in
-    EVERY mode (finding #4's `apply_persona_override` fix never touches
-    `root` for a specialist target) — the original `tup.binding.
-    component_root is None: continue` guard would silently un-pin an
-    override-applied specialist's component root on every scan, an
-    immediate GC-root regression for the exact case this task exists to
-    close.
-
-    This function only ever pins SPECIALIST COMPONENT blobs (CAS-addressed
-    under `specialists_dir/store/`) — there is nothing image-bundled to pin
-    here, since a specialist has no "image-default" binding mode (only
-    residents do; see `personality_binding.py`'s mode enum)."""
-    from personality_binding import load_instance_tuple
-
-    pinned: set[str] = set()
-    if not specialists_dir.is_dir():
-        return frozenset(pinned)
-    for entry in sorted(specialists_dir.iterdir()):
-        if not entry.is_dir() or entry.name in {"store", ".staging", ".roles-overlay"}:
-            continue
-        for filename in ("active.yaml", "desired.yaml", "active.prior.yaml"):
-            path = entry / filename
-            if not path.is_file():
-                continue
-            tup = load_instance_tuple(path)
-            if tup is None:
-                continue
-            try:
-                _, _, checksum = parse_component_root(tup.root)
-            except ValueError:
-                continue
-            pinned.add(checksum)
-    return frozenset(pinned)

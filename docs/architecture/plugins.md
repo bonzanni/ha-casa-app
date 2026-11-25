@@ -14,7 +14,9 @@ not cover authoring a plugin, nor the MCP protocol itself. What a protected call
 it runs — the single-use grant, the challenge that mints it, who may answer it — is
 [`plugin-authorization.md`](plugin-authorization.md).
 How a plugin's problems reach the operator — the health report, the notices and their
-dedup — is [`plugin-health.md`](plugin-health.md).
+dedup — is [`plugin-health.md`](plugin-health.md). How an artifact nothing names any more
+leaves the store — the cleanup `plugin_boot.main` runs as its last step — is
+[`store-cleanup.md`](store-cleanup.md).
 
 ## Mental model
 
@@ -262,4 +264,5 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - [`architecture/plugin-health.md`](../architecture/plugin-health.md)
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
 - [`architecture/plugin-authorization.md`](../architecture/plugin-authorization.md)
+- [`architecture/store-cleanup.md`](../architecture/store-cleanup.md)
 <!-- END SOURCEMAP -->

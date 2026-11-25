@@ -2455,30 +2455,3 @@ def import_bundle(bundle_root: Path, store_root: Path = STORE_ROOT) -> list:
                     name=name_dir.name, target=None, stage="import",
                     reason_code=code, artifact_id=art_dir.name))
     return issues
-
-
-def gc_sweep(*, store_root: Path = STORE_ROOT, referenced: set[str],
-             min_age_days: int = 7, enabled: bool = False) -> list[str]:
-    """§3.12 conservative GC. SHIPS DISABLED: no production caller passes
-    enabled=True this release; with enabled=False only reports candidates."""
-    import time
-    cutoff = time.time() - min_age_days * 86400
-    candidates: list[str] = []
-    root = Path(store_root)
-    if not root.is_dir():
-        return candidates
-    for name_dir in root.iterdir():
-        if not name_dir.is_dir():
-            continue
-        for art_dir in name_dir.iterdir():
-            if not art_dir.is_dir() or art_dir.name in referenced:
-                continue
-            try:
-                if art_dir.stat().st_mtime > cutoff:
-                    continue
-            except OSError:
-                continue
-            candidates.append(art_dir.name)
-            if enabled:
-                shutil.rmtree(art_dir, ignore_errors=True)
-    return sorted(candidates)
