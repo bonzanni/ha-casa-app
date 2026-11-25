@@ -1119,30 +1119,51 @@ async def test_revoke_locks_are_the_real_shared_module_objects(
 
 
 async def test_revoke_takes_reconcile_lock_before_dispatch_lock(
-        fake_event_episodes, monkeypatch):
-    """Important-3 (review round 1): revoke_and_unroute must serialize
-    against an in-flight reconcile COMPUTE too (not just the dispatch
-    lock) — proven by holding ``_RECONCILE_LOCK`` externally and observing
-    the revoke call blocks until it releases."""
-    held = asyncio.Event()
-    release = asyncio.Event()
+        tmp_path, fake_event_episodes):
+    """Important-3 (review round 1), #1703: revoke_and_unroute must take
+    ``_RECONCILE_LOCK`` BEFORE ``DISPATCH_LOCK`` and before touching any
+    routing or ack state. The test holds ``_RECONCILE_LOCK`` itself and lets
+    the loop run: a revoke that skips the reconcile lock unroutes and drops
+    the ack at once, and one that takes the locks in the opposite order is
+    seen holding ``DISPATCH_LOCK`` — both fail the outcome assertions below.
+    No wall-clock wait: only loop turns."""
+    import copy
 
-    async def _hold_reconcile_lock() -> None:
-        async with er._RECONCILE_LOCK:
-            held.set()
-            await release.wait()
+    import event_episodes
 
-    holder = asyncio.create_task(_hold_reconcile_lock())
-    await held.wait()
+    emitter = _rp("gmail", emits=["mail_in"])
+    subscriber = _rp("finance", subscribes=[("gmail", "mail_in")])
+    acks = EventAckStore(path=tmp_path / "acks.json")
+    _ack(acks, "finance", "art-1", "gmail", "mail_in")
+    identity = _identity("finance", "art-1", "gmail", "mail_in")
+    runtime = SimpleNamespace(
+        role_configs=_role_configs(assistant=["telegram"]),
+        channel_manager=None)
+    await er.reconcile_plugin_events(
+        runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+        entries=_entries(emitter, subscriber), prompt=False)
+    routed_before = copy.deepcopy(er.get_routed())
+    assert "finance" in routed_before[("gmail", "mail_in")]
+    assert acks.get(identity) is not None
 
-    revoke_task = asyncio.create_task(er.revoke_and_unroute("finance"))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert not revoke_task.done()
+    await er._RECONCILE_LOCK.acquire()
+    try:
+        revoke_task = asyncio.create_task(
+            er.revoke_and_unroute("finance", acks=acks))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not revoke_task.done()
+        assert not event_episodes.DISPATCH_LOCK.locked()
+        assert er.get_routed() == routed_before
+        assert acks.get(identity) is not None
+    finally:
+        er._RECONCILE_LOCK.release()
 
-    release.set()
-    await holder
-    await revoke_task
+    removed = await revoke_task
+    assert [r["subscriber"] for r in removed] == ["finance"]
+    assert "finance" not in er.get_routed().get(("gmail", "mail_in"), {})
+    assert acks.get(identity) is None
+    assert not event_episodes.DISPATCH_LOCK.locked()
 
 
 # ---------------------------------------------------------------------------
