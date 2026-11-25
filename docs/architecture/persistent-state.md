@@ -255,7 +255,7 @@ and absent — an entry written before the upgrade that added it has none, and a
 as *unknown*, never as "not scheduled".
 
 A session entry may also carry two advisory resume-fault fields — the fault-streak state
-of the turn loop's INV-TURN-008 (`architecture/turn-loop.md`), persisted with the entry
+of the turn loop's INV-TURN-008 (`architecture/turn-faults.md`), persisted with the entry
 and restored on write failure so disk and memory never disagree about the streak. Absent
 or malformed fields read as no streak, and fields naming a sid the entry no longer holds
 are inert.

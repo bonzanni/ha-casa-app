@@ -49,7 +49,7 @@
     - tests/test_turn_stop.py
     - tests/test_sdk_pool_stop.py
     - tests/test_agent_partial_streaming.py
-  related: [architecture/telegram.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/output-boundary.md, architecture/output-scope-properties.md, architecture/guest-summons.md]
+  related: [architecture/telegram.md, architecture/turn-loop.md, architecture/turn-faults.md, architecture/sdk-client-pool.md, architecture/output-boundary.md, architecture/output-scope-properties.md, architecture/guest-summons.md]
   defines_invariants: [INV-TG-023, INV-TG-024, INV-TURN-016]
   invariant_tests:
     INV-TG-023: [tests/test_turn_stop.py::test_stream_is_ended_before_the_reply_is_delivered, tests/test_turn_stop.py::test_stream_is_ended_when_process_returns, tests/test_turn_stop.py::test_stream_is_ended_when_process_raises, tests/test_turn_stop.py::test_stream_is_ended_when_the_turn_is_cancelled, tests/test_turn_stop.py::test_reply_goes_out_through_send_response_after_streaming, tests/test_turn_stop.py::test_a_failing_end_only_logs]

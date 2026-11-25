@@ -90,7 +90,7 @@ The runtime enforces the same rule against text you never wrote. When the model 
 is declined or fails, the CLI hands back its own prose — a request id, advice about picking
 a different model — as though it were an assistant message. None of that is yours to relay,
 so none of it reaches a channel: the turn ends as a classified error with a line written for
-a household instead (`architecture/turn-loop.md`, INV-TURN-007).
+a household instead (`architecture/turn-faults.md`, INV-TURN-007).
 
 **Prefer tappable choices to prose questions.** Where the system offers a structured way to
 ask among options, use it. A question that requires a person to type an answer that could have

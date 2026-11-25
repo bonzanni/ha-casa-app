@@ -249,6 +249,7 @@ critical section and belongs to the owning subsystem's contract.
 
 **Related**
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 - [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
 - [`architecture/configuration.md`](../architecture/configuration.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)

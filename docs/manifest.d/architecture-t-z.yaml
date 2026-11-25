@@ -139,6 +139,24 @@
     INV-TRIG-013: [tests/test_webhook_trigger_prompt_refused.py::test_the_upsert_writer_refuses_and_writes_nothing, tests/test_webhook_trigger_prompt_refused.py::test_the_writer_stays_strict_when_the_reader_is_tolerant]
     INV-TRIG-012: [tests/test_scheduled_media_delivery.py::TestDispatchSitesStamp::test_scheduler_dispatch_stamps_the_marker, tests/test_scheduled_media_delivery.py::TestDispatchSitesStamp::test_reminder_sweep_stamps_the_marker, tests/test_scheduled_media_delivery.py::TestSendMediaFromScheduledTurn::test_delivers_to_the_operator_dm, tests/test_scheduled_media_delivery.py::TestSendMediaFromScheduledTurn::test_unmarked_scheduled_turn_still_refused, tests/test_scheduled_media_delivery.py::test_marker_is_reserved_and_stripped_from_external_context, tests/test_scheduled_delivery_durable.py::TestOriginReconstruction::test_marked_job_restores_the_marker, tests/test_job_registry.py::test_recovered_orphan_carries_scheduled_delivery_across_restart]
 
+- doc: architecture/turn-faults.md
+  summary: How a turn's model call is retried and how its faults are classified — cancellation, an API fault the CLI reports as an assistant message, a fault after a tool call, and a silent turn that ends as a classified error.
+  when_changing: retry behaviour, cancelling a turn, or how a turn's faults are classified
+  covers:
+    - casa/rootfs/opt/casa/agent.py::Agent._process
+    - casa/rootfs/opt/casa/agent.py::Agent._make_on_message
+    - casa/rootfs/opt/casa/retry.py::retry_sdk_call
+    - casa/rootfs/opt/casa/retry.py::compute_backoff_ms
+  tests:
+    - tests/test_retry.py
+    - tests/test_agent_api_error_message.py
+  related: [architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/turn-limits.md, architecture/memory-serving.md]
+  defines_invariants: [INV-TURN-005, INV-TURN-007, INV-TURN-008, INV-TURN-017]
+  invariant_tests:
+    INV-TURN-005: [tests/test_retry.py::test_cancelled_error_propagates_immediately, tests/test_retry.py::test_may_retry_false_raises_the_fault_at_once, tests/test_retry.py]
+    INV-TURN-007: [tests/test_agent_api_error_message.py::test_refusal_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_api_error_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_refusal_is_not_retried, tests/test_agent_api_error_message.py::test_result_stop_reason_refusal_is_the_second_carrier, tests/test_agent_api_error_message.py::test_subagent_api_error_suppresses_text_without_failing_the_turn, tests/test_agent_api_error_message.py::test_a_refused_turn_does_not_leave_its_session_resumable, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_refusal_raises_with_the_refusal_kind, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_fault_after_output_truncation_still_raises, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_sub_agent_scoped_fault_does_not_end_the_turn]
+    INV-TURN-008: [tests/test_agent_process.py::TestIssue650RedCases::test_trusted_retry_then_silent_final_emits_exactly_one_delivery, tests/test_agent_process.py::TestIssue650RedCases::test_two_trusted_sdk_retry_exhaustions_start_fresh, tests/test_agent_process.py::TestIssue650RedCases::test_untrusted_sdk_retry_exhaustions_keep_resuming, tests/test_agent_process.py::TestIssue650RedCases::test_trusted_silence_without_retries_stays_silent, tests/test_resume_fault_streak.py::TestAgentStrikeShapes::test_mixed_retry_kinds_still_strike_and_escape, tests/test_resume_fault_streak.py::TestGateOrderedNotes::test_concurrent_asks_cannot_overshoot_the_limit]
+    INV-TURN-017: [tests/test_turn_fault_after_tool.py::test_a_fault_after_a_tool_call_is_not_rerun_and_keeps_its_session, tests/test_turn_fault_after_tool.py::test_a_cli_exit_after_a_tool_call_is_not_rerun_fresh]
 - doc: architecture/turn-limits.md
   summary: What bounds a resident turn — the stop at its turn limit, the one line Casa adds about it and where that line goes, and the limits the residents run with.
   when_changing: a resident's turn limit, how a turn-limit stop is detected or returned, or what Casa says about a limit stop and where
@@ -149,7 +167,7 @@
   tests:
     - tests/test_pin_1121_turn_limit.py
     - tests/test_turn_limit_regressions.py
-  related: [architecture/turn-loop.md, architecture/voice.md, architecture/delegation-announcements.md, architecture/scheduled-prompt-endings.md, architecture/plugin-triggers.md, architecture/webhook-delivery.md]
+  related: [architecture/turn-loop.md, architecture/turn-faults.md, architecture/voice.md, architecture/delegation-announcements.md, architecture/scheduled-prompt-endings.md, architecture/plugin-triggers.md, architecture/webhook-delivery.md]
   defines_invariants: [INV-TURN-014]
   invariant_tests:
     INV-TURN-014: [tests/test_webhook_deliver_operator.py::test_always_a_silent_limit_stop_sends_only_the_limit_line, tests/test_pin_1121_turn_limit.py::test_rc1_dm_progress_stays_and_one_line_follows, tests/test_pin_1121_turn_limit.py::test_rc2_dm_no_text_gets_the_line_alone, tests/test_pin_1121_turn_limit.py::test_rc3_retry_then_limit_is_not_an_error_and_not_a_strike, tests/test_pin_1121_turn_limit.py::test_rc4_scheduled_no_text_names_the_task_and_offers_a_redo, tests/test_pin_1121_turn_limit.py::test_rc5_scheduled_text_is_delivered_then_one_line, tests/test_pin_1121_turn_limit.py::test_rc6_rule1_suppression_holds_and_the_line_still_goes, tests/test_pin_1121_turn_limit.py::test_rc7_narration_with_only_casas_line_stays_owed, tests/test_pin_1121_turn_limit.py::test_rc8_voice_origin_narration_line_reaches_the_operator_chat, tests/test_pin_1121_turn_limit.py::test_rc9_streaming_plugin_setup_turn_gets_exactly_one_line, tests/test_pin_1121_turn_limit.py::test_rc10_trusted_invoke_body_is_text_then_the_line, tests/test_pin_1121_turn_limit.py::test_rc11_untrusted_webhook_sends_nothing_and_runs_at_20, tests/test_pin_1121_turn_limit.py::test_rc12_scheduled_trigger_on_webhook_channel_tells_the_operator, tests/test_pin_1121_turn_limit.py::test_rc17_scheduled_voice_trigger_tells_the_operator, tests/test_pin_1121_turn_limit.py::test_rc18_line_and_warning_survive_a_raising_delivery, tests/test_pin_1121_turn_limit.py::test_rc13_voice_speaks_the_held_tail_then_the_line, tests/test_pin_1121_turn_limit.py::test_rc14_voice_zero_speech_after_retry_keeps_the_s1_line, tests/test_pin_1121_turn_limit.py::test_rc16_voice_progress_only_then_limit_speaks_the_line, tests/test_turn_limit_regressions.py::test_other_error_results_get_no_limit_line, tests/test_turn_limit_regressions.py::test_a_successful_silent_turn_gets_no_limit_line, tests/test_turn_limit_regressions.py::test_a_limit_stop_is_published_reset_and_never_retried, tests/test_guest_run.py::test_a_limit_stop_on_a_guest_turn_posts_no_line]
@@ -161,33 +179,25 @@
   tests:
     - tests/test_own_voice_conversation.py
     - tests/test_guest_summons.py
-  related: [architecture/turn-loop.md, architecture/memory-serving.md, architecture/own-voice.md, architecture/guest-summons.md, architecture/inbound-files.md, architecture/delegation-announcements.md]
+  related: [architecture/turn-loop.md, architecture/turn-faults.md, architecture/memory-serving.md, architecture/own-voice.md, architecture/guest-summons.md, architecture/inbound-files.md, architecture/delegation-announcements.md]
 
 - doc: architecture/turn-loop.md
-  summary: How one inbound message becomes one agent turn — what it assembles and how its model call is retried.
-  when_changing: the turn lifecycle, retry behaviour, or how a turn's output and faults are classified
+  summary: How one inbound message becomes one agent turn — what it assembles before its model call, its token stream and resume, and what the CLI is handed.
+  when_changing: the turn lifecycle, what a turn assembles before the model call, its token stream, or resuming a conversation
   covers:
     - casa/rootfs/opt/casa/agent.py::Agent._process
     - casa/rootfs/opt/casa/agent.py::Agent._make_on_message
     - casa/rootfs/opt/casa/agent.py::Agent._build_options
-    - casa/rootfs/opt/casa/retry.py::retry_sdk_call
-    - casa/rootfs/opt/casa/retry.py::compute_backoff_ms
   tests:
     - tests/test_agent_process.py::test_session_id_is_channel_plus_role
-    - tests/test_retry.py
-    - tests/test_agent_api_error_message.py
-  related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/sdk-client-pool.md, architecture/turn-limits.md]
-  defines_invariants: [INV-TURN-004, INV-TURN-005, INV-TURN-007, INV-TURN-008, INV-TURN-009, INV-TURN-012, INV-TURN-013, INV-TURN-015, INV-TURN-017]
+  related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/sdk-client-pool.md, architecture/turn-faults.md, architecture/turn-limits.md]
+  defines_invariants: [INV-TURN-004, INV-TURN-009, INV-TURN-012, INV-TURN-013, INV-TURN-015]
   invariant_tests:
     INV-TURN-004: [tests/test_agent_process.py::test_memory_failure_does_not_break_response]
-    INV-TURN-005: [tests/test_retry.py::test_cancelled_error_propagates_immediately, tests/test_retry.py::test_may_retry_false_raises_the_fault_at_once, tests/test_retry.py]
-    INV-TURN-007: [tests/test_agent_api_error_message.py::test_refusal_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_api_error_text_is_never_delivered_as_persona_text, tests/test_agent_api_error_message.py::test_refusal_is_not_retried, tests/test_agent_api_error_message.py::test_result_stop_reason_refusal_is_the_second_carrier, tests/test_agent_api_error_message.py::test_subagent_api_error_suppresses_text_without_failing_the_turn, tests/test_agent_api_error_message.py::test_a_refused_turn_does_not_leave_its_session_resumable, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_refusal_raises_with_the_refusal_kind, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_fault_after_output_truncation_still_raises, tests/test_in_casa_driver.py::TestInCasaApiFaultCarriesItsKind::test_sub_agent_scoped_fault_does_not_end_the_turn]
-    INV-TURN-008: [tests/test_agent_process.py::TestIssue650RedCases::test_trusted_retry_then_silent_final_emits_exactly_one_delivery, tests/test_agent_process.py::TestIssue650RedCases::test_two_trusted_sdk_retry_exhaustions_start_fresh, tests/test_agent_process.py::TestIssue650RedCases::test_untrusted_sdk_retry_exhaustions_keep_resuming, tests/test_agent_process.py::TestIssue650RedCases::test_trusted_silence_without_retries_stays_silent, tests/test_resume_fault_streak.py::TestAgentStrikeShapes::test_mixed_retry_kinds_still_strike_and_escape, tests/test_resume_fault_streak.py::TestGateOrderedNotes::test_concurrent_asks_cannot_overshoot_the_limit]
     INV-TURN-009: [tests/test_agent_partial_streaming.py::test_sentinel_only_fold_emits_nothing, tests/test_agent_partial_streaming.py::test_voice_sentinel_fragments_emit_nothing, tests/test_agent_partial_streaming.py::test_sentinel_prefix_that_diverges_releases_the_whole_cumulative, tests/test_agent_partial_streaming.py::test_g3_recant_releases_the_words_without_the_leading_sentinel, tests/test_agent_partial_streaming.py::test_a_dropped_closing_sentinel_never_takes_back_streamed_words, tests/test_agent_partial_streaming.py::test_a_closing_sentinel_split_across_deltas_is_never_spoken, tests/test_agent_partial_streaming.py::test_a_held_piece_that_is_no_sentinel_is_released_whole, tests/test_agent_partial_streaming.py::test_held_sentinel_does_not_survive_into_the_next_attempt, tests/test_agent_partial_streaming.py::test_divergent_canonical_correction_to_silence_emits_only_the_prose, tests/test_agent_partial_streaming.py::test_bare_sentinel_prefix_fold_is_released_not_held, tests/test_agent_partial_streaming.py::test_a_sentinel_fragment_with_content_behind_it_is_released, tests/test_agent_process.py::TestIssue666SentinelHold::test_sentinel_only_turn_streams_nothing_and_still_tears_down, tests/test_agent_process.py::TestIssue666SentinelHold::test_recant_turn_streams_the_words_without_the_sentinel, tests/test_pending_approval_output.py::test_pending_approval_keeps_only_pre_result_text, tests/test_pending_approval_output.py::test_approval_records_apply_at_matching_result, tests/test_pending_approval_pins.py::test_a_same_grant_consume_releases_the_words_at_its_own_result, tests/test_pending_approval_delegate.py::test_sync_delegate_pending_approval_keeps_resident_prefix, tests/test_pending_approval_delegate.py::test_a_warm_clients_second_turn_is_cut_on_its_own_scope]
     INV-TURN-012: [tests/test_memory_frozen_view.py::test_a_turn_never_runs_on_a_session_of_another_clearance, tests/test_prompt_surface_resume.py::test_changed_surface_starts_a_fresh_session_and_retains_the_old, tests/test_prompt_surface_resume.py::test_entry_written_before_this_gate_is_a_mismatch_not_consent, tests/test_prompt_surface_resume.py::test_matching_surface_still_resumes, tests/test_prompt_surface_resume.py::test_digest_moves_when_a_declared_job_appears, tests/test_prompt_surface_resume.py::test_build_options_splices_the_armed_surface_without_re_rendering, tests/test_ha_surface_resume.py::test_changed_ha_publication_changes_armed_surface, tests/test_ha_surface_resume.py::test_missing_tool_refreshes_and_retires_previous_surface, tests/test_ha_surface_resume.py::test_transport_blip_and_reordered_reconnect_retire_nothing, tests/test_ha_surface_resume.py::test_a_publication_mid_turn_does_not_reach_that_turns_options, tests/test_ha_surface_resume.py::test_a_role_with_no_published_surface_keeps_its_digest_byte_identical]
     INV-TURN-013: [tests/test_sdk_line_buffer.py::test_default_limit_fails_the_observed_read, tests/test_sdk_line_buffer.py::test_shared_limit_carries_the_largest_whole_pdf_the_cli_inlines, tests/test_sdk_line_buffer.py::test_every_production_claude_options_sets_the_shared_line_buffer, tests/test_cli_sdk_pin_assert.py::test_resident_specialist_and_executor_options_use_verified_cli]
     INV-TURN-015: [tests/test_system_prompt_file.py::test_raw_large_prompt_is_refused_by_the_kernel, tests/test_system_prompt_file.py::test_large_prompt_execs_through_a_file, tests/test_system_prompt_file.py::test_pool_default_client_gets_the_file_form, tests/test_system_prompt_file.py::test_every_sdk_exec_site_passes_the_file_form]
-    INV-TURN-017: [tests/test_turn_fault_after_tool.py::test_a_fault_after_a_tool_call_is_not_rerun_and_keeps_its_session, tests/test_turn_fault_after_tool.py::test_a_cli_exit_after_a_tool_call_is_not_rerun_fresh]
 - doc: architecture/vault-drop-off.md
   summary: How a sign-in link reaches the plugin tool that consumes it without a delegation brief — the casa.dropOffs field, the Casa-titled and tagged vault item, and the assistant's vault_drop_off tool that writes only that item and never returns or logs the value.
   when_changing: a plugin's declared drop-off, the vault_drop_off tool, the drop-off item's title, tag or write sequence, or where a sign-in link goes instead of a brief
@@ -221,7 +231,7 @@
     - tests/test_voice_channel_sse.py
     - tests/test_voice_channel_ws.py
     - tests/test_voice_context_sanitize.py
-  related: [architecture/overview.md, architecture/http-surface.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/personality.md]
+  related: [architecture/overview.md, architecture/http-surface.md, architecture/turn-loop.md, architecture/turn-faults.md, architecture/sdk-client-pool.md, architecture/personality.md]
   defines_invariants: [INV-VOICE-001, INV-VOICE-002, INV-VOICE-003, INV-VOICE-004, INV-VOICE-005, INV-VOICE-006, INV-VOICE-007]
   invariant_tests:
     INV-VOICE-001: [tests/test_voice_auth_failclosed.py::test_sse_turn_rejected_and_never_dispatched, tests/test_voice_auth_failclosed.py::test_ws_upgrade_rejected, tests/test_voice_auth_failclosed.py::test_catalog_rejected, tests/test_voice_auth_failclosed.py::test_mis_signed_turn_rejected, tests/test_voice_malformed_input.py::test_sse_non_ascii_signature_is_401, tests/test_voice_malformed_input.py::test_ws_non_ascii_signature_is_401]

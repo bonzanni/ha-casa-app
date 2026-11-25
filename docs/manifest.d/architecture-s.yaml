@@ -49,7 +49,7 @@
     - tests/test_sdk_pool_stop.py
     - tests/test_pool_close_final_sweep.py
     - tests/test_shutdown_pool_and_refusal.py
-  related: [architecture/turn-loop.md, architecture/concurrency-model.md, architecture/overview.md]
+  related: [architecture/turn-loop.md, architecture/turn-faults.md, architecture/concurrency-model.md, architecture/overview.md]
   defines_invariants: [INV-TURN-001, INV-TURN-002, INV-TURN-003, INV-TURN-006, INV-TURN-010, INV-TURN-011]
   invariant_tests:
     INV-TURN-001: [tests/test_sdk_client_pool_pool.py::test_sid_mismatch_reconnects_on_registry_sid]

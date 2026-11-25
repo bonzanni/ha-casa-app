@@ -11,7 +11,8 @@ last_reviewed: 2026-11-12
 What the query a turn sends carries ahead of the message's own text — the time envelope
 and the block of Casa's per-turn notes — what the turn's origin records as its question,
 and how a specialist's own conversation runs the turn loop with its own notes. The turn
-itself, its scope, retries and invariants are [`turn-loop.md`](turn-loop.md); the memory
+itself, its scope and invariants are [`turn-loop.md`](turn-loop.md), its retries and faults
+[`turn-faults.md`](turn-faults.md); the memory
 view the options carry is [`memory-serving.md`](memory-serving.md).
 
 ## Mental model
@@ -73,6 +74,7 @@ forge is read only under a reserved context key the channel stamps.
 
 **Related**
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 - [`architecture/memory-serving.md`](../architecture/memory-serving.md)
 - [`architecture/own-voice.md`](../architecture/own-voice.md)
 - [`architecture/guest-summons.md`](../architecture/guest-summons.md)
