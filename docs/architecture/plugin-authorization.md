@@ -123,7 +123,7 @@ inbound file and neither opened nor shared one carries the same Casa line as the
 output ([`output-boundary.md`](output-boundary.md)). A challenge whose request settles while
 its card is being written posts nothing (INV-PLUG-060).
 
-**INV-PLUG-061**: A protected call's approval card raised on a Telegram turn whose reply goes to the chat the card is posted in is held until that reply has been sent, the turn has otherwise ended or the request has settled, for at most 20 seconds from the call, and is then posted if the request is still open; a card held this way that is never shown ends in one Casa line in that chat, except when the request was cancelled because Casa is stopping.
+**INV-PLUG-061**: A protected call's approval card raised on a Telegram turn whose reply goes to the chat the card is posted in is held until that reply has been sent, the turn has otherwise ended or the request has settled, for at most 20 seconds from the call; when the hold ends Casa tries to post it as soon as it is written, if the request is still open; when a card held this way is never shown and its request was not answered, Casa tries once to send one line of its own to that chat, except when the request was cancelled because Casa is stopping.
 
 The model often writes a line and then makes the protected call in the same turn, and the
 turn's reply is one send when the turn ends, so a card posted at the call landed above the
@@ -253,11 +253,10 @@ arguments — a changed argument is a different grant.
 **The engagement that raised a challenge ends before the tap.** The challenge is withdrawn
 and its keyboard says so (INV-PLUG-033); nothing is resumed.
 
-**A card held for the turn's reply cannot be shown.** The operator gets the turn's reply, cut
-at the call, and one Casa line asking them to ask again; no grant exists and nothing waits on
-a tap (INV-PLUG-061). The line usually follows the reply; it comes before it when the request
-settled while the card was held (a chat reset, a timeout) or when the send failed at the
-deadline of a turn still running. Casa stopping sends no line. When the turn never ends, the card is posted at the deadline.
+**A card held for the turn's reply cannot be shown.** When the request was not answered and
+was not cancelled because Casa is stopping, Casa tries once to send one line asking the operator to ask again (a
+line that cannot be sent is logged and not retried); no grant exists for that request and
+nothing waits on a tap (INV-PLUG-061). The line can come before or after the turn's reply.
 
 **A delegated call is approved while its specialist is still running.** The continuation
 waits, bounded, for the specialist's delegation slot, then goes to the resident; if the slot

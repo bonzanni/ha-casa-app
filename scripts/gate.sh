@@ -90,7 +90,9 @@ case "$browser_mode" in
   *) echo "✋ gate: CASA_GATE_BROWSER must be 'auto' or 'always', not '$browser_mode'" >&2
      exit 1 ;;
 esac
-make test-casa
+# Each suite runs through keep-suite-output.sh, which keeps a failing run's output under
+# the git common directory: a failure that does not recur still leaves its traceback.
+scripts/keep-suite-output.sh casa make test-casa
 case "$browser_decision" in
   "skip: "*)
     echo "    browser suite skipped: ${browser_decision#skip: }"
@@ -111,8 +113,9 @@ case "$browser_decision" in
     while IFS= read -r root; do
       rm -rf "${browser_tree:?}/${root:?}"
     done <<< "$casa_only_roots"
-    make -C "$browser_tree" --no-print-directory test-browser PYTEST_ARGS= \
-      BROWSER_PY="$PWD/venv_browser/bin/python"
+    scripts/keep-suite-output.sh browser \
+      make -C "$browser_tree" --no-print-directory test-browser PYTEST_ARGS= \
+        BROWSER_PY="$PWD/venv_browser/bin/python"
     ;;
 esac
 

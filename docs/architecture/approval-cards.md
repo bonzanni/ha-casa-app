@@ -161,8 +161,8 @@ sent once more as the same text with none — less emphasis, the same words.
 Enforced in the post driver: after `write_card` returns, and after the wait of a card held
 for a turn's reply, the driver checks the request and, when it has settled, returns the
 broker's nothing-was-posted signal before admission, so no send record is opened for a card
-never sent. From that check to the start of the send there is no await. A held card that
-ends this way is told to the operator in one Casa line (INV-PLUG-061). An install or persona approval that a newer request replaces settles its open
+never sent. From that check to the start of the send there is no await. For a held card that
+ends this way Casa tries once to tell the operator in one line of its own, unless the request was answered or was cancelled because Casa is stopping (INV-PLUG-061). An install or persona approval that a newer request replaces settles its open
 question at once (`specialist_install_consent.supersede_card`), including one whose card is
 still being written, and the older request tool returns `approval_superseded` rather than a
 post failure.
