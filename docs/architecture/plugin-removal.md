@@ -141,6 +141,13 @@ no pending consent. Of the routes, the settlement itself drops only the removed 
 event subscriptions, with their consents; the rest of the runtime overlay stands until the
 reload. A cancelled removal, like a raising one, returns no envelope.
 
+**A plugin leaves through a specialist bundle's owned-set swap.** It is not `plugin_remove`
+that runs, so the bundle's sequencer does the callback part of that teardown itself: before
+its reload it revokes the persisted callback consents and purges the callback spool of every
+owned plugin the swap dropped, as it revokes the event consents held on a removed artifact
+(#1677, #1671; [`specialist-bundle-transactions.md`](specialist-bundle-transactions.md)).
+Neither waits for a reconcile's prune, which any resolver issue in the registry skips.
+
 ## Extension points
 
 **Closing the gap a raising removal leaves** is the one extension INV-TOOL-007 names: where a

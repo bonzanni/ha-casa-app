@@ -593,10 +593,11 @@ IDENTITY_SITE_HITS = {
     },
     "specialist_component.py": {"SpecialistComponent": 1, "load_specialist_component": 3},
     "specialist_install.py": {
+        "_added_owned_names": 2,
         "_assert_receipt_matches_inspection": 1, "_kept_new_version_error": 1,
         "_removed_artifact_ids": 2, "_removed_owned_names": 5, "commit_specialist_install": 1,
         "inspect_specialist_repo": 1, "rollback_specialist": 4,
-        "sanitize_specialist_snapshots": 4, "uninstall_specialist": 4, "upgrade_specialist": 1,
+        "sanitize_specialist_snapshots": 4, "uninstall_specialist": 5, "upgrade_specialist": 1,
     },
     "specialist_install_consent.py": {
         "_env_names_set": 1,

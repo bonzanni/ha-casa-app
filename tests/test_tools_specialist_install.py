@@ -88,7 +88,8 @@ def _stub_bundle_sequencer(monkeypatch):
     import tools as tools_mod
     import specialist_bundle_journal
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         return {"ok": True, "reloaded": [], "verify": {},
                 "reload_errors": [], "removed_artifact_ids": list(removed_artifact_ids)}
 
@@ -271,7 +272,8 @@ async def test_commit_sequencer_failure_compensates_with_new_artifact_ids(
 
     seq_calls = []
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         seq_calls.append(list(removed_artifact_ids))
         if len(seq_calls) == 1:
             raise RuntimeError("reload blew up")
@@ -328,7 +330,8 @@ async def test_commit_seq_not_ready_compensates_and_reports_ok_false(
 
     seq_calls = []
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         seq_calls.append(list(removed_artifact_ids))
         if len(seq_calls) == 1:
             return {"ok": False, "kind": "postcondition_failed", "reloaded": [],
@@ -364,7 +367,8 @@ async def test_compensate_fresh_install_runs_uninstall_shaped_sweep(monkeypatch)
 
     captured: dict = {}
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         captured["targets_removed"] = list(targets_removed)
         captured["removed"] = list(removed_artifact_ids)
         return {"ok": True, "reloaded": [], "verify": {}}
@@ -398,7 +402,8 @@ async def test_compensate_upgrade_reconstructs_prior_generation(monkeypatch) -> 
 
     captured: dict = {}
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         captured["targets_removed"] = list(targets_removed)
         return {"ok": True, "reloaded": [], "verify": {}}
 
@@ -452,7 +457,8 @@ async def test_seq_failure_with_failed_rollback_tags_compensation_failed(
     monkeypatch.setattr(specialist_bundle_journal, "complete",
                         lambda p: completed.append(p))
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         return {"ok": False, "kind": "postcondition_failed", "reloaded": [],
                 "reload_errors": [], "not_ready": ["mtg.mtg"],
                 "absent_violations": [], "verify": {}}
@@ -1312,7 +1318,8 @@ async def test_seq_failure_successful_compensation_tags_rolled_back(
     import tools as tools_mod
     import specialist_bundle_journal
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         return {"ok": True, "reloaded": [], "verify": {}}
 
     monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq)
@@ -1346,7 +1353,8 @@ async def test_seq_failure_incomplete_runtime_compensation_is_disclosed(
     import tools as tools_mod
     import specialist_bundle_journal
 
-    async def _seq_fail(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq_fail(slug, *, removed_artifact_ids, targets_removed,
+                        callback_reset_plugins=()):
         return {"ok": False, "kind": "reload_failed",
                 "reload_errors": [{"target": "specialist:mtg"}]}
 
@@ -1365,7 +1373,8 @@ async def test_seq_failure_incomplete_runtime_compensation_is_disclosed(
     assert "compensation_failed" not in env
 
     # A RAISING compensating sequencer grades the same way.
-    async def _seq_raise(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq_raise(slug, *, removed_artifact_ids, targets_removed,
+                         callback_reset_plugins=()):
         raise RuntimeError("agent eviction blew up")
 
     monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq_raise)

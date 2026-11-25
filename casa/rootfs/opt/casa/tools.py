@@ -13865,6 +13865,17 @@ def _swap_dropped_names(txn) -> "list[str]":
             if isinstance(n, str) and n]
 
 
+def _swap_added_names(txn) -> "list[str]":
+    """#1677: the owned-plugin names this transaction's registry swap ADDED,
+    or [] when it never swapped — the mirror of `_swap_dropped_names`. The
+    forward sequencer resets the callback consents and spool of both lists; a
+    name on both sides of the swap is in neither."""
+    if not getattr(txn, "owned_swap_committed", False):
+        return []
+    return [n for n in (getattr(txn, "added_owned_names", None) or ())
+            if isinstance(n, str) and n]
+
+
 def _swap_removal_disclosure(txn) -> dict:
     """#676 (INV-TOOL-007): the disclosure a SUCCESSFUL bundle owed for the
     owned plugins its registry swap dropped, or `{}` when it dropped none.
@@ -14712,7 +14723,8 @@ async def _run_bundle_transaction(operation: "Callable[[], Awaitable[Any]]") -> 
 
 
 async def _bundle_reload_and_verify(
-    slug: str, *, removed_artifact_ids: list, targets_removed: list) -> dict:
+    slug: str, *, removed_artifact_ids: list, targets_removed: list,
+    callback_reset_plugins: "list[str]" = ()) -> dict:
     """Task 10 bundle sequencer (spec §3.2d) — the post-mutation half of a
     specialist-bundle transaction, run by the tool layer while holding
     `_PLUGIN_TOOLS_LOCK` (the sync lifecycle function already committed the
@@ -14723,8 +14735,10 @@ async def _bundle_reload_and_verify(
       1. grant/challenge invalidation FIRST — per removed/replaced artifact id
          (the SAME `_invalidate_lifecycle` call plugin_update/plugin_remove use)
          AND the specialist role + any removed targets, BEFORE the first reload;
-         then the event consents held on a removed artifact, before the
-         reload reconciles;
+         then the event consents held on a removed artifact, and the
+         callback consents and spool of each name in `callback_reset_plugins`
+         (the names the swap dropped or added; a compensation passes none),
+         before the reload reconciles;
       2. ONE plugin-snapshot reload;
       3. ONE specialist-agent reload (only when the slug is installed — skipped
          for an uninstall or a still-pending specialist target);
@@ -14748,6 +14762,17 @@ async def _bundle_reload_and_verify(
     for name in sorted(event_acks.ACKS.subscribers_on(removed_artifact_ids)):
         await _settle_through_cancellation(
             _revoke_event_consents(name, "specialist bundle"))
+    # #1677: a plugin that left the owned set loses its callback consents and
+    # spool, and one that entered it starts with none. A callback consent is
+    # bound to the plugin NAME and its declaration, not to the artifact, so a
+    # reinstall of the same declaration would otherwise find the old consent
+    # and be routed with no consent card; the reconcile's prune cannot be
+    # relied on, since any resolver issue anywhere in the registry skips it.
+    # A name on both sides of the swap is not in the list: an upgrade or a
+    # rollback that keeps a plugin keeps its consent (INV-CB-003).
+    for name in sorted(set(callback_reset_plugins)):
+        await _settle_through_cancellation(
+            _remove_plugin_callbacks(name, "specialist bundle"))
 
     # 2. ONE snapshot reload.
     await asyncio.to_thread(plugin_registry.reload_snapshot)
@@ -16797,7 +16822,9 @@ async def specialist_install_commit(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=[])
+                targets_removed=[],
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -16975,7 +17002,9 @@ async def specialist_upgrade(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=[])
+                targets_removed=[],
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -17046,7 +17075,9 @@ async def specialist_rollback(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=[])
+                targets_removed=[],
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -17150,7 +17181,9 @@ async def specialist_uninstall(args: dict) -> dict:
         try:
             seq = await _bundle_reload_and_verify(
                 txn.slug, removed_artifact_ids=list(txn.removed_artifact_ids),
-                targets_removed=targets_removed)
+                targets_removed=targets_removed,
+                callback_reset_plugins=[*_swap_dropped_names(txn),
+                                        *_swap_added_names(txn)])
         except Exception:
             await _bundle_compensate(txn)
             raise
@@ -19207,21 +19240,24 @@ async def trigger_ack_revoke(args: dict) -> dict:
         })
 
 
-async def _remove_plugin_callbacks(name: str) -> None:
+async def _remove_plugin_callbacks(name: str, tool: str = "plugin_remove") -> None:
     """Durable callback teardown for a removed plugin: revoke its
     persisted callback consents and delete its spool dir. Best-effort — a
     failure here never fails the removal (the overlay was already swept by
-    absence in the sequencer's callback reconcile)."""
+    absence in the sequencer's callback reconcile). #1677: a specialist
+    bundle's sequencer runs the same teardown for each owned plugin its swap
+    dropped, and for each one it added, so a name entering the owned set
+    starts with no consent and no spool; *tool* names the caller in the log."""
     try:
         import callback_acks
         removed = await asyncio.to_thread(
             callback_acks.ACKS.revoke_plugin, name)
         if removed:
-            logger.info("plugin_remove: revoked %d callback ack(s) for %s",
-                        len(removed), name)
+            logger.info("%s: revoked %d callback ack(s) for %s",
+                        tool, len(removed), name)
     except Exception:  # noqa: BLE001
-        logger.warning("plugin_remove: callback ack revoke failed (%s)",
-                       name, exc_info=True)
+        logger.warning("%s: callback ack revoke failed (%s)",
+                       tool, name, exc_info=True)
     try:
         import callback_spool
         spool = callback_spool.get_spool()
@@ -19235,8 +19271,8 @@ async def _remove_plugin_callbacks(name: str) -> None:
             # operator can see.
             await asyncio.to_thread(spool.remove_plugin, name)
     except Exception:  # noqa: BLE001
-        logger.warning("plugin_remove: callback spool purge failed (%s)",
-                       name, exc_info=True)
+        logger.warning("%s: callback spool purge failed (%s)",
+                       tool, name, exc_info=True)
 
 
 @tool(

@@ -1900,6 +1900,16 @@ def _removed_owned_names(before_entries: "list[dict]",
     return tuple(dict.fromkeys(dropped))
 
 
+def _added_owned_names(before_entries: "list[dict]",
+                       new_entries: "list[dict]") -> "tuple[str, ...]":
+    """#1677: the mirror of `_removed_owned_names` — the owned-plugin names
+    this swap ADDED, present in the set it published and absent from the
+    pre-swap one. A name entering a specialist's owned set starts with no
+    callback consent and no callback spool, whatever an earlier life of that
+    name left behind; a name on both sides of the swap is in neither list."""
+    return _removed_owned_names(new_entries, before_entries)
+
+
 def _reject_receiptless_sourced_deps(
     component: "SpecialistComponent", *, receipt: "SourceReceipt | None",
 ) -> None:
@@ -2585,6 +2595,8 @@ def commit_specialist_install(
                     op="install", owned_swap_committed=True,
                     removed_owned_names=_removed_owned_names(
                         before_entries, new_entries),
+                    added_owned_names=_added_owned_names(
+                        before_entries, new_entries),
                     target_root=_install_root,
                     declared_secret_names=declared_secret_names,
                     registry_path=registry_path, specialists_dir=specialists_dir,
@@ -3069,6 +3081,8 @@ def upgrade_specialist(
                 new_artifact_ids=tuple(sorted(new_artifact_ids)),
                 op="upgrade", owned_swap_committed=swapped,
                 removed_owned_names=_removed_owned_names(
+                    before_entries, new_entries) if swapped else (),
+                added_owned_names=_added_owned_names(
                     before_entries, new_entries) if swapped else (),
                 target_root=target_root,
                 declared_secret_names=declared_secret_names,
@@ -4313,6 +4327,8 @@ def rollback_specialist(
             op="rollback", owned_swap_committed=True,
             removed_owned_names=_removed_owned_names(
                 before_entries, prior_entries),
+            added_owned_names=_added_owned_names(
+                before_entries, prior_entries),
             declared_secret_names=declared_secret_names,
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
@@ -4689,6 +4705,7 @@ def uninstall_specialist(
             removed_artifact_ids=all_ids, new_artifact_ids=(),
             op="uninstall", owned_swap_committed=True,
             removed_owned_names=_removed_owned_names(before_entries, []),
+            added_owned_names=_added_owned_names(before_entries, []),
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)

@@ -68,11 +68,23 @@ any publication has landed since its route check began (INV-PLUG-016).
 
 Enforced by the ack store's load path — wrong schema, any malformed record, or any key that does
 not equal its record's recomputed identity yields *no* acks at all, never a partial store — and
-by the reconciler, which prunes an ack no installed declaration can still compute and swaps the
-overlay so a removed plugin's route goes dark.
+by the removal paths, which revoke a leaving plugin's acks and purge its spool themselves:
+`plugin_remove`, and a specialist bundle's sequencer for each owned plugin its swap dropped
+(#1677). The reconciler then swaps the overlay so a removed plugin's route goes dark. It also
+prunes an ack no installed declaration can still compute, but removal does not rely on that
+prune: any resolver issue anywhere in the registry skips it, and an ack it left behind would
+match a reinstall of the same declaration.
 
-What it does not cover: the identity deliberately excludes the artifact id, so only an
-operator-visible declaration change mints a new identity and forces re-consent.
+The bundle rule has two sides, because the identity carries no artifact id. A plugin that
+leaves a specialist's owned set loses its acks and spool; a plugin that enters it starts with
+none, whatever an earlier life of that name left on file; a name on both sides of the swap is
+untouched, so an upgrade or a rollback that keeps a plugin keeps its consent.
+
+What it does not cover: the identity deliberately excludes the artifact id, so for a plugin
+that stays installed only an operator-visible declaration change mints a new identity and
+forces re-consent. A plugin a bundle's swap dropped and its compensation then restored has
+lost its consent and is asked about again. A consent already on file for a plugin that is
+not installed is not searched for; it is cleared when that name next enters a bundle.
 
 **INV-CB-004**: Casa relays the query opaquely — the raw query string plus an ordered list of decoded key/value pairs — and interprets only `state`; no provider-specific parsing lives in core.
 

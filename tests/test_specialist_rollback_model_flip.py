@@ -138,7 +138,8 @@ async def test_m2_bundle_rollback_after_a_model_flip_succeeds_through_the_handle
             agents_specialists_dir=agents_root, registry_path=registry_path,
             plugin_store_root=tmp_path / "store", ops_dir=ops_dir)
 
-    async def _seq(slug, *, removed_artifact_ids, targets_removed):
+    async def _seq(slug, *, removed_artifact_ids, targets_removed,
+                   callback_reset_plugins=()):
         return {"ok": True, "reloaded": [], "verify": {}, "reload_errors": [],
                 "removed_artifact_ids": list(removed_artifact_ids)}
 

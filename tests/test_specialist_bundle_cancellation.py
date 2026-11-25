@@ -163,7 +163,8 @@ class _Sequencer:
         base.update(override)
         return base
 
-    async def __call__(self, slug, *, removed_artifact_ids, targets_removed):
+    async def __call__(self, slug, *, removed_artifact_ids, targets_removed,
+                       callback_reset_plugins=()):
         self.calls.append({"slug": slug, "removed": list(removed_artifact_ids),
                            "targets_removed": list(targets_removed)})
         if self.gate is not None and len(self.calls) == 1:
