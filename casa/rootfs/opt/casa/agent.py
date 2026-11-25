@@ -4034,7 +4034,8 @@ class Agent:
         ``state["partial"]`` accumulates the in-flight message's text deltas
         from ``StreamEvent`` messages, which are only ever produced when
         ``include_partial_messages=True``, i.e. voice and Telegram turns (see
-        ``_build_options``); a sub-agent's deltas are skipped. ``_cum()`` is
+        ``_build_options``); a sub-agent's deltas are skipped, and its finished
+        messages are not folded (#1587). ``_cum()`` is
         the single pinned formula (AR-A) joining the folded ``state["text"]``
         to the in-flight partial with the same "\\n\\n" separator the
         canonical fold uses, so a partial emission and the eventual fold
@@ -4155,7 +4156,7 @@ class Agent:
             if isinstance(sdk_msg, StreamEvent):
                 # A sub-agent's in-flight text stays out of the stream: two
                 # sub-agents writing at once would interleave. Its finished
-                # message is still folded below, unchanged.
+                # message is not folded either (#1587, below).
                 if getattr(sdk_msg, "parent_tool_use_id", None):
                     return
                 try:
@@ -4338,6 +4339,14 @@ class Agent:
                     # Partial is reset for the same reason the fold below
                     # resets it: nothing stale may bleed into message N+1.
                     state["partial"] = ""
+                elif getattr(sdk_msg, "parent_tool_use_id", None):
+                    # #1587: a sub-agent's message is written for the agent
+                    # that started it, not for the person: it is not folded
+                    # into the reply, not captured as the resident's words and
+                    # not streamed. Its tool calls were still recorded by the
+                    # dispatch above. The main agent's in-flight partial is
+                    # left as it is — this message does not supersede it.
+                    pass
                 else:
                     # E-2: collect TextBlocks of THIS AssistantMessage.
                     msg_text = "".join(

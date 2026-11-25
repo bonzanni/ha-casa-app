@@ -23,8 +23,10 @@ pool does with an interrupted client is [`sdk-client-pool.md`](sdk-client-pool.m
 **The draft shows the reply; the reply is still one ordinary message.** A Telegram turn asks
 the Claude Agent SDK for partial messages, as a voice turn does (`agent.py::_PARTIAL_CHANNELS`),
 so the token callback receives the accumulated reply text as the model writes it. A
-sub-agent's in-flight text deltas are not streamed, and what the reply contains — the fold of
-finished messages — is the same as on a turn that never streamed. The callback
+sub-agent's text is neither streamed nor folded: its in-flight deltas and its finished
+messages (those carrying a `parent_tool_use_id`) are left out, while its tool calls are still
+recorded. What the reply contains — the fold of the main agent's finished messages — is the
+same as on a turn that never streamed. The callback
 (`TelegramChannel.create_on_token`) writes that text into a Telegram rich draft (the Bot
 API's `sendRichMessageDraft`), its Markdown prepared as the final reply's is, with Telegram's
 own Stop button (`can_stop`, `keep_on_stop`) and a fresh non-zero draft id per turn. The draft
