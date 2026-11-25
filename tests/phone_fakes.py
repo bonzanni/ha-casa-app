@@ -71,7 +71,13 @@ class FakeOpenAI:
         self.responses_queue: list[Any] = []
         #: True refuses the attach upgrade with 403; "hang" never completes it.
         self.attach_refuse: bool | str = False
+        #: Sessions whose socket stays open while nothing reaches the client
+        #: on it any more (see ``mute``); what would have been sent is in
+        #: ``held``.
+        self.muted: set[str] = set()
+        self.held: list[tuple[str, dict]] = []
 
+        self._flows: dict[str, asyncio.Task] = {}
         self._sockets: dict[str, web.WebSocketResponse] = {}
         self._attached: dict[str, asyncio.Event] = {}
         self._release = asyncio.Event()
@@ -91,6 +97,10 @@ class FakeOpenAI:
 
     async def stop(self) -> None:
         self._release.set()
+        flows = tuple(self._flows.values())
+        for flow in flows:
+            flow.cancel()
+        await asyncio.gather(*flows, return_exceptions=True)
         for ws in list(self._sockets.values()):
             if not ws.closed:
                 await ws.close()
@@ -133,7 +143,34 @@ class FakeOpenAI:
 
     async def emit(self, sid: str, event: dict) -> None:
         """Send a server event on *sid*'s socket (waits for the attach)."""
+        if sid in self.muted:
+            self.held.append((sid, event))
+            return
         await (await self._socket(sid)).send_json(event)
+
+    def flow(self, sid: str, every: float = 0.05) -> None:
+        """Emit a periodic event on *sid*'s socket, of a kind the client has
+        no use for, to exercise a control channel that stays live. The
+        events go on over a socket that drops and is attached again, until
+        the session is muted or the fake stops."""
+        if sid not in self._flows:
+            self._flows[sid] = asyncio.ensure_future(self._flow(sid, every))
+
+    async def _flow(self, sid: str, every: float) -> None:
+        while sid not in self.muted:
+            ws = self._sockets.get(sid)
+            if ws is not None and not ws.closed:
+                try:
+                    await ws.send_json({"type": "session.usage.updated"})
+                except (ConnectionError, RuntimeError):
+                    pass  # the socket went away meanwhile
+            await asyncio.sleep(every)
+
+    def mute(self, sid: str) -> None:
+        """From now on nothing reaches the client on *sid*'s socket, which
+        stays open: a channel that died without a close. The flow stops and
+        what ``emit`` is given is kept in ``held``."""
+        self.muted.add(sid)
 
     async def close(self, sid: str, reason: str = "close_requested") -> None:
         """End the session the way the service does: ``session.closed``, then close."""

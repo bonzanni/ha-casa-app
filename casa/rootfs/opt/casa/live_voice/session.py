@@ -36,6 +36,46 @@ control channel is lost and cannot be attached again in time. A silence is
 checked on before it ends anything: the agent is first told to ask whether
 the other side is still there, and only when that brings no word from them
 is the closing line said and the session ended.
+
+Accepted work that has not finished (an ability marked it pending) owns the
+session until it is settled. The session treats the acceptance as
+inconclusive: it does not read it as the work having taken the other side
+away, it waits for no event that would say so, and it handles a session that
+stays open afterwards. What it goes by is whether the other side is heard
+again, and whether it was really listening:
+
+- a word of the other side after the settle time (``handover_s``), or at any
+  moment once it is being asked, shows it is still here. The work is settled
+  as not done at once, inside the handling of that event; the agent is told
+  ``transfer_failed`` and the session goes on as before, with its deadlines
+  started afresh. That line stays owed until it has been sent: when no
+  control channel is attached at that moment, it goes out once one is;
+- with no such word ``pending_s`` after the acceptance, the agent is told
+  once to ask whether the other side is there (``check_in``), and the session
+  waits ``silence_s`` from the later of the sending and the end of what the
+  agent says from the moment the sending began. Still no word: the session
+  is ended from this side, quietly. The work counts as done (phase
+  ``handed_off``) only when the question was asked and listened to: sent,
+  the agent seen to speak, no error event meanwhile, the control channel
+  attached from the question to the end of the wait, and events still
+  arriving on it at that end (the last no older than ``alive_s``).
+  Otherwise the session ends at the same moment with the work left
+  unsettled (phase ``pending``);
+- a session that is closed from the far side before any such word also ends
+  with the work unsettled: the other side may have left, or the work may
+  have taken it.
+
+A transcript delta is speech only when it holds a letter or a digit
+(:func:`_is_speech`). One of blanks or punctuation alone is not, here or
+anywhere in a session: it is neither a word of the other side nor the
+agent's question, it opens no line, and it moves no time.
+
+Until the work is settled nothing else speaks or ends the session: no other
+deadline comes due, a closing line already said stands down, the decision
+step is not asked (one still waiting for its quiet moment is dropped, one
+that fails is not tried again), and a control channel that drops is attached
+again for as long as it takes. Once the quiet end has begun nothing gives
+the session back.
 """
 from __future__ import annotations
 
@@ -122,7 +162,15 @@ class Timing:
     may be retried. ``decision_timeout_s``: one decision call.
     ``goodbye_grace_s``: the longest wait for a line to be played.
     ``speak_margin_s``: added to a line's end before it counts as played.
-    ``pending_s``: how long accepted work may stay unfinished."""
+    Two count from the moment work became pending. ``handover_s``: until
+    then a word of the other side tells nothing about the work.
+    ``pending_s``: with no word that does by then, the other side is asked
+    whether it is still there, and has ``silence_s`` to answer.
+    ``resume_s``: after a session was given back because that work did not
+    finish, the ending for the longest session (``max_call_s``) cannot come
+    before this long has passed. No other deadline is put off by it.
+    ``alive_s``: the control channel counts as listened on at a moment only
+    when an event arrived on it no longer before."""
     first_speech_s: float = 8.0
     quiet_s: float = 1.0
     check_in_s: float = 7.0
@@ -133,7 +181,10 @@ class Timing:
     undecided_silence_s: float = 8.0
     goodbye_grace_s: float = 8.0
     speak_margin_s: float = 0.6
-    pending_s: float = 30.0
+    pending_s: float = 20.0
+    handover_s: float = 15.0
+    resume_s: float = 60.0
+    alive_s: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -152,9 +203,17 @@ class Result:
     ``clock:<which>`` when the clock ended it, or ``lost``; ``started`` and
     ``ended`` are ``time.monotonic()`` values, like the ``t`` of an action.
 
+    ``phase`` is the action state's last phase. For a session with accepted
+    work: ``handed_off`` when the other side was asked whether it was still
+    there, was listened to, and did not answer; ``pending`` when the session
+    ended before the work could be settled either way; ``ended`` (like any
+    other session) when the other side was heard again and the session went
+    on.
+
     Two delays, for tuning only. ``first_speech_ms``: from the moment the
     session began to be followed (it has just been accepted) to the agent's
-    first transcript delta; ``None`` when the agent never spoke.
+    first transcript delta that is speech; ``None`` when the agent never
+    spoke.
     ``reply_gaps_ms``: for each line of the other side that the agent
     answered, the time from that line's end to the start of the answer."""
     lines: tuple[Line, ...]
@@ -203,7 +262,7 @@ class LiveSession:
             {a.name: self._noted(self._after_last_line(a.run)
                                  if a.kind == "final" else a.run)
              for a in profile.abilities},
-            final_abilities=self._final, on_pending=self._clock.pending)
+            final_abilities=self._final, on_pending=self._on_pending)
         self._lines: list[Line] = []
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._tasks: set[asyncio.Task] = set()
@@ -211,12 +270,18 @@ class LiveSession:
         self._reason: str | None = None
         #: When the first event was seen: the session's zero for ``*_ms``.
         self._zero: float | None = None
-        #: When the agent's first transcript delta arrived.
+        #: When the agent's first transcript delta that is speech arrived.
         self._first_agent: float | None = None
         self._agent_end_ms = 0
-        #: Count transcript deltas, to tell whether anyone spoke since.
+        #: Count transcript deltas, to tell whether anyone spoke since. Only
+        #: those that are speech (see ``_is_speech``).
         self._deltas = 0
         self._caller_deltas = 0
+        self._agent_deltas = 0
+        #: Count ``error`` events, to tell whether one arrived since.
+        self._errors = 0
+        #: When the latest event arrived on the control channel.
+        self._last_event = 0.0
         self._quiet: asyncio.Task | None = None
         self._delegations: dict[str, int] = {}
         self._told: set[int] = set()
@@ -225,6 +290,9 @@ class LiveSession:
         #: Waiters for the next delta, each with the side it waits for.
         self._speech_waiters: dict[asyncio.Future, str | None] = {}
         self._appends = 0
+        #: The line about pending work that did not finish, from the moment
+        #: the session is given back until it has been sent.
+        self._owed: str | None = None
 
     # The run.
 
@@ -316,6 +384,9 @@ class LiveSession:
                 return
             self._ws = ws
             self._clock.attached()
+            if self._owed is not None:
+                # Owed since before the channel dropped: it goes out now.
+                self._spawn(self._tell_owed(), "work not done")
             try:
                 closed = await self._read(ws)
             finally:
@@ -334,11 +405,17 @@ class LiveSession:
     async def _attach(self, deadline: float
                       ) -> aiohttp.ClientWebSocketResponse | None:
         """The attached channel, or ``None`` once *deadline* has passed; each
-        attempt may take what remains until then."""
+        attempt may take what remains until then. While accepted work is
+        pending the attempts go on past it, one such window after another:
+        that work decides when the session ends, not a channel that stays
+        away."""
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return None
+                if self.actions.phase != "pending":
+                    return None
+                remaining = self._timing.reconnect_s
+                deadline = time.monotonic() + remaining
             try:
                 async with asyncio.timeout(remaining):
                     return await self._api.attach(self._sid)
@@ -375,8 +452,9 @@ class LiveSession:
                 logger.warning("live session event %r could not be handled",
                                event.get("type"), exc_info=True)
 
-    async def _send(self, event: dict) -> None:
-        """Send a client event; one that cannot be sent is logged and lost."""
+    async def _send(self, event: dict) -> bool:
+        """Send a client event; one that cannot be sent is logged and lost.
+        True when it was sent."""
         ws = self._ws
         try:
             if ws is None or ws.closed:
@@ -385,12 +463,14 @@ class LiveSession:
         except (aiohttp.ClientError, OSError, RuntimeError) as exc:
             logger.warning("live session %s not sent: %s", event["type"],
                            type(exc).__name__)
+            return False
+        return True
 
-    async def _append(self, content: str) -> None:
+    async def _append(self, content: str) -> bool:
         self._appends += 1
-        await self._send({"type": "session.instructions.append",
-                          "event_id": f"i_{self._appends}",
-                          "delegation_id": None, "content": content})
+        return await self._send({"type": "session.instructions.append",
+                                 "event_id": f"i_{self._appends}",
+                                 "delegation_id": None, "content": content})
 
     async def say(self, text: str) -> None:
         """Have the agent say *text* now."""
@@ -404,8 +484,9 @@ class LiveSession:
 
     def _on_event(self, event: dict) -> bool:
         """Handle one server event without waiting; true for the last one."""
+        self._last_event = time.monotonic()
         if self._zero is None:
-            self._zero = time.monotonic()
+            self._zero = self._last_event
         kind = event.get("type")
         if kind == "session.output_transcript.delta":
             self._on_delta("agent", event)
@@ -418,14 +499,15 @@ class LiveSession:
         elif kind == "response.event":
             self._on_helper_event(event)
         elif kind == "session.closed":
-            # Pending work and a closed session: the work went through.
-            if self.actions.phase == "pending":
-                self.actions.resolve_pending(True)
-            else:
+            # Closed while accepted work is pending: the other side may
+            # have left, or the work may have taken it away. The work stays
+            # unsettled, which the result shows.
+            if self.actions.phase != "pending":
                 self.actions.end()
             self._finish(str(event.get("reason") or "closed"))
             return True
         elif kind == "error":
+            self._errors += 1
             error = event.get("error")
             code = error.get("code") or error.get("type") \
                 if isinstance(error, dict) else None
@@ -436,43 +518,96 @@ class LiveSession:
         text = event.get("delta")
         if not isinstance(text, str) or not text:
             return
+        last = self._lines[-1] if self._lines else None
+        if not _is_speech(text):
+            # Blanks and punctuation are nobody speaking. They belong to the
+            # text of the line they fall in, and that is all: they open no
+            # line, move no time, and count for nothing that goes by who
+            # spoke or when.
+            if last is not None and last.who == who:
+                self._lines[-1] = Line(who, last.text + text, last.start_ms,
+                                       last.end_ms)
+            return
         self._deltas += 1
         # Without a time of its own, a delta ends about now.
         end = _ms(event.get("end_ms"),
                   int((time.monotonic() - (self._zero or 0.0)) * 1000))
         start = _ms(event.get("start_ms"), end)
-        last = self._lines[-1] if self._lines else None
         if last is not None and last.who == who:
-            # A line that so far held only blanks starts at its first word.
-            merged = last.text + text if last.text else text.lstrip()
-            self._lines[-1] = Line(who, merged, last.start_ms,
+            self._lines[-1] = Line(who, last.text + text, last.start_ms,
                                    max(last.end_ms, end))
         else:
             if who == "caller":
                 self.actions.new_round()
             self._lines.append(Line(who, text.lstrip(), start, end))
         if who == "agent":
+            self._agent_deltas += 1
             if self._first_agent is None:
                 self._first_agent = time.monotonic()
-            self._agent_end_ms = self._lines[-1].end_ms
+            # What the agent is saying never ends earlier than it was said
+            # to: a later line with an earlier end, or with none of its own,
+            # does not pull the end of the playback back.
+            self._agent_end_ms = max(self._agent_end_ms,
+                                     self._lines[-1].end_ms)
             # The text of a line arrives before it has been played to the
             # end; until then the line is not silence.
             self._clock.heard(who, self._agent_line_played())
-            self._restart_quiet()
+            if self.actions.phase == "pending":
+                # Nothing is decided for what the agent says while accepted
+                # work owns the session.
+                self._cancel_quiet()
+            else:
+                self._restart_quiet()
         else:
             self._caller_deltas += 1
+            # A word, of a session that is still running, while the work is
+            # unsettled and at a moment when a word tells something.
+            if self._reason is None \
+                    and self.actions.phase == "pending" \
+                    and self._clock.word_counts():
+                self._give_back()
             self._clock.heard(who)
             self._cancel_quiet()
         for waiter, wanted in self._speech_waiters.items():
             if wanted in (None, who) and not waiter.done():
                 waiter.set_result(None)
 
+    def _on_pending(self) -> None:
+        """Work became pending: its times start, and a decision still
+        waiting for the agent's line to go quiet is not asked any more (one
+        already asked is left to finish; the action state answers it)."""
+        self._clock.pending()
+        self._cancel_quiet()
+
+    def _give_back(self) -> None:
+        """The other side was heard again, which is taken to mean it is
+        still here: the work is settled as not done and the session goes on.
+        Nothing is awaited here. The event that follows this one may be the
+        session's close, and it must find the work settled; only telling the
+        agent is left to a task."""
+        self.actions.resolve_pending(False)
+        self._clock.settled()
+        self._owed = self._spoken.get("transfer_failed") or None
+        if self._owed is not None:
+            self._spawn(self._tell_owed(), "work not done")
+
+    async def _tell_owed(self) -> None:
+        """Tell the agent that the pending work did not finish. The line
+        stays owed until a sending of it has gone out: one that found no
+        control channel is made again when the channel is attached again.
+        It is taken up before the sending is awaited, so it never goes out
+        twice."""
+        text, self._owed = self._owed, None
+        if text is not None and not await self._append(text):
+            self._owed = text
+
     def _agent_spoke_last(self) -> bool:
         return bool(self._lines) and self._lines[-1].who == "agent"
 
     def _agent_line_played(self) -> float:
-        """When the agent's latest line, plus a margin, has been played (a
-        ``time.monotonic()`` value)."""
+        """When what the agent has said, plus a margin, has been played (a
+        ``time.monotonic()`` value): the latest end any of its lines was
+        said to have."""
         return (self._zero or 0.0) + self._agent_end_ms / 1000 \
             + self._timing.speak_margin_s
 
@@ -511,7 +646,9 @@ class LiveSession:
         # its round judges it.
         self._quiet = None
         choice = await self._ask()
-        if choice is decision.FAILED:
+        if choice is decision.FAILED and self.actions.phase != "pending":
+            # Tried once more, but not while accepted work owns the
+            # session: nothing is decided then.
             choice = await self._ask()
         if choice is decision.FAILED:
             # Nobody decides for this line. Unless someone spoke since, or
@@ -642,12 +779,7 @@ class LiveSession:
         """A deadline passed; true when the session is over."""
         grace = self._timing.goodbye_grace_s
         if which == "pending":
-            self._clock.settled()
-            if self.actions.phase == "pending":
-                self.actions.resolve_pending(False)
-                if self._spoken.get("transfer_failed"):
-                    await self.tell(self._spoken["transfer_failed"])
-            return False
+            return await self._ask_and_listen()
         if which == "check_in":
             # Context for the agent, which words the question itself. From
             # here on only the other side's speech starts the silence again.
@@ -670,11 +802,102 @@ class LiveSession:
         elif which == "max":
             await self._say_line("too_long")
             await asyncio.sleep(grace)
+            if not self._clock.max_due():
+                return False  # work was accepted meanwhile; its clock decides
         return await self._end(f"clock:{which}")
+
+    async def _ask_and_listen(self) -> bool:
+        """Accepted work has been pending for its time and the other side
+        was not heard to still be here: ask, listen, and end the session
+        when no word comes. True when the session is over.
+
+        The clock waits in here, so no other deadline passes meanwhile. A
+        word of the other side settles the work the moment it is handled
+        (:meth:`_give_back`); after every wait below the state is read
+        again, and nothing is ended once such a word was heard."""
+        if self.actions.phase != "pending":
+            self._clock.settled()
+            return False
+        # Before anything is awaited: from here on every word counts, and
+        # so does what the agent says, which can begin to arrive while the
+        # instruction is still being sent.
+        self._clock.probing()
+        heard, spoken = self._caller_deltas, self._agent_deltas
+        errors, ws = self._errors, self._ws
+        text = self._spoken.get("check_in")
+        sent = bool(text) and await self._append(text)
+        asked = time.monotonic()
+        while self._unheard(heard):
+            # The other side has its time from the end of the question the
+            # agent is heard to ask, or from the sending when it asks none.
+            since = asked if self._agent_deltas == spoken \
+                else max(asked, self._agent_line_played())
+            wait = since + self._timing.silence_s - time.monotonic()
+            if wait <= 0:
+                break
+            await self._speech_within(wait)
+        if not self._unheard(heard):
+            # Over, or given back by a word of the other side. The count of
+            # its words is read beside the phase, so that such a word is
+            # never followed by this end, whatever did or did not settle
+            # the work when it arrived.
+            if self._reason is None and self.actions.phase == "pending":
+                self._give_back()
+            return self._reason is not None
+        # Done only when the question was put and listened to all the way:
+        # on one channel throughout, on which events were still arriving at
+        # the end. A channel can die without closing, and then an answer
+        # would not have been received either.
+        watched = (sent and self._agent_deltas != spoken
+                   and self._errors == errors
+                   and ws is not None and self._ws is ws
+                   and time.monotonic() - self._last_event
+                   <= self._timing.alive_s)
+        return await self._end_unheard(watched)
+
+    def _unheard(self, heard: int) -> bool:
+        """True while the session is still the pending work's to end: not
+        over, the work unsettled, and no word of the other side since
+        *heard* of them."""
+        return self._reason is None and self.actions.phase == "pending" \
+            and self._caller_deltas == heard
+
+    async def _end_unheard(self, watched: bool) -> bool:
+        """End the session whose pending work the other side was not heard
+        after: the work is done when the question was *watched*, and stays
+        unsettled otherwise. That is decided here and stands: from this
+        point no word gives the session back and no ability starts, while
+        the hang-up is asked for. The session is taken to be possibly gone
+        already, so whatever is answered to the hang-up, or no answer at
+        all, ends it here all the same; nothing is tried again. Unlike a
+        final ability this runs although the other side's words may be the
+        last thing heard (words inside the settle time). Always true."""
+        self._reason = "clock:pending"
+        if watched:
+            self.actions.resolve_pending(True)
+        answer = "accepted"
+        try:
+            await self._api.hangup(self._sid)
+        except ApiError as exc:
+            answer = f"{exc.code} (status {exc.status})"
+        except Exception as exc:  # noqa: BLE001 — the session counts as ended
+            answer = type(exc).__name__
+        finally:
+            self._done.set()
+        logger.info("live session ended with its accepted work %s; hang-up: %s",
+                    "done: asked, and no word from the other side" if watched
+                    else "unsettled", answer)
+        return True
 
     async def _say_line(self, key: str) -> None:
         if self._spoken.get(key):
             await self.say(self._spoken[key])
+
+
+def _is_speech(text: str) -> bool:
+    """Whether a transcript delta is someone speaking: it holds at least one
+    letter or digit, of any script. Blanks and punctuation alone are not."""
+    return any(ch.isalpha() or ch.isdigit() for ch in text)
 
 
 def _reply_gaps(lines: tuple[Line, ...]) -> tuple[int, ...]:

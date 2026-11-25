@@ -16,8 +16,9 @@ import pytest
 from contacts import store as cstore
 from contacts.store import ContactsStore, Person
 from live_voice.api import LiveApi
-from live_voice.session import Timing
+from live_voice.session import Result, Timing
 from phone import controller
+from phone import prompt
 from phone import settings
 from phone import store as pstore
 from phone.controller import Deps
@@ -39,6 +40,10 @@ TIMING = Timing(first_speech_s=3.0, quiet_s=5.0, silence_s=5.0,
                 max_call_s=8.0, reconnect_s=1.0, decision_timeout_s=0.5,
                 undecided_silence_s=1.0, goodbye_grace_s=0.3,
                 speak_margin_s=0.0, pending_s=2.0)
+# A transfer that was accepted: the settle time, the moment the caller is
+# asked whether they are still there, and the wait for an answer.
+ACCEPTED = dataclasses.replace(TIMING, handover_s=0.2, pending_s=0.6,
+                               silence_s=0.5)
 OPTIONS = Options(enabled=True, transfer_number=TRANSFER_TO,
                   owner_name="Sam Owner", seed_voices={}, api_host="",
                   line_number=LINE)
@@ -334,14 +339,21 @@ async def test_accept_refused(fake, http, phone_store) -> None:
         assert pstore.transcript(conn, row["id"], 0.0) is None
 
 
-async def test_transfer_then_closed_is_transferred(fake, http, phone_store,
-                                                   contacts) -> None:
-    op = Operator()
-    sid = "live_transfer"
-    task = asyncio.create_task(controller.handle_call(
-        Incoming(sid, PRIORITY, LINE),
-        deps(fake, http, phone_store, contacts=contacts, op=op)))
-    await wait_for(lambda: accepted(fake, sid))
+def appended(fake) -> list[str]:
+    return [e["content"] for e in fake.ws_sent
+            if e["type"] == "session.instructions.append"]
+
+
+def fixed_line(key: str) -> str:
+    """A fixed line of the priority contact's call, which is in Dutch."""
+    return prompt.spoken_lines("nl", OPTIONS.owner_name)[key]
+
+
+async def put_through(fake, sid: str) -> None:
+    """The helper asks for the transfer, and the request for it is placed.
+    The fake keeps emitting periodic events, to exercise a control channel
+    that stays live."""
+    fake.flow(sid)
     await fake.emit(sid, {"type": "session.output_transcript.delta",
                           "delta": "Hello", "start_ms": 0, "end_ms": 300})
     await fake.emit(sid, {"type": "session.delegation.created",
@@ -349,17 +361,143 @@ async def test_transfer_then_closed_is_transferred(fake, http, phone_store,
     await fake.emit(sid, {**tool_call_event("transfer", {"why": "asked"}),
                           "delegation_id": "d1"})
     await wait_for(lambda: any(v == "refer" for v, _, _ in fake.requests))
+
+
+async def test_a_transfer_and_a_close_before_anyone_is_heard_ended_in_transfer(
+        fake, http, phone_store, contacts) -> None:
+    op = Operator()
+    sid = "live_transfer"
+    task = asyncio.create_task(controller.handle_call(
+        Incoming(sid, PRIORITY, LINE),
+        deps(fake, http, phone_store, contacts=contacts, op=op)))
+    await wait_for(lambda: accepted(fake, sid))
+    await put_through(fake, sid)
     refer = next(b for v, _, b in fake.requests if v == "refer")
     assert refer == {"target_uri": "tel:" + TRANSFER_TO}
     await fake.close(sid, "remote_hangup")
     await asyncio.wait_for(task, 5)
     [row] = calls(phone_store)
-    assert row["outcome"] == "transferred"
+    # The caller may have given up, or may have been put through for a
+    # short call: the record does not claim either.
+    assert row["outcome"] == "ended_in_transfer"
+    assert controller.headline(row).endswith(
+        " · it ended while being put through")
     assert any(a["ability"] == "transfer" and a["status"] == "done"
                for a in row["actions"])
     # The operator was told who is being put through, and from which number.
     assert op.lines == [f"Putting through: Bea Sample ({PRIORITY})"]
     assert op.finished == [row["id"]]
+    assert [v for v, _, _ in fake.requests if v == "hangup"] == []
+
+
+async def test_a_transfer_after_which_nobody_answers_is_transferred(
+        fake, http, phone_store, contacts) -> None:
+    op = Operator()
+    sid = "live_through"
+    d = dataclasses.replace(
+        deps(fake, http, phone_store, contacts=contacts, op=op),
+        timing=ACCEPTED)
+    task = asyncio.create_task(controller.handle_call(
+        Incoming(sid, PRIORITY, LINE), d))
+    await wait_for(lambda: accepted(fake, sid))
+    await put_through(fake, sid)
+    # The session stays open after the transfer was accepted. Casa asks
+    # into it whether anyone is there; the voice model says so, and nobody
+    # answers.
+    await fake.wait_sent("session.instructions.append")
+    await fake.emit(sid, {"type": "session.output_transcript.delta",
+                          "delta": "Bent u er nog?", "start_ms": 0,
+                          "end_ms": 0})
+    await asyncio.wait_for(task, 5)
+    [row] = calls(phone_store)
+    assert row["outcome"] == "transferred"
+    assert controller.headline(row).endswith(" · it was put through to you")
+    assert appended(fake) == [fixed_line("check_in")]
+    # Casa ended the leftover session itself.
+    assert [s for v, s, _ in fake.requests if v == "hangup"] == [sid]
+    assert op.finished == [row["id"]]
+
+
+async def test_a_caller_heard_after_a_transfer_is_an_ordinary_call(
+        fake, http, phone_store, contacts) -> None:
+    op = Operator()
+    sid = "live_still_here"
+    d = dataclasses.replace(
+        deps(fake, http, phone_store, contacts=contacts, op=op),
+        timing=dataclasses.replace(ACCEPTED, pending_s=30.0))
+    task = asyncio.create_task(controller.handle_call(
+        Incoming(sid, PRIORITY, LINE), d))
+    await wait_for(lambda: accepted(fake, sid))
+    await put_through(fake, sid)
+    await asyncio.sleep(0.6)  # three times the settle time
+    await fake.emit(sid, {"type": "session.input_transcript.delta",
+                          "delta": "Hello? Nobody picks up.", "start_ms": 0,
+                          "end_ms": 0})
+    await fake.wait_sent("session.instructions.append")
+    assert appended(fake) == [fixed_line("transfer_failed")]
+    await fake.close(sid, "remote_hangup")
+    await asyncio.wait_for(task, 5)
+    [row] = calls(phone_store)
+    assert row["outcome"] == "caller_hung_up"
+    assert len([v for v, _, _ in fake.requests if v == "refer"]) == 1
+
+
+async def test_the_times_of_a_transfer_count_from_the_providers_answer(
+        fake, http, phone_store, contacts) -> None:
+    gate = asyncio.Event()
+    fake.hold_for["refer"] = gate
+    op = Operator()
+    sid = "live_slow_answer"
+    d = dataclasses.replace(
+        deps(fake, http, phone_store, contacts=contacts, op=op),
+        timing=dataclasses.replace(ACCEPTED, handover_s=1.0, pending_s=1.4))
+    task = asyncio.create_task(controller.handle_call(
+        Incoming(sid, PRIORITY, LINE), d))
+    await wait_for(lambda: accepted(fake, sid))
+    await put_through(fake, sid)
+    requested = asyncio.get_running_loop().time()
+    await asyncio.sleep(1.0)
+    gate.set()
+    answered = asyncio.get_running_loop().time()
+    # Past the settle time as counted from the request, well inside it as
+    # counted from the provider's answer: these words prove nothing.
+    await asyncio.sleep(max(0.0, requested + 1.3
+                            - asyncio.get_running_loop().time()))
+    await fake.emit(sid, {"type": "session.input_transcript.delta",
+                          "delta": "Thanks.", "start_ms": 0, "end_ms": 0})
+    await fake.wait_sent("session.instructions.append")
+    assert appended(fake) == [fixed_line("check_in")]
+    # Asked no sooner than its time after the answer.
+    assert asyncio.get_running_loop().time() - answered >= 1.4
+    await fake.emit(sid, {"type": "session.output_transcript.delta",
+                          "delta": "Bent u er nog?", "start_ms": 0,
+                          "end_ms": 0})
+    await asyncio.wait_for(task, 5)
+    [row] = calls(phone_store)
+    assert row["outcome"] == "transferred"
+    assert appended(fake) == [fixed_line("check_in")]
+
+
+def _result(phase: str, reason: str, *actions: dict) -> Result:
+    return Result(lines=(), actions=actions, phase=phase, closed_reason=reason,
+                  started=0.0, ended=1.0)
+
+
+def test_the_outcome_of_a_call_whose_transfer_was_accepted() -> None:
+    final = frozenset({"end_call"})
+    done = {"ability": "transfer", "status": "done"}
+    # Asked and nobody answered; ended before anyone could tell (by Casa or
+    # from the far side); heard again, then an ordinary end.
+    assert controller.outcome_of(
+        _result("handed_off", "clock:pending", done), final) == "transferred"
+    assert controller.outcome_of(
+        _result("pending", "clock:pending", done), final) == "ended_in_transfer"
+    assert controller.outcome_of(
+        _result("pending", "remote_hangup", done), final) == "ended_in_transfer"
+    assert controller.outcome_of(
+        _result("ended", "remote_hangup", done), final) == "caller_hung_up"
+    assert controller.outcome_of(
+        _result("ended", "clock:silence", done), final) == "ended_by_casa"
 
 
 async def test_session_that_raises_is_an_error(fake, http, phone_store) -> None:

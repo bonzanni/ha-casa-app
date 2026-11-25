@@ -2045,12 +2045,24 @@ urgent alert if they say it is an emergency; Casa recognises such a call only
 when `phone_line_number` is set. When nobody speaks for a few seconds, the
 assistant asks whether the caller is still there; if there is still no answer,
 it says goodbye and hangs up. Casa also ends a call after ten minutes, or when
-the connection is lost. Up to two
+the connection is lost, but not while it is putting the call through. Up to two
 calls are answered at once; a third caller hears busy.
+
+**When a call is put through.** Casa does not take the transfer itself as a
+sign that the call reached you; it keeps listening. If the caller is still
+heard after a few seconds, Casa treats the transfer as not gone through: the
+assistant tells them so and takes a message. If the caller is not heard again,
+after about twenty seconds the assistant asks whether anyone is still there,
+and when nobody answers, Casa leaves the call quietly. Casa cannot know whether
+you picked up.
 
 **After the call.** You get two messages in your chat. First Casa's own line:
 who called (the name from your contacts, or "Unknown caller"), their full
-number so you can call back, the time and how the call ended. Then the
+number so you can call back, the time and how the call ended: "it was put
+through to you" when Casa asked whether anyone was still there, heard the
+question asked, kept listening and nobody answered, "it ended while being put through" when the call ended before Casa
+could tell (the caller hung up while waiting, or you answered and the call
+was over within about half a minute). Then the
 assistant's summary of what they wanted and what happened. The assistant gets
 a short summary of the call, never the transcript. Casa keeps a transcript of
 each call for 30 days, and until then the assistant can send it to you; after

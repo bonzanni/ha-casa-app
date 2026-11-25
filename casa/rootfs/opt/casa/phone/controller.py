@@ -69,6 +69,7 @@ _OUTCOME_WORDS = {
     "caller_hung_up": "the caller hung up",
     "ended_by_casa": "the assistant ended it",
     "transferred": "it was put through to you",
+    "ended_in_transfer": "it ended while being put through",
     "accept_failed": "it could not be answered",
     "error": "it stopped on an error",
     "interrupted": "it was cut off when Casa stopped",
@@ -187,9 +188,19 @@ async def _caller(number: str, deps: Deps, *, returned: bool) -> CallerInfo:
 
 
 def outcome_of(result: Result, final_abilities: frozenset[str]) -> str:
-    """How the session ended, as recorded on the call."""
+    """How the session ended, as recorded on the call.
+
+    Casa treats an accepted transfer as inconclusive: the acceptance is not
+    taken to show that the call left, and the session may stay open after
+    it. A call counts as put through only when Casa asked into the session
+    whether the caller was still there, was listening for the answer, and
+    none came (``handed_off``). A session that ended with the transfer still
+    unsettled (``pending``) is recorded as just that: the caller may have
+    given up, or may have been put through for a short call."""
     if result.phase == "handed_off":
         return "transferred"
+    if result.phase == "pending":
+        return "ended_in_transfer"
     reason = result.closed_reason
     if reason.startswith("clock:") or reason == "lost":
         return "ended_by_casa"
@@ -394,7 +405,8 @@ async def _handle(incoming: Incoming, deps: Deps) -> None:
         holder.append(session)
         result = await session.run()
         # A call the stop hung up is cut off, whatever its close would
-        # otherwise imply (a transfer still pending reads as put through).
+        # otherwise imply (one with a transfer still pending would read as
+        # ended while being put through).
         # A run that returned before the stop keeps its own outcome: nothing
         # is awaited between the run's end and this check.
         outcome = ("interrupted" if deps.cut_by_stop()
