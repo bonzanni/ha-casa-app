@@ -13,7 +13,7 @@
   "history": [
     {
       "who": "agent",
-      "text": "Hi Mara, you have reached the assistant answering this phone. How can I help?"
+      "text": "Hi Mara, this is the AI assistant answering this phone. How can I help?"
     },
     {
       "who": "caller",

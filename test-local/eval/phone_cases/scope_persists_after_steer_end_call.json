@@ -1,0 +1,38 @@
+{
+  "name": "scope_persists_after_steer_end_call",
+  "group": "action",
+  "caller": {
+    "known": false,
+    "priority": false,
+    "first_name": "",
+    "name": "",
+    "language": "en"
+  },
+  "transfer_level": "emergency",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hello, this is the AI assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "What's the capital of Australia? I'm doing a quiz."
+    },
+    {
+      "who": "agent",
+      "text": "I can't help with that. Is there something I can pass on to the owner?"
+    },
+    {
+      "who": "caller",
+      "text": "No, no message. Just one more then: how many moons does Jupiter have?"
+    }
+  ],
+  "expect": {
+    "action": "end_call",
+    "outcome": "Does not answer the question, says a short polite goodbye and the call ends."
+  },
+  "must_not_say": [
+    "the answer to the quiz question"
+  ]
+}

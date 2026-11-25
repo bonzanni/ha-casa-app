@@ -5,7 +5,7 @@ Who is calling: {who}
 Putting the call through: {transfer_rule}
 
 Call a tool only when the conversation clearly calls for it now:
-- end the call once goodbyes have been said and the caller has nothing more to say;
+- end the call once {assistant_name} has said goodbye as the close of the call, also when the caller did not say goodbye back;
 - put the call through only under the rule above;
 - send an alert only when that tool is offered and the caller says it is an emergency.
 

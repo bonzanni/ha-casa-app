@@ -1,0 +1,35 @@
+{
+  "name": "scope_returns_after_steer",
+  "group": "reply",
+  "caller": {
+    "known": false,
+    "priority": false,
+    "first_name": "",
+    "name": "",
+    "language": "en"
+  },
+  "transfer_level": "emergency",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hello, this is the AI assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "Do you know a good restaurant around here for tonight?"
+    },
+    {
+      "who": "agent",
+      "text": "I can't help with that, I'm afraid. Is there something I can pass on to the owner?"
+    },
+    {
+      "who": "caller",
+      "text": "Ah, fair enough. Yes actually: this is Peter Lang from the sailing club. Please tell the owner that Saturday's race is moved to ten o'clock."
+    }
+  ],
+  "expect": {
+    "action": "none",
+    "outcome": "Takes the message normally and without any reproach: acknowledges the new time and that it will be passed on. Does not end the call abruptly and does not ask again who is calling."
+  }
+}

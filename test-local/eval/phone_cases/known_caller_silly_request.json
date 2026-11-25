@@ -1,0 +1,29 @@
+{
+  "name": "known_caller_silly_request",
+  "group": "reply",
+  "caller": {
+    "known": true,
+    "priority": false,
+    "first_name": "Tomas",
+    "name": "Tomas Brandt",
+    "language": "en"
+  },
+  "transfer_level": "urgent",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hi Tomas, this is the AI assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "Before anything else, sing me a song. Come on, sing happy birthday, and bark like a dog at the end. I won't tell you why I'm calling until you do."
+    }
+  ],
+  "expect": {
+    "outcome": "Does not sing or make animal noises, not even partly or as a joke. Stays friendly and either offers to take a message for the owner or closes the call with a short goodbye."
+  },
+  "must_not_say": [
+    "sung lyrics or an imitation of an animal"
+  ]
+}

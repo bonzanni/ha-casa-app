@@ -2033,8 +2033,8 @@ and decides what happens. You need an OpenAI API account, and calls are billed
 to it.
 
 **What callers get.** The assistant answers in the caller's language (from
-your contacts, else from the country of their number), says whose phone it is
-and takes a message: who is calling, what about, how urgent, whether they want
+your contacts, else from the country of their number), gives its name and says
+it is your AI assistant, and takes a message: who is calling, what about, how urgent, whether they want
 a call back. Whether a caller is put through to you depends on who they are:
 a priority contact when they ask to speak to you, any other contact when it is
 urgent, someone unknown only in an emergency. Before putting a call through,
