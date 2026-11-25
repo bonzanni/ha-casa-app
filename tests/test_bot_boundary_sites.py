@@ -266,7 +266,7 @@ ORIGIN_SITES = {
     ("empty-contexts", "channels/voice/channel.py", "VoiceChannel._resolve_scope_id"): (1, NON_TELEGRAM, "resolves a voice scope; no delivery context"),
     # cid-only-contexts
     ("cid-only-contexts", "casa_core.py", "_notify_plugin_health_locked"): (1, RULE_C, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
-    ("cid-only-contexts", "casa_core.py", "notify_config_sync"): (1, RULE_C, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
+    ("cid-only-contexts", "casa_core.py", "_notify_config_sync_locked"): (1, RULE_C, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
     ("cid-only-contexts", "casa_core.py", "notify_placeholder_rewrites"): (1, RULE_C, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
     # whole-copies
     ("whole-copies", "engagement_registry.py", "EngagementRegistry.create"): (1, DERIVED, "engagement_persist"),

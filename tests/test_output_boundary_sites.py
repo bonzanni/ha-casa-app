@@ -83,7 +83,7 @@ CASA_TEXT_SITES = {
     ("authz_grants.py", "_post_card"): "an approval card raised with NO turn bound (a setup dispatch); with a turn it is admitted",
     ("casa_core.py", "_notify_plugin_health_locked"): "plugin-health notice, Casa template",
     ("casa_core.py", "notify_placeholder_rewrites"): "placeholder-rewrite notice, Casa template",
-    ("casa_core.py", "notify_config_sync"): "config-overwrite notice, Casa template",
+    ("casa_core.py", "_notify_config_sync_locked"): "config-overwrite notice, Casa template",
     ("casa_core.py", "_telegram_outbound"): "bus target for Casa notices only; a model reply never reaches it",
     ("casa_core.py", "operator_notify"): "operator notice, Casa template",
     ("tools.py", "_post"): "wipe_memory's confirmation keyboard, Casa template",
@@ -188,7 +188,7 @@ CHANNEL_METHOD_CALLERS = {
     ("casa_core.py", "operator_notify"): "casa_text",
     ("casa_core.py", "_notify_plugin_health_locked"): "casa_text",
     ("casa_core.py", "notify_placeholder_rewrites"): "casa_text",
-    ("casa_core.py", "notify_config_sync"): "casa_text",
+    ("casa_core.py", "_notify_config_sync_locked"): "casa_text",
     ("casa_core.py", "_telegram_outbound"): "casa_text",
     # The transport resolves one endpoint and hands it the same value unchanged.
     ("channels/telegram_transport.py", "send"): "forward",
