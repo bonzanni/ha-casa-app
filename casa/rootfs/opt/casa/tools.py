@@ -7840,13 +7840,30 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
         await tell(reason)
 
 
+# #1678: the input bounds the launch paths enforce, stated where the model
+# reads them before it writes, so a long request is not composed only to be
+# refused.
+_TASK_FIELD = {"type": "string", "description": (
+    f"At most {specialist_limits._MAX_TASK_CHARS:,} characters; a longer one "
+    "is refused. Put long material in a file or your scratchpad and say "
+    "where it is.")}
+_CONTEXT_FIELD = {"type": "string", "description": (
+    f"At most {specialist_limits._MAX_CONTEXT_CHARS:,} characters.")}
+
+
 @tool(
     "start_job",
     "Start a background job: one listed in <jobs>, or, for a specialist, one its own "
     "plugins declare. A job <jobs> lists as a delegate's own is started by delegating the "
     "request to that delegate. It runs as one long session, and the chat's resident is "
     "notified when it ends.",
-    {"job": str, "task": str, "context": str},
+    {"type": "object",
+     "properties": {
+         "job": {"type": "string"},
+         "task": _TASK_FIELD,
+         "context": _CONTEXT_FIELD,
+     },
+     "required": ["job", "task", "context"]},
 )
 async def start_job(args: dict) -> dict:
     origin = _snapshot_origin()
@@ -7959,8 +7976,8 @@ def _delegation_mode_for(cfg: Any, mode: str) -> str:
     {"type": "object",
      "properties": {
          "agent": {"type": "string"},
-         "task": {"type": "string"},
-         "context": {"type": "string"},
+         "task": _TASK_FIELD,
+         "context": _CONTEXT_FIELD,
          "mode": {"type": "string",
                   "enum": ["sync", "async", "interactive"],
                   "description": (
@@ -8721,8 +8738,8 @@ def _handoff_target(agent_name: str) -> "tuple[str | None, dict | None]":
     {"type": "object",
      "properties": {
          "agent": {"type": "string"},
-         "task": {"type": "string"},
-         "context": {"type": "string"},
+         "task": _TASK_FIELD,
+         "context": _CONTEXT_FIELD,
          "expected_result": {"type": "string"},
      },
      "required": ["agent", "task"]},
