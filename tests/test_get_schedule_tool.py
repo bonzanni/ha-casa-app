@@ -59,6 +59,39 @@ class TestGetSchedule:
         result = await tools.get_schedule.handler({"within_hours": 24})
         assert "Error" in result["content"][0]["text"]
         assert "turn" in result["content"][0]["text"].lower()
+        assert result.get("is_error") is True
+
+    async def test_registry_missing_is_an_error(self):
+        import tools
+        tools.init_tools(
+            channel_manager=MagicMock(), bus=MagicMock(),
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=None,
+        )
+        result = await tools.get_schedule.handler({"within_hours": 24})
+        assert "registry" in result["content"][0]["text"]
+        assert result.get("is_error") is True
+
+    async def test_origin_without_role_is_an_error(self):
+        import agent as agent_mod
+        import tools
+        reg = MagicMock()
+        tools.init_tools(
+            channel_manager=MagicMock(), bus=MagicMock(),
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=reg,
+        )
+        token = agent_mod.origin_var.set({
+            "role": "", "channel": "telegram",
+            "chat_id": "c1", "cid": "x", "user_text": "hi",
+        })
+        try:
+            result = await tools.get_schedule.handler({"within_hours": 24})
+        finally:
+            agent_mod.origin_var.reset(token)
+        assert "no role" in result["content"][0]["text"]
+        assert result.get("is_error") is True
+        reg.list_jobs_for.assert_not_called()
 
     async def test_empty_schedule_message(self, monkeypatch):
         import agent as agent_mod

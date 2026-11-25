@@ -10551,18 +10551,17 @@ async def _phone_grant_card(caller_class: str, ability: str, before: str,
 )
 async def get_schedule(args: dict) -> dict:
     if _trigger_registry is None:
-        return {"content": [{"type": "text",
-                             "text": "Error: trigger registry not initialized"}]}
+        return _text_result("Error: trigger registry not initialized",
+                            is_error=True)
 
     origin = _snapshot_origin()
     if not origin:
-        return {"content": [{"type": "text",
-                             "text": "Error: get_schedule called outside a turn context"}]}
+        return _text_result("Error: get_schedule called outside a turn context",
+                            is_error=True)
 
     role = origin.get("role") or ""
     if not role:
-        return {"content": [{"type": "text",
-                             "text": "Error: turn origin has no role"}]}
+        return _text_result("Error: turn origin has no role", is_error=True)
 
     raw_hours = args.get("within_hours", 24)
     try:
