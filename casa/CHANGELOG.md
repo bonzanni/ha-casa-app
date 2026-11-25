@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.385.3] - 2026-11-25
+
+### Fixed
+
+- When an agent you handed work to needed your approval and the approval card could not be shown, the assistant could still be told that an approval was pending, so it neither retried the action nor mentioned it. This happened when the request was cancelled while the card was being sent. If the card cannot be shown, Casa now clears its pending-approval mark when the send finishes, if the mark has not already been used.
+- When one hand-off raised two approval cards and the second could not be shown, the assistant was no longer told that the first was still waiting for you. It now is.
+- If an agent uses a sub-agent, the sub-agent's own text is no longer added to the reply you receive. None of the agents shipped with Casa can start sub-agents, so this affects only an agent you gave that tool yourself.
+
 ## [0.385.2] - 2026-11-25
 
 ### Fixed
