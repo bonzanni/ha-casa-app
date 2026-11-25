@@ -888,15 +888,27 @@ def _isolate_verdict_broker_and_challenges():
 # the sentinel per-test via ``monkeypatch``; the two compose cleanly — a
 # conftest-level autouse fixture is instantiated before a same-scope one
 # declared in the test module.
+#
+# The same fixture gives every test its own ``_RECONCILE_LOCK`` (#1681), for
+# the reason ``_fresh_reload_locks`` gives above: an ``asyncio.Lock`` binds to
+# the loop of its first contended acquire, and pytest-asyncio gives each test
+# a fresh loop. A consent card's reconcile runs as a background task that
+# publishes its routing before it releases the lock, so a test that reconciles
+# right after the card's routing appears can contend with it; two such tests
+# in one worker then fail with "is bound to a different event loop".
+# Production has one loop, so the lock discipline itself is unchanged.
 @pytest.fixture(autouse=True)
 def _reset_event_routing(monkeypatch):
     try:
+        import asyncio as _asyncio
+
         import event_reconcile
         import event_spool
     except Exception:  # pragma: no cover — module import is universal in tests
         yield
         return
     monkeypatch.setattr(event_reconcile, "_routed", event_spool.ROUTING_UNAVAILABLE)
+    monkeypatch.setattr(event_reconcile, "_RECONCILE_LOCK", _asyncio.Lock())
     yield
 
 
