@@ -10,9 +10,10 @@ last_reviewed: 2026-11-13
 
 What bounds a resident turn: how a turn that stops at its turn limit is detected and
 returned, the one line Casa adds about the stop and where it goes, and the limits the
-residents run with. How the turn is assembled, called and retried — and the silence and
+residents run with. How the turn is assembled and called is
+[`architecture/turn-loop.md`](turn-loop.md); how it is retried — and the silence and
 resume-fault rules that consult the stop (INV-TURN-008) — is
-[`architecture/turn-loop.md`](turn-loop.md). How the line is spoken on voice is
+[`architecture/turn-faults.md`](turn-faults.md). How the line is spoken on voice is
 [`architecture/voice.md`](voice.md); what it means for a narration's announcement is
 [`architecture/delegation-announcements.md`](delegation-announcements.md).
 
@@ -99,6 +100,7 @@ notice and goes through Casa's own bot ([`telegram-bots.md`](telegram-bots.md)).
 
 **Related**
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 - [`architecture/voice.md`](../architecture/voice.md)
 - [`architecture/delegation-announcements.md`](../architecture/delegation-announcements.md)
 - [`architecture/scheduled-prompt-endings.md`](../architecture/scheduled-prompt-endings.md)

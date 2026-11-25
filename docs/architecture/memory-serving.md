@@ -67,7 +67,7 @@ connects and again at the end of every turn, inside the turn's session gate: a s
 without such a record (its view could not be recorded or bound, or its record was replaced
 by another session's) has its warm client released then, and any session that cannot resume
 on its record starts afresh, once, and the reason is logged. A turn that fails but keeps
-its session (INV-TURN-017 in [`turn-loop.md`](turn-loop.md)) binds its view to that session
+its session (INV-TURN-017 in [`turn-faults.md`](turn-faults.md)) binds its view to that session
 the same way, so the next turn resumes it. The one exception is a store
 that cannot be read at all: that is no verdict, and the session is kept on its own frozen
 view. The session's resume pointer is dropped durably before the new view is rendered and
@@ -206,4 +206,5 @@ snapshot, and add itself to INV-MEM-030's tests.
 - [`architecture/memory-scoping.md`](../architecture/memory-scoping.md)
 - [`architecture/personality.md`](../architecture/personality.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 <!-- END SOURCEMAP -->

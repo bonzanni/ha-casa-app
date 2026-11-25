@@ -309,5 +309,6 @@ that writes it ([`memory-store.md`](memory-store.md)).
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
 - [`architecture/memory-scoping.md`](../architecture/memory-scoping.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 <!-- END SOURCEMAP -->

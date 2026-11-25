@@ -11,8 +11,8 @@ last_reviewed: 2026-09-22
 The life of the warm, conversation-bound model client a turn runs on: how the pool keys and
 reuses one, what invalidates it, what a cancelled turn owes it, and what a close, a key
 reset or a container stop guarantees about the clients the pool has opened. It does not
-cover what a turn assembles or how the model call is retried
-([`architecture/turn-loop.md`](turn-loop.md)), nor how turns are ordered against
+cover what a turn assembles ([`architecture/turn-loop.md`](turn-loop.md)) or how the model
+call is retried ([`architecture/turn-faults.md`](turn-faults.md)), nor how turns are ordered against
 configuration writes ([`architecture/concurrency-model.md`](concurrency-model.md)).
 
 ## Mental model
@@ -88,7 +88,7 @@ loop — what is guaranteed is that the entry is invalid by the time the call re
 Retryable errors are re-raised so the retry wrapper sees them; non-retryable ones return
 with the entry marked invalid for the pool to drop. Whether a re-raised error is retried,
 and that the dropped entry's session may still be registered for the conversation, is
-INV-TURN-017 in [`turn-loop.md`](turn-loop.md).
+INV-TURN-017 in [`turn-faults.md`](turn-faults.md).
 
 The one exception is a stop. `ManagedSdkClient.interrupt_turn` marks the entry `stopped` and
 asks the client's `interrupt()`, bounded at two seconds; it refuses an entry with no turn in
@@ -292,6 +292,7 @@ handler call — starts its drain at the swap, as before.
 
 **Related**
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 - [`architecture/concurrency-model.md`](../architecture/concurrency-model.md)
 - [`architecture/overview.md`](../architecture/overview.md)
 <!-- END SOURCEMAP -->

@@ -75,7 +75,7 @@ addressing the limit-stop line uses. So nothing the model writes is rewritten, a
 fallback is Casa's text (`casa_text`, beside INV-OUT-001), not the model's. Its wording says there
 was nothing to add, which is why a failed turn must never reach it. Webhook fires carry a
 trusted origin, so a silence after consumed retries is already reclassified as the error it
-is (INV-TURN-008 in [`turn-loop.md`](turn-loop.md)). An error result the SDK client returns
+is (INV-TURN-008 in [`turn-faults.md`](turn-faults.md)). An error result the SDK client returns
 rather than raises is not, on any other turn; on this one, a silence that came with one is
 reported as the SDK error instead of the fallback.
 

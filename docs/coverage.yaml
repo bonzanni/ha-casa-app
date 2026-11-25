@@ -286,7 +286,7 @@
 - item: casa/rootfs/opt/casa/reminders.py
   doc: architecture/reminders.md
 - item: casa/rootfs/opt/casa/retry.py
-  doc: architecture/turn-loop.md
+  doc: architecture/turn-faults.md
 - item: casa/rootfs/opt/casa/trigger_write_lock.py
   doc: architecture/trigger-file-writers.md
 - item: casa/rootfs/opt/casa/role_artifact.py
@@ -658,7 +658,7 @@
 - item: casa/rootfs/opt/casa/drivers/__init__.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/error_kinds.py
-  doc: architecture/turn-loop.md
+  doc: architecture/turn-faults.md
 - item: casa/rootfs/opt/casa/markdown_sections.py
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/mcp_registry.py

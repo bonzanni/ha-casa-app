@@ -730,19 +730,53 @@ def test_turn_limit_stop_and_turn_conduct_are_separate():
     (1, 1, 1), not (1, 1, 2). All five payload-location checks independently
     yield (1, 1) at base and are regression arms.
 
+    #1670 then split the conduct set itself at the clause the document's
+    scope names beside assembly, "how the call is retried": turn-loop.md
+    stood at 24,973 of its 25,000 bytes, so the fault group (INV-TURN-005,
+    007, 008, 017) moved to ``docs/architecture/turn-faults.md`` and the
+    conduct group (004, 009, 012, 013, 015) stayed. Each group is declared
+    in exactly one document, and the three documents are distinct: counts
+    (1, 1, 1, 3). The manifest alone would let a declaration move in the
+    Markdown unnoticed, so each pinned id's ``**INV-TURN-0NN**:`` line is
+    also counted: once across the text corpus, in the manifest's owner.
+
     Pins ownership and lead location; byte-identical movement and
     completeness of the passages remain review obligations.
     """
     limits = {_declaring_document("INV-TURN-014")}
+    faults = {
+        _declaring_document(inv)
+        for inv in (
+            "INV-TURN-005", "INV-TURN-007", "INV-TURN-008", "INV-TURN-017",
+        )
+    }
     conduct = {
         _declaring_document(inv)
         for inv in (
-            "INV-TURN-004", "INV-TURN-005", "INV-TURN-007", "INV-TURN-008",
-            "INV-TURN-009", "INV-TURN-012", "INV-TURN-013",
+            "INV-TURN-004", "INV-TURN-009", "INV-TURN-012", "INV-TURN-013",
+            "INV-TURN-015",
         )
     }
-    counts = (len(limits), len(conduct), len(limits | conduct))
-    assert counts == (1, 1, 2), (counts, limits, conduct)
+    counts = (
+        len(limits), len(faults), len(conduct),
+        len(limits | faults | conduct),
+    )
+    assert counts == (1, 1, 1, 3), (counts, limits, faults, conduct)
+
+    raw = {doc: (DOCS / doc).read_text() for doc in _text_corpus()}
+    for inv in (
+        "INV-TURN-014",
+        "INV-TURN-005", "INV-TURN-007", "INV-TURN-008", "INV-TURN-017",
+        "INV-TURN-004", "INV-TURN-009", "INV-TURN-012", "INV-TURN-013",
+        "INV-TURN-015",
+    ):
+        declared = {
+            doc: [m.group(1) for m in INV_DECLARATION.finditer(text)].count(inv)
+            for doc, text in raw.items()
+        }
+        total = sum(declared.values())
+        owned = declared[_declaring_document(inv)]
+        assert (total, owned) == (1, 1), (inv, total, owned)
 
     owner = _declaring_document("INV-TURN-014")
     texts = {

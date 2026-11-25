@@ -121,7 +121,7 @@ run left waiting — and the turn, at the result of Casa's `delegate_to_agent` w
 that delegation id at its top level, feeds each to the same cut. The specialist's text inside
 that result is never read for it, and the result the resident receives is unchanged. At a
 delegate result the turn cannot read that way — one the CLI rewrote for size, or an
-interrupted call's text — it feeds instead every record still on the scope: by the routes measured, those still unread belong to that call or to a sibling of the same response, whose result folds at the same point (#1274). No earlier attempt can have left one there, since no attempt of a turn follows one that made a call (INV-TURN-017 in [`turn-loop.md`](turn-loop.md)). A delegated run publishes the grants
+interrupted call's text — it feeds instead every record still on the scope: by the routes measured, those still unread belong to that call or to a sibling of the same response, whose result folds at the same point (#1274). No earlier attempt can have left one there, since no attempt of a turn follows one that made a call (INV-TURN-017 in [`turn-faults.md`](turn-faults.md)). A delegated run publishes the grants
 its cut still holds for its launcher's fold (`approval_waiting`). What it does not cover: the
 transcript and memory keep the words on every turn.
 
@@ -190,6 +190,7 @@ predicate rather than re-derived inline where it is acted on; the grep test in
 **Related**
 - [`architecture/output-boundary.md`](../architecture/output-boundary.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 - [`architecture/webhook-delivery.md`](../architecture/webhook-delivery.md)
 - [`architecture/scheduled-prompt-endings.md`](../architecture/scheduled-prompt-endings.md)
 - [`architecture/delegation-announcements.md`](../architecture/delegation-announcements.md)

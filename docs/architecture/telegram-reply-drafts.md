@@ -156,6 +156,7 @@ correlation id; the turn then ends through its normal end, as a Stop press does.
 **Related**
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
+- [`architecture/turn-faults.md`](../architecture/turn-faults.md)
 - [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
 - [`architecture/output-boundary.md`](../architecture/output-boundary.md)
 - [`architecture/output-scope-properties.md`](../architecture/output-scope-properties.md)
