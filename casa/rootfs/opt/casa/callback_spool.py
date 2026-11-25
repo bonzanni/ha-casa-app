@@ -69,8 +69,8 @@ import callback_attempts
 from spool_fs import (  # noqa: F401 — re-exported for existing callers
     DIR_ID_NAME, DIR_MODE, REPLACE_TEMP_INFIX, _DIR_FLAGS, _DIR_ID_RE,
     _MARKER_READ_FLAGS, _TOKEN_ERROR, _classify_dir_token, _is_clock,
-    _is_replace_temp, _listdir_quiet, _lstat_quiet, _mkdir, _open_dir,
-    canonical_marker_bytes,
+    _LSTAT_ERROR, _is_replace_temp, _listdir_quiet, _lstat_quiet,
+    _marker_lstat, _mkdir, _open_dir, canonical_marker_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,34 +319,6 @@ def _fsync_strict(fd: int, what: str) -> None:
         raise FsyncFailed(
             exc.errno if exc.errno is not None else errno.EIO,
             f"fsync of {what} failed") from exc
-
-
-#: Sentinel for :func:`_marker_lstat`: a metadata read that FAILED (any OSError
-#: other than ENOENT), so the entry's presence is UNKNOWN — distinct from a
-#: genuine absence (``None``). Never conflated with "gone".
-_LSTAT_ERROR: object = object()
-
-
-def _marker_lstat(name: str, dir_fd: int):
-    """``lstat`` for the marker retirement/confirmation path, three-valued:
-
-    * a ``stat_result`` — the entry is PRESENT;
-    * ``None`` — the entry is genuinely ABSENT (``FileNotFoundError`` / ENOENT);
-    * :data:`_LSTAT_ERROR` — a metadata read FAILED for any other reason
-      (EACCES, EIO, ELOOP, ENOTDIR, …), so presence is UNKNOWN.
-
-    Unlike :func:`_lstat_quiet` — which maps EVERY error to ``None`` and is
-    therefore only safe where "absent-on-any-error" is a fail-SAFE best-effort
-    peek — this never reads a non-ENOENT failure as absence. A retirement that
-    cannot confirm removal must report FAILURE (so the reconciler surfaces
-    ``callback_spool_error``), never a false success that leaves a surviving
-    marker mistaken for gone."""
-    try:
-        return os.lstat(name, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return None
-    except OSError:
-        return _LSTAT_ERROR
 
 
 def _regular_stat(name: str, dir_fd: "int | None"):

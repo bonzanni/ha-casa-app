@@ -93,8 +93,8 @@ import event_attempts
 from spool_fs import (  # noqa: F401 — re-exported for existing callers
     DIR_ID_NAME, DIR_MODE, REPLACE_TEMP_INFIX, _DIR_FLAGS, _DIR_ID_RE,
     _MARKER_READ_FLAGS, _TOKEN_ERROR, _classify_dir_token, _is_clock,
-    _is_replace_temp, _listdir_quiet, _lstat_quiet, _mkdir, _open_dir,
-    canonical_marker_bytes,
+    _LSTAT_ERROR, _is_replace_temp, _listdir_quiet, _lstat_quiet,
+    _marker_lstat, _mkdir, _open_dir, canonical_marker_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -397,11 +397,16 @@ _SCAN_ERROR: object = object()
 
 
 def _retire_marker_entry(name: str, dir_fd: int) -> bool:
-    st = _lstat_quiet(name, dir_fd)
+    """Retire a marker entry of any type; True only when it is confirmed
+    ABSENT (ENOENT). A metadata failure before or after the removal leaves
+    presence unknown and reports False, as ``callback_spool`` does."""
+    st = _marker_lstat(name, dir_fd)
     if st is None:
         return True
+    if st is _LSTAT_ERROR:
+        return False
     _remove_entry(name, dir_fd, st)
-    return _lstat_quiet(name, dir_fd) is None
+    return _marker_lstat(name, dir_fd) is None
 
 
 def _read_marker_at(name: str, dir_fd: int) -> Marker:
@@ -2260,9 +2265,11 @@ class EventSpool:
         except OSError:
             return None
         for name in names:
-            st = _lstat_quiet(name, fd)
+            st = _marker_lstat(name, fd)
             if st is None:
                 continue
+            if st is _LSTAT_ERROR:
+                return None
             newest = max(newest, st.st_mtime)
             if depth > 0 and stat.S_ISDIR(st.st_mode):
                 try:

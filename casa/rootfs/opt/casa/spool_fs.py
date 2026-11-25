@@ -34,7 +34,7 @@ _DIR_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 #: Sentinel for a token whose state could not be ESTABLISHED (an I/O failure
 #: mid-probe). Distinct from ``None`` (positively absent or malformed) for the
-#: same reason ``callback_spool._LSTAT_ERROR`` is distinct from ENOENT: an
+#: same reason :data:`_LSTAT_ERROR` is distinct from ENOENT: an
 #: unknowable state is never grounds for the repair path to retire a
 #: possibly-valid token.
 _TOKEN_ERROR = object()
@@ -92,6 +92,34 @@ def _lstat_quiet(name: str, dir_fd: int):
         return os.lstat(name, dir_fd=dir_fd)
     except OSError:
         return None
+
+
+#: Sentinel for :func:`_marker_lstat`: a metadata read that FAILED (any OSError
+#: other than ENOENT), so the entry's presence is UNKNOWN — distinct from a
+#: genuine absence (``None``). Never conflated with "gone".
+_LSTAT_ERROR: object = object()
+
+
+def _marker_lstat(name: str, dir_fd: int):
+    """``lstat`` for the marker retirement/confirmation path, three-valued:
+
+    * a ``stat_result`` — the entry is PRESENT;
+    * ``None`` — the entry is genuinely ABSENT (``FileNotFoundError`` / ENOENT);
+    * :data:`_LSTAT_ERROR` — a metadata read FAILED for any other reason
+      (EACCES, EIO, ELOOP, ENOTDIR, …), so presence is UNKNOWN.
+
+    Unlike :func:`_lstat_quiet` — which maps EVERY error to ``None`` and is
+    therefore only safe where "absent-on-any-error" is a fail-SAFE best-effort
+    peek — this never reads a non-ENOENT failure as absence. A retirement that
+    cannot confirm removal must report FAILURE (so the reconciler surfaces a
+    spool error), never a false success that leaves a surviving marker
+    mistaken for gone."""
+    try:
+        return os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return _LSTAT_ERROR
 
 
 def _listdir_quiet(dir_fd: int) -> list[str]:
