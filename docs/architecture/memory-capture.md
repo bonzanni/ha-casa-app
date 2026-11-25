@@ -37,7 +37,8 @@ awaits the append, so every capture a turn made has returned by the time the tur
   `correct_memory` finds the message to mark ([`memory-tools.md`](memory-tools.md)).
 - **Each text-bearing message the resident writes**, in the fold that streams it, before it
   is emitted. Every attempt of the turn folds its own messages, so a retry's output and a
-  regenerated answer are captured as well; an API fault's prose is never folded.
+  regenerated answer are captured as well; an API fault's prose is never folded, and
+  neither is a sub-agent's message (one carrying a `parent_tool_use_id`).
 - **A delegated run's request**, raw (the task, not the assembled prompt), when its prompt is
   assembled and before its client starts; and **its answer**, the whole live fold, when the
   run completes.

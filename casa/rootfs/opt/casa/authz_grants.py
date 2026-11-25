@@ -252,21 +252,32 @@ GRANTS = GrantStore()
 # call to the approval's own continuation. In-process and advisory (a restart
 # loses it along with every grant); capped because a delegation that returned
 # in time never produces a notification to take its entry.
+# #1626: one hand-off may raise several cards, so each delegation keeps the
+# request ids of the challenges it awaits; a card that is not shown takes back
+# only its own, and the delegation awaits approval while any is left.
 _AWAITING_APPROVAL_CAP = 256
-_AWAITING_APPROVAL: dict[str, None] = {}
+_AWAITING_APPROVAL: dict[str, set[str]] = {}
 
 
-def note_delegation_awaiting_approval(delegation_id: str) -> None:
+def note_delegation_awaiting_approval(
+        delegation_id: str, request_id: str = "") -> None:
     if not delegation_id:
         return
-    _AWAITING_APPROVAL.pop(delegation_id, None)
-    _AWAITING_APPROVAL[delegation_id] = None
+    rids = _AWAITING_APPROVAL.pop(delegation_id, set())
+    rids.add(request_id)
+    _AWAITING_APPROVAL[delegation_id] = rids
     while len(_AWAITING_APPROVAL) > _AWAITING_APPROVAL_CAP:
         del _AWAITING_APPROVAL[next(iter(_AWAITING_APPROVAL))]
 
 
-def forget_delegation_awaiting_approval(delegation_id: str) -> None:
-    _AWAITING_APPROVAL.pop(delegation_id, None)
+def forget_delegation_awaiting_approval(
+        delegation_id: str, request_id: str = "") -> None:
+    rids = _AWAITING_APPROVAL.get(delegation_id)
+    if rids is None:
+        return
+    rids.discard(request_id)
+    if not rids:
+        del _AWAITING_APPROVAL[delegation_id]
 
 
 def take_delegation_awaiting_approval(delegation_id: str) -> bool:
@@ -580,9 +591,9 @@ class _Challenge:
     # #1621: the card's post waits for the reply of the turn that raised the
     # call, so the hook answers without waiting for the post.
     deferred: bool = False
-    # #1621: every delegation a hook marked as awaiting this approval while
-    # its card was held — the call that raised it and any repeat of it — for a
-    # deferred card that ends without being shown.
+    # #1621/#1626: every delegation a hook marked as awaiting this approval —
+    # the call that raised it and any repeat of it — for the post driver to
+    # forget when the card ends without being shown.
     delegation_ids: set = field(default_factory=set)
 
 
@@ -649,10 +660,16 @@ class ChallengeHandle:
         ch = self._challenge
         return ch is not None and not ch.req._future.done()
 
+    @property
+    def request_id(self) -> str:
+        """The challenge's broker request id; "" when none was registered."""
+        return self._challenge.rid if self._challenge is not None else ""
+
     def remember_delegation(self, delegation_id: str) -> None:
-        """#1621: a delegation the caller marked as awaiting this approval
-        while its card is held. The post driver forgets every such mark when
-        the card is never shown, as the hook does when it waits for the post."""
+        """#1621/#1626: a delegation the caller marked as awaiting this
+        approval. The post driver forgets every such mark when the card is
+        never shown or is retired unanswered while it posts, whether or not
+        the caller is still waiting for the post."""
         if self._challenge is not None and delegation_id:
             self._challenge.delegation_ids.add(delegation_id)
 
@@ -922,6 +939,13 @@ class ChallengeCoordinator:
         ch.driver = driver
         self._drivers.add(driver)
         driver.add_done_callback(self._drivers.discard)
+        # #1626: however the driver ends, a delegation marked as awaiting a
+        # card that was not shown, or was retired unanswered while it posted,
+        # waits on nothing. Forgotten here, on the owned driver, because the
+        # hook that set the mark may have been cancelled while it waited for
+        # this post. A card that stands, or an answer, keeps the mark.
+        driver.add_done_callback(
+            lambda _t, _c=ch: self._forget_if_not_shown(_c))
 
         return ChallengeHandle(created=True, _challenge=ch)
 
@@ -1129,6 +1153,20 @@ class ChallengeCoordinator:
             await self._card_not_shown(
                 ch, channel, chat_id, tell=not _stopping(req))
 
+    @staticmethod
+    def _forget_delegations(ch: _Challenge) -> None:
+        for delegation_id in ch.delegation_ids:
+            forget_delegation_awaiting_approval(delegation_id, ch.rid)
+        ch.delegation_ids.clear()
+
+    @classmethod
+    def _forget_if_not_shown(cls, ch: _Challenge) -> None:
+        fut = ch.req._future
+        if ch.delegation_ids and fut.done() and (
+                fut.cancelled()
+                or not ChallengeHandle(created=False, _challenge=ch).answered()):
+            cls._forget_delegations(ch)
+
     async def _card_not_shown(
         self, ch: _Challenge, channel: Any, chat_id: int, *, tell: bool = True,
     ) -> None:
@@ -1136,9 +1174,7 @@ class ChallengeCoordinator:
         approval, as the hook does when it sees a post fail, and tell the
         operator once, in the card's chat, with Casa's own line. Best effort:
         a notice that cannot be sent is logged, and nothing more is tried."""
-        for delegation_id in ch.delegation_ids:
-            forget_delegation_awaiting_approval(delegation_id)
-        ch.delegation_ids.clear()
+        self._forget_delegations(ch)
         if not tell:
             return
         told = False
@@ -1979,15 +2015,18 @@ def make_resident_authz_hook(
                 delegation_id = "" if engagement_id else str(
                     (agent_mod.origin_var.get(None) or {}).get(
                         "_delegation_id") or "")
-                note_delegation_awaiting_approval(delegation_id)
+                rid = handle.request_id
+                note_delegation_awaiting_approval(delegation_id, rid)
+                # #1626: the challenge keeps it too, so the post driver forgets
+                # it when the card ends up not shown, even if this hook is
+                # cancelled while it waits for the post below.
+                handle.remember_delegation(delegation_id)
                 # #1621: a card that waits for this turn's reply is not
                 # waited for here — the reply is sent only after this hook
                 # has answered. The call is recorded as pending now, before
                 # its card is posted; a card that then cannot be shown is told
-                # to the operator by the post driver, which also forgets the
-                # delegation noted above.
+                # to the operator by the post driver.
                 if handle.deferred and handle.live:
-                    handle.remember_delegation(delegation_id)
                     _note_approval(tool_use_id, "pending", key)
                     return _deny(_DENY_PENDING if handle.created is False
                                  else _DENY_POSTED)
@@ -2004,20 +2043,20 @@ def make_resident_authz_hook(
                     elif not handle.answered():
                         # No card stands and nobody answered: the delegation
                         # noted above waits on nothing, as on the paths below.
-                        forget_delegation_awaiting_approval(delegation_id)
+                        forget_delegation_awaiting_approval(delegation_id, rid)
                     return _deny(_DENY_PENDING)
 
                 # settled_post awaits the coordinator-owned setup driver
                 # (shielded); deny latency ≈ one Telegram post RTT.
                 outcome = await handle.settled_post()
                 if outcome == "delivery_failed":
-                    forget_delegation_awaiting_approval(delegation_id)
+                    forget_delegation_awaiting_approval(delegation_id, rid)
                     return _deny(_DENY_DELIVERY_FAILED)
                 if outcome == "inactive":
                     # #1049: an expiry or a cancellation leaves no decision to
                     # wait for; an answer that raced the post does.
                     if not handle.answered():
-                        forget_delegation_awaiting_approval(delegation_id)
+                        forget_delegation_awaiting_approval(delegation_id, rid)
                     return _deny(_DENY_INACTIVE)
                 _note_approval(tool_use_id, "pending", key)
                 return _deny(_DENY_POSTED)

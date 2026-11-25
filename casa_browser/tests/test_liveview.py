@@ -400,11 +400,12 @@ async def test_type_box_sends_keystrokes(rig, operator):
     await ctl.send_str(json.dumps({"t": "key", "k": "Left"}))
     await ctl.send_str(json.dumps({"t": "key", "k": "rm -rf"}))            # not a key: dropped
     await ctl.send_str(json.dumps({"t": "text", "s": "x" * 257}))   # too long: dropped
-    assert await _until(lambda: ("injected", "key", None) in rig.log)
-    await asyncio.sleep(0.05)
+    await ctl.send_str(json.dumps({"t": "key", "k": "Right"}))     # the last one: all handled
+    assert await _until(lambda: ("injected", "key", "Right") in rig.log)
     injected = [e for e in rig.log if e[0] == "injected"]
-    assert injected == [("injected", "text", "Corr3ct-Horse€ü!"), ("injected", "key", None),
-                        ("injected", "key", None)]
+    assert injected == [("injected", "text", "Corr3ct-Horse€ü!"),
+                        ("injected", "key", "ctrl+BackSpace"), ("injected", "key", "Left"),
+                        ("injected", "key", "Right")]
     events = json.dumps([e.text_masked for e in rig.events(run_id)])
     assert "Corr3ct" not in events
 
@@ -603,7 +604,7 @@ async def test_the_viewers_own_select_all_is_no_copy_offer(rig, operator):
             rig.screen.selections.append("about:blank")      # what Chrome selected
     rig.screen.inject = inject
     await ctl.send_str(json.dumps({"t": "key", "k": "SelectAll"}))
-    await _until(lambda: ("injected", "key", None) in rig.log)
+    await _until(lambda: ("injected", "key", "ctrl+a") in rig.log)
     got = []
     for _ in range(6):
         try:

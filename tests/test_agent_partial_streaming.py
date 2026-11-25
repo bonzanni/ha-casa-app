@@ -509,22 +509,66 @@ async def test_sub_agent_stream_events_are_not_streamed(
     assert text == "Main"
 
 
-async def test_fold_still_takes_a_sub_agent_message(agent_fixture, monkeypatch):
-    """Only the in-flight deltas are filtered: a finished AssistantMessage
-    carrying ``parent_tool_use_id`` is folded into the reply as before."""
+async def test_fold_leaves_out_a_sub_agent_message(agent_fixture, monkeypatch):
+    """#1587: a finished AssistantMessage carrying ``parent_tool_use_id`` is
+    the sub-agent's own working text, written for the agent and not for the
+    person. The reply and every streamed cumulative carry the main agent's
+    text only, in order."""
     sub_msg = _mk_assistant("From the sub-agent.")
     # The SDK marks a sub-agent's message by its parent_tool_use_id (not frozen).
     object.__setattr__(sub_msg, "parent_tool_use_id", "toolu_1")
     factory = QueuedScriptFactory([[
+        _mk_stream_event("Checking."),
+        _mk_assistant("Checking."),
         sub_msg,
+        _mk_stream_event("Done."),
         _mk_assistant("Done."),
     ]])
     monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
     agent = agent_fixture
+    seen: list[str] = []
 
-    text = await agent._process(_msg("telegram", "123", "hi"))
+    async def on_token(text: str) -> None:
+        seen.append(str(text))
 
-    assert text == "From the sub-agent.\n\nDone."
+    text = await agent._process(_msg("telegram", "123", "hi"), on_token=on_token)
+
+    assert text == "Checking.\n\nDone."
+    assert seen == ["Checking.", "Checking.\n\nDone."]
+
+
+async def test_a_sub_agent_tool_call_still_stops_a_rerun(
+    agent_fixture, monkeypatch,
+):
+    """#1587 leaves a sub-agent message out of the reply only: its tool call
+    is still seen, so #1654's rule holds — an attempt that has seen a tool
+    call is not run again after a transient fault. Nothing of the
+    sub-agent's text reaches the stream."""
+    RetryableError = type("CLIConnectionError", (RuntimeError,), {})
+    sub_msg = _mk_assistant_content([
+        _mk_text_block("Sub-agent: sending it now."),
+        _SDKToolUseBlock(
+            id="toolu_sub", name="mcp__casa-framework__send_message",
+            input={}),
+    ])
+    object.__setattr__(sub_msg, "parent_tool_use_id", "toolu_1")
+    factory = QueuedScriptFactory([
+        [sub_msg, RetryableError("upstream reset")],
+        [_mk_assistant("A second attempt ran.")],
+    ])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(str(text))
+
+    with patch_retry_sleep() as sleep, pytest.raises(RetryableError):
+        await agent._process(_msg("telegram", "123", "hi"), on_token=on_token)
+
+    assert factory.constructed == 1
+    sleep.assert_not_awaited()
+    assert seen == []
 
 
 # ---------------------------------------------------------------------------

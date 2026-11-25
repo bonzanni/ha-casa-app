@@ -79,10 +79,9 @@ finish hook, because the broker's global hook drain — which engagement finaliz
 shutdown both await — must not wait on a specialist; the shutdown drain cuts any such wait
 short and delivers at once. Raising or
 reusing the challenge also records the delegation id
-(`authz_grants.note_delegation_awaiting_approval`) before the post settles, and forgets it
-if the post fails or the challenge was retired unanswered while it posted — an answer that
-raced the post keeps it; for a card held for the turn's reply the post driver does the
-forgetting (INV-PLUG-061). The resident turn later synthesized from that delegation's completion
+(`authz_grants.note_delegation_awaiting_approval`) with that challenge; the challenge's part
+is taken back when its card is not shown or the challenge was retired unanswered while it
+posted, whether or not the hook that recorded it is still waiting for the post. The resident turn later synthesized from that delegation's completion
 notification runs at an origin no grant serves, so it takes the record once and is told not
 to retry or re-delegate the action and to say nothing about approvals — the approval's own
 continuation carries the action out. The record is in-process, capped and advisory: losing

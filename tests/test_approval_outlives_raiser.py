@@ -357,14 +357,15 @@ def _delegated_origin(**extra) -> dict:
             "_delegation_id": "deleg-1", "_tg_bot": 111, **extra}
 
 
-async def _hook_call(deps, origin):
+async def _hook_call(deps, origin, args=None):
     hook = make_resident_authz_hook(
         "finance", {TOOL: {"artifact_id": ARTIFACT, "summary": None}},
         lambda: deps)
     otok = agent_mod.origin_var.set(origin)
     etok = tools_mod.engagement_var.set(None)
     try:
-        out = await hook({"tool_name": TOOL, "tool_input": {"x": 1}}, None, {})
+        out = await hook({"tool_name": TOOL, "tool_input": args or {"x": 1}},
+                         None, {})
     finally:
         agent_mod.origin_var.reset(otok)
         tools_mod.engagement_var.reset(etok)
@@ -385,6 +386,14 @@ def _synth(delegation_id: str) -> str:
 
 
 NOTE = "On THIS turn do NOT retry that action"
+
+
+async def _cancelled(task) -> None:
+    """Cancel *task*, a hook call waiting on its card's post, and see it go."""
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 class TestCompletionTurnLeavesTheCallToTheApproval:
@@ -440,6 +449,127 @@ class TestCompletionTurnLeavesTheCallToTheApproval:
         channel.post_raises = True
         deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
         assert await _hook_call(deps, _delegated_origin()) == _DENY_DELIVERY_FAILED
+        assert NOTE not in _synth("deleg-1")
+
+    # #1626: a hand-off's turn cancelled while its hook waits for the card's
+    # post. The post driver, which the cancellation cannot stop, forgets the
+    # mark when the card ends up not shown, and keeps it when the card stands.
+
+    async def test_a_cancelled_hook_whose_post_fails_leaves_no_mark(self, env):
+        broker, coord, channel = env
+        channel.post_gate = asyncio.Event()
+        channel.post_raises = True
+        deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
+        task = asyncio.ensure_future(_hook_call(deps, _delegated_origin()))
+        await _settle()
+        await _cancelled(task)
+        channel.post_gate.set()
+        await _settle()
+        assert not coord._entries and not channel.edits      # no card stands
+        assert "deleg-1" not in authz_grants._AWAITING_APPROVAL
+        assert NOTE not in _synth("deleg-1")
+
+    async def test_a_cancelled_hook_whose_request_is_retired_leaves_no_mark(
+            self, env):
+        broker, coord, channel = env
+        channel.post_gate = asyncio.Event()
+        deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
+        task = asyncio.ensure_future(_hook_call(deps, _delegated_origin()))
+        await _settle()
+        await _cancelled(task)
+        broker.cancel_scope(namespace="resident_ask", scope="authz:111:100",
+                            reason="new_session")
+        channel.post_gate.set()
+        await _settle()
+        assert "deleg-1" not in authz_grants._AWAITING_APPROVAL
+        assert NOTE not in _synth("deleg-1")
+
+    async def test_a_cancelled_repeat_whose_first_post_fails_leaves_no_mark(
+            self, env):
+        broker, coord, channel = env
+        channel.post_gate = asyncio.Event()
+        channel.post_raises = True
+        deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
+        first = asyncio.ensure_future(_hook_call(deps, _delegated_origin()))
+        await _settle()
+        second = asyncio.ensure_future(
+            _hook_call(deps, _delegated_origin(_delegation_id="deleg-2")))
+        await _settle()
+        assert "deleg-2" in authz_grants._AWAITING_APPROVAL
+        await _cancelled(second)                 # hand-off 2's turn cancelled
+        channel.post_gate.set()
+        assert await first == _DENY_DELIVERY_FAILED
+        await _settle()
+        assert "deleg-1" not in authz_grants._AWAITING_APPROVAL
+        assert "deleg-2" not in authz_grants._AWAITING_APPROVAL
+        assert NOTE not in _synth("deleg-2")
+
+    async def test_a_cancelled_hook_whose_card_posts_keeps_the_mark(self, env):
+        broker, coord, channel = env
+        channel.post_gate = asyncio.Event()
+        deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
+        task = asyncio.ensure_future(_hook_call(deps, _delegated_origin()))
+        await _settle()
+        await _cancelled(task)
+        channel.post_gate.set()
+        await _settle()
+        (ch,) = coord._entries.values()
+        assert ch.req.meta.get("message_id") == 55   # the card stands
+        assert "deleg-1" in authz_grants._AWAITING_APPROVAL
+        assert NOTE in _synth("deleg-1")
+
+    # #1626: one hand-off, two cards (two calls with different arguments).
+    # A card that was not shown takes back only its own part of the mark.
+
+    async def _second_card_not_shown(self, env, *, cancel: bool):
+        broker, coord, channel = env
+        deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
+        assert await _hook_call(deps, _delegated_origin()) == _DENY_POSTED
+        (first,) = coord._entries                     # the first card stands
+        channel.post_gate = asyncio.Event()
+        channel.post_raises = True
+        second = asyncio.ensure_future(
+            _hook_call(deps, _delegated_origin(), {"x": 2}))
+        await _settle()
+        if cancel:
+            await _cancelled(second)
+            channel.post_gate.set()
+        else:
+            channel.post_gate.set()
+            assert await second == _DENY_DELIVERY_FAILED
+        await _settle()
+        assert list(coord._entries) == [first]
+        return broker, coord, first
+
+    async def test_a_second_card_not_shown_keeps_the_first_cards_mark(
+            self, env):
+        broker, coord, first = await self._second_card_not_shown(
+            env, cancel=True)
+        assert "deleg-1" in authz_grants._AWAITING_APPROVAL
+        _approve(broker, coord, first)                # an answer keeps it
+        await _settle()
+        assert NOTE in _synth("deleg-1")
+
+    async def test_a_second_card_whose_post_fails_keeps_the_first_cards_mark(
+            self, env):
+        await self._second_card_not_shown(env, cancel=False)
+        assert NOTE in _synth("deleg-1")
+
+    async def test_two_cards_not_shown_leave_no_mark(self, env):
+        broker, coord, channel = env
+        channel.post_gate = asyncio.Event()
+        channel.post_raises = True
+        deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
+        calls = [asyncio.ensure_future(
+            _hook_call(deps, _delegated_origin(), {"x": n})) for n in (1, 2)]
+        await _settle()
+        assert len(coord._entries) == 2
+        await _cancelled(calls[0])
+        channel.post_gate.set()
+        assert await calls[1] == _DENY_DELIVERY_FAILED
+        await _settle()
+        assert not coord._entries
+        assert "deleg-1" not in authz_grants._AWAITING_APPROVAL
         assert NOTE not in _synth("deleg-1")
 
     async def test_the_record_is_bounded(self, monkeypatch):
