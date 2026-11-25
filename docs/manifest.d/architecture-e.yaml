@@ -54,7 +54,7 @@
     - tests/test_emit_completion_tool.py
     - tests/test_cancel_engagement_tool.py
     - tests/test_engagement_registry.py
-  related: [architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-terminal-telling.md, architecture/engagement-transcript-reaping.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
+  related: [architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-terminal-telling.md, architecture/engagement-transcript-reaping.md, architecture/tool-outcomes.md, architecture/overview.md, architecture/jobs-and-delivery.md]
   defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-010]
   invariant_tests:
     INV-ENG-001: [tests/test_engagement_registry.py::test_mark_idle_never_overwrites_terminal, tests/test_engagement_registry.py::test_mark_error_loses_to_terminal_winner, tests/test_engagement_registry.py::test_sweep_does_not_resurrect_concurrently_finalized]

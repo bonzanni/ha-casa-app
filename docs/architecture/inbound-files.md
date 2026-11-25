@@ -15,7 +15,7 @@ handler, the checks a file passes, the per-role folder it is published into unde
 is [`telegram.md`](telegram.md); how `share_inbound_file` passes a copy of one of these files
 to a plugin is [`plugin-handoff.md`](plugin-handoff.md); how `path_scope` and the rest of an agent's hooks are built is
 [`hook-resolution.md`](hook-resolution.md); the outbound media surface (`send_media`) is
-[`tools-interface.md`](tools-interface.md); what a turn that listed files and opened none
+[`tool-outcomes.md`](tool-outcomes.md); what a turn that listed files and opened none
 says about them is [`output-boundary.md`](output-boundary.md).
 
 ## Mental model
@@ -307,7 +307,7 @@ app documentation spells the period out and changes with them.
 **Related**
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)
-- [`architecture/tools-interface.md`](../architecture/tools-interface.md)
+- [`architecture/tool-outcomes.md`](../architecture/tool-outcomes.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 - [`architecture/own-voice.md`](../architecture/own-voice.md)
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)

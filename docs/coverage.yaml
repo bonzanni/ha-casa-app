@@ -352,7 +352,7 @@
 - item: casa/rootfs/opt/casa/tools.py
   doc: architecture/tools-interface.md
 - item: casa/rootfs/opt/casa/tool_result.py
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-outcomes.md
 - item: casa/rootfs/opt/casa/memory_tools.py
   doc: architecture/memory-tools.md
 - item: casa/rootfs/opt/casa/vault_tools.py
@@ -442,15 +442,15 @@
 - item: tool:ack_event
   doc: architecture/plugin-events.md
 - item: tool:ask_user
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-questions.md
 - item: tool:browse_memory_day
   doc: architecture/memory-tools.md
 - item: tool:callback_ack_revoke
   doc: architecture/callbacks.md
 - item: tool:cancel_engagement
-  doc: architecture/tools-interface.md
+  doc: architecture/engagement-finalization.md
 - item: tool:cancel_voice_job
-  doc: architecture/tools-interface.md
+  doc: architecture/voice-delivery.md
 - item: tool:casa_reload
   doc: architecture/tools-interface.md
 - item: tool:casa_reload_triggers
@@ -466,7 +466,7 @@
 - item: tool:config_trigger_delete
   doc: architecture/triggers.md
 - item: tool:continue_voice_job
-  doc: architecture/tools-interface.md
+  doc: architecture/voice-delivery.md
 - item: tool:offer_own_chat
   doc: architecture/own-voice.md
 - item: tool:start_job
@@ -478,11 +478,11 @@
 - item: tool:correct_memory
   doc: architecture/memory-tools.md
 - item: tool:delegate_to_agent
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-outcomes.md
 - item: tool:hand_off
   doc: architecture/specialist-handoff.md
 - item: tool:emit_completion
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-outcomes.md
 - item: tool:event_ack_revoke
   doc: architecture/plugin-events.md
 - item: tool:get_item_fields
@@ -496,7 +496,7 @@
 - item: tool:share_inbound_file
   doc: architecture/plugin-handoff.md
 - item: tool:set_reminder
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-outcomes.md
 - item: tool:cancel_reminder
   doc: architecture/tools-interface.md
 - item: tool:list_vault_items
@@ -532,7 +532,7 @@
 - item: tool:plugin_update
   doc: architecture/plugin-mutation-tools.md
 - item: tool:query_engager
-  doc: architecture/tools-interface.md
+  doc: architecture/memory-tools.md
 - item: tool:remove_plugin_env_reference
   doc: architecture/plugin-mutation-tools.md
 - item: tool:resident_persona_reset
@@ -542,9 +542,9 @@
 - item: tool:search_memory
   doc: architecture/memory-tools.md
 - item: tool:send_media
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-outcomes.md
 - item: tool:send_message
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-outcomes.md
 - item: tool:set_plugin_env_reference
   doc: architecture/plugin-mutation-tools.md
 - item: tool:specialist_install_commit
@@ -570,7 +570,7 @@
 - item: tool:verify_plugin_state
   doc: architecture/plugin-mutation-tools.md
 - item: tool:voice_job_status
-  doc: architecture/tools-interface.md
+  doc: architecture/voice-delivery.md
 - item: tool:wipe_memory
   doc: architecture/memory-wipe.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:/
@@ -664,7 +664,7 @@
 - item: casa/rootfs/opt/casa/mcp_registry.py
   doc: architecture/home-assistant-control.md
 - item: casa/rootfs/opt/casa/media_policies.py
-  doc: architecture/tools-interface.md
+  doc: architecture/tool-outcomes.md
 - item: casa/rootfs/opt/casa/persona_install_consent.py
   doc: architecture/persona-lifecycle.md
 - item: casa/rootfs/opt/casa/personality_types.py

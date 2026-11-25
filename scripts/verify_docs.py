@@ -81,7 +81,8 @@ REQUIRED_SKELETON = {
     "doctrine/invariants.md",
     "doctrine/invariants-c-d.md",
     "doctrine/invariants-e.md",
-    "doctrine/invariants-f-m.md",
+    "doctrine/invariants-f-j.md",
+    "doctrine/invariants-k-m.md",
     "doctrine/invariants-n-pk.md",
     "doctrine/invariants-pl-pq.md",
     "doctrine/invariants-pr-r.md",
@@ -1235,7 +1236,12 @@ def _documents(repo_root: Path) -> list[dict]:
 
 
 def render_llms(repo_root: Path) -> str:
-    """llms.txt. Links are relative to docs/, since that is where this file lives."""
+    """llms.txt. Links are relative to docs/, since that is where this file lives.
+
+    A row's link text is the document's name under its section heading; the target is
+    the full path. Repeating the directory in the text of every row cost the index
+    about 2 KB of its ceiling and gave a reader nothing the target does not.
+    """
     lines = [
         "# Casa — Home Assistant app",
         "",
@@ -1252,7 +1258,8 @@ def render_llms(repo_root: Path) -> str:
             continue
         lines += [f"## {title}", ""]
         for entry in chosen:
-            lines.append(f"- [{entry['doc']}]({entry['doc']}): {entry['summary'].strip()}")
+            name = entry["doc"][len(prefix):]
+            lines.append(f"- [{name}]({entry['doc']}): {entry['summary'].strip()}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1296,7 +1303,8 @@ def _invariant_rows(repo_root: Path) -> list[tuple[str, str, str]]:
 # `E`: the `E` families alone are about half of it), seven once S-Z did (#1275,
 # at `T`, a whole-letter bound), eight once A-D did (at `C`, a whole-letter
 # bound; `BRW` alone is about two fifths of it), nine once PL-R did (at `PR`: `PLUG` alone
-# is most of that range): each row is (range label, corpus path, exclusive
+# is most of that range), ten once F-M came within a row of it (#1697, at `K`, a whole-letter bound; `MEM`
+# alone is about two fifths of it): each row is (range label, corpus path, exclusive
 # upper bound on the family string), and a family lands in the FIRST shard whose
 # bound it sorts below — the last shard has no bound and takes the rest. Adding
 # a shard is adding a row.
@@ -1315,7 +1323,8 @@ _INV_SHARDS: tuple[tuple[str, str, str | None], ...] = (
     ("A-B", "doctrine/invariants.md", "C"),
     ("C-D", "doctrine/invariants-c-d.md", "E"),
     ("E", "doctrine/invariants-e.md", "F"),
-    ("F-M", "doctrine/invariants-f-m.md", "N"),
+    ("F-J", "doctrine/invariants-f-j.md", "K"),
+    ("K-M", "doctrine/invariants-k-m.md", "N"),
     ("N-PK", "doctrine/invariants-n-pk.md", "PL"),
     ("PL-PQ", "doctrine/invariants-pl-pq.md", "PR"),
     ("PR-R", "doctrine/invariants-pr-r.md", "S"),

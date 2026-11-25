@@ -10,8 +10,9 @@ last_reviewed: 2026-10-08
 
 What a tool that asks the operator a question reports about that question: `ask_user`'s
 operator-DM arm and the consent keyboard `wipe_memory` posts — a question that cannot be
-delivered, and one that is over before the tool returns. The tool surface and what a tool
-result promises are in [`tools-interface.md`](tools-interface.md); the scheduled arm, and the
+delivered, and one that is over before the tool returns. The tool surface is in
+[`tools-interface.md`](tools-interface.md) and what a tool result promises in
+[`tool-outcomes.md`](tool-outcomes.md); the scheduled arm, and the
 lane rule between a machine-timed and a human question, are in
 [`scheduled-asks.md`](scheduled-asks.md); what the wipe itself does is in
 [`memory-wipe.md`](memory-wipe.md).
@@ -101,6 +102,7 @@ from the broker's live map, sampled after its last await and before it returns.
 
 **Related**
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
+- [`architecture/tool-outcomes.md`](../architecture/tool-outcomes.md)
 - [`architecture/scheduled-asks.md`](../architecture/scheduled-asks.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 <!-- END SOURCEMAP -->

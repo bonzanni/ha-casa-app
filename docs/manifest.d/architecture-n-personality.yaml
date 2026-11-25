@@ -23,7 +23,7 @@
     - tests/test_output_boundary_sites.py
     - tests/test_output_boundary_tools.py
     - tests/test_output_boundary_own_files.py
-  related: [architecture/inbound-files.md, architecture/telegram.md, architecture/turn-loop.md, architecture/tools-interface.md, architecture/reminders.md, architecture/delegation.md, architecture/hook-resolution.md, architecture/jobs-and-delivery.md, architecture/output-scope-properties.md]
+  related: [architecture/inbound-files.md, architecture/telegram.md, architecture/turn-loop.md, architecture/tool-outcomes.md, architecture/reminders.md, architecture/delegation.md, architecture/hook-resolution.md, architecture/jobs-and-delivery.md, architecture/output-scope-properties.md]
   defines_invariants: [INV-OUT-001, INV-OUT-002, INV-OUT-003, INV-OUT-004, INV-OUT-005]
   invariant_tests:
     INV-OUT-001: [tests/test_output_boundary_channel.py::test_send_refuses_a_bare_string_with_zero_bot_calls, tests/test_output_boundary_channel.py::test_send_response_refuses_a_bare_string, tests/test_telegram_draft_stream.py::test_unadmitted_text_makes_zero_bot_calls, tests/test_output_boundary_channel.py::test_post_dm_keyboard_refuses_a_bare_string_with_none, tests/test_output_boundary_channel.py::test_send_media_refuses_a_bare_string_caption_by_raising, tests/test_output_boundary_sites.py::test_every_raw_transport_call_is_inside_a_recorded_function, tests/test_output_boundary_sites.py::test_every_casa_text_call_site_is_recorded, tests/test_output_boundary_sites.py::test_every_edit_dm_message_caller_is_recorded_and_classified, tests/test_output_boundary_sites.py::test_channel_text_methods_are_classified]

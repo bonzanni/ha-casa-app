@@ -1,0 +1,36 @@
+# Manifest shard: the tool interface and tool outcome documents (in their own shard so the
+# T-Z shard keeps room under the 40 KB index ceiling).
+- doc: architecture/tool-outcomes.md
+  summary: What a tool call reports — the two-layer result envelopes, what sending tools admit and report, the media policy table, how completion, a job launch and a delegated run end, and which failures roll back versus report.
+  when_changing: a tool's result contract, what send_message, send_media, ask_user or set_reminder admit and report, the media policy table, or completion and delegated-run failure semantics
+  covers:
+    - casa/rootfs/opt/casa/tool_result.py::_result
+    - casa/rootfs/opt/casa/tools.py::emit_completion
+  tests:
+    - tests/test_internal_handlers.py
+    - tests/test_emit_completion_tool.py
+  related: [architecture/tools-interface.md, architecture/engagements.md, architecture/engagement-finalization.md, architecture/output-boundary.md, architecture/delegation.md, architecture/tool-questions.md]
+  defines_invariants: [INV-TOOL-001, INV-TOOL-006]
+  invariant_tests:
+    INV-TOOL-001: [tests/test_internal_handlers.py::test_pin_inv_tool_001_result_marks_errors_only_for_error_status]
+    INV-TOOL-006: [tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_nonvoice_abort_reaches_both_consumers, tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_abort_write_failure_reconciles_original_failure_only, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_nonvoice_abort_matrix, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_empty_text_completed_run_is_still_successful, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_abort_write_failure_retries_the_original_failure]
+
+- doc: architecture/tools-interface.md
+  summary: The mutation interface — the one tool registry, in-tool role checks, the configurator's persona, vault and reload tools, and what config_git_commit reloads.
+  when_changing: adding a tool, its schema or an in-tool role check, the configurator's persona, vault or reload tools, or what config_git_commit reloads
+  covers:
+    - casa/rootfs/opt/casa/tools.py::create_casa_tools
+    - casa/rootfs/opt/casa/tools.py::select_casa_tools
+    - casa/rootfs/opt/casa/tools.py::config_git_commit
+    - casa/rootfs/opt/casa/tools.py::_run_reload
+    - casa/rootfs/opt/casa/reload.py::commit_reload_scopes
+    - casa/rootfs/opt/casa/tools.py::_reload_after_untracked_write
+  tests:
+    - tests/test_casa_reload_role_forms.py
+    - tests/test_config_git_commit_reload.py
+    - tests/test_configurator_doctrine_commit_reloads.py
+    - tests/test_1095_change_load_timing.py
+  related: [architecture/mcp-and-tools.md, architecture/tool-outcomes.md, architecture/plugin-mutation-tools.md, architecture/tool-questions.md, architecture/configuration.md, architecture/configurator.md]
+  defines_invariants: [INV-TOOL-014]
+  invariant_tests:
+    INV-TOOL-014: [tests/test_config_git_commit_reload.py::test_commit_reload_table, tests/test_config_git_commit_reload.py::test_trigger_edit_reloads_the_roles_triggers, tests/test_config_git_commit_reload.py::test_character_edit_rebuilds_that_resident, tests/test_config_git_commit_reload.py::test_two_commits_reload_twice, tests/test_config_git_commit_reload.py::test_policies_edit_reloads_policies, tests/test_config_git_commit_reload.py::test_fleet_scopes_run_through_the_entry_point_fence, tests/test_config_git_commit_reload.py::test_mixed_commit_reloads_full_once, tests/test_config_git_commit_reload.py::test_plugins_only_commit_reloads_nothing, tests/test_config_git_commit_reload.py::test_executor_prompt_edit_reloads_nothing, tests/test_config_git_commit_reload.py::test_unreadable_paths_reload_full, tests/test_config_git_commit_reload.py::test_a_failed_reload_is_reported_and_the_commit_stands, tests/test_config_git_commit_reload.py::test_a_reported_subordinate_failure_is_surfaced, tests/test_config_git_commit_reload.py::test_inside_an_engagement_it_reloads_the_same_way]

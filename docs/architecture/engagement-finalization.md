@@ -264,7 +264,7 @@ gets none of that.
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/engagement-terminal-telling.md`](../architecture/engagement-terminal-telling.md)
 - [`architecture/engagement-transcript-reaping.md`](../architecture/engagement-transcript-reaping.md)
-- [`architecture/tools-interface.md`](../architecture/tools-interface.md)
+- [`architecture/tool-outcomes.md`](../architecture/tool-outcomes.md)
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/jobs-and-delivery.md`](../architecture/jobs-and-delivery.md)
 <!-- END SOURCEMAP -->

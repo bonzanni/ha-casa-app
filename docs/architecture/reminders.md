@@ -12,8 +12,9 @@ How an agent comes to nudge someone later: what a reminder is made of, who may c
 remove one, how a due one is delivered, and what happens to one whose moment passed while
 Casa was not running. It does not cover the trigger machinery a reminder rides on —
 registration, dispatch, webhook routing, plugin consent — which is
-[`architecture/triggers.md`](triggers.md). The tools themselves and their result contracts
-are [`architecture/tools-interface.md`](tools-interface.md).
+[`architecture/triggers.md`](triggers.md). What `set_reminder` admits, stores as its note and
+returns is in [`architecture/tool-outcomes.md`](tool-outcomes.md); the tool registry is in
+[`architecture/tools-interface.md`](tools-interface.md).
 
 ## Mental model
 

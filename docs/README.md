@@ -46,9 +46,10 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a scheduled trigger that starts a plugin job — its schema keys, the upsert refusals, the fire's origin and launcher, or the line a refused fire sends | [`architecture/job-triggers.md`](architecture/job-triggers.md) |
 | a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |
 | a tap's next card, the in_place answer, the edit that replaces the tapped card, a keep_card button, a Close button, or a card's pages | [`architecture/stored-call-next-card.md`](architecture/stored-call-next-card.md) |
+| a tool's result contract, what send_message, send_media, ask_user or set_reminder admit and report, the media policy table, or completion and delegated-run failure semantics | [`architecture/tool-outcomes.md`](architecture/tool-outcomes.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
-| adding a tool, a tool's result contract, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
+| adding a tool, its schema or an in-tool role check, the configurator's persona, vault or reload tools, or what config_git_commit reloads | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding an agent or a tier, the required file set, or role resolution | [`architecture/agent-taxonomy.md`](architecture/agent-taxonomy.md) |
 | adding durable state, changing a corrupt-file policy, or anything about what survives | [`architecture/persistent-state.md`](architecture/persistent-state.md) |
 | adding or removing an app option, or changing what consumes one | [`reference/operator-options.md`](reference/operator-options.md) |

@@ -17,9 +17,9 @@ tools' contracts, not the machinery they drive
 — the registry and content-addressed store are in [`plugins.md`](plugins.md),
 per-call authorization in [`plugin-authorization.md`](plugin-authorization.md), the declared setup run in
 [`plugin-setup.md`](plugin-setup.md), and the health surfaces the status tool reads in
-[`plugin-health.md`](plugin-health.md). The tool surface itself — one registry, the
-two-layer result envelope and completion — is in
-[`tools-interface.md`](tools-interface.md), and the question lifecycle in
+[`plugin-health.md`](plugin-health.md). The tool surface itself — one registry — is in
+[`tools-interface.md`](tools-interface.md), the two-layer result envelope and completion in
+[`tool-outcomes.md`](tool-outcomes.md), and the question lifecycle in
 [`tool-questions.md`](tool-questions.md).
 
 ## Mental model
