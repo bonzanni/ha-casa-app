@@ -333,6 +333,8 @@
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_registry.py
   doc: architecture/specialist-lifecycle.md
+- item: casa/rootfs/opt/casa/store_gc.py
+  doc: architecture/store-cleanup.md
 - item: casa/rootfs/opt/casa/supervisor_discovery.py
   doc: architecture/home-assistant-control.md
 - item: casa/rootfs/opt/casa/supervisor_restart.py

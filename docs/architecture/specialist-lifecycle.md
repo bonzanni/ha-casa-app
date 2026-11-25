@@ -39,8 +39,9 @@ taken against exactly that identity plus the receipt digest.
 **Consent precedes persistence; verification precedes publication.** The acknowledgement
 is checked before any durable component-store write, and publication into the store is
 verify-then-publish from a fresh staging copy, tolerant of a same-digest concurrent winner.
-The store is append-only in practice: roots are pinned, unreferenced blobs are not
-collected.
+A published root stays while a tuple or another reference file names it; one nothing
+names any more is removed by the store cleanup only after it has waited unnamed
+([`store-cleanup.md`](store-cleanup.md), INV-PLUG-062).
 
 ## Contracts & invariants
 
@@ -51,7 +52,7 @@ digest) and refuses before staging when no acknowledgement matches.
 
 What it does not cover: crash residue. A crash between store publication and journal
 creation leaves verified-but-unreferenced content in the store, deliberately outside
-rollback.
+rollback; the store cleanup treats it like any other unnamed root.
 
 **INV-SPEC-018**: The ref literal `latest`, given to a specialist inspection for install or upgrade, is resolved before anything is staged to the published release tag `plugin_add` would choose for the same repository (INV-PLUG-022) — the tag, never the literal, is the ref the receipt records and the result reports as `resolved_ref`, the fetch is guarded against that release's peeled commit, and a repository with no published release is refused with `no_release_found` leaving no staging tree and no receipt.
 

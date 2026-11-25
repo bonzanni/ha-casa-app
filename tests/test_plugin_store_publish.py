@@ -790,17 +790,6 @@ def test_publish_freezes_artifact_files_readonly(tmp_path):
     assert validate_artifact(Path(r.path))
 
 
-def test_gc_disabled_returns_candidates_without_deleting(tmp_path):
-    src = _plugin_tree(tmp_path)
-    store = tmp_path / "store"
-    res = publish_from_tree(name="probe", repo="o/r", ref="v1",
-                            revision=f"git:{SHA}", subdir="", src_root=src,
-                            store_root=store, staging_root=tmp_path / "stg")
-    cands = plugin_store.gc_sweep(store_root=store, referenced=set(),
-                                  min_age_days=0, enabled=False)
-    assert cands == [res.artifact_id] and Path(res.path).exists()
-
-
 def test_publish_from_tree_rejects_escaping_symlink(tmp_path):
     """Sol round-3 H7: an offline-adopt tree with a symlink escaping the artifact
     root is rejected (unsafe_archive) — freezing/loading it must never touch or

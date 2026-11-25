@@ -1688,10 +1688,21 @@ ask for); a subscription you switched off this way, or denied on its card, stays
 The store lives on `/config` (the `addon_config` volume), so artifacts persist
 across app updates. Because artifacts are content-addressed, updating a plugin
 adds a new artifact directory rather than replacing the old one, and removing a
-plugin leaves its artifact in place. Automatic garbage collection is written but
-**ships disabled in this release**; unreferenced artifacts can be pruned in a
-later version. Typical plugins are small (skills + a small MCP server), so this
-is not a concern for normal use.
+plugin leaves its artifact in place at first. The same goes for specialists
+under `/config/specialists/store/`.
+
+Casa clears these out by itself. An old artifact that Casa's own files no longer
+refer to stays for at least 30 days and is then removed at a later start of the
+app. An artifact that a recorded engagement uses stays while that record stays,
+and a specialist's previous version stays while it is kept for rollback. If the
+app was stopped for more than two hours, the 30 days are counted again from
+that start. Casa writes down what it is waiting on in
+`/config/plugins/.store-gc.json`. If you restore `registry.json` from the config
+git history to a plugin version whose artifact was already removed, Casa reports
+that artifact as missing. For a plugin you added yourself, update it, or remove
+it and add it again; a plugin that came with a specialist cannot be updated or
+removed on its own. Typical plugins are
+small (skills + a small MCP server), so disk use is not a concern for normal use.
 
 ### Integrity model
 

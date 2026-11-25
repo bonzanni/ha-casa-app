@@ -76,3 +76,20 @@ def test_engagement_transcript_reap_is_a_scheduled_coroutine_job():
     assert "args=(engagement_registry,)" in job.group("args")
     assert "next_run_time=" in job.group("args")
 
+
+
+def test_store_cleanup_observation_is_a_scheduled_sync_job():
+    """#1679: the hourly pass that keeps the store cleanup's ledger current is
+    registered directly as a synchronous callable (the scheduler runs those in
+    a worker thread), under its own id, first at scheduler start."""
+    import store_gc
+
+    assert not asyncio.iscoroutinefunction(store_gc.observe)
+    text = _CASA_CORE_SRC.read_text(encoding="utf-8")
+    job = re.search(
+        r"scheduler\.add_job\(\s*store_gc\.observe,(?P<args>.*?)\n    \)",
+        text, re.S)
+    assert job, "store_gc.observe must be registered directly with scheduler.add_job"
+    assert 'id="store_cleanup_observe"' in job.group("args")
+    assert "hours=1," in job.group("args")
+    assert "next_run_time=" in job.group("args")

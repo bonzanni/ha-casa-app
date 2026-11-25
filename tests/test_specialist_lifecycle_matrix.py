@@ -15,7 +15,6 @@ import specialist_install
 from specialist_component import compute_component_checksum, load_specialist_component
 from specialist_install import (
     SpecialistInstallError,
-    cas_pin_roots,
     commit_specialist_install,
     inspect_specialist_repo,
     parse_component_root,
@@ -236,8 +235,7 @@ def test_uninstall_then_reinstall_at_the_same_digest_is_allowed(tmp_path: Path) 
                                agents_specialists_dir=agents_specialists_dir)
     uninstall_specialist(slug="mtg", specialists_dir=specialists_dir,
                           agents_specialists_dir=agents_specialists_dir)
-    pinned_after_uninstall = cas_pin_roots(specialists_dir)
-    assert inspection.root_digest not in pinned_after_uninstall  # no tuple references it anymore
+    assert not (specialists_dir / "mtg").exists()   # no tuple names the digest any more
 
     second_acks = SpecialistInstallAckStore(path=tmp_path / "acks-reinstall.json")
     record_specialist_ack(second_acks, inspection)

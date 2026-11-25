@@ -3949,6 +3949,23 @@ async def main() -> None:
         max_instances=1,
         misfire_grace_time=3600,
     )
+    # #1679: keep the store cleanup's ledger current while Casa runs, so an
+    # artifact that is named again between two starts has its wait restarted.
+    # The pass only observes; deletion happens in the boot oneshot. First at
+    # scheduler start, for the same reason as the reap above.
+    import store_gc
+
+    scheduler.add_job(
+        store_gc.observe,
+        trigger="interval",
+        id="store_cleanup_observe",
+        hours=1,
+        next_run_time=_dt.now(_tz.utc),
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
     # INV-ENG-028: a delegated run's transcript is deleted only by this pass
     # (or a wipe) — the session its confirmed row names, once its retention
     # has passed — on the same cadence, first at scheduler start.

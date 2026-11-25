@@ -125,7 +125,8 @@ clears it.
 
 - Store: `/config/plugins/store/<name>/<artifact-id>/` — immutable artifacts,
   content-addressed by `SHA-256(repo\nrevision\nsubdir\nname)`. An update is a
-  NEW artifact + a registry pointer change; old artifacts are retained.
+  NEW artifact + a registry pointer change. An old artifact stays at least
+  30 days after nothing names it, then Casa removes it at a start.
 - Resolver: `plugin_registry.resolve_for(target)` turns the registry into one
   `ResolutionResult` that feeds EVERYTHING — the SDK `plugins=[…]` list
   (residents/specialists), tool grants, secrets,
@@ -189,7 +190,8 @@ Registry:
   access profiles for a NEW assignment only (omit = full); an existing
   assignment is never changed. See `recipes/plugin/add.md` ("Profiles and
   requirements").
-- `plugin_remove(name)` — remove the entry (artifact retained for GC).
+- `plugin_remove(name)` — remove the entry (the artifact stays; Casa removes it at
+  a later start, once nothing has named it for 30 days).
 - `plugin_list()` — enumerate registered plugins + presence + seeded-default.
 - `verify_plugin_state(name)` — tier-aware readiness: desired-vs-active binding,
   artifact validity, tools, secrets.
