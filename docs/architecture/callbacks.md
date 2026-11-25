@@ -84,7 +84,9 @@ What it does not cover: the identity deliberately excludes the artifact id, so f
 that stays installed only an operator-visible declaration change mints a new identity and
 forces re-consent. A plugin a bundle's swap dropped and its compensation then restored has
 lost its consent and is asked about again. A consent already on file for a plugin that is
-not installed is not searched for; it is cleared when that name next enters a bundle.
+not installed is not searched for: a reconcile that could resolve every plugin and parse
+every callback declaration prunes it, and one that survives is revoked, best-effort, when
+that name next enters a bundle.
 
 **INV-CB-004**: Casa relays the query opaquely — the raw query string plus an ordered list of decoded key/value pairs — and interprets only `state`; no provider-specific parsing lives in core.
 
