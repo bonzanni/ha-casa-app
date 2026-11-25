@@ -153,7 +153,7 @@ just its name inside `/data/memory/exports/`.
 | `phone_owner_name` | How the phone assistant names you to callers. Leave empty to say "the person you called". Default: empty. |
 | `live_voices` | Voices per language for calls, like `nl=voice_abc,en=marin`: a value starting with `voice_` is a custom voice id, anything else a stock voice name. Default: empty (a stock voice). |
 | `live_api_host` | The OpenAI API host for calls. Leave empty for `api.openai.com`; use `eu.api.openai.com` for a project with EU data residency. Default: empty. |
-| `log_level` | Log verbosity: `debug`, `info`, `warning`, or `error`. Default: `info`. Flip to `debug` for verbose troubleshooting without rebuilding the image. |
+| `log_level` | Log verbosity: `debug`, `info`, `warning`, or `error`. Default: `info`. Flip to `debug` for verbose troubleshooting without rebuilding the image. The Telegram client's own debug records, which carry message contents, are left out. |
 | `specialist_max_concurrency` | Max specialist delegations in flight fleet-wide at once (see [Delegation limits](#delegation-limits)). Range 1-20. Default: `2`. |
 | `specialist_cost_alert_threshold` | Cumulative per-specialist USD spend past which Casa logs a warning on further delegations (see [Delegation limits](#delegation-limits)). Default: `5.0`. |
 

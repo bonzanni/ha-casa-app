@@ -351,6 +351,33 @@ class TestInstallLogging:
         assert "markdown_it info kept" in out
         assert sum('"markdown_it' in l for l in out.splitlines()) == 1, out
 
+    def test_telegram_client_debug_records_are_kept_out_at_debug(
+            self, monkeypatch):
+        """#1696: python-telegram-bot logs whole sendMessage requests and
+        responses (``telegram.Bot``) and every update (``telegram.ext``) at
+        DEBUG, message text included. At log_level debug those records must
+        not reach the handler, while Casa's own DEBUG records still do."""
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        # Production state: the library never sets a level of its own, so
+        # without the cap its records inherit the root's DEBUG. The guard
+        # restores the level this test found.
+        logging.getLogger("telegram").setLevel(logging.NOTSET)
+        buf = StringIO()
+        install_logging(level=logging.DEBUG, stream=buf)
+        try:
+            logging.getLogger("telegram.Bot").debug("PRIVATE-TEXT-BOT")
+            logging.getLogger("telegram.ext.Application").debug(
+                "PRIVATE-TEXT-UPDATE")
+            logging.getLogger("telegram.Bot").info("telegram info kept")
+            logging.getLogger("unit").debug("casa debug still on")
+        finally:
+            self._cleanup_casa()
+
+        out = buf.getvalue()
+        assert "casa debug still on" in out
+        assert "telegram info kept" in out
+        assert "PRIVATE-TEXT" not in out, out
+
 
 class TestFormatDefaultIsJson:
     """5.5 item 4 — LOG_FORMAT unset now means JSON."""

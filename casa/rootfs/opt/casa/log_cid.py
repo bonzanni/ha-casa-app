@@ -221,7 +221,9 @@ def install_logging(
       anything else (incl. unset) → human.
     - Quiets the ``httpx`` logger to WARNING (Telegram polling emits a
       line every ~10 s on INFO — retained from the prior basicConfig
-      block for behaviour parity).
+      block for behaviour parity), and caps the ``telegram`` logger at
+      INFO so the client's DEBUG records, which carry message text,
+      never reach the log.
 
     Safe to call from tests; the ``_casa_owned`` flag prevents
     duplication across repeated invocations.
@@ -266,3 +268,7 @@ def install_logging(
     # markdown-it-py traces every block rule per line at DEBUG; one persona
     # reload is ~9k lines, enough to trip journald's rate limit on HA OS (#1421).
     logging.getLogger("markdown_it").setLevel(logging.INFO)
+    # python-telegram-bot logs whole requests, responses and updates at DEBUG,
+    # message text included; debug logging must not copy chats into the log
+    # (#1696).
+    logging.getLogger("telegram").setLevel(logging.INFO)
