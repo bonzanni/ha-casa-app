@@ -20,6 +20,7 @@ MUST_BE_EXECUTABLE = [
     "scripts/deny-sweep.sh",
     "scripts/docs_impact.sh",
     "scripts/gate.sh",
+    "scripts/keep-suite-output.sh",
     "scripts/run-gitleaks.sh",
     "scripts/setup-browser-dev.sh",
     "scripts/setup-dev.sh",

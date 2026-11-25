@@ -104,6 +104,13 @@ does a classifier that fails. When the suite runs, the gate runs it in a fresh c
 them fails at the commit that adds the dependency. `CASA_GATE_BROWSER=always` forces the
 suite. CI is unaffected: the `browser-unit` job runs on every pull request.
 
+**A failing gate suite keeps its output.** The gate runs each suite through
+`scripts/keep-suite-output.sh`. When the suite fails, everything it printed is moved to
+`casa-gate-failures/` in the git common directory, in a file named by time, commit and suite,
+and the path is printed; a passing run keeps nothing. The common directory is shared by all
+worktrees, so the file survives the removal of the worktree the gate ran in. A test that
+fails once and passes on the re-run therefore still leaves its traceback.
+
 ## Failure behavior
 
 **What "already released" means.** Only the release tag is consulted. A run that pushed
@@ -144,10 +151,12 @@ those lists disagrees with the script's.
 - `.github/workflows/deploy-app.yml`
 - `scripts/setup-browser-dev.sh`
 - `scripts/browser-suite-affected.sh`
+- `scripts/keep-suite-output.sh`
 
 **Tests**
 - `tests/test_browser_release_matrix.py`
 - `tests/test_browser_suite_affected.py`
+- `tests/test_keep_suite_output.py`
 
 **Related**
 - [`contributing/doc-contract.md`](../contributing/doc-contract.md)
