@@ -291,7 +291,9 @@ gains it.
 file runs the missing ones in one transaction.
 
 `test-local/eval/phone_eval.py` runs the call's prompts and decision step against the
-provider on scripted cases, by hand only, since it spends money.
+provider on scripted cases, by hand only, since it spends money. A case with no history is the
+start of a call and grades what the agent says first; a failed run in the `disclosure`,
+`transfer` or `troll` group makes the run exit non-zero.
 
 ## Source & test map
 

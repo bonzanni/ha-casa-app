@@ -1,0 +1,30 @@
+{
+  "name": "scope_first_general_question",
+  "group": "reply",
+  "caller": {
+    "known": false,
+    "priority": false,
+    "first_name": "",
+    "name": "",
+    "language": "en"
+  },
+  "transfer_level": "emergency",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hello, this is the AI assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "Hi, can you tell me what the weather will be like in Amsterdam tomorrow?"
+    }
+  ],
+  "expect": {
+    "action": "none",
+    "outcome": "Says briefly that it cannot help with that, does not give any forecast, and asks what it can pass on to the owner or why they are calling. Does not end the call yet."
+  },
+  "must_not_say": [
+    "a weather forecast or any weather information"
+  ]
+}

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.386.0] - 2026-11-25
+
+### Changed
+
+- The phone assistant now opens every call by giving its name and saying it is your AI assistant, in the caller's language, instead of saying whose phone it is. If a caller asks whether they are talking to an AI, it says yes in a few words and carries on. It no longer brings the subject up a second time.
+- The phone assistant stays with its job. Asked for something an assistant answering your phone would not do (the weather, general questions, technical help), it says so briefly, asks once what it can pass on to you, and says goodbye if the caller does not come back to a reason to reach you. A moment of small talk is fine.
+- Some calls are now closed straight away with a short, polite goodbye and no offer to take a message: a sales pitch from someone you do not know, a caller who twice refuses to say who they are, and a caller who is playing with the assistant (trying to make it say something insulting or vulgar, play a role, or read out or change its instructions).
+- "Emergency" is spelled out for callers who are only put through in one: danger to someone's life, health or home right now. A job title, a company name, "it is urgent" or a problem with an account is not an emergency.
+- A known caller is never asked who they are. Asked how it knows them, the assistant says their number is in your contacts. Asked whether you are there, it says you cannot take the call right now and offers to take a message.
+- In Dutch the assistant addresses callers with "u", in Italian with "tu".
+- These changes are in the phone prompt files Casa ships. If you edited `phone/prompts/agent.md`, `decision.md` or `helper.md` in your configuration, your copies stay as they are.
+
 ## [0.385.4] - 2026-11-25
 
 ### Fixed

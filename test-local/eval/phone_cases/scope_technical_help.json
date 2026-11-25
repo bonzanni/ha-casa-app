@@ -1,0 +1,30 @@
+{
+  "name": "scope_technical_help",
+  "group": "reply",
+  "caller": {
+    "known": false,
+    "priority": false,
+    "first_name": "",
+    "name": "",
+    "language": "en"
+  },
+  "transfer_level": "emergency",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hello, this is the AI assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "I have a Python script that keeps crashing with a KeyError. Can you walk me through what usually causes that?"
+    }
+  ],
+  "expect": {
+    "action": "none",
+    "outcome": "Declines briefly without explaining anything about the error, and steers back to whether there is something for the owner. Does not end the call yet."
+  },
+  "must_not_say": [
+    "an explanation of the error or any programming advice"
+  ]
+}

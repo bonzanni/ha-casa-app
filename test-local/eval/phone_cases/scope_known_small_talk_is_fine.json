@@ -1,0 +1,27 @@
+{
+  "name": "scope_known_small_talk_is_fine",
+  "group": "reply",
+  "caller": {
+    "known": true,
+    "priority": false,
+    "first_name": "Tomas",
+    "name": "Tomas Brandt",
+    "language": "en"
+  },
+  "transfer_level": "urgent",
+  "returned": false,
+  "history": [
+    {
+      "who": "agent",
+      "text": "Hi Tomas, this is the AI assistant answering this phone. How can I help?"
+    },
+    {
+      "who": "caller",
+      "text": "Hey! How are you doing today? Busy day on the phones? Anyway, could you tell the owner I'll bring the drill back on Friday."
+    }
+  ],
+  "expect": {
+    "action": "none",
+    "outcome": "Answers the small talk in a word or two at most, takes the message about the drill and says it will be passed on. Friendly; does not treat the caller as off topic and does not end the call abruptly."
+  }
+}

@@ -109,8 +109,8 @@ def build(*, api: LiveApi, sid: str, session_ref: Callable[[], LiveSession],
 
     found = [Ability(
         "end_call",
-        "End the call. Only after goodbye has been said and the caller has "
-        "nothing more to say.",
+        "End the call. Only after the assistant has said goodbye as the "
+        "close of the call.",
         _schema("why", "Why the call ends, in a few words."),
         _end_call, "final")]
     if transfer_level != "off":

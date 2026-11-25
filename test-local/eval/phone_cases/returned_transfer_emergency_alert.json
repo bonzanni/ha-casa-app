@@ -1,0 +1,27 @@
+{
+  "name": "returned_transfer_emergency_alert",
+  "group": "action",
+  "caller": {
+    "known": false,
+    "priority": false,
+    "first_name": "",
+    "name": "",
+    "language": "en"
+  },
+  "transfer_level": "off",
+  "returned": true,
+  "history": [
+    {
+      "who": "agent",
+      "text": "I'm sorry, the owner did not pick up just now. Can I take a message?"
+    },
+    {
+      "who": "caller",
+      "text": "No, please, this is an emergency. There has been an accident with his daughter at school and the ambulance is here. He has to know right now."
+    }
+  ],
+  "expect": {
+    "action": "alert_operator",
+    "outcome": "Tells the caller, kindly and briefly, that it is alerting the owner right now. Does not just take a message and does not promise that the owner will call back within any time."
+  }
+}
