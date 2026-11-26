@@ -187,6 +187,15 @@ async def test_status_is_readable_only_by_its_plugin_and_operator(wired):
     assert run_admission.confirmation_status(other, out["confirmation_id"])[
         "status"] == "expired"
     assert run_admission.confirmation_status(other, "conf-unknown")["status"] == "expired"
+    # the same plugin, another operator: the request is not his
+    stranger = operator_calls.OperatorCall(
+        client_id="c3", tool_use_id="t", tool_name="x", role="browser", plugin="browser",
+        identity=GrantIdentity(operator_id=999, chat_id=999, enforcement_role="browser",
+                               artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT),
+        operator_words=None, chain=("assistant", "browser"), requester="assistant",
+        turn_key="", binding_ref=None, origin={}, opened_at=0.0)
+    seen = run_admission.confirmation_status(stranger, out["confirmation_id"])
+    assert seen["status"] == "expired" and "admissions" not in seen
 
 
 @pytest.mark.asyncio
