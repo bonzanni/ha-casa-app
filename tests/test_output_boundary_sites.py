@@ -179,7 +179,7 @@ CHANNEL_METHODS = {"send", "send_response", "post_dm_keyboard", "send_media",
 # (file, enclosing function) → what the call hands the method. "admitted" = a value
 # minted by TurnScope.admit or carried from one; "casa_text" = the Casa template
 # class; "forward" = the channel forwarding an already-admitted value to a sibling
-# method. Receivers that are not a channel (the bus, PTB's bot) are excluded.
+# method; "not_channel" = a same-named method that is not a chat channel's. Receivers that are not a channel (the bus, PTB's bot) are excluded.
 CHANNEL_METHOD_CALLERS = {
     ("agent.py", "handle_message"): "admitted",                 # the final reply
     ("agent.py", "_send_limit_line"): "casa_text",              # #1121: the turn-limit line
@@ -206,6 +206,7 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "_post_task_start"): "admitted",               # a task's quoted request, admitted on the task's scope
     ("own_voice_lifecycle.py", "post_card"): "casa_text",       # an own-chat card in the resident's chat
     ("own_voice_lifecycle.py", "_post"): "casa_text",           # the own-chat question naming a new bot
+    ("vault_service.py", "_write"): "not_channel",              # the standard library's HTTP `send_response` on the secrets page's socket, not a chat
 }
 _NON_CHANNEL_RECEIVERS = {"bot", "_bot", "bus", "_bus", "self_bus"}
 
@@ -235,7 +236,7 @@ def test_every_caller_of_a_channel_text_method_is_recorded():
     assert found == set(CHANNEL_METHOD_CALLERS), {
         "unrecorded": sorted(found - set(CHANNEL_METHOD_CALLERS)),
         "gone": sorted(set(CHANNEL_METHOD_CALLERS) - found)}
-    assert set(CHANNEL_METHOD_CALLERS.values()) <= {"admitted", "casa_text", "forward"}
+    assert set(CHANNEL_METHOD_CALLERS.values()) <= {"admitted", "casa_text", "forward", "not_channel"}
 
 
 def test_every_casa_text_call_site_is_recorded():

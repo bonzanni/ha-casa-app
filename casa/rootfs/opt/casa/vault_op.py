@@ -135,6 +135,7 @@ def _read(store: Store, vault: str, args: list[str]) -> str:
     if field is None:
         raise _Failure(f"could not read secret '{reference}': "
                        f"item '{wanted_vault}/{ref}' does not have a field '{name}'")
+    store.note_read(item.id)
     return _line(field.value)
 
 
@@ -167,6 +168,7 @@ def _item_get(store: Store, vault: str, args: list[str], stdin: str | None) -> s
         field = _field(item, match.group(1))
         if field is None:
             raise _Failure(f'"{match.group(1)}" isn\'t a field in the "{item.title}" item')
+        store.note_read(item.id)
         return _line(field.value)
     if set(flags) - {"--vault", "--format"}:
         raise _unsupported("item get with this combination of flags")
@@ -174,7 +176,9 @@ def _item_get(store: Store, vault: str, args: list[str], stdin: str | None) -> s
     if "--vault" in flags:
         _check_vault(vault, flags["--vault"])
     with _lookup(vault, ref):
-        return _json(_document(vault, store.get(ref)))
+        item = store.get(ref)
+    store.note_read(item.id)
+    return _json(_document(vault, item))
 
 
 def _item_create(store: Store, vault: str, args: list[str], stdin: str | None) -> str:

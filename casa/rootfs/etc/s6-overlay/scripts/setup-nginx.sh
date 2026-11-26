@@ -5,6 +5,11 @@ export NO_COLOR=1
 
 INGRESS_PORT=$(bashio::app.ingress_port)
 
+# Where this install keeps its secrets, as decided at container start
+# (scripts/secrets-backend.sh): the secrets page exists only for the built-in
+# store.
+. /opt/casa/scripts/secrets-backend-lib.sh
+
 cat > /etc/nginx/nginx.conf <<NGINX
 worker_processes 1;
 error_log /dev/stdout warn;
@@ -110,6 +115,45 @@ else
 NGINX
 fi
 
+# The secrets page on ingress, only when Casa keeps its own secrets. nginx
+# serves the page's stylesheets and scripts itself; the page comes from the
+# store service over a socket only nginx's workers may open. This
+# configuration includes no mime.types, so the static location names the two
+# types it serves: as text/plain, which nosniff makes browsers refuse, neither
+# would load. The page refuses a form over 256 KiB itself; nginx refuses a
+# body well past that before it reaches the page.
+if [ "$(casa_secrets_backend)" = builtin ]; then
+    _secrets_page=served
+    cat >> /etc/nginx/nginx.conf <<'NGINX'
+        location /vault/static/ {
+            alias /opt/casa/vault_static/;
+            types {
+                text/css css;
+                application/javascript js;
+            }
+            default_type application/octet-stream;
+            add_header Cache-Control "no-store" always;
+            add_header X-Content-Type-Options "nosniff" always;
+        }
+        location /vault/ {
+            proxy_pass http://unix:/run/casa-vault-page/page.sock:/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Ingress-Path $http_x_ingress_path;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_set_header X-Forwarded-Host $http_x_forwarded_host;
+            proxy_read_timeout 75;
+            client_max_body_size 300k;
+        }
+NGINX
+else
+    _secrets_page="not served"
+    cat >> /etc/nginx/nginx.conf <<'NGINX'
+        location /vault/ {
+            return 404;
+        }
+NGINX
+fi
+
 # Close ingress server block
 cat >> /etc/nginx/nginx.conf <<'NGINX'
     }
@@ -162,8 +206,13 @@ cat >> /etc/nginx/nginx.conf <<'NGINX'
         location /terminal/ {
             return 404;
         }
+
+        # The secrets page is reached only through Home Assistant.
+        location /vault/ {
+            return 404;
+        }
     }
 }
 NGINX
 
-bashio::log.info "Nginx configured (terminal: $(bashio::config 'enable_terminal'))"
+bashio::log.info "Nginx configured (terminal: $(bashio::config 'enable_terminal'), secrets page: ${_secrets_page})"

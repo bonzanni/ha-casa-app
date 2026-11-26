@@ -590,3 +590,20 @@ def test_a_failing_directory_sync_after_the_rename_does_not_fail_the_write(
 
     assert Store.open(directory, None).list() == [item]
     assert sorted(p.name for p in directory.iterdir()) == [DB, KEY]
+
+
+# -- reads ------------------------------------------------------------------
+
+def test_reads_are_counted_in_memory_only(store, directory):
+    item = make(store)
+    other = make(store, title="Other")
+    before = snapshot(directory)
+
+    assert store.reads(item.id) == 0
+    store.note_read(item.id)
+    store.note_read(item.id)
+    store.note_read(other.id)
+
+    assert (store.reads(item.id), store.reads(other.id)) == (2, 1)
+    assert snapshot(directory) == before
+    assert Store.open(directory, None).reads(item.id) == 0

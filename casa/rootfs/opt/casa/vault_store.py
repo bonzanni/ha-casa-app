@@ -99,6 +99,7 @@ class Store:
         self._key = key
         self._kp: PyKeePass | None = database
         self._lock = threading.RLock()
+        self._reads: dict[str, int] = {}
 
     @classmethod
     def open(cls, directory: Path, env_key: str | None) -> Store:
@@ -205,6 +206,21 @@ class Store:
             entry = self._find(ref)
             with self._saved() as database:
                 database.delete_entry(entry)
+
+    def note_read(self, item_id: str) -> None:
+        """Count one read of the item's values by a caller.
+
+        The count lives in memory only and starts again at zero with the
+        process: it says how often a secret was used lately, and writing it
+        down would rewrite the file on every read.
+        """
+        with self._lock:
+            self._reads[item_id] = self._reads.get(item_id, 0) + 1
+
+    def reads(self, item_id: str) -> int:
+        """How often the item was read since this store was opened."""
+        with self._lock:
+            return self._reads.get(item_id, 0)
 
     # -- inside the lock ----------------------------------------------------
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.387.0] - 2026-11-26
+
+### Added
+
+- When Casa keeps its own secrets (no 1Password token set), Casa's page in Home Assistant now has a **Secrets** button. It opens a page that lists your secrets by name, with who keeps each one, and lets you find one by typing its name. A secret with a single value (and not an SSH key) has **Copy** right on the list; hidden values stay dots, empty or not, until you tap **Show**, and are hidden again after 30 seconds. Each secret lists the names its `op://` references use, such as `Mail/username`; a secret whose name contains `/` or `?` is referenced by its id instead (`op://Casa/<id>/<label>`), which the page shows in place of the name.
+- You can add a secret: a name and a value, with up to two more values under their own labels (one tap for username, password or certificate). Every value added on the page is kept hidden. You can change a plain value, replace a hidden one, remove values (with Undo until you save), add more, and delete a secret, with a warning for one handed to a plugin or made by Casa and not changed here since. A save never overwrites a secret Casa changed while you had it open, and a refused save keeps what you ticked, labelled and changed in the plain values the form sent (one ticked for removal is normally not sent) but asks you to enter new and replacement values again.
+- Anyone who can open Casa's page in Home Assistant can read the secrets there. The page is not reachable from outside Home Assistant, and with a 1Password token set there is no secrets page. See "The secrets page" in the documentation.
+
 ## [0.386.1] - 2026-11-25
 
 ### Changed

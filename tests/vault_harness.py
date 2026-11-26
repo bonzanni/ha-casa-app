@@ -51,11 +51,14 @@ class Service:
     """`vault_service.serve` in a thread of this process, until `stop()`."""
 
     def __init__(self, store_dir: Path, socket_path: Path, *, env_key: str | None = None,
-                 ready_fd: int | None = None) -> None:
+                 ready_fd: int | None = None, page_socket: Path | None = None,
+                 page_group: str | None = None) -> None:
         # The kernel takes a socket path of about a hundred bytes and no more.
+        # (The page socket's is left to the test: one checks a path too long.)
         assert len(os.fsencode(socket_path)) <= 100, f"socket path too long: {socket_path}"
         self.store_dir = store_dir
         self.socket = socket_path
+        self.page_socket = page_socket
         self.calls_file: Path | None = None
         self.ready: bytes | None = None  # what the service wrote to say it is ready
         self._stop = threading.Event()
@@ -65,7 +68,8 @@ class Service:
         self._thread = threading.Thread(
             target=vault_service.serve,
             args=(store_dir, socket_path, VAULT, env_key, ready_fd),
-            kwargs={"stop": self._stop}, daemon=True)
+            kwargs={"stop": self._stop, "page_socket": page_socket, "page_group": page_group},
+            daemon=True)
         self._thread.start()
         if waits_here:
             try:
