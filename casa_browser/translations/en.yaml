@@ -3,8 +3,7 @@ configuration:
     name: 1Password service account token
     description: >-
       Token of a 1Password service account that can see only the browsing vault.
-      The app's credential broker uses it to read and save site logins; no other part
-      of the app can read it. Required before any site login.
+      Leave empty to keep site logins in Casa Browser's own store instead of 1Password.
   onepassword_vault:
     name: Browsing vault
     description: >-
@@ -18,18 +17,19 @@ configuration:
       my.1password.eu is not accepted). The browser's 1Password extension signs in
       there as a guest with read-only access to the browsing vault, and the app's
       proxy admits this one address for the extension and the broker.
+      Not used when the token is empty.
   guest_email:
     name: 1Password guest email
     description: >-
-      Email address of that 1Password guest.
+      Email address of that 1Password guest. Not used when the token is empty.
   guest_password:
     name: 1Password guest password
     description: >-
-      Password of that 1Password guest.
+      Password of that 1Password guest. Not used when the token is empty.
   guest_secret_key:
     name: 1Password guest Secret Key
     description: >-
-      Secret Key of that 1Password guest.
+      Secret Key of that 1Password guest. Not used when the token is empty.
   language:
     name: Browser language
     description: >-

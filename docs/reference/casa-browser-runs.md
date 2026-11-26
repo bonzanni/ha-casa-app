@@ -47,7 +47,8 @@ login view to its provider-binding learning; no other event is kept.
 ## Starting a run
 
 `start_run` validates before queueing: the effective locale is known, an account run has
-1Password configured (an open-web run does not need it), and every granted site exists; the
+its login store set up (with the app's own store it always is; 1Password needs all six of its
+options; an open-web run needs neither), and every granted site exists; the
 same `request_id` with the same members returns the existing run and starts nothing. Leasing
 re-reads the granted sites (a site gone, or the setup no longer ready, ends the run `failed`),
 then: the broker's `begin_run` (account runs); the first session — the first account grant's
@@ -97,6 +98,10 @@ logged and asks for nothing; a broker RPC error interrupts the run. Two things s
   reports `login_needed` (`timeout`). A sign-in with no hint (a password, an emailed code, a
   start page already signed in by cookie) opens no guest session at all.
 - `request_live(…, 'login')` on a site with login origins (below).
+
+With the app's own login store ([`casa-browser-builtin-store.md`](casa-browser-builtin-store.md);
+`Components.login_store`, read from the public options) `RunController._guest_due` is always
+false, so neither starts a guest session and `guest_ask` is false on every sign-in.
 
 A run also gains a site from the operator's Yes on a sign-in card: the site's account grant
 replaces any grant for it, the stored spec follows (the admitted digest stays), the broker's run

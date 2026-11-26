@@ -140,5 +140,11 @@
   "sites.forget_body": "The browser's saved sign-in for this site is cleared and its 1Password item is no longer linked, so the next login asks again. A run on this site stops. The item itself stays in 1Password.",
   "pair.again_ask": "Pair again?",
   "app.cancel": "Cancel",
-  "app.back": "Back"
+  "app.back": "Back",
+  "sites.item.builtin": "Saved login id (optional: empty means the first live login creates it)",
+  "sites.extra_fields.builtin": "That saved login also holds the fields {fields}.",
+  "sites.forget_body.builtin": "The browser's saved sign-in for this site is cleared and its saved login is no longer linked, so the next login asks again. A run on this site stops. The saved login itself is kept.",
+  "setup.store_builtin": "Logins: kept by Casa Browser itself",
+  "setup.store_builtin_unavailable": "Logins: the saved logins could not be opened. See the app's log.",
+  "setup.store_builtin_scope": "Saved logins are typed into web pages by a browser an assistant drives. Save only the logins Casa Browser should use."
 }

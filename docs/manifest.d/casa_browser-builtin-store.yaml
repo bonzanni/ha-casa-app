@@ -1,0 +1,35 @@
+# Manifest shard — the Casa Browser app's own login store, in a shard of its own as Casa's
+# built-in secrets store document is. Loaded with the root docs/manifest.yaml by
+# scripts/verify_docs.py; same entry format.
+
+- doc: reference/casa-browser-builtin-store.md
+  summary: Where Casa Browser keeps site logins when no 1Password token is set — the login store chosen at start, the store's files and CASA_BROWSER_VAULT_KEY, the second vault and its version rule, what does not run in that mode, and a site's link kept per store.
+  when_changing: the choice of login store or the login_store word, the app's own store or its key, BuiltinVault, build_vault, a site's link per store (the registry's builtin key, the builtin_links table), or anything that behaves differently with no 1Password token
+  covers:
+    - casa_browser/rootfs/opt/casa_browser/broker/builtin.py
+    - casa_browser/rootfs/opt/casa_browser/vault_store.py
+    - casa_browser/rootfs/opt/casa_browser/broker/main.py::build_vault
+    - casa_browser/rootfs/opt/casa_browser/broker/main.py::site_view
+    - casa_browser/rootfs/opt/casa_browser/broker/main.py::site_record
+    - casa_browser/rootfs/opt/casa_browser/options.py::parse_options
+    - casa_browser/rootfs/opt/casa_browser/proxy_main.py::build_addon
+    - casa_browser/rootfs/opt/casa_browser/controller.py::RunController._guest_due
+    - casa_browser/rootfs/opt/casa_browser/confirmations.py::item_word
+  tests:
+    - casa_browser/tests/test_broker_builtin.py
+    - casa_browser/tests/test_builtin_vault.py
+    - casa_browser/tests/test_vault_contract.py
+    - casa_browser/tests/test_vault_store_copy.py
+    - casa_browser/tests/test_builtin_rule.py
+    - casa_browser/tests/integration/test_builtin_mode.py
+    - tests/test_vault_store_copies.py
+  related: [reference/casa-browser-credentials.md, reference/casa-browser.md, reference/casa-browser-signin.md, reference/casa-browser-runtime.md, reference/casa-browser-browser.md, reference/casa-browser-ingress.md, architecture/builtin-secrets-store.md]
+  defines_invariants: [INV-BRW-070, INV-BRW-071, INV-BRW-072, INV-BRW-073, INV-BRW-074, INV-BRW-075, INV-BRW-076]
+  invariant_tests:
+    INV-BRW-070: [casa_browser/tests/test_options.py::test_empty_token_selects_builtin, casa_browser/tests/test_options.py::test_invalid_options_select_none_never_builtin, casa_browser/tests/test_broker_builtin.py::test_invalid_options_never_open_a_store_that_is_there, casa_browser/tests/test_broker_builtin.py::test_build_vault_follows_the_mode_only, casa_browser/tests/integration/test_builtin_mode.py::test_the_store_is_the_brokers_and_private]
+    INV-BRW-071: [casa_browser/tests/test_builtin_rule.py::test_nothing_made_for_1password_runs_in_built_in_mode, casa_browser/tests/test_controller.py::test_builtin_opens_no_guest_session, casa_browser/tests/test_controller.py::test_builtin_event_texts_say_saved_login, casa_browser/tests/test_proxy_adapter.py::test_the_broker_listener_admits_the_team_host_only_under_1password, casa_browser/tests/test_proxy_adapter.py::test_chromes_own_update_requests_are_refused_quietly_without_the_extension, casa_browser/tests/test_options.py::test_policy_for_builtin_drops_exactly_two_keys, casa_browser/tests/test_sign_in_card.py::test_builtin_cards_say_saved_login, casa_browser/tests/test_i18n.py::test_builtin_pages_in_every_language_name_no_1password_extension_or_guest, casa_browser/tests/test_controller.py::test_builtin_questions_say_saved_login, casa_browser/tests/integration/test_builtin_mode.py::test_the_setup_page_shows_the_apps_own_store_and_no_guest, casa_browser/tests/integration/test_builtin_mode.py::test_the_browser_listener_refuses_chromes_extension_update]
+    INV-BRW-072: [casa_browser/tests/test_options.py::test_a_whitespace_token_is_a_token, casa_browser/tests/test_broker_builtin.py::test_a_failing_token_never_opens_the_built_in_store]
+    INV-BRW-073: [casa_browser/tests/test_vault_contract.py::test_an_update_raises_the_version_by_one_and_keeps_the_other_field, casa_browser/tests/test_vault_contract.py::test_an_update_with_a_stale_version_is_a_conflict_and_changes_nothing, casa_browser/tests/test_builtin_vault.py::test_two_updates_from_one_version_give_one_conflict]
+    INV-BRW-074: [casa_browser/tests/test_builtin_vault.py::test_a_file_without_its_key_is_unavailable_and_untouched, casa_browser/tests/test_builtin_vault.py::test_a_file_with_a_wrong_outside_key_is_unavailable_and_untouched, casa_browser/tests/test_builtin_vault.py::test_a_whitespace_only_outside_key_is_unavailable_and_changes_nothing, casa_browser/tests/test_broker_builtin.py::test_builtin_status_when_the_store_cannot_be_opened, casa_browser/tests/test_broker_builtin.py::test_an_unavailable_store_sends_nobody_to_type_a_login_it_cannot_keep, casa_browser/tests/test_broker_builtin.py::test_build_vault_opens_the_store_with_the_supplied_key]
+    INV-BRW-075: [tests/test_vault_store_copies.py::test_the_two_copies_are_identical]
+    INV-BRW-076: [casa_browser/tests/test_broker_builtin.py::test_one_site_through_token_set_then_empty_then_set, casa_browser/tests/test_store.py::test_a_sites_link_belongs_to_its_store, casa_browser/tests/test_broker_builtin.py::test_a_site_linked_without_a_token_has_no_1password_login, casa_browser/tests/test_broker_builtin.py::test_forgetting_the_built_in_link_keeps_an_unverified_1password_login]

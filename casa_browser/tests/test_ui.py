@@ -452,3 +452,118 @@ async def test_pages_carry_no_inline_style_and_name_their_tab(rig, operator):
         assert re.findall(r'<a href="([^"]+)" aria-current="page">', html) == [PREFIX + tab], path
     status, _, _ = await operator.get("/sites/no-such-site")
     assert status == 404
+
+
+# --------------------------------------------------------------------------- the app's own store
+
+
+@pytest.fixture
+async def builtin(tmp_path, aiohttp_client):
+    """The pages of an app with no 1Password token: the logins are in its own store."""
+    from controllerfakes import Rig
+    r = Rig(tmp_path, login_store="builtin")
+    await r.start()
+    yield r, Operator(await aiohttp_client(make_ui(r.ctl)))
+    await r.live.end_all()
+    await r.ctl.shutdown()
+    r.close()
+
+
+def _shown(page: str) -> str:
+    """A page's text and attribute values as a person reads them."""
+    from html import unescape
+    return unescape(page)
+
+
+def _fixed_part(template: str) -> str:
+    """A catalog text up to its first value: what a page built from it always holds."""
+    return template.split("{")[0].strip()
+
+
+async def test_builtin_setup_page_has_one_store_row_and_the_risk_line(builtin):
+    """Setup with the app's own store: one row saying where the logins are kept, the language
+    row, and one card with the risk of saved logins; nothing about 1Password or a guest."""
+    from casa_browser import ui
+    from casa_browser.i18n import catalog
+    rig, operator = builtin
+    status, page, _ = await operator.get("/setup")
+    assert status == 200
+    en = catalog("en")
+    store_row = ui.row(ui.lead("ok", "ok"), ui.e(en["setup.store_builtin"]), wrap=True)
+    risk = f'<div class="card pad"><p class="small">{ui.e(en["setup.store_builtin_scope"])}</p></div>'
+    assert page.count(store_row) == 1 and page.count(risk) == 1
+    assert (page.index(store_row) < page.index(_fixed_part(en["setup.language"]))
+            < page.index(risk) < page.index(ui.e(en["pair.heading"])))
+    shown = _shown(page)
+    assert en["setup.store_builtin_unavailable"] not in shown
+    others = [key for key in en if key.startswith(("setup.guest_", "setup.onepassword_"))]
+    assert len(others) == 10
+    for key in others:
+        assert _fixed_part(en[key]) and _fixed_part(en[key]) not in shown, key
+
+
+@pytest.mark.parametrize("status_reply", [
+    {"configured": True, "store": "builtin", "available": False},
+    {"error": "unavailable"},
+    None,
+], ids=["not_available", "an_error", "no_answer"])
+async def test_builtin_setup_page_says_when_the_store_cannot_be_opened(builtin, status_reply):
+    from casa_browser import ui
+    from casa_browser.i18n import catalog
+    rig, operator = builtin
+    real = rig.broker.call
+
+    async def call(op, **args):
+        if op == "status":
+            if status_reply is None:
+                raise OSError("no broker")
+            return dict(status_reply)
+        return await real(op, **args)
+    rig.broker.call = call
+    status, page, _ = await operator.get("/setup")
+    assert status == 200
+    en = catalog("en")
+    alert = ui.row(ui.lead("alert", "err"), ui.e(en["setup.store_builtin_unavailable"]), wrap=True)
+    assert page.count(alert) == 1
+    assert en["setup.store_builtin"] not in _shown(page)
+    assert en["setup.store_builtin_scope"] in _shown(page)
+    assert "1Password" not in page
+
+
+async def test_builtin_site_pages_use_the_saved_login_texts(builtin):
+    """The new-site form's id field, a site's forget dialog and the extra-fields banner each
+    use the text for a saved login, and none of them the 1Password one."""
+    from casa_browser import ui
+    from casa_browser.i18n import Text, catalog
+    rig, operator = builtin
+    t = Text("en")
+    real = rig.broker.call
+
+    async def call(op, **args):
+        if op == "register_item":
+            return {"site_id": args["site_id"], "roles_available": ["username", "password"],
+                    "extra_field_names": ["recovery codes"], "warning": ""}
+        return await real(op, **args)
+    rig.broker.call = call
+    status, form, _ = await operator.get("/sites/new")
+    assert status == 200
+    assert f'<span>{ui.e(t("sites.item.builtin"))}</span><input name="vault_item_id"' in form
+    assert t("sites.item") not in _shown(form)
+    status, _, resp = await operator.post("/sites", {
+        "display_name": "Shop", "origins": "https://shop.example", "login_origins":
+        "https://login.shop.example", "vault_item_id": "saved_shop", "start_page": "",
+        "confirm": "yes"})
+    assert status == 303, operator.html
+    status, listing, _ = await operator.follow(resp)
+    assert status == 200
+    banner = t("sites.extra_fields.builtin", fields="recovery codes")
+    assert f"<p>{ui.e(banner)}</p>" in listing
+    assert _fixed_part(catalog("en")["sites.extra_fields"]) not in _shown(listing)
+    site = next(s for s in rig.store.list_sites() if s.display_name == "Shop")
+    assert site.vault_item_id == "saved_shop"
+    status, page, _ = await operator.get(f"/sites/{site.site_id}")
+    assert status == 200
+    assert f'data-confirm-body="{ui.e(t("sites.forget_body.builtin"))}"' in page
+    assert t("sites.forget_body") not in _shown(page)
+    for html in (form, listing, page):
+        assert "1Password" not in html and "extension" not in html

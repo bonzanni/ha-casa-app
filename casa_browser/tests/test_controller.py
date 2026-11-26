@@ -5705,3 +5705,250 @@ async def test_a_page_gone_blind_since_the_question_lapses_at_the_tap(rig):
     reply = await tap(rig, run.run_id, qid)
     assert reply["outcome"] == "lapsed" and reply["reason"] == "incomplete"
     assert presses(rig) == []
+
+
+# --------------------------------------------------------------------------- the app's own store
+
+
+async def started(tmp_path, **kw):
+    r = Rig(tmp_path, **kw)
+    await r.start()
+    return r
+
+
+@pytest.fixture
+async def builtin(tmp_path):
+    """A controller started as the app starts it with no 1Password token and no guest value:
+    the options' own rule says where the logins are kept and whether the app is set up."""
+    from casa_browser.options import parse_options
+    _public, options = parse_options({})
+    assert options.login_store == "builtin"
+    r = await started(tmp_path, login_store=options.login_store, configured=options.configured)
+    yield r
+    await r.ctl.shutdown()
+    r.close()
+
+
+async def test_builtin_hello_is_configured(builtin):
+    assert await builtin.ctl.hello() == {"configured": True, "needs_locale": False,
+                                         "language_source": "option"}
+
+
+async def test_builtin_account_run_starts_without_guest_options(builtin):
+    run = await builtin.run()
+    assert run.state == "running" and builtin.events(run.run_id, "run_failed") == []
+    assert ("broker", "begin_run", run.run_id, None) in builtin.log
+    assert sign_in_ops(builtin) == ["login"] and builtin.broker.guest_asks == [False]
+
+
+LOOK_READ = {"found": True, "passkey": False, "fields": [
+    {"id": "f1", "role": None, "label": "Username", "password": False, "button": "Login"},
+    {"id": "f2", "role": "password", "label": "Password", "password": True, "button": "Login"}]}
+LOOK_SIGN_IN = {"verdict": "sign_in", "reason": "the site's login form",
+                "fields": {"username": "f1", "password": "f2"}}
+
+
+async def scroll(rig, run_id):
+    """A step of Fido's that leaves the page where it is (the next observe may look at it)."""
+    obs = await observe(rig, run_id)
+    return await act(rig, run_id, "scroll", obs.page_handle, obs, direction="down", amount="step")
+
+
+async def look_and_sign_in(rig, run_id):
+    """The look at the page as it is, and its check's ``sign_in`` verdict."""
+    rig.broker.sign_in_read = LOOK_READ
+    result = await rig.ctl.observe(run_id, sign_in=True)
+    assert result.outcome == "judgement_required"
+    j = result.to_wire()["judgement"]
+    assert j["kind"] == "sign_in"
+    return await rig.ctl.apply_judgement(run_id, j["id"], {"packet_sha256": sha(j["packet"]),
+                                                          "verdict": LOOK_SIGN_IN})
+
+
+async def start_a_sign_in(rig, starter):
+    """One of the three places the 1Password guest flow can start from: the start page's
+    sign-in and a look's sign-in, each on a page with a passkey hint (the broker double
+    answers ``needs_guest`` to a sign-in that asks), and a login live view."""
+    if starter == "start_page":
+        rig.broker.passkey_hint = True
+        return await rig.run()
+    if starter == "look":
+        rig.broker.login_reply = {"status": "no_form", "reason": "needs_check"}
+        run = await rig.run()
+        rig.broker.passkey_hint = True
+        rig.broker.login_reply = {"status": "logged_in", "reason": "completed"}
+        await look_and_sign_in(rig, run.run_id)
+        assert [a for a in rig.broker.logins if a.get("auto")]
+        return run
+    run = await rig.run()
+    await rig.ctl.request_live(run.run_id, "login")
+    assert rig.state(run.run_id) == "waiting_live"
+    return run
+
+
+@pytest.mark.parametrize("starter", ["start_page", "look", "login_view"])
+async def test_builtin_opens_no_guest_session(tmp_path, builtin, starter):
+    await start_a_sign_in(builtin, starter)
+    assert len([e for e in builtin.log if e[:2] == ("open_session", "guest")]) == 0
+    assert "unlock_guest" not in sign_in_ops(builtin)
+    assert builtin.broker.guest_asks and all(ask is False for ask in builtin.broker.guest_asks)
+    # the same steps with 1Password do start it, so each of them reaches its starter
+    (tmp_path / "onepassword").mkdir()
+    other = await started(tmp_path / "onepassword")
+    try:
+        await start_a_sign_in(other, starter)
+        assert guest_sessions(other) == 1
+    finally:
+        await other.ctl.shutdown()
+        other.close()
+
+
+SIGNED_IN = {"verdict": "signed_in", "evidence_blocks": [2], "reason": "Log out shown"}
+ACCOUNT_PAGE = {"title": "Account", "host": "a.example", "path": "/account",
+                "blocks": ["Your invoices", "Log out"], "controls": ["link: Log out"],
+                "password_field": False, "_origin": "https://a.example"}
+CARD_PAGE = "https://login.example.test/in"
+
+
+async def live_sign_in(rig, run_id, save_reply):
+    """A login live view whose Done takes a sign-in attempt, judged ``signed_in``; the broker
+    answers the save with ``save_reply``."""
+    async def expose():
+        pass
+    rig.broker.attempt_reply = {"attempt": {"failed": False, "typed_after": False},
+                                "incomplete": False}
+    rig.broker.save_attempt_reply = save_reply
+    await rig.ctl.request_live(run_id, "login")
+    await rig.ctl.begin_live(run_id, expose)
+    rig.driver.readings[rig.broker.capture_reply["capture_id"]] = {
+        "after": [], "at_done": dict(ACCOUNT_PAGE)}
+    await rig.ctl.live_done(run_id)
+    _j, reply = await relay_app(rig, run_id, SIGNED_IN, kind="signin")
+    return reply
+
+
+async def on_card_page(rig, request_id):
+    """An open-web run on the public sign-in page of a site that is not set up."""
+    rig.browser.contents[CARD_PAGE] = dict(text="Sign in with your email", title="Sign in")
+    return await rig.run(spec(request_id=request_id, mode="open_web", sites=(),
+                              start_url=CARD_PAGE))
+
+
+async def end(rig, run_id):
+    await rig.ctl.cancel(run_id)
+    await rig.settle()
+
+
+async def test_builtin_event_texts_say_saved_login(builtin):
+    """Every event text that names the login a site signs in with says "saved login" when
+    the logins are the app's own: the check of the logins, its verdict, its question and its
+    three answers, the sign-in card's check, and a live-view sign-in whose login was kept."""
+    rig = builtin
+    found = {}
+
+    def emitted(name, run_id, kind, outcome):
+        events = [e for e in rig.events(run_id, kind) if e.outcome == outcome]
+        assert len(events) == 1, (name, [(e.kind, e.outcome) for e in rig.events(run_id)])
+        found[name] = events[0].text_masked
+
+    rig.broker.login_reply = {"status": "needs_live_view", "reason": "not_found"}
+    rig.broker.items_reply = {"items": ITEMS, "truncated": False}
+    run = await rig.run(spec(request_id="none"))
+    emitted("the check of the logins", run.run_id, "login_item_judgement", "pending")
+    _j, asked = await relay_app(rig, run.run_id, {"items": [1, 0], "reason": "two"})
+    emitted("its verdict", run.run_id, "judgement", "items")
+    emitted("its question", run.run_id, "question", "asked")
+    assert (await answer(rig, run.run_id, asked["question_id"], "not_now"))["outcome"] == "declined"
+    emitted("the answer: none", run.run_id, "question", "declined")
+    await end(rig, run.run_id)
+
+    real = rig.broker.call
+
+    async def no_link(op, **args):
+        return {"error": "not_found"} if op == "register_item" else await real(op, **args)
+    rig.broker.call = no_link
+    run = await rig.run(spec(request_id="fails"))
+    _j, asked = await relay_app(rig, run.run_id, {"items": [1, 0], "reason": "two"})
+    reply = await answer(rig, run.run_id, asked["question_id"], {"item": 0})
+    assert reply["outcome"] == "not_linked"
+    emitted("the answer: a link that fails", run.run_id, "question", "answered")
+    await end(rig, run.run_id)
+    rig.broker.call = real
+
+    run = await rig.run(spec(request_id="links"))
+    _j, asked = await relay_app(rig, run.run_id, {"items": [1, 0], "reason": "two"})
+    rig.broker.login_reply = {"status": "logged_in", "reason": "completed"}
+    assert (await answer(rig, run.run_id, asked["question_id"], {"item": 0}))["outcome"] == "linked"
+    emitted("the answer: a link", run.run_id, "question", "answered")
+    await end(rig, run.run_id)
+
+    run = await on_card_page(rig, "card")
+    assert (await rig.ctl.ask_sign_in(run.run_id, "RunPod")).outcome == "judging"
+    emitted("the sign-in card's check", run.run_id, "login_item_judgement", "pending")
+    await end(rig, run.run_id)
+
+    run = await rig.run(spec(request_id="kept"))
+    reply = await live_sign_in(rig, run.run_id, {"saved": False, "reason": "item_kept",
+                                                 "item_id": "itm_work"})
+    assert reply["outcome"] == "credential_not_saved"
+    emitted("a live-view sign-in whose login was kept", run.run_id, "credential_not_saved",
+            "item_kept")
+
+    assert len(found) == 8
+    for name, text in found.items():
+        assert "saved login" in text, (name, text)
+        assert "1Password" not in text, (name, text)
+
+
+async def test_builtin_questions_say_saved_login(builtin):
+    """The login question and the sign-in card the controller stores carry the same word."""
+    rig = builtin
+    rig.broker.items_reply = {"items": ITEMS, "truncated": False}
+    rig.broker.login_reply = {"status": "needs_live_view", "reason": "not_found"}
+    run = await rig.run(spec(request_id="question"))
+    _j, asked = await relay_app(rig, run.run_id, {"items": [1], "reason": "work account"})
+    view = (await rig.ctl.get_question(run.run_id, asked["question_id"]))["view"]
+    assert view["text"] == 'To sign in to a.example I\'d use your saved login "RunPod (work)". OK?'
+    await end(rig, run.run_id)
+    run = await on_card_page(rig, "card")
+    assert (await rig.ctl.ask_sign_in(run.run_id, "RunPod")).outcome == "judging"
+    _j, asked = await relay_app(rig, run.run_id, {"items": [0], "reason": "the brand"})
+    view = (await rig.ctl.get_question(run.run_id, asked["question_id"]))["view"]
+    assert view["text"].startswith(
+        'Sign in to login.example.test (RunPod) with your saved login "RunPod"?\n')
+
+
+async def test_a_1password_linked_site_needs_a_login_in_built_in_mode(tmp_path):
+    """A site linked to a 1Password item, then the app started with no token: the item is not
+    this store's, so the site needs a login and nothing signs in with it; a login saved from
+    the live view links the site here, and the 1Password link is still the item's."""
+    from casa_browser.store import Store
+    before = Store(tmp_path / "state.db")
+    before.put_site(replace(ACCOUNT, vault_item_id="item"))
+    before.close()
+    rig = await started(tmp_path, sites=(), login_store="builtin")
+    try:
+        assert [(s.site_id, s.status) for s in await rig.ctl.list_sites()] == [("sa", "needs_login")]
+        rig.broker.login_reply = {"status": "needs_live_view", "reason": "not_found"}
+        run = await rig.run()
+        looks = lambda: [e for e in rig.log if e[:2] == ("broker", "read_sign_in")]  # noqa: E731
+        rig.broker.sign_in_read = LOOK_READ
+        await scroll(rig, run.run_id)
+        result = await rig.ctl.observe(run.run_id, sign_in=True)
+        assert getattr(result, "outcome", None) != "judgement_required" and looks() == []
+        reply = await live_sign_in(rig, run.run_id, {"saved": True, "item_id": "saved-9"})
+        assert reply["outcome"] == "credential_saved"
+        assert [(s.site_id, s.status) for s in await rig.ctl.list_sites()] == [("sa", "ready")]
+        assert rig.store.get_site("sa").vault_item_id == "saved-9"
+        # linked now, the same step and observe do look at the page
+        await scroll(rig, run.run_id)
+        await rig.ctl.observe(run.run_id, sign_in=True)
+        assert len(looks()) == 1
+    finally:
+        await rig.ctl.shutdown()
+        rig.close()
+    after = Store(tmp_path / "state.db", login_store="onepassword")
+    try:
+        assert after.get_site("sa").vault_item_id == "item"
+    finally:
+        after.close()

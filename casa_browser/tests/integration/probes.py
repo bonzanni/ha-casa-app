@@ -29,6 +29,10 @@ _SNIPPET = textwrap.dedent(r'''
             s.sendto(msg, (host, port)); s.recvfrom(2048); out("answered")
         if kind == "dns":
             socket.getaddrinfo(host, port); out("resolved")
+        if kind == "connect_via_proxy":  # a proxy listener's (PROBE_PROXY_PORT) answer to one CONNECT
+            s = socket.create_connection(("127.0.0.1", int(os.environ.get("PROBE_PROXY_PORT", "3128"))), timeout=10)
+            s.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+            out("proxy:" + s.recv(4096).split(b"\r\n")[0].decode(errors="replace"))
         if kind == "https_via_proxy":  # one GET through a proxy listener (PROBE_PROXY_PORT) with the app's CA
             proxy_port = int(os.environ.get("PROBE_PROXY_PORT", "3128"))
             s = socket.create_connection(("127.0.0.1", proxy_port), timeout=10)

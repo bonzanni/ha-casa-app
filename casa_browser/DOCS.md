@@ -2,13 +2,14 @@
 
 Casa Browser is an optional app beside Casa. Casa's browsing specialist, **Fido**, uses it to
 work on websites for you: on the sites you register (signed in, with logins from a dedicated
-1Password vault) and on the open web. You ask your assistant as usual (Ellen, unless you
+1Password vault, or from a store of its own when you have none) and on the open web. You ask your assistant as usual (Ellen, unless you
 renamed her); she hands the browsing to Fido, Fido drives the browser, and Casa checks each
 step before it runs.
 
 ## Before you start
 
-- A **dedicated 1Password vault** for the logins the browser may use (default name
+- With 1Password (optional; see "Without 1Password" below to leave it out): a **dedicated
+  1Password vault** for the logins the browser may use (default name
   `Casa Browser`), a **service account** that can see only that vault and edit its items
   (Casa Browser saves the logins you type in the live view through it), and a **guest** of
   the same vault (the browser's own 1Password extension signs in as the guest). The
@@ -22,9 +23,9 @@ step before it runs.
 
 | Option | What it is |
 |---|---|
-| `onepassword_service_account_token` | Token of the service account that sees only the browsing vault. |
-| `onepassword_vault` | Name of the browsing vault (default `Casa Browser`). |
-| `guest_sign_in_address`, `guest_email`, `guest_password`, `guest_secret_key` | The 1Password guest the browser's extension signs in as (read-only is enough); it is what lets a site sign in with a passkey. The sign-in address is your account's own (`yourteam.1password.eu`), not the generic `my.1password.eu`. |
+| `onepassword_service_account_token` | Token of the service account that sees only the browsing vault. Leave it empty to keep site logins in Casa Browser's own store instead. |
+| `onepassword_vault` | 1Password only. Name of the browsing vault (default `Casa Browser`). |
+| `guest_sign_in_address`, `guest_email`, `guest_password`, `guest_secret_key` | 1Password only; not used when the token is empty, but still checked (an invalid one leaves the app not set up). The 1Password guest the browser's extension signs in as (read-only is enough); it is what lets a site sign in with a passkey. The sign-in address is your account's own (`yourteam.1password.eu`), not the generic `my.1password.eu`. |
 | `language` | Optional. Overrides the browser language, which otherwise follows Home Assistant's. |
 | `timezone` | Optional. Overrides the browser time zone, which otherwise follows Home Assistant's. |
 | `retention_days` | How long step logs, screenshots, downloaded files and run records are kept after a run ends (default 30). |
@@ -34,6 +35,38 @@ The browser's language follows Home Assistant's configured language, read when t
 starts; a change takes effect at the next app restart. If the app cannot read it and no
 `language` is set, it holds new runs until it can. The app's own pages use the same language
 when they have it — English, Italian, Dutch or German — and English otherwise.
+
+## Without 1Password
+
+Leave `onepassword_service_account_token` empty and Casa Browser keeps site logins in a store
+of its own; it then counts as set up with no other option.
+
+- A login is saved when you sign in to a site in the live view (the same save as below:
+  only after Casa's check sees that the sign-in worked), and is used from then on. Your first
+  sign-in on a site saves its login. A later one replaces that login only when it was
+  rejected during the same run, or before an automatic sign-in with it has worked;
+  otherwise the saved login is kept and Fido tells you.
+- The saved logins are kept on the same machine as the browser, and inside its Home Assistant
+  backups, together with the key Casa Browser made to open them. That is weaker than
+  1Password, where they stay in your 1Password account.
+- If you supply the key yourself, by setting `CASA_BROWSER_VAULT_KEY` on the app's container
+  before the store is first created, no key file is made and the key is not in the backup:
+  keep it somewhere safe and supply it again after a restore, or the restored logins cannot be
+  opened. Left unset or empty, the variable supplies no key, and Casa Browser makes and uses
+  its own key file. A value of only spaces or other whitespace is refused: the saved logins then cannot be opened
+  until it is fixed. Supplying a key later, to a store that already made its own key, leaves
+  that key file in place and in backups.
+- There is no page yet to see, change or delete saved logins.
+- No authenticator codes from an app and no passkeys yet. A passkey offered on a sign-in
+  page does not stop a sign-in: the saved username and password are filled in as usual.
+- The guest options are not used, and the browser has no 1Password extension. They are still
+  checked: an invalid one (a sign-in address that is not an account address, say) leaves the
+  app not set up until you correct or clear it.
+- Setting a token later switches to 1Password: each site keeps the 1Password item it had, or
+  asks again when it had none. Clearing the token again brings the saved logins back; the two
+  never mix.
+- A known limit: the cards Fido sends in Telegram still say "1Password item" where the app's
+  own pages say "saved login"; they mean the saved login.
 
 ## Pairing with Casa
 
@@ -160,7 +193,8 @@ theme, light or dark, and on a phone its three tabs sit at the bottom:
   1Password item or nothing: then your first login in the live view saves it).
 - **Setup** shows whether the app is ready, what the vault's user list says about the
   guest (read-only when at least one user of the vault is read-only; a warning when none is;
-  nothing to confirm), and pairs with Casa.
+  nothing to confirm), and pairs with Casa. Without 1Password it shows that logins are kept by
+  Casa Browser itself, or that they could not be opened.
 
 ## The live view
 
@@ -204,5 +238,6 @@ extension's own window through them), so they can also be opened from the live v
   in through another provider (such as Google) needs it in the live view — the Sites page
   says "provider sign-in needs a live login". They are not encrypted at rest.
 - Registered sites, run records and downloaded files are kept in the app's data and are part
-  of normal backups. Run records, step logs, screenshots and files are deleted
+  of normal backups, and so are the saved logins of Casa Browser's own store (without
+  1Password). Run records, step logs, screenshots and files are deleted
   `retention_days` after a run ends.

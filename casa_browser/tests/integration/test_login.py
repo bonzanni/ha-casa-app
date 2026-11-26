@@ -17,8 +17,11 @@ pytestmark = pytest.mark.docker
 LOGIN, ACCOUNT, OTHER = 'login.example', 'site.example', 'outside.example'
 
 
-def fixture_config(tmp_path, *, totp=True, identifier_only=False):
-    """Test vault persistence belongs only to this harness, never production configuration."""
+def fixture_config(tmp_path, *, totp=True, identifier_only=False, vault='onepassword'):
+    """Test vault persistence belongs only to this harness, never production configuration.
+
+    With ``vault='builtin'`` the broker gets the app's own store instead of the fake SDK, with
+    one login in it; the config then also names that login's id (``item_id``)."""
     tmp_path.chmod(0o755)
     # The image tests run as root; every ancestor must let service users reach the fixture.
     for p in tmp_path.parents:
@@ -30,6 +33,9 @@ def fixture_config(tmp_path, *, totp=True, identifier_only=False):
     controller = tmp_path / 'controller'
     controller.mkdir(mode=0o711)
     os.chown(controller, 1103, 1103)
+    if vault == 'builtin':
+        return {'root': str(root), 'driver_socket': str(controller / 'driver.sock'),
+                **builtin_vault(root / 'vault')}
     seed = make_item()
     if not totp:            # slice 6: an item with no authenticator (the site sends a code)
         seed.fields[:] = [f for f in seed.fields if f.field_type != 'Totp']
@@ -43,6 +49,33 @@ def fixture_config(tmp_path, *, totp=True, identifier_only=False):
                           'guest_sign_in_address': 'acct.1password.eu', 'guest_email': canary(),
                           'guest_password': canary(), 'guest_secret_key': canary()}}
     return config
+
+
+# Two moments in different 30-second periods, so the codes made for them differ.
+CODE_TIMES = [1_700_000_000, 1_700_000_045]
+
+
+def builtin_vault(directory):
+    """The app's own store in ``directory`` with one login, made before the broker opens it:
+    the login through the vault class the broker uses, then its authenticator seed with the
+    store underneath (the vault takes values and websites, never a seed). The directory is
+    handed to the broker's user. Returns the part of the fixture's config that names it."""
+    import asyncio
+    import base64
+    import secrets
+    from casa_browser.broker.builtin import BuiltinVault, one_time_code
+    from casa_browser.vault_store import Store
+    login = asyncio.run(BuiltinVault(directory, None).create_login(
+        'Synthetic login', canary(), canary(), ['https://' + LOGIN]))
+    seed = base64.b32encode(secrets.token_bytes(20)).decode()
+    while len({one_time_code(seed, at) for at in CODE_TIMES}) < len(CODE_TIMES):
+        seed = base64.b32encode(secrets.token_bytes(20)).decode()
+    Store.open(directory, None).set_field(login.id, label='one-time password', type='OTP',
+                                          value=seed, writer='live_view')
+    for path in (directory, *directory.iterdir()):
+        os.chown(path, 1102, 1102)
+    return {'vault': 'builtin', 'vault_times': CODE_TIMES, 'item_id': login.id, 'seed': seed,
+            'options': {'op_token': '', 'login_store': 'builtin'}}
 
 
 def instruction(config, action, login=LOGIN, **args):
@@ -99,6 +132,36 @@ def test_login_from_registration(tmp_path, same_origin):
 def test_login_same_origin(tmp_path):
     """Login and account on one origin can complete and log in again after expiry."""
     test_login_from_registration(tmp_path, True)
+
+
+def test_a_sign_in_from_the_built_in_store(tmp_path):
+    """The same sign-in, twice, with the login in the app's own store: the broker is built for
+    that store as production builds it, the site is registered with the login's real id, and
+    each one-time code is the one the stored seed gives at the moment the broker made it."""
+    from casa_browser.broker.builtin import one_time_code
+    config = fixture_config(tmp_path, vault='builtin')
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        install(sites)
+        sites.pages['/username'] = form('username', '/password')
+        sites.pages['/password'] = form('current-password', '/otp')
+        sites.pages['/otp'] = form('one-time-code', '/finish')
+        sites.pages['/finish'] = ('text/html', b'', {'Location': 'https://' + ACCOUNT + '/done'})
+        sites.status['/finish'] = 303
+        sites.pages['/done'] = ('text/html', b'<p>Signed in</p>', {'Set-Cookie': 'sid=active; Secure; Path=/; Max-Age=1'})
+        steps = [{'open': {'site_id': 's1'}}, instruction(config, 'setup', item_id=config['item_id'])]
+        for attempt in range(2):
+            if attempt:
+                steps += [{'wait': 2}, {'cookies': 'https://' + ACCOUNT}]
+            steps += [instruction(config, 'open_login'), {'goto': 'https://' + LOGIN + '/username'},
+                      instruction(config, 'login')]
+        result = run_scenario(steps, broker_fixture=config)
+        assert result[1] == {'ready': True}     # the site is linked to the login in the store
+        assert [r['status'] for r in result if isinstance(r, dict) and 'status' in r] == ['logged_in', 'logged_in']
+        posts = [r for r in sites.receipts.requests if r[0] == 'POST']
+        assert [p[2] for p in posts] == ['/password', '/otp', '/finish'] * 2
+        sent = [parse_qs(posts[n][3].decode())['value'][0] for n in (2, 5)]
+        first, second = (one_time_code(config['seed'], at) for at in config['vault_times'])
+        assert sent == [first, second] and first != second
 
 
 def test_lease_closes_at_landing_document(tmp_path):

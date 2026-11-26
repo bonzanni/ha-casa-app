@@ -2,9 +2,9 @@ configuration:
   onepassword_service_account_token:
     name: Token van het 1Password-serviceaccount
     description: >-
-      Token van een 1Password-serviceaccount dat alleen de browserkluis ziet. De
-      inloggegevensbroker van de app gebruikt het om inlogs van sites te lezen en op te
-      slaan; geen ander deel van de app kan het lezen. Nodig voor elke inlog op een site.
+      Token van een 1Password-serviceaccount dat alleen de browserkluis ziet. Laat het
+      leeg om de inlogs van sites in de eigen opslag van Casa Browser te bewaren in plaats
+      van in 1Password.
   onepassword_vault:
     name: Browserkluis
     description: >-
@@ -18,18 +18,19 @@ configuration:
       my.1password.eu wordt niet geaccepteerd). De 1Password-extensie van de browser logt
       daar in als gast met alleen-lezen toegang tot de browserkluis, en de proxy van de app
       laat alleen dit adres toe voor de extensie en de broker.
+      Niet gebruikt als het token leeg is.
   guest_email:
     name: E-mailadres van de 1Password-gast
     description: >-
-      E-mailadres van die 1Password-gast.
+      E-mailadres van die 1Password-gast. Niet gebruikt als het token leeg is.
   guest_password:
     name: Wachtwoord van de 1Password-gast
     description: >-
-      Wachtwoord van die 1Password-gast.
+      Wachtwoord van die 1Password-gast. Niet gebruikt als het token leeg is.
   guest_secret_key:
     name: Secret Key van de 1Password-gast
     description: >-
-      Secret Key van die 1Password-gast.
+      Secret Key van die 1Password-gast. Niet gebruikt als het token leeg is.
   language:
     name: Browsertaal
     description: >-

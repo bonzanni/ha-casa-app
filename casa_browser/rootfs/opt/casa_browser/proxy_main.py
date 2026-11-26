@@ -26,6 +26,8 @@ import sys
 from pathlib import Path
 
 from casa_browser import netfloor
+from casa_browser.infra import onepassword_extension_hosts
+from casa_browser.options import LOGIN_STORES
 from casa_browser.proxy_addon import EnforcingAddon, Pins
 from casa_browser.proxy_client import (
     CONTROL_SOCKET, MAX_LINE, ControlError, decode_lease, decode_policy, encode_event, peer_uid,
@@ -33,7 +35,8 @@ from casa_browser.proxy_client import (
 
 PRIVATE_DIR = Path("/run/casa-browser/proxy-private")  # 0700 casa-proxy (root bootstrap)
 CA_DIR = PRIVATE_DIR / "ca"                             # the CA key: proxy only
-HOSTS_FILE = PRIVATE_DIR / "hosts.json"                 # the account host (root bootstrap)
+# The account host and where logins are kept (root bootstrap writes both).
+HOSTS_FILE = PRIVATE_DIR / "hosts.json"
 CA_PUBLIC = Path("/run/casa-browser/ca/ca.pem")         # public certificate, world-readable
 GC_PERIOD = 2.0  # seconds between full garbage collections (see Proxy._collect_garbage)
 BINDING_KEY = Path('/data/proxy/binding.key')
@@ -111,6 +114,29 @@ def load_extra_hosts(path: Path = HOSTS_FILE) -> frozenset[str]:
         return frozenset()
     host = data.get("onepassword_account_host") if isinstance(data, dict) else None
     return frozenset({host}) if isinstance(host, str) and netfloor.valid_hostname(host) == host else frozenset()
+
+
+def load_login_store(path: Path = HOSTS_FILE) -> str:
+    """Where site logins are kept, as root bootstrap wrote it beside the account host. A file
+    that cannot be read, or a word bootstrap does not write, reads as ``onepassword``."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "onepassword"
+    store = data.get("login_store") if isinstance(data, dict) else None
+    return store if store in LOGIN_STORES else "onepassword"
+
+
+def build_addon(*, resolver, hosts_file: Path = HOSTS_FILE,
+                binding_key_path=BINDING_KEY) -> EnforcingAddon:
+    """The addon for the store root bootstrap chose. With the app's own store 1Password gets
+    no special access: no host on the broker listener, none admitted for the extension, and
+    no rule for downloading the extension. Its sites stay ordinary sites."""
+    builtin = load_login_store(hosts_file) == "builtin"
+    account = frozenset() if builtin else load_extra_hosts(hosts_file)
+    return EnforcingAddon(resolver=resolver, broker_hosts=account,
+                          extension_hosts=onepassword_extension_hosts(next(iter(account), None)),
+                          binding_key_path=binding_key_path, extension=not builtin)
 
 
 class Proxy:
@@ -317,11 +343,7 @@ async def _main() -> int:  # pragma: no cover — exercised by the image integra
     loop = asyncio.get_running_loop()
     import pwd
     controller_uid = pwd.getpwnam("casa-controller").pw_uid
-    account = load_extra_hosts()
-    from casa_browser.infra import onepassword_extension_hosts
-    addon = EnforcingAddon(resolver=loop.resolve_unpinned, broker_hosts=account,
-                           extension_hosts=onepassword_extension_hosts(next(iter(account), None)),
-                           binding_key_path=BINDING_KEY)
+    addon = build_addon(resolver=loop.resolve_unpinned)
     loop.pins = addon.pins
     _ensure_private_dir(CA_DIR)
     proxy = Proxy(addon=addon, confdir=CA_DIR, control_path=CONTROL_SOCKET,

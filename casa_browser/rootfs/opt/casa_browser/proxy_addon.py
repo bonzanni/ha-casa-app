@@ -11,7 +11,8 @@ installed.
 
 The **broker listener** carries only the broker's 1Password SDK traffic: ``CONNECT`` to a
 listed host on port 443, intercepted, its TLS server name and every ``Host`` equal to the
-``CONNECT`` host. No run policy applies there.
+``CONNECT`` host. No run policy applies there. With logins kept in the app's own store no host
+is listed, so that listener admits nothing.
 
 The **download listener** carries only the controller's downloader (``downloads.PROXY_URL``):
 its requests are decided like the browser's, as download hops (``decide(…, hop=True)``: the
@@ -229,7 +230,7 @@ class EnforcingAddon:
                  browser_port: int = netfloor.PROXY_BROWSER_PORT,
                  broker_port: int = netfloor.PROXY_BROKER_PORT,
                  download_port: int = netfloor.PROXY_DOWNLOAD_PORT,
-                 clock=time.time, binding_key_path=None, tagger=None):
+                 clock=time.time, binding_key_path=None, tagger=None, extension: bool = True):
         self.binding_key_path = Path(binding_key_path) if binding_key_path is not None else None
         self._key = _binding_key(self.binding_key_path)
         # Names the key without revealing it: a provider binding learned under another key
@@ -239,6 +240,9 @@ class EnforcingAddon:
         self.resolver = resolver
         self.broker_hosts = frozenset(broker_hosts) | infra.BROKER_SDK_HOSTS
         self.extension_hosts = frozenset(extension_hosts)
+        # Whether Chrome has a 1Password extension to download. False when logins are kept in
+        # the app's own store: the three rules for that download then admit nothing.
+        self.extension = extension
         self.browser_port = browser_port
         self.broker_port = broker_port
         self.download_port = download_port
@@ -434,7 +438,7 @@ class EnforcingAddon:
         if any(origin in (*s.origins, *s.login_origins) for s in p.sites):
             return True
         hosts = self.extension_hosts | self.broker_hosts | infra.ONEPASSWORD_EXTENSION_HOSTS
-        hosts |= frozenset(r.host for r in infra.INFRA_RULES if r.host is not None)
+        hosts |= frozenset(r.host for r in infra.rules(self.extension) if r.host is not None)
         return origin in {'https://' + host for host in hosts}
 
     def _withhold(self, flow=None):
@@ -469,7 +473,7 @@ class EnforcingAddon:
 
     def _decide(self, meta: RequestMeta, *, hop: bool = False) -> Decision:
         return decide(meta, self.policy, extra_hosts=self.extension_hosts, tagger=self.tagger,
-                      hop=hop)
+                      hop=hop, extension=self.extension)
 
     def _lease_only(self, meta: RequestMeta, hop: bool) -> bool:
         """A lease is what admits *meta*: the policy without its login and manual leases
@@ -477,7 +481,8 @@ class EnforcingAddon:
         p = self.policy
         return p is not None and (p.login_lease is not None or p.manual_lease is not None) and not decide(
             meta, dataclasses.replace(p, login_lease=None, manual_lease=None),
-            extra_hosts=self.extension_hosts, tagger=self.tagger, hop=hop).allow
+            extra_hosts=self.extension_hosts, tagger=self.tagger, hop=hop,
+            extension=self.extension).allow
 
     def _recheck_sockets(self):
         for key, sock in list(self.sockets.items()):

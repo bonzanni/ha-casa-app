@@ -8,6 +8,13 @@ reads Home Assistant's configured language through the Core API proxy with
 ``SUPERVISOR_TOKEN``, writes the effective locale, and then removes the token from the s6
 container environment so no service started afterwards can inherit it.
 
+Bootstrap also decides, once per start, where site logins are kept (``login_store``): in
+1Password when the token option holds anything at all, in the app's own store when it is
+empty. Invalid options select neither: the app is then not set up and its own store is left
+alone. Bootstrap writes that one word to the three files the broker, the controller and the
+proxy read, so none of them works it out from the token, and it writes Chrome's managed
+policy to match.
+
 Nothing in this module puts a secret in a ``repr``, an exception message, a log line or an
 argv: validation errors name the option key, never its value.
 """
@@ -22,7 +29,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zoneinfo
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -35,6 +42,17 @@ CONTAINER_ENV = Path("/run/s6/container_environment")
 
 HA_CONFIG_URL = "http://supervisor/core/api/config"
 TOKEN_ENV_NAMES = ("SUPERVISOR_TOKEN", "HASSIO_TOKEN")
+
+# Where site logins are kept. ``builtin``: the app's own store (no 1Password token is set).
+# ``onepassword``: a token is set, whatever it is worth. ``none``: the options are invalid, so
+# the app is not set up and its own store is left alone.
+LOGIN_STORES = ("builtin", "onepassword", "none")
+# An optional key for the app's own store, given from outside the container. Bootstrap hands
+# it to the broker and removes it from the environment every service starts from.
+STORE_KEY_ENV = "CASA_BROWSER_VAULT_KEY"
+# Chrome's policy keys that exist only for the 1Password extension: the forced install, and
+# the debugger access the driver needs to read the extension's own pages.
+_EXTENSION_POLICY_KEYS = ("ExtensionSettings", "DeveloperToolsAvailability")
 
 # Service identities (created in the Dockerfile). Task 5's firewall matches these UIDs.
 SERVICE_USERS = {
@@ -67,6 +85,10 @@ class Paths:
     data: Path = DATA_ROOT
     run: Path = RUN_ROOT
     container_env: Path = CONTAINER_ENV
+    # Chrome's managed policy as shipped, beside this module (in the image and in a checkout),
+    # and the place Chrome reads it from, which bootstrap writes at every start.
+    policy_source: Path = Path(__file__).with_name("chrome_policy.json")
+    chrome_policy: Path = Path("/etc/opt/chrome/policies/managed/casa.json")
 
     @property
     def options(self) -> Path:
@@ -140,9 +162,17 @@ class BrokerOptions:
     guest_email: str = field(default="", repr=False)
     guest_password: str = field(default="", repr=False)
     guest_secret_key: str = field(default="", repr=False)
+    login_store: str = "onepassword"
+    store_key: str = field(default="", repr=False)
 
     @property
     def configured(self) -> bool:
+        """The app's own store needs no option at all; 1Password needs all six values;
+        invalid options are never set up."""
+        if self.login_store == "builtin":
+            return True
+        if self.login_store != "onepassword":
+            return False
         return all((self.op_token, self.vault, self.guest_sign_in_address, self.guest_email,
                     self.guest_password, self.guest_secret_key))
 
@@ -151,7 +181,8 @@ class BrokerOptions:
         return {"op_token": self.op_token, "vault": self.vault,
                 "guest_sign_in_address": self.guest_sign_in_address,
                 "guest_email": self.guest_email, "guest_password": self.guest_password,
-                "guest_secret_key": self.guest_secret_key}
+                "guest_secret_key": self.guest_secret_key,
+                "login_store": self.login_store, "store_key": self.store_key}
 
 
 def valid_language(value: object) -> bool:
@@ -208,15 +239,31 @@ def parse_options(raw: Mapping) -> tuple[PublicOptions, BrokerOptions]:
     if level not in LOG_LEVELS:
         raise OptionsError("log_level")
     public = PublicOptions(language=language, timezone=tz, retention_days=days, log_level=level)
-    broker = BrokerOptions(
-        op_token=_opt_str(raw, "onepassword_service_account_token"),
-        vault=_opt_str(raw, "onepassword_vault", DEFAULT_VAULT) or DEFAULT_VAULT,
-        guest_sign_in_address=account_host(_opt_str(raw, "guest_sign_in_address")),
-        guest_email=_opt_str(raw, "guest_email"),
-        guest_password=_opt_str(raw, "guest_password"),
-        guest_secret_key=_opt_str(raw, "guest_secret_key"),
-    )
-    return public, broker
+    # Every value is validated whichever store is used: a malformed one is an invalid option.
+    token = _opt_str(raw, "onepassword_service_account_token")
+    vault = _opt_str(raw, "onepassword_vault", DEFAULT_VAULT) or DEFAULT_VAULT
+    guest = {
+        "guest_sign_in_address": account_host(_opt_str(raw, "guest_sign_in_address")),
+        "guest_email": _opt_str(raw, "guest_email"),
+        "guest_password": _opt_str(raw, "guest_password"),
+        "guest_secret_key": _opt_str(raw, "guest_secret_key"),
+    }
+    if token:
+        # Any token at all, even a wrong or a blank-looking one, means 1Password: its
+        # failures stay visible instead of logins quietly going to another store.
+        return public, BrokerOptions(op_token=token, vault=vault, login_store="onepassword",
+                                     **guest)
+    # No token: the app's own store. The guest values are dropped here, so neither the
+    # broker's file nor the proxy's can carry them.
+    return public, BrokerOptions(op_token="", vault=vault, login_store="builtin")
+
+
+def chrome_policy(source: dict, login_store: str) -> dict:
+    """Chrome's managed policy for a login store: the shipped one, without the keys that
+    exist only for the 1Password extension when logins are kept in the app's own store."""
+    if login_store != "builtin":
+        return source
+    return {key: value for key, value in source.items() if key not in _EXTENSION_POLICY_KEYS}
 
 
 def load_options(path: Path) -> tuple[PublicOptions, BrokerOptions]:
@@ -345,11 +392,44 @@ def _write_private(path: Path, payload: dict, owner: tuple[int, int] | None) -> 
         raise
 
 
+def _write_chrome_policy(path: Path, source: Path, login_store: str) -> None:
+    """Write the policy Chrome reads at ``path``. Chrome runs as its own user, so the file
+    and every directory made on the way to it are readable by all, whatever the umask. The
+    shipped bytes are written as they are unless the store calls for a different policy.
+    Any failure raises: Chrome must never start without its policy."""
+    data = source.read_bytes()
+    if login_store == "builtin":
+        policy = chrome_policy(json.loads(data), login_store)
+        data = (json.dumps(policy, indent=2) + "\n").encode("utf-8")
+    missing = []
+    directory = path.parent
+    while not directory.exists():
+        missing.append(directory)
+        directory = directory.parent
+    for directory in reversed(missing):
+        directory.mkdir()
+        os.chmod(directory, 0o755)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def scrub_container_environment(container_env: Path) -> list[str]:
-    """Remove the Supervisor token from the s6 container environment, so ``with-contenv``
-    can never hand it to a service. Returns the names removed."""
+    """Remove the Supervisor token and the store key from the s6 container environment, so
+    ``with-contenv`` can never hand either to a service. Returns the names removed."""
     removed = []
-    for name in TOKEN_ENV_NAMES:
+    for name in (*TOKEN_ENV_NAMES, STORE_KEY_ENV):
         target = container_env / name
         try:
             target.unlink()
@@ -396,21 +476,28 @@ def bootstrap(env: Mapping[str, str], paths: Paths, owners: Owners,
             public, broker = load_options(paths.options)
         except OptionsError as err:
             options_error = err.key
-            public, broker = PublicOptions(), BrokerOptions(op_token="")
+            public, broker = PublicOptions(), BrokerOptions(op_token="", login_store="none")
+        if broker.login_store == "builtin":
+            # Copied as it is: whether the key is usable is the store's to say, not ours.
+            broker = replace(broker, store_key=env.get(STORE_KEY_ENV) or "")
 
         ha_language = None
         if public.language is None and token:
             ha_language = read_ha_language(fetch_factory(token))
         locale = effective_locale(public, ha_language, env.get("TZ"))
 
+        # Before the files the services start from: if it fails, none of them is written.
+        _write_chrome_policy(paths.chrome_policy, paths.policy_source, broker.login_store)
         _write_private(paths.broker_config, broker.to_private_json(), owners.broker)
         _write_private(paths.proxy_private / "hosts.json",
-                       {"onepassword_account_host": broker.guest_sign_in_address or None},
+                       {"onepassword_account_host": broker.guest_sign_in_address or None,
+                        "login_store": broker.login_store},
                        owners.proxy)
         _write_private(paths.public_options,
                        {"language": public.language, "timezone": public.timezone,
                         "retention_days": public.retention_days, "log_level": public.log_level,
-                        "configured": broker.configured, "options_error": options_error},
+                        "configured": broker.configured, "options_error": options_error,
+                        "login_store": broker.login_store},
                        owners.controller)
         if locale is None:
             record = {"needs_locale": True}
@@ -419,7 +506,7 @@ def bootstrap(env: Mapping[str, str], paths: Paths, owners: Owners,
                       "timezone": locale.timezone, "language_source": locale.language_source}
         _write_private(paths.locale_record, record, owners.controller)
     finally:
-        # Whatever happened above, no service may inherit the token.
+        # Whatever happened above, no service may inherit the token or the store key.
         scrub_container_environment(paths.container_env)
 
     if options_error:
@@ -448,6 +535,7 @@ def main() -> int:  # pragma: no cover — exercised by the image's init oneshot
     result = bootstrap(dict(os.environ), Paths(), Owners.from_system())
     os.environ.pop("SUPERVISOR_TOKEN", None)
     os.environ.pop("HASSIO_TOKEN", None)
+    os.environ.pop(STORE_KEY_ENV, None)
     del result  # an invalid option is reported in the log and on the setup page
     return 0
 

@@ -43,8 +43,13 @@ def test_options_schema_translations_agree():
     options, schema = CONFIG["options"], CONFIG["schema"]
     assert set(options) <= set(schema)
     assert set(TRANSLATIONS["configuration"]) == set(schema)
+    # Optional, so the configuration can be saved with them empty: logins are then kept in
+    # the app's own store.
     for key in SECRET_OPTIONS:
-        assert schema[key] == "password", key
+        assert schema[key] == "password?", key
+    for key in ("guest_sign_in_address", "guest_email"):
+        assert schema[key] == "str?", key
+    assert schema["onepassword_vault"] == "str"
     # The language and time zone are optional overrides of Home Assistant's.
     assert schema["language"] == "str?" and "language" not in options
     assert schema["timezone"] == "str?" and "timezone" not in options

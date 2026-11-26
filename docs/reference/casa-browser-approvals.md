@@ -123,7 +123,8 @@ serves them — a `login_item` only while the run is running — and the plugin'
 through Casa's check to the same verdict route; a run command never supersedes them, and their
 item ids never leave the app. A `login_item` verdict of 0–5 of the packet's own indexes asks the
 login question (fixed copy: the host, the vault's whole titles, told apart by their hosts when
-equal): [Yes] [No] for one, the titles and [None of these] for several, no confirm and no live
+equal; it calls a login a "1Password item", or a "saved login" with the app's own store,
+`confirmations.item_word`, as the sign-in card and the run's event texts do): [Yes] [No] for one, the titles and [None of these] for several, no confirm and no live
 view. `{"item": i}` links that item and signs in again; No, None of these, no candidate, no
 verdict or the question's hour report `login_needed`. A site that is not set up gets its own question, the sign-in card (view `kind: site_signin`, Yes or No only), in [`casa-browser-signin.md`](casa-browser-signin.md).
 

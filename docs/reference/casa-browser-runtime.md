@@ -193,6 +193,14 @@ The guest driver opens its credential window before navigation to withhold reque
 origins while guest credentials are in use; closing that window does not withdraw the
 fixed host list.
 
+**The login store.** `proxy_main.py::build_addon` reads the `login_store` word bootstrap wrote
+beside the account host (`proxy_main.py::load_login_store`: an unreadable file or an unknown
+word reads as `onepassword`). With `builtin` 1Password gets no special access: the broker
+listener admits no host, no host joins the extension list, and the addon is built with
+`extension=False`, so `infra.py::rules` leaves out `infra.py::EXTENSION_RULES` (the three
+rules below). Requests to 1Password's websites are then ordinary requests, decided like any
+other site's.
+
 **Chrome's own updates.** The managed policy force-installs the 1Password extension, and Chrome
 fetches it through three fixed infrastructure rules in `infra.py`, admitted only in an account
 session: the extension update check (`GET clients2.google.com/service/update2/crx`), the CRX
@@ -200,7 +208,10 @@ download (`GET clients2.googleusercontent.com/crx/blobs/…`) and the signed upd
 (`POST update.googleapis.com/service/update2/json` carrying its `cup2key`/`cup2hreq`
 signature), each with its own query grammar. Everything else Chrome sends on its own — account
 sign-in, device check-in, field-trial seeds, the per-cache download redirector — is refused,
-and the extension still installs. In an account session a request the browser or the 1Password
+and the extension still installs. With the app's own login store the three rules are not in
+force: Chrome's launch arguments are the same, so it still sends those requests, and in an
+account session the proxy refuses them as `browser_background`, never a question.
+In an account session a request the browser or the 1Password
 extension makes on its own, not a navigation, is refused as `browser_background`: never a
 question to the operator. "On its own" is the browser's signal (`RequestMeta.browser_own`, set by
 `proxy_addon.request_meta`): `Sec-Fetch-Site: none` outside a navigation, to any host outside the
@@ -251,7 +262,11 @@ resolver answering a public-looking address, which the production floor checks, 
 that maps that pinned address to the fixture's port. The image lane
 (`casa_browser/test/run-integration.sh`, `make test-browser-integration`) starts the app image
 with its own s6 `/init` and `NET_ADMIN` only, beside a reachable private target, and probes
-every service user with root positive controls on the same destinations.
+every service user with root positive controls on the same destinations. `CASA_IT_STORE`
+selects the app's login store: `onepassword` (the default) gives the options a made-up token
+and leaves `tests/integration/test_builtin_mode.py` out; `builtin` gives no token, sets a
+random `CASA_BROWSER_VAULT_KEY` on the container, fails the lane if that key reaches the
+container log, and without selectors runs only that file.
 
 The addon accepts an injected binding tagger and passes it to every policy decision.
 Policy encoding and decoding carry only the provider origin and three validated tags;

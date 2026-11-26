@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.20] - 2026-11-26
+
+### Added
+
+- Site logins without 1Password. Leave the 1Password token option empty and Casa Browser keeps site logins in a store of its own: a login is saved when you sign in to a site in the live view, and is used from then on. Your first sign-in on a site saves its login; a later one replaces it only when it was rejected in the same run or before an automatic sign-in with it has worked, and otherwise the saved login is kept. The Setup page says where logins are kept, or that they could not be opened.
+- Its limits, for now: the saved logins are kept on the same machine as the browser and inside its Home Assistant backups, which is weaker than 1Password; there is no page yet to see, change or delete them; there are no authenticator codes from an app and no passkeys (a passkey offered on a sign-in page does not stop a sign-in: the saved password is used); the guest options are not used, though they are still checked (an invalid one leaves the app not set up); and the cards Fido sends in Telegram still say "1Password item" where the app's pages say "saved login".
+- Setting a token later switches to 1Password, where each site keeps the 1Password item it had (or asks again); clearing it brings the saved logins back. The two never mix.
+
+### Changed
+
+- An install with no 1Password token now uses the built-in store and counts as set up, where it was "not configured" before. Installs with a token are unaffected.
+- Without a token, the browser has no 1Password extension and gives 1Password no special network access; visits to 1Password's own websites are ordinary visits.
+
 ## [0.1.19] - 2026-11-24
 
 ### Changed

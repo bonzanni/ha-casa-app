@@ -16,6 +16,7 @@ from onepassword.types import FileAttributes, ItemField, ItemFile, ItemSection, 
 
 from brokerfakes import ALL_SDK_CALLS, FORBIDDEN_SDK_METHODS, FakeSDK, LOGIN, Rig, Step, canary, item_value, sdk_error
 from casa_browser.broker import BrokerError
+from casa_browser.broker.builtin import BuiltinVault
 from casa_browser.broker.journal import Journal
 from casa_browser.broker.guest import assess_guest
 from casa_browser.broker.items import EXTRA_FIELDS_WARNING, Vault
@@ -165,7 +166,8 @@ async def test_no_delete_interface(tmp_path):
     banned.add('generate_password')
     dynamic = {'getattr', 'setattr', 'delattr', 'attrgetter', 'methodcaller',
                '__getattribute__', '__dict__', 'eval', 'exec', 'compile'}
-    for names in (BROKER_OPS, DRIVER_OPS, [n for n in dir(Vault) if not n.startswith('_')]):
+    for names in (BROKER_OPS, DRIVER_OPS, [n for n in dir(Vault) if not n.startswith('_')],
+                  [n for n in dir(BuiltinVault) if not n.startswith('_')]):
         assert not any(any(word in n for word in ('delete', 'archive', 'remove', 'purge', 'trash')) for n in names)
     root = Path(__file__).parents[1] / 'rootfs/opt/casa_browser'
     for path in [*(root / 'broker').rglob('*.py'), root / 'broker_client.py']:

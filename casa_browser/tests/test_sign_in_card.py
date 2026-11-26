@@ -355,3 +355,20 @@ async def test_a_start_page_that_does_not_open_is_said_on_the_receipt(rig):
     assert reply["outcome"] == "not_opened" and reply["label"] == HOST
     assert len(new_sites(rig)) == 1 and rig.state(run.run_id) == "running"
     assert [e.outcome for e in rig.events(run.run_id, "page_unreachable")][-1] == "blocked"
+
+
+async def test_builtin_cards_say_saved_login():
+    """With the app's own store the three card sentences name a saved login."""
+    from casa_browser import confirmations as conf
+    word = conf.item_word("builtin")
+    assert word == "saved login" and conf.item_word("onepassword") == "1Password item"
+    one = conf.login_view("a.example", ["RunPod (work)"], word)
+    assert one["text"] == 'To sign in to a.example I\'d use your saved login "RunPod (work)". OK?'
+    several = conf.login_view("a.example", ["RunPod (work)", "RunPod"], word)
+    assert several["text"] == "To sign in to a.example, which saved login?"
+    proposal = conf.SignInProposal(ORIGIN, HOST, START, "Enable Banking")
+    card_view = conf.site_view(proposal, "Enable Banking", word)
+    assert card_view["text"] == (
+        'Sign in to login.example.test (Enable Banking) with your saved login "Enable Banking"?\n'
+        "Yes, and next time I'll sign in here without asking. "
+        "You can undo that in Casa Browser's Sites page.")

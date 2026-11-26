@@ -8,6 +8,10 @@
   kind: meta
   summary: Manifest shard — the Casa Browser app's run controller, action gate, questions and /v1 contract.
 
+- doc: manifest.d/casa_browser-builtin-store.yaml
+  kind: meta
+  summary: Manifest shard — the Casa Browser app's own login store document, in a shard of its own as Casa's built-in secrets store document is.
+
 - doc: manifest.d/architecture-a-d.yaml
   kind: meta
   summary: Manifest shard — architecture documents A-D, except the background-jobs documents.

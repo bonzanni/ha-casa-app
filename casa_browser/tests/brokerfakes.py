@@ -21,9 +21,10 @@ if platform.machine().lower() in ('x86_64', 'amd64'):
 else:
     from onepassword.lib.aarch64.op_uniffi_core import Error as NativeError
 
+from casa_browser import vault_store
 from casa_browser.broker.items import Vault
 from casa_browser.broker.journal import Journal
-from casa_browser.broker.main import Broker
+from casa_browser.broker.main import Broker, build_vault
 from casa_browser.login import CapturedFields, CapturedValue, LoginFields
 from casa_browser.options import BrokerOptions
 
@@ -411,15 +412,20 @@ class Clock:
 
 class Rig:
     """Only orchestration and dependency construction; no broker behavior is faked."""
-    def __init__(self, root):
+    def __init__(self, root, *, sdk=None):
+        # ``root`` may hold what an earlier rig left (its registry and journal are then the
+        # ones opened), and ``sdk`` may be that rig's double, so its items are the same.
         self.root = root
-        self.sdk, self.driver, self.clock = FakeSDK(), FakeDriver(), Clock()
+        self.sdk, self.driver, self.clock = sdk or FakeSDK(), FakeDriver(), Clock()
         self.journal = Journal(root / 'journal.db')
-        self.options = BrokerOptions(canary(), vault='Synthetic vault',
-                                     guest_sign_in_address='acct.1password.eu',
-                                     guest_email=canary(), guest_password=canary(), guest_secret_key=canary())
+        self.options = self.new_options()
         self.broker = self.new_broker()
         self.replies = []
+
+    def new_options(self):
+        return BrokerOptions(canary(), vault='Synthetic vault',
+                             guest_sign_in_address='acct.1password.eu',
+                             guest_email=canary(), guest_password=canary(), guest_secret_key=canary())
 
     def new_broker(self):
         return Broker(Vault(self.sdk, 'Synthetic vault'), self.driver, self.journal,
@@ -439,6 +445,13 @@ class Rig:
             await self.call('register_capture', site_id='site', login_origins=list(LOGIN), operator_ref='operator', title='Synthetic site')
         await self.call('begin_run', run_id='run', account_site_ids=['site'])
         self.sdk.calls.clear()
+        return self
+
+    async def resume(self):
+        """On a root an earlier rig left: the broker starts on the registry that is there and
+        its run begins. Nothing is registered."""
+        await self.broker.start()
+        await self.call('begin_run', run_id='run', account_site_ids=['site'])
         return self
 
     async def capture(self, values, purpose='login', *, attempt=None):
@@ -472,6 +485,56 @@ class Rig:
 
     def writes(self):
         return [c for c in self.sdk.calls if c[0] in ('items.put', 'items.create')]
+
+
+class BuiltinRig(Rig):
+    """The same rig with no 1Password token: the logins are in the app's own store, in
+    ``root / 'vault'``, behind the vault the broker builds for that mode.
+
+    The vault takes a login's values and websites, never an authenticator seed. Given a
+    ``seed``, the rig puts a login holding one into the store itself, before the broker's
+    vault opens it, and ``setup`` links the site to that login."""
+    def __init__(self, root, *, seed=None):
+        self.item_id = None       # the login ``setup`` linked the site to
+        if seed is not None:
+            field = vault_store.Field
+            store = vault_store.Store.open(root / 'vault', None)
+            self.item_id = store.create(
+                title='Synthetic login', category='LOGIN', tags=(), writer='live_view',
+                fields=[field('', 'username', 'STRING', canary()),
+                        field('', 'password', 'CONCEALED', canary()),
+                        field('', 'websites', 'URL', '\n'.join(LOGIN)),
+                        field('', 'one-time password', 'OTP', seed),
+                        field('', 'version', 'STRING', '1')]).id
+        super().__init__(root)
+
+    def new_options(self):
+        return BrokerOptions(op_token='', login_store='builtin')
+
+    def new_broker(self):
+        self.vault = build_vault(self.options, self.root / 'vault')
+        # A code is made for the rig's time, so a test can say which code it must be.
+        self.vault._clock = self.clock
+        return Broker(self.vault, self.driver, self.journal, self.root / 'registry.json',
+                      self.options, self.clock)
+
+    async def setup(self, *, item=True):
+        """As the 1Password rig's, with a login that is really in the store: the one put
+        there with a seed, else one made through the vault. The registration has to succeed:
+        a test that counts no guest call must not pass because no login was ever linked."""
+        await self.broker.start()
+        if item:
+            if self.item_id is None:
+                made = await self.vault.create_login('Synthetic login', canary(), canary(), LOGIN)
+                self.item_id = made.id
+            reply = await self.call('register_item', site_id='site', item_id=self.item_id,
+                                    login_origins=list(LOGIN), operator_ref='operator')
+            assert 'error' not in reply, reply
+        else:
+            await self.call('register_capture', site_id='site', login_origins=list(LOGIN),
+                            operator_ref='operator', title='Synthetic site')
+        await self.call('begin_run', run_id='run', account_site_ids=['site'])
+        return self
 
 
 class SocketDriver:
@@ -620,18 +683,30 @@ async def serve_image_broker(config):
     from casa_browser.broker.main import BrokerServer
     assert os.getuid() == 1102
     root = Path(config['root'])
-    sdk = FakeSDK()
-    sdk.forbidden_log_path = root / 'forbidden-sdk-calls.jsonl'
-    snapshot = root / 'fake-vault.json'
-    sdk.saved = {(i['vaultId'], i['id']): Item.model_validate(i) for i in json.loads(snapshot.read_text())}
-    original = sdk.items._write
-    def persist(value, fresh):
-        result = original(value, fresh)
-        snapshot.write_text(json.dumps([i.model_dump(mode='json', by_alias=True) for i in sdk.saved.values()]))
-        return result
-    sdk.items._write = persist
     options = BrokerOptions(**config['options'])
-    broker = Broker(Vault(sdk, options.vault), SocketDriver(config['driver_socket']),
+    if config.get('vault') == 'builtin':
+        # The app's own store under the fixture's root, built as production builds it: no
+        # SDK double and no snapshot file. The options have to name that store as well, or
+        # the broker would be built for 1Password.
+        assert options.login_store == 'builtin'
+        vault = build_vault(options, root / 'vault')
+        if config.get('vault_times'):
+            # The times its one-time codes are made for, in order and one per code: a test
+            # names two in different periods and knows both codes without waiting for one.
+            vault._clock = iter(config['vault_times']).__next__
+    else:
+        sdk = FakeSDK()
+        sdk.forbidden_log_path = root / 'forbidden-sdk-calls.jsonl'
+        snapshot = root / 'fake-vault.json'
+        sdk.saved = {(i['vaultId'], i['id']): Item.model_validate(i) for i in json.loads(snapshot.read_text())}
+        original = sdk.items._write
+        def persist(value, fresh):
+            result = original(value, fresh)
+            snapshot.write_text(json.dumps([i.model_dump(mode='json', by_alias=True) for i in sdk.saved.values()]))
+            return result
+        sdk.items._write = persist
+        vault = Vault(sdk, options.vault)
+    broker = Broker(vault, SocketDriver(config['driver_socket']),
                     Journal(root / 'journal.db'), root / 'registry.json', options)
     await broker.start()
     real_dispatch = broker.dispatch

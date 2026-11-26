@@ -458,3 +458,78 @@ def test_address_gives_the_canonical_origin_and_parts():
         "https://account.example", "/s", "q=1", True, "f", True)
     assert address("http://[2001:db8::1]:8080/")[0] == "http://[2001:db8::1]:8080"
     assert address("https://account.example")[1:] == ("", "", False, "", False)
+
+
+# The three rules through which Chrome downloads the 1Password extension, each with a request
+# of its own shape, as Chrome sends its own requests (CHROME_OWN, without a content type where
+# there is no body).
+CRX_QUERY = ("os=linux&arch=x86_64&prod=chromecrx&prodchannel=&prodversion=155.0.8059.84&lang=en-GB"
+             "&acceptformat=crx3,puff&x=id%3Daeblfdkhhhdcdjpifhhbdiojplfjncoa%26installsource%3Dpolicy%26uc")
+CUP_QUERY = "cup2key=15:AbCdEf0123456789_-&cup2hreq=" + "0123456789abcdef" * 4
+EXTENSION_DOWNLOADS = [
+    ("chrome_extension_update", "GET",
+     "https://clients2.google.com/service/update2/crx?" + CRX_QUERY, b""),
+    ("chrome_extension_download", "GET",
+     "https://clients2.googleusercontent.com/crx/blobs/AbC-123_x/abc.crx", b""),
+    ("chrome_update_check", "POST",
+     "https://update.googleapis.com/service/update2/json?" + CUP_QUERY, b"{}"),
+]
+
+
+def _sender(headers, body):
+    """*headers* without their content type, or with a JSON one when there is a body."""
+    plain = {k: v for k, v in headers.items() if k != "content-type"}
+    return {**plain, "content-type": "application/json"} if body else plain
+
+
+@pytest.mark.parametrize("name, method, url, body", EXTENSION_DOWNLOADS,
+                         ids=[case[0] for case in EXTENSION_DOWNLOADS])
+def test_without_the_extension_its_three_download_rules_admit_nothing(name, method, url, body):
+    """The three rules exist so that Chrome can download the 1Password extension. By default
+    each admits its request, as before. Without the extension none of them matches, and the
+    request is what it is without a rule: Chrome's own is its background traffic, refused
+    quietly, on the downloader's listener too; a page's is that page's ordinary request (the
+    host is not blocked, it only has no rule of its own)."""
+    from casa_browser import infra
+    assert name in infra.EXTENSION_RULES
+    own = _meta(method, url, _sender(CHROME_OWN, body), body)
+    assert own.browser_own
+    assert infra.infra_match(own, BASE) == name
+    d = decide(own, BASE)
+    assert (d.allow, d.reason) == (True, "infrastructure")
+    assert infra.infra_match(own, BASE, extension=False) is None
+    for hop in (False, True):
+        d = decide(own, BASE, hop=hop, extension=False)
+        assert (d.allow, d.reason, d.event_kind) == (False, "browser_background", "request_refused")
+    page = _meta(method, url, _sender(PAGE_FETCH, body), body)
+    assert not page.browser_own
+    assert decide(page, BASE).reason == "infrastructure"
+    assert decide(page, BASE, extension=False).reason == "site_page"
+
+
+OTHER_RULES = [
+    ("clerk_refresh", RequestMeta(
+        "POST", "https://login.example/v1/client/sessions/sess_123/tokens",
+        b"token=x&organization_id=1&force_origin=true", "application/x-www-form-urlencoded")),
+    ("cloudflare_challenge", RequestMeta(
+        "GET", "https://account.example/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1")),
+    ("hcaptcha_checksiteconfig", RequestMeta(
+        "GET", "https://api.hcaptcha.com/checksiteconfig?host=account.example&sitekey=abc")),
+]
+
+
+@pytest.mark.parametrize("extension", [True, False], ids=["with", "without"])
+def test_the_other_fixed_rules_do_not_depend_on_the_extension(extension):
+    """The rules for site mechanics (an auth vendor's session refresh, Cloudflare's challenge,
+    hCaptcha's site check) have nothing to do with 1Password: they match with and without the
+    extension. Together with the three download rules they are every fixed rule."""
+    from casa_browser import infra
+    every = [rule.name for rule in infra.INFRA_RULES]
+    others = [name for name, _ in OTHER_RULES]
+    assert infra.EXTENSION_RULES == {case[0] for case in EXTENSION_DOWNLOADS}
+    assert sorted(every) == sorted([*others, *infra.EXTENSION_RULES])
+    assert infra.rules(True) == infra.INFRA_RULES
+    assert [rule.name for rule in infra.rules(False)] == others
+    for name, request in OTHER_RULES:
+        assert infra.infra_match(request, BASE, extension=extension) == name
+        assert decide(request, BASE, extension=extension).reason == "infrastructure"

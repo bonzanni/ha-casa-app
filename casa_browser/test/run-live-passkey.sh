@@ -10,7 +10,8 @@
 # webauthn.io in the last 24 hours; password_item_id, the vault's the-internet.herokuapp.com
 # item (without it that site's run has no linked item). Needs the internet. Builds the app and test images, starts the app container with its
 # own s6 services (the enforcing proxy, the launcher, Chrome) and options holding only the account
-# host, runs tests/integration/livepasskey.py, then scans the container's log for every value.
+# host and a made-up token (any token keeps the app on the 1Password path: its Chrome gets the
+# extension), runs tests/integration/livepasskey.py, then scans the container's log for every value.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 IFS= read -r secrets
@@ -31,7 +32,7 @@ docker build -t "$test_image" -f test/Dockerfile --build-arg APP_IMAGE="$app_ima
 host="$(printf '%s\n' "$secrets" | python3 -c 'import json,sys; print(json.loads(sys.stdin.readline())["guest_sign_in_address"])')"
 docker volume create "$tag-data" >/dev/null
 docker run --rm --entrypoint /bin/sh -v "$tag-data:/data" "$test_image" \
-  -c "printf '%s' '{\"retention_days\": 30, \"log_level\": \"info\", \"guest_sign_in_address\": \"$host\"}' > /data/options.json"
+  -c "printf '%s' '{\"retention_days\": 30, \"log_level\": \"info\", \"guest_sign_in_address\": \"$host\", \"onepassword_service_account_token\": \"made-up\"}' > /data/options.json"
 docker run -d --name "$tag-app" --cap-add NET_ADMIN --security-opt seccomp=unconfined \
   -e TZ=UTC -v "$tag-data:/data" "$test_image" >/dev/null
 for _ in $(seq 1 60); do

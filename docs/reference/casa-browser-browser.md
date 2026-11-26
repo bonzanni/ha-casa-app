@@ -118,7 +118,10 @@ starts ([`casa-browser-runs.md`](casa-browser-runs.md)).
 
 ## Managed policy
 
-`casa_browser/rootfs/etc/opt/chrome/policies/managed/casa.json` force-installs the official
+Root bootstrap writes the policy Chrome reads, `/etc/opt/chrome/policies/managed/casa.json`,
+at every start from `casa_browser/rootfs/opt/casa_browser/chrome_policy.json`
+(`options.py::chrome_policy`), before the files the services start from. The shipped policy
+force-installs the official
 1Password extension from the Chrome Web Store and pins its icon to the toolbar
 (`toolbar_pin: force_pinned`, so the operator finds it in a live view), disables browser sign-in, sync, the password
 manager and its leak check, metrics reporting, DNS-over-HTTPS and the built-in DNS client,
@@ -132,7 +135,10 @@ Chrome's list), and allows the debugger on the extension's own pages
 (`DeveloperToolsAvailability: 1`: Chrome 156 refuses it by default on a force-installed
 extension's pages, and the 1Password guest's state is read from its popup). The extension's
 download passes the proxy through the
-Chrome update rules described in [`casa-browser-runtime.md`](casa-browser-runtime.md).
+Chrome update rules described in [`casa-browser-runtime.md`](casa-browser-runtime.md). With
+the app's own login store ([`casa-browser-builtin-store.md`](casa-browser-builtin-store.md))
+the written policy lacks `ExtensionSettings` and `DeveloperToolsAvailability`, so no extension
+is installed; every other key is as shipped. The launch arguments are the same in both modes.
 
 ## Display
 
@@ -242,7 +248,7 @@ against synthetic fixture sites behind the test harness proxy and counts upstrea
 - `casa_browser/rootfs/opt/casa_browser/browser.py`
 - `casa_browser/rootfs/opt/casa_browser/pacing.py`
 - `casa_browser/rootfs/opt/casa_browser/bin/chrome-launch`
-- `casa_browser/rootfs/etc/opt/chrome/policies/managed/casa.json`
+- `casa_browser/rootfs/opt/casa_browser/chrome_policy.json`
 - `casa_browser/rootfs/etc/s6-overlay/s6-rc.d/svc-browser-launcher/run`
 - `casa_browser/rootfs/etc/s6-overlay/s6-rc.d/svc-browser-xvfb/run`
 
