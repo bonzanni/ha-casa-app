@@ -209,7 +209,7 @@ frame line that hands those notes to it as its own memory (`agent.CHAT_NOTES_FRA
 
 The files of one album share the destination its first file resolved. Every landed post
 of a task — each page, proposal, link and file of a plugin, a `send_media` file, a run
-admission's question and status card, the Stop's line — is filed under it through one
+admission's status card, the Stop's line — is filed under it through one
 bridge (`TelegramChannel._record_post` → `task_posts.record`): a job's on its engagement
 record, a delegation's (or continuation's) on its job row, keyed by bot, chat and message,
 rebuilt at load. The task rides on the post record's owner: a plugin call's job or

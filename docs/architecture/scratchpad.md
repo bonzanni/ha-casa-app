@@ -60,13 +60,14 @@ fresh session — unless a binding still holds it (`release_pad`).
 **A plugin's code can fill the pad with no model in between.** Page text or a downloaded list
 can be long, and a model that relays it retypes it. During a `callsCasa` call
 ([`plugin-operator-calls.md`](plugin-operator-calls.md)) the plugin's code posts
-`{"client", "op", "section", "text" | "offset"}` to `POST /internal/broker/pad`: `write` replaces
+`{"client", "op", "section", "text" | "offset"}`, and optionally the call's `"tool_use_id"`, to `POST /internal/broker/pad`: `write` replaces
 one named section, creating it when missing, `append` adds to it, and both answer the section's
 `{"lines", "bytes"}`; `read` answers `{"text", "next"}`, at most 30,000 characters of the section
 from `offset`, with `next` null at its end. A refusal is `{"error", "message"}`. The pad is found
 the way the tool's is, never by a name: `attach` registers the client's broker id
 (`CASA_BROKER_CLIENT` in its env) for the key it builds the tool around, and the route answers only
-while the call record finds that client with one call in flight. The registration goes with its
+while the call record finds a call of that client in flight: the one the optional `tool_use_id`
+names, or with none its only one. The registration goes with its
 pad. A line of the plugin's text beginning `## ` is stored with one leading space, so page text
 cannot split itself into sections or reach past the one it was sent to.
 
@@ -189,7 +190,7 @@ which seeds only when given a task and only after the role's `tools.disallowed` 
 `ConversationTurn`. A relay or nested turn is a conversation of its own, so it gets a brief of its
 own.
 
-**INV-PAD-008**: `POST /internal/broker/pad` reaches only the pad whose tool was built for the broker client id the request presents, which `attach` registers from the client's env, and answers only while that client has exactly one call in flight; no field of the request selects a pad, an id registered for two pads reaches neither, and a read gives at most 30,000 characters of one section with the offset that reads on.
+**INV-PAD-008**: `POST /internal/broker/pad` reaches only the pad whose tool was built for the broker client id the request presents, which `attach` registers from the client's env, and answers only during a call of that client in flight — the one the request's `tool_use_id` names, or the client's only one when it names none; no field of the request selects a pad, an id registered for two pads reaches neither, and a read gives at most 30,000 characters of one section with the offset that reads on.
 
 Enforced by `PadStore.register`, called only from `attach` after the role's `tools.disallowed`
 check, by `PadStore.from_plugin`, which reads the key from the registration alone, and by

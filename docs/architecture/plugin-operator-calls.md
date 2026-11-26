@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-27
 ---
 
 # Plugin operator calls and run admission
@@ -9,11 +9,11 @@ last_reviewed: 2026-11-12
 ## Scope
 
 What a plugin's own code may ask Casa while one of its declared tools runs: whom the call
-serves (its binding), run admission — whether the operator's own words asked for the
-browsing runs the plugin is about to start — and its confirmation's state, a continuation
-turn for a run, a delivered slot's outcome, and the check of one browsing action. It covers
-the `callsCasa` declaration, the record the admission hook makes, the six internal routes,
-the binding store, the confirmation card and the status card, the admission decision and the action check. A seventh route on the same
+serves (its binding), run admission of the browsing runs the plugin is about to start and
+a request's state, a continuation turn for a run, a delivered slot's outcome, and the check
+of one browsing action. It covers the `callsCasa` declaration, the record the admission hook
+makes and how a request finds it, the six internal routes, the binding store, the status
+card, the admission and the action check. A seventh route on the same
 call, `POST /internal/broker/pad`, fills and reads the conversation's pad, and is
 [`scratchpad.md`](scratchpad.md). The continuation turn those routes queue,
 and the driver sweep, are [`plugin-continuations.md`](plugin-continuations.md); the result
@@ -32,8 +32,15 @@ The chain always ends with the agent making the call (`handoff.child_chain` over
 origin and the call's role): a delegated run's origin already carries it, but an engagement
 turn runs under the ambient origin of the resident's turn that launched it, which does not.
 During the call the plugin's code presents its session's broker client id
-(`CASA_BROKER_CLIENT`) on the internal socket; the call is found by that id alone and must
-be the client's only recorded call, the deposit route's rule. The record is forgotten at
+(`CASA_BROKER_CLIENT`) on the internal socket and may name the call it serves in the
+optional body member `tool_use_id`, the id the tool call itself carries
+(`operator_calls._found`, `OperatorCalls.find`). A string id finds exactly the record of that
+client and that call, or nothing: a miss answers `no_call_in_flight` and never falls back to
+another record of the client. An empty string is an id like any other, so a plugin with no
+id leaves the member out. A value that is not a string answers `bad_tool_use_id`. With no
+member, or JSON `null`, the call is the client's only record: none answers
+`no_call_in_flight`, two answer `ambiguous_call`, the deposit route's rule for a deposit
+that names no call. The record is forgotten at
 the call's PostToolUse or PostToolUseFailure, or an hour after it opened. A call is
 recorded only for the operator as configured now (`operator_calls.is_configured_operator`,
 the Telegram channel's one operator rule): a turn with no grant identity — voice, a
@@ -63,75 +70,48 @@ they start with the agent's name in bold. A binding is honoured only for the plu
 operator it was minted for. It also keeps its request's conversation, the session its
 continuation turns resume ([`plugin-continuations.md`](plugin-continuations.md)).
 
-**Admission reads his words and nothing else.** `POST /internal/broker/run-admission`
-takes the runs the plugin wants to start — each with its spec digest, mode, task line and
-the sites it opens, each site with its grant and the display name the plugin's own
-registry gives it. With operator words on the call, one clean-context model call
-(`run_admission._ask_model`: Haiku, no tools, no settings sources, no session) reads only
-those words and returns the sites they name. The comparison is mechanical
-(`run_admission.run_matches`): an account run is named when each of its account-grant
-sites is a site he named — the same name once case, spacing and punctuation are ignored
-(`site_named`: "Run Pod" names "RunPod"; "Chase Center" does not name "Chase", "Booking.com"
-does not name "ING", "GitHub" does not name "GitHub Enterprise"; the reading is asked for
-the bare name, "UniFi" for "my UniFi gateway") — and an open-web run, holding nothing of
-his, when his words ask for browsing at all. The kind of task is shown, not compared:
-admission stays site-based because every change a run would make is asked per action by
-the action check below. Every run named
-answers `admitted`, with one `origin_ref` per spec digest. Each request carries a
-`request_key` the plugin chooses; a key this plugin and operator used before on the same bot gets its first
-answer again — no second reading and no second card — and requests with one key are decided
-one at a time, so a retry that overlaps the first waits for it and gets its answer. Otherwise — no words (a
-continuation, a narration, a tap), a reading that names nothing ("collect them"), a
-failed reading, or one run he did not name — Casa posts ONE question listing every run,
-one line each, in the browsing agent's voice ("Ellen asked me for this browsing run. OK to
-start?", or "OK to start this browsing run?" when the run is the agent's own;
-`compose_question`) (`TelegramChannel.deliver_operator_question`, the resident-ask keyboard in
-the `ask:<bot>:<chat>` scope) and answers `confirmation_pending` with its id. His tap settles it
-— "Start" admits all of them, anything else none — and so does the hour's timeout; either
-way Casa queues a continuation of `admission:<id>`, whose plugin call reads the state with
-`POST /internal/broker/run-admission-status`. Every answer — by his words or by his tap —
-is kept in `/data/plugin-admissions.json` (`0600`) for thirty days after it was given and
-returned identically on every status read and key replay, across restarts; a card a
-restart left behind reads `expired`. Each decision logs its model time and total
-time, the measurement the design asks for. When the call carries his words, admission keeps
-them for each requested run's spec digest — admitted by them or put to the card — in
-`action_judgement.WORDS`: memory-only, at most 500 for a day each, keyed by plugin, bot,
+**Every request is admitted at once.** `POST /internal/broker/run-admission` takes the runs
+the plugin wants to start — each with its spec digest, mode, task line and the sites it
+opens, each site with its grant and the display name the plugin's own registry gives it.
+Casa admits every run of the request at once, whoever asked and whatever the turn
+(`run_admission._decide`): it answers `admitted`, with one `origin_ref` per spec digest, and
+nothing waits for the operator. Every change a run would make is asked per action by the
+action check below, and what a run needs him for later (a payment, an order, a first or a
+failed sign-in) is asked on its own path. Each request carries a `request_key` the plugin
+chooses; a key this plugin and operator used before on the same bot gets its first answer
+again — no second card — and requests with one key are decided one at a time, so a retry
+that overlaps the first waits for it and gets its answer. A call with no delivery, or whose
+delivery's bot has no id yet, is refused as `not_delivered` and nothing is stored. Every
+answer is kept in `/data/plugin-admissions.json` (`0600`) for thirty days after it was
+given and returned identically on every status read
+(`POST /internal/broker/run-admission-status`) and key replay, across restarts; a request an
+earlier version stored `pending` reads `expired`, and one it stored `declined` still reads
+`declined`.
+When the call carries his words, admission keeps them for each requested run's spec digest
+in `action_judgement.WORDS`: memory-only, at most 500 for a day each, keyed by plugin, bot,
 operator and digest, because nothing durable keeps his words.
 
-**An admitted request's card carries no Stop.** When his tap on Start admits the runs, the
-settled card keeps no button (`operator_calls.post_question` settles every answer to none,
-an edit failure logged by `edit_dm_message`); the Start choice's `on_settle` records the
-admission as `admitted` with the card's address and its settled text (`Confirmation.card`,
-`[bot, chat, message]`, and `card_text`), and posts nothing more. When his words admitted the
-runs there is no start card, so one status card (`compose_status`: `On it for Ellen:` over
-the same run lines — `On it:` when the run is the agent's own) is posted with no keyboard of
-any kind, beside the answer in its own task, never awaited by it (`_spawn_status_card`,
-`TelegramChannel.deliver_run_card`); when it lands its message and text are recorded with
-the admission (`Confirmations.set_card`), and a failed post is only logged. Each request is
-stored with a title (`Confirmation.title`, `run_admission.key_title`: its first task and
-` +N` for the runs after it, never a site, at most `TITLE_CHARS`). He stops the runs by
-asking the agent, which calls `stop_work` ([`plugin-stop.md`](plugin-stop.md)). The
-`run_stop` callback of a card an earlier version posted with an inline Stop reads the
-admission by its id alone (`Confirmations.peek`) and compares the tapper itself. A request
-that is stopped, or ends on its own, has its card marked there, after which the admission
-forgets the card (`Confirmations.clear_card`), so no later pass edits it again. The card
-the operator approved is also where the run's result answers him: a continuation reads it
-(`Confirmations.card_for_binding`, the newest `admitted` request of the binding that still
-holds one) when it is queued, and its narration replies to it
+**The status card carries no button and makes no sound.** One status card
+(`compose_status`: `On it for Ellen:` over one line per run — `On it:` when the run is the
+agent's own) is posted with no keyboard of any kind and without a notification, beside the
+answer in its own task, never awaited by it (`_spawn_status_card`,
+`TelegramChannel.deliver_run_card(silent=True)`); when it lands its message and text are
+recorded with the admission (`Confirmations.set_card`), and a failed post is only logged —
+the admission stands. Each request is stored with a title (`Confirmation.title`,
+`run_admission.key_title`: its first task and ` +N` for the runs after it, never a site, at
+most `TITLE_CHARS`). He stops the runs by asking the agent, which calls `stop_work`
+([`plugin-stop.md`](plugin-stop.md)). The `run_stop` callback of a card an earlier version
+posted with an inline Stop reads the admission by its id alone (`Confirmations.peek`) and
+compares the tapper itself. A request that is stopped, or ends on its own, has its card
+marked there, after which the admission forgets the card (`Confirmations.clear_card`), so
+no later pass edits it again. The card is also where the run's result answers him: a
+continuation reads it (`Confirmations.card_for_binding`, the newest `admitted` request of the
+binding that still holds one) when it is queued, and its narration replies to it
 ([`plugin-continuations.md`](plugin-continuations.md)).
 
-**A colleague's request under the operator's task starts without a card.** When the call's
-turn carries Casa's operator-task proof and its requester is a specialist, not the resident
-(`handoff.helper_under_operator_task` over the call's origin and its own chain), every
-requested run is admitted at once: no reading, no question, and none of his words kept for the
-action check; the admission is recorded and replayed by its key like any other, and the status
-card is posted as above, without a notification (`deliver_run_card(silent=True)`).
-The operator started that task and the specialist asking is working on it; every change a run
-would make is still asked per action. A resident's own request, the agent's own run, and any
-turn without the proof — scheduled or agent-started work — keep the steps above, and so does a
-proof that is not the literal `True`.
-
-**A helper's own posts under that task do not buzz.** The admission hook opens such a call quiet
+**A helper's own posts under the operator's task do not buzz.** When the call's turn carries
+Casa's operator-task proof and its requester is a specialist, not the resident
+(`handoff.helper_under_operator_task` over the call's origin and its own chain), the admission hook opens the call quiet
 (`ReferenceStore.open_call(quiet=True)`, `_InFlight.quiet`), and an `operator_message` slot it
 delivers is posted with every rich message, and any unformatted resend of one, sent without a notification
 (`TelegramChannel.deliver_operator_message(silent=True)`); the message is delivered, filed and
@@ -178,9 +158,11 @@ plugin records Casa's outcome rather than its model's report.
 
 ## Contracts & invariants
 
-**INV-PLUG-051**: Every operator-call route serves only the unique in-flight `callsCasa` call of the presenting broker client, recorded at that call's admission with the call's grant identity, and acts only on bindings, confirmations and delivery outcomes minted for that call's plugin and operator.
+**INV-PLUG-051**: Every operator-call route serves only an in-flight `callsCasa` call of the presenting broker client — the one the request names by its `tool_use_id`, or the client's unique one when it names none — recorded at that call's admission with the call's grant identity, and acts only on bindings, confirmations and delivery outcomes minted for that call's plugin and operator.
 
-Enforced by `OperatorCalls.find` (zero calls `no_call_in_flight`, two `ambiguous_call`),
+Enforced by `OperatorCalls.find` (with an id, that client's record of that id or
+`no_call_in_flight`; with none, zero calls `no_call_in_flight`, two `ambiguous_call`), by
+`_found` refusing an id that is not a string (`bad_tool_use_id`),
 by the admission hook deriving the identity through `authz_grants.resolve_grant_identity`
 and denying the call when there is none, by `BindingStore.get`,
 `Confirmations.get` and `DeliveryOutcomes.status` comparing plugin and operator, and by
@@ -190,21 +172,6 @@ an identity, a requester or a chain; Casa reads them from the record.
 What it does not cover: a plugin whose own code misuses what it is told — the plugin is
 the trust boundary the result contract already accepts; and a call whose PostToolUse
 never arrives, which stays answerable until the hour's cap.
-
-**INV-PLUG-052**: Run admission sends the clean-context reading only the operator's own current words, admits with no prompt only when every requested run is named by what those words ask for or when a specialist requester asks in a turn carrying Casa's operator-task proof, and otherwise admits nothing unless the operator taps Start on one question listing every requested run.
-
-Enforced in `run_admission.request_admission`: the proof check
-(`handoff.helper_under_operator_task`) comes first and reads nothing; `_ask_model` is called with
-`OperatorCall.operator_words` and nothing else, and not at all when there are none; a
-reading that cannot be parsed or a model failure reads as nothing named; the question's
-text is `compose_question` over the validated fields; only the tap's first option settles
-`admitted`.
-
-What it does not cover: whether the site names a plugin presents are the sites its run
-then opens — that is the plugin's code checking its own registry; two registered sites
-whose labels are the same words; meaning, which the model judges and which can vary
-between calls (a miss costs a tap, measured by `test-local/eval/run_admission_probe.py`);
-and a card a restart left behind, which reads `expired`.
 
 **INV-PLUG-055**: The judgement route returns a verdict only for the packet bytes it received, with their SHA-256, and any failure to obtain a parsed verdict is check_unavailable, never a verdict.
 
@@ -235,19 +202,20 @@ control whose text and DOM state nothing, where the picture alone can turn `look
 
 ## Failure behavior
 
-**Telegram is down or the card fails to post.** Admission answers `refused` with
-`not_delivered`, nothing is admitted, and a replay of the key answers the same. **The operator does not answer.** The card
-expires after an hour, reads `expired`, and the run is continued so the plugin can say so.
-**Casa restarts.** Call records, delivery outcomes and the words kept for the action check
-are lost; bindings and admission answers survive, and a card still waiting reads `expired`.
+**The call has nowhere to post.** Admission answers `refused` with `not_delivered`,
+nothing is admitted or stored, and a later request with the key is decided afresh. **The
+status card fails to post.** The failure is logged; the runs stay admitted and `stop_work`
+still stops them. **Casa restarts.** Call records, delivery outcomes and the words kept for
+the action check are lost; bindings and admission answers survive, and a request an earlier
+version left `pending` reads `expired`.
 **The check cannot answer.** The route answers `check_unavailable`, never a verdict in its
-place. **A malformed body.** A typed `error` (`bad_json`, `bad_client`, `bad_runs`,
+place. **A malformed body.** A typed `error` (`bad_json`, `bad_client`, `bad_tool_use_id`, `bad_runs`,
 `bad_mode`, `bad_digest`, `bad_task`, `bad_sites`, `bad_request_key`, `bad_run_ref`, `bad_reason`,
 `unknown_binding`, `bad_kind`, `bad_packet`), with nothing posted, queued or judged.
 
 ## Extension points
 
-**A new kind of run** is admitted here by its sites alone; what it may change on the
+**A new kind of run** is admitted here at once, like any other; what it may change on the
 operator's account is decided per action by the action check, never at admission.
 **A new kind of check** is a new `kind`, a new measured rulebook file under `rulebooks/`
 and its own verdict set in `action_judgement.parse_reply`.

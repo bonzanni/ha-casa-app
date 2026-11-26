@@ -212,7 +212,7 @@ which preserves their existing behavior. That case is deliberately
 distinct from a negative — treating "cannot report" as "failed" would re-offer a notice on
 every turn forever.
 
-**INV-TG-007**: A settled DM question drops its buttons along with its text; an edit keeps only the buttons it names, and the browsing start card's answered Start names none.
+**INV-TG-007**: A settled DM question drops its buttons along with its text; an edit keeps only the buttons it names.
 
 The DM settle edit sends an *explicit empty* keyboard rather than omitting the markup.
 Omitting it is not neutral: the client library drops the absent parameter, so the platform's
@@ -224,15 +224,12 @@ The clear is the default because every caller of the DM settle edit is a broker 
 hook, and a finish hook runs only at a terminal outcome: an answered question, an expiry, a
 supersession, a shutdown. There is no mid-question repaint on this path, and an opt-in flag
 is a thing the next call site forgets. An edit that names its buttons
-(`edit_dm_message(buttons=...)`) carries exactly those; the start card of a browsing request,
-answered Start, settles to none, and the work it started is stopped by its key at the reply
-keyboard ([`plugin-stop.md`](plugin-stop.md)).
+(`edit_dm_message(buttons=...)`) carries exactly those.
 
 A button is posted in Telegram's red style only where the caller names its position
-(`post_dm_keyboard(danger=...)`, `edit_dm_message(danger=...)`). Three callers do: the memory
-wipe question for its approving button, the uninstall question for its erasing choices, and
-the browsing start card for the Stop it carries when no key could be raised. Red marks a
-choice that deletes something for good, or stops running work; every other button, Approve
+(`post_dm_keyboard(danger=...)`, `edit_dm_message(danger=...)`). Two callers do: the memory
+wipe question for its approving button and the uninstall question for its erasing choices.
+Red marks a choice that deletes something for good; every other button, Approve
 and Deny included, keeps the app's default look, so that a red button stays worth a second
 look.
 
