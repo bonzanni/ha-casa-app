@@ -394,6 +394,29 @@ async def test_the_run_card_and_its_stop_line_follow_the_tasks_delivery(world, m
 
 
 @pytest.mark.asyncio
+async def test_casas_own_question_records_its_agent_and_where_it_was_delivered(
+        world, monkeypatch):
+    """The callback ingress reads a card's agent from its record: Casa's own question
+    (the configurator's Restart now card) records the configurator and Casa's chat,
+    like every card."""
+    import configurator_run
+    import verdict_broker
+    monkeypatch.setattr(configurator_run, "_operator_identity",
+                        lambda: SimpleNamespace(chat_id=OPERATOR, operator_id=OPERATOR))
+    configurator_run.note_restart("run-1", "add the ledger specialist")
+    assert await configurator_run.offer_restart("run-1") is True
+    scope = f"ask:{CASA_BOT}:{OPERATOR}"
+    [rid] = verdict_broker.BROKER.pending(namespace="resident_ask", scope=scope)
+    meta = verdict_broker.BROKER.get_meta(namespace="resident_ask", scope=scope,
+                                          request_id=rid)
+    assert meta["kind"] == "casa_question"
+    assert (meta["role"], meta["delivery"]) == ("configurator", ELLEN_CHAT)
+    [(name, (chat, _text))] = sends(world.casa)
+    assert (name, chat) == ("deliver_operator_question", OPERATOR)
+    assert sends(world.alex) == []
+
+
+@pytest.mark.asyncio
 async def test_run_admission_with_no_delivery_posts_nothing(world):
     ident = GrantIdentity(operator_id=OPERATOR, bot_id=CASA_BOT, chat_id=OPERATOR,
                           enforcement_role="finance", artifact_id=ARTIFACT, engagement_id="",

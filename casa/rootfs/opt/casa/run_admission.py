@@ -449,9 +449,10 @@ _CARD_TASKS: set = set()
 
 
 def _card_post(call, cid: str):
-    """The post record a request's status card is filed under: the calling agent's, owned by the call's task (its job or its
-    delegation, ``result_broker._post_owner``), so a reply to the card reaches
-    the task the call runs in."""
+    """The post record a request's status card is filed under: the calling
+    agent's, owned by the call's task (its job or its delegation,
+    ``result_broker._post_owner``), so a reply to the card reaches the task the
+    call runs in."""
     import result_broker as rb
     return rb.PostRecord(role=call.role, operator_id=int(call.identity.operator_id),
                          plugin=call.plugin, slot="run_admission", tool_use_id=cid,

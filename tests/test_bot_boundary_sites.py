@@ -224,7 +224,7 @@ ORIGIN_SITES = {
     ("origin-builders", "job_owner_turn.py", "owner_origin"): (2, DERIVED, "owner_turn_origin"),
     ("origin-builders", "job_registry.py", "VoiceJob"): (1, NOISE, "the creating peer field"),
     ("origin-builders", "memory/maintenance.py", "send_operator_line"): (1, RULE_C, "test_bot_boundary_invariants.py::test_the_maintenance_line_before_boot_is_sent_with_casas_own_token"),
-    ("origin-builders", "operator_calls.py", "post_question"): (1, PRE_POST, "test_plugin_identities.py::test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted"),
+    ("origin-builders", "operator_calls.py", "post_question"): (1, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),
     ("origin-builders", "output_boundary.py", "TurnScope.delivers_to_operator"): (1, NOISE, "reads the ingress kind (_origin_route), not a Telegram route"),
     ("origin-builders", "output_boundary.py", "TurnScope.mint"): (1, NOISE, "reads the ingress kind (_origin_route), not a Telegram route"),
     ("origin-builders", "plugin_bindings.py", "<module>"): (2, DERIVED, "binding"),
@@ -276,7 +276,7 @@ ORIGIN_SITES = {
     ("whole-copies", "tools.py", "delegate_to_agent"): (1, DERIVED, "delegated_child"),
     ("whole-copies", "tools.py", "hand_off"): (1, DERIVED, "handoff_child"),
     # broker-registrations
-    ("broker-registrations", "operator_calls.py", "post_question"): (1, PRE_POST, "test_plugin_identities.py::test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted"),
+    ("broker-registrations", "operator_calls.py", "post_question"): (1, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),
     ("broker-registrations", "own_voice_lifecycle.py", "TelegramHost.post_ask"): (1, PRE_POST, "test_own_voice_invariants.py::test_casas_ask_card_before_casas_bot_has_an_id_registers_and_posts_nothing"),
     ("broker-registrations", "result_broker.py", "_post_proposal"): (1, PRE_POST, "test_plugin_identities.py::test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted"),
     ("broker-registrations", "scheduled_asks.py", "reconcile_at_boot"): (1, DERIVED, "scheduled_ask_meta"),
