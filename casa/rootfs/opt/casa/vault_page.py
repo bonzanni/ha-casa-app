@@ -198,8 +198,11 @@ class Slots:
     use yet. A value typed into a free slot is stored as `CONCEALED`.
 
     Fixed boxes: the add form shows every box, in order. The edit form shows
-    each stored field as its card and offers the boxes whose label the item
-    lacks. No label is typed, and a box left empty adds nothing.
+    each stored value of a box as its card and offers the boxes whose label
+    the item lacks. No label is typed, and a box left empty adds nothing. A
+    value stored under any other label has its card on the item's page and
+    none on the edit form: a save carries it as it is stored. A box whose
+    label the profile keeps from the person is not offered.
     """
     defaults: tuple[str, ...] = ()
     suggestions: tuple[str, ...] = ()
@@ -236,12 +239,15 @@ class Profile:
         changed.
     `delete_warning`: the bold line on the delete screen, or "" for none.
     `heading`: what a value is called on the item's page and on its edit
-        card, from the item and the field.
+        card, from the item, the field and whether it stands alone: true on
+        the page of an item with this one value and no facts block, where
+        the heading is only read out; never on the edit form.
     `is_hidden`: whether a field's value is kept off the page until asked
         for: dots, Show and Copy, and Replace on the edit form.
     `kept`: labels kept from the person: no card, not a Show target, no
-        control and no accepted form name. A save carries such a field as it
-        is stored, and the edit form's stamp covers it.
+        control and no accepted form name, and never the label of a value a
+        person adds. A save carries such a field as it is stored, and the
+        edit form's stamp covers it.
     `facts`: the read-only block of an item's page, or None for none.
     `editable`: whether an item has an edit form.
     `references`: whether an item's page lists the references to its values.
@@ -267,7 +273,7 @@ class Profile:
     summary: Callable[[Item], str]
     origin: Callable[[Item], str]
     delete_warning: Callable[[Item], str]
-    heading: Callable[[Item, Field], str]
+    heading: Callable[[Item, Field, bool], str]
     is_hidden: Callable[[Field], bool]
     kept: frozenset[str]
     facts: Callable[[Item], Facts | None]
@@ -349,6 +355,9 @@ class Page:
         self._store = store
         self._profile = profile
         self._words = profile.words
+        # The fixed boxes a person may fill: a box under a kept label is not theirs.
+        self._fillable = tuple(box for box in profile.slots.boxes
+                               if box.label not in profile.kept)
         # The attributes of `<body>` that hand the script its words.
         self._script_words = "".join(
             f' data-{key.replace("_", "-")}="{_text(profile.words[key])}"'
@@ -421,6 +430,20 @@ class Page:
         return [(index, field) for index, field in enumerate(item.fields)
                 if field.label not in kept]
 
+    def _cards(self, item: Item) -> list[tuple[int, Field]]:
+        """The stored fields the edit form has a card for, each with its stored position.
+
+        With free slots that is every field a person may see. With fixed
+        boxes it is the values of the boxes only: a field stored under any
+        other label has no control, so no form the page accepts names it,
+        and a save carries it as it is stored.
+        """
+        shown = self._shown(item)
+        if not self._profile.slots.boxes:
+            return shown
+        labels = {box.label for box in self._fillable}
+        return [(index, field) for index, field in shown if field.label in labels]
+
     def _only_value(self, item: Item) -> int | None:
         """Where the item's one value is stored, when a person sees just one and no facts."""
         shown = self._shown(item)
@@ -492,7 +515,7 @@ class Page:
             if facts is not None and field.label in facts.labels:
                 continue
             code = self.codes.issue(show_path) if profile.is_hidden(field) else None
-            title = "Value" if single else profile.heading(item, field)
+            title = profile.heading(item, field, single)
             body += self._value_card(prefix, item, index, field, code, shown == index, title,
                                      title_hidden=single)
         body += (f'<p class="v-meta">{_text(profile.origin(item))} · '
@@ -557,7 +580,7 @@ class Page:
         """The edit form; `draft` is the refused form it shows again, without its hidden values."""
         code = self.codes.issue(f"/s/{item.id}/edit")
         existing = "".join(self._existing_card(item, index, field, draft)
-                           for index, field in self._shown(item))
+                           for index, field in self._cards(item))
         body = (f'<p class="v-subtitle v-name">{_text(item.title)}</p>'
                 + self._form_problem(problem, draft, item)
                 + '<form class="v-form" id="secret-form" method="post" novalidate '
@@ -709,7 +732,7 @@ class Page:
         The form names stored fields by position. Its stamp says what the
         item held when the form was made, so an item that changed since
         (and whose positions may have moved) is never overwritten. A field
-        the profile keeps from the person has no control, so no form the
+        without a card on the form (`_cards`) has no control, so no form the
         page accepts names it, and it is carried as it is stored.
         """
         profile, words = self._profile, self._words
@@ -828,13 +851,16 @@ class Page:
             if not label:
                 problem = problem or _LABEL_MISSING
                 continue
+            if label in self._profile.kept:  # taken, though the person cannot see by what
+                problem = problem or _LABEL_TWICE
+                continue
             fields.append(Field(id="", label=label, type=_FREE_TYPE,
                                 value=_lf(form.get(controls["value"], ""))))
         return fields, problem
 
     def _unfilled(self, fields: list[Field]) -> str | None:
         """The sentence of the first required box that `fields` hold no value for, else None."""
-        for box in self._profile.slots.boxes:
+        for box in self._fillable:
             if box.required and not any(field.label == box.label and field.value
                                         for field in fields):
                 return box.required
@@ -882,8 +908,7 @@ class Page:
         removed, unless it is the value of a required box.
         """
         controls = {"value": f"value{index}"}
-        if not any(box.required and box.label == field.label
-                   for box in self._profile.slots.boxes):
+        if not any(box.required and box.label == field.label for box in self._fillable):
             controls["remove"] = f"remove{index}"
         if self._profile.is_hidden(field):
             controls["replace"] = f"replace{index}"
@@ -892,15 +917,14 @@ class Page:
     def _offered(self, item: Item | None) -> list[tuple[int, Box]]:
         """The fixed boxes a form offers, each with the number its control is named by.
 
-        The add form (`item` is None) offers every box. The edit form offers
-        the boxes whose label the item lacks, numbered after its stored
-        fields.
+        The add form (`item` is None) offers every box a person may fill.
+        The edit form offers those whose label the item lacks, numbered
+        after its stored fields.
         """
-        boxes = self._profile.slots.boxes
         if item is None:
-            return list(enumerate(boxes))
+            return list(enumerate(self._fillable))
         have = {field.label for field in item.fields}
-        return list(enumerate((box for box in boxes if box.label not in have),
+        return list(enumerate((box for box in self._fillable if box.label not in have),
                               len(item.fields)))
 
     def _hides(self, box: Box) -> bool:
@@ -919,7 +943,7 @@ class Page:
             item = None
         else:
             names.add("stamp")
-            for index, field in self._shown(item):
+            for index, field in self._cards(item):
                 names.update(self._stored_controls(index, field).values())
         slots = self._profile.slots
         if slots.boxes:
@@ -996,7 +1020,7 @@ class Page:
         """
         controls = self._stored_controls(index, field)
         draft = draft or {}
-        heading = _text(self._profile.heading(item, field))
+        heading = _text(self._profile.heading(item, field, False))
         remove = removed = ""
         if "remove" in controls:
             remove = ('<label class="v-choice v-choice--remove"><input class="v-remove-input" '

@@ -144,8 +144,11 @@ def _facts(item: Item) -> Facts | None:
         labels=frozenset(field.label for field in item.fields if _is_fact(field)))
 
 
-def _heading(item: Item, field: Field) -> str:
-    """A value is called by its label; an SSH key's parts with a capital."""
+def _heading(item: Item, field: Field, alone: bool) -> str:
+    """A value is called by its label; a secret's one value needs no name; an SSH key's
+    parts take a capital."""
+    if alone:
+        return "Value"
     if item.category == _SSH_KEY:
         return field.label[:1].upper() + field.label[1:]
     return field.label

@@ -77,6 +77,7 @@ BOXES = (
     Box("pass", "CONCEALED", "Pass phrase"),
     Box("seed", "OTP", "Seed"),
 )
+CLEARED = "The values you typed were cleared. Enter them again."
 NEEDS_ONE = "A thing needs a user or a pass."
 NAME_REFUSED = "That name is not for things."
 
@@ -115,7 +116,7 @@ FIXED = Profile(
     summary=lambda item: f"row of {item.title}",
     origin=lambda item: f"came from {item.writer}",
     delete_warning=lambda item: "" if "quiet" in item.tags else f"Losing {item.title} matters.",
-    heading=lambda item, field: f"The {field.label}",
+    heading=lambda item, field, alone: f"The {'only ' if alone else ''}{field.label}",
     is_hidden=lambda field: field.label in ("pass", "seed"),
     kept=frozenset({"version"}),
     facts=_facts,
@@ -142,6 +143,24 @@ FREE = dataclasses.replace(FIXED, slots=Slots(defaults=("first", "second"),
 @pytest.fixture
 def store(tmp_path):
     return Store.open(tmp_path, None)
+
+
+def telling(store, profile=None):
+    """PROFILE (the test profile unless given) with callbacks that also look at the store:
+    `seen` gets, for a save, the fields the callback was handed and the fields the store held
+    for that item at that moment; for a delete, whether the store still held the item."""
+    seen = []
+
+    def after_save(item):
+        saved.append(item.id)
+        seen.append((item.fields, store.get(item.id).fields))
+
+    def after_delete(item):
+        deleted.append(item.id)
+        seen.append(item.id in [held.id for held in store.list()])
+
+    return dataclasses.replace(profile or FIXED, after_save=after_save,
+                               after_delete=after_delete), seen
 
 
 @pytest.fixture(autouse=True)
@@ -328,7 +347,8 @@ def test_a_profile_without_one_of_the_engine_s_words_is_refused():
 # -- adding -------------------------------------------------------------------------
 
 def test_add_with_fixed_boxes_stores_the_profile_s_shape(store):
-    page = Page(store, FIXED)
+    profile, seen = telling(store)
+    page = Page(store, profile)
     body = text(get(page, "/add"))
     assert names_of(body, "/add") == {"code", "name", "value0", "value1", "value2", "value3"}
     response = post(page, "/add", {
@@ -345,6 +365,8 @@ def test_add_with_fixed_boxes_stores_the_profile_s_shape(store):
         ("address", "URL", "https://a.example\nhttps://b.example"),
         ("user", "STRING", "me"), ("pass", "CONCEALED", "pw1"), ("version", "STRING", "1")]
     assert saved == [one.id] and deleted == []
+    # the profile was told once the store held the item, and was handed the item as written
+    assert seen == [(one.fields, one.fields)]
 
 
 def test_a_box_is_drawn_with_its_caption_and_its_height(store):
@@ -371,16 +393,21 @@ def _box_tags(body):
 def test_a_fixed_box_tells_the_script_it_is_fixed_and_what_its_refusal_says(store):
     """The script reads a form's shape from the page: a fixed box says so, and a required one
     carries the sentence that refuses it; a free slot says it is one."""
-    for body in (text(get(Page(store, FIXED), "/add")),
-                 text(get(Page(store, FIXED), f"/s/{thing(store, 'bare', user='me').id}/edit"))):
+    bare = thing(store, "bare", user="me")  # stored: user, then version
+    for path, offered, required in (
+            ("/add", {"value0", "value1", "value2", "value3"}, "value0"),
+            (f"/s/{bare.id}/edit", {"value2", "value3", "value4"}, "value2")):
+        body = text(get(Page(store, FIXED), path))
         tags = _box_tags(body)
-        offered = [name for name, tag in tags.items() if "data-fixed-value" in tag]
-        assert offered and all("data-new-value" not in tag for tag in tags.values())
-        for name in offered:
-            required = re.findall(r'\sdata-required="([^"]*)"', tags[name])
-            caption = re.search(rf'for="f-{name}">([^<]+)<', body).group(1)
-            assert required == ([ADDRESS_MISSING] if caption == "Where it lives" else []), name
-        assert "data-required" not in body.replace(f'data-required="{ADDRESS_MISSING}"', "")
+        # every box the form offers says it is one, and nothing else does
+        assert {name for name, tag in tags.items() if "data-fixed-value" in tag} == offered, path
+        assert body.count("data-fixed-value") == len(offered), path
+        assert all("data-new-value" not in tag for tag in tags.values()), path
+        # the required box alone carries a sentence, and it is its own
+        assert {name: re.findall(r'\sdata-required="([^"]*)"', tag)
+                for name, tag in tags.items() if "data-required" in tag} == {
+                    required: [ADDRESS_MISSING]}, path
+        assert body.count("data-required") == 1, path
     # a stored value is not a box to fill: its card carries neither
     one = whole(store, "whole")
     edit = text(get(Page(store, FIXED), f"/s/{one.id}/edit"))
@@ -396,12 +423,15 @@ def test_a_required_box_left_empty_is_refused_with_its_sentence(store):
                                    "value1": "me", "value2": SENTINEL})
     body = text(response)
     assert response.status == 200
-    assert ADDRESS_MISSING in body and "Thing not kept" in body
+    # The form that comes back carries the sentence in the box's own attribute as well, for
+    # the script; what a person is told is the box above the form.
+    assert error_lines(body) == ["Thing not kept", ADDRESS_MISSING, CLEARED]
     assert SENTINEL not in body
     assert store.list() == [] and saved == []
     # With nothing typed at all, that box is still what is asked for.
     response = post(page, "/add", {**form_of(page, "/add"), "name": "box"})
-    assert response.status == 200 and ADDRESS_MISSING in text(response)
+    assert response.status == 200
+    assert error_lines(text(response)) == ["Thing not kept", ADDRESS_MISSING]
     assert store.list() == [] and saved == []
     # An edit that empties the required value is the same slip.
     one = whole(store)
@@ -409,7 +439,7 @@ def test_a_required_box_left_empty_is_refused_with_its_sentence(store):
     response = post(page, f"/s/{one.id}/edit", {**form_of(page, f"/s/{one.id}/edit"),
                                                 "value0": "", "value1": "you"})
     assert response.status == 200
-    assert ADDRESS_MISSING in text(response)
+    assert error_lines(text(response)) == ["Thing not kept", ADDRESS_MISSING]
     assert snapshot(store) == before and saved == []
     # Its card has no Remove, and a Remove sent for it is not a name the form rendered.
     body = text(get(page, f"/s/{one.id}/edit"))
@@ -442,7 +472,7 @@ def test_an_add_with_every_box_empty_is_refused(store):
     page = Page(store, optional)
     response = post(page, "/add", {**form_of(page, "/add"), "name": "box"})
     assert response.status == 200
-    assert "Enter a value." in text(response)
+    assert error_lines(text(response)) == ["Thing not kept", "Enter a value."]
     assert store.list() == [] and saved == []
 
 
@@ -469,19 +499,20 @@ def test_a_refused_form_gives_plain_boxes_back_and_clears_hidden_ones(store):
         **form_of(page, f"/s/{one.id}/edit"), "value0": "https://typed.example",
         "value1": "typed\x0cuser"})
     body = text(response)
-    assert response.status == 200 and "Thing not kept" in body
+    assert response.status == 200
+    assert error_lines(body) == ["Thing not kept", vault_page._VALUE_UNSTORABLE]
     assert re.search(r'name="value0"[^>]*>\nhttps://typed.example</textarea>', body)
-    assert "cleared" not in body
     # The edit form's offered box does the same.
     one = thing(store, "partial", password="pw-old-1")
     response = post(page, f"/s/{one.id}/edit", {
         **form_of(page, f"/s/{one.id}/edit"), "value2": "https://typed.example",
         "value3": "typed-user", "value4": SENTINEL + "\x0c"})
     body = text(response)
-    assert response.status == 200 and "Thing not kept" in body
+    assert response.status == 200
+    assert error_lines(body) == ["Thing not kept", vault_page._VALUE_UNSTORABLE, CLEARED]
     assert re.search(r'name="value2"[^>]*>\nhttps://typed.example</textarea>', body)
     assert re.search(r'name="value3"[^>]*>\ntyped-user</textarea>', body)
-    assert SENTINEL not in body and "The values you typed were cleared." in body
+    assert SENTINEL not in body
 
 
 def test_a_name_over_the_limit_is_refused(store):
@@ -507,7 +538,7 @@ def test_check_refuses_add_and_edit_with_its_sentence(store):
                                    "value0": "https://a.example", "value3": SENTINEL})
     body = text(response)
     assert response.status == 200
-    assert NEEDS_ONE in body and "Thing not kept" in body
+    assert error_lines(body) == ["Thing not kept", NEEDS_ONE, CLEARED]
     assert SENTINEL not in body
     assert store.list() == [] and saved == []
     # Removing the pass from an item whose user is empty is refused the same way.
@@ -516,7 +547,7 @@ def test_check_refuses_add_and_edit_with_its_sentence(store):
     response = post(page, f"/s/{one.id}/edit", {**form_of(page, f"/s/{one.id}/edit"),
                                                 "remove2": "1"})
     assert response.status == 200
-    assert NEEDS_ONE in text(response)
+    assert error_lines(text(response)) == ["Thing not kept", NEEDS_ONE]
     assert snapshot(store) == before and saved == []
 
 
@@ -591,8 +622,14 @@ def test_the_one_value_beside_a_kept_one_is_copied_from_the_list(store):
     show = form_of(page, "/", f"/s/{one.id}/show")
     answer = post(page, f"/s/{one.id}/show", show, accept="application/json")
     assert answer.status == 200 and SENTINEL in text(answer)
-    # its page heads the value "Value", as for any item with one
-    assert '<h2 class="v-sr-only">Value</h2>' in text(get(page, f"/s/{one.id}"))
+    # its page heads that value as the profile heads an item's one value, for a screen
+    # reader alone; the edit form heads the same value as it heads any
+    shown = text(get(page, f"/s/{one.id}"))
+    assert ('<section class="v-panel v-value-card" data-value-block aria-label="The only pass">'
+            '<h2 class="v-sr-only">The only pass</h2>') in shown
+    assert ">Value<" not in shown and 'aria-label="Value"' not in shown
+    assert ('<section class="v-panel v-stack v-existing" aria-label="The pass">'
+            '<div class="v-heading"><h2>The pass</h2>') in text(get(page, f"/s/{one.id}/edit"))
     # an item with a facts block opens instead, however many values it has
     assert _forms(body, "things", f"/s/{weighed.id}/show") == []
     assert (f'<a class="v-button v-button--quiet" href="{PREFIX}/things/s/{weighed.id}">Open</a>'
@@ -601,7 +638,8 @@ def test_the_one_value_beside_a_kept_one_is_copied_from_the_list(store):
 
 def test_an_edit_carries_the_kept_field_and_raises_it(store):
     one = whole(store)
-    page = Page(store, FIXED)
+    profile, seen = telling(store)
+    page = Page(store, profile)
     response = post(page, f"/s/{one.id}/edit", {**form_of(page, f"/s/{one.id}/edit"),
                                                 "replace2": "1", "value2": "pw-new-2"})
     assert response.status == 303
@@ -612,6 +650,8 @@ def test_an_edit_carries_the_kept_field_and_raises_it(store):
         dataclasses.replace(one.fields[3], value="2"))
     assert after.writer == vault_page.WRITER
     assert saved == [one.id]
+    # the profile was told once the store held the change, and was handed the item as written
+    assert seen == [(after.fields, after.fields)]
 
 
 def test_an_edit_that_changes_nothing_writes_nothing(store):
@@ -655,11 +695,128 @@ def test_removing_every_value_a_person_sees_is_refused(store):
     response = post(page, f"/s/{one.id}/edit", {
         **form_of(page, f"/s/{one.id}/edit"), "remove0": "1", "remove1": "1", "remove2": "1"})
     assert response.status == 200
-    assert "Leave one value or drop the thing." in text(response)
+    assert error_lines(text(response)) == ["Thing not kept", "Leave one value or drop the thing."]
+    assert snapshot(store) == before and saved == []
+
+
+def test_a_kept_label_cannot_be_typed_as_the_label_of_a_new_value(store):
+    """With free slots a person types the label. One the profile keeps is not theirs to
+    write: the form comes back saying the label will not do, and nothing is stored."""
+    page = Page(store, dataclasses.replace(FREE, kept=frozenset({"version"})))
+    for form in ({"label0": "version", "value0": SENTINEL},
+                 {"label0": "one", "value0": "v0", "add1": "1", "label1": " version ",
+                  "value1": SENTINEL}):
+        response = post(page, "/add", {**form_of(page, "/add"), "name": "box", **form})
+        assert response.status == 200, form
+        assert error_lines(text(response)) == [
+            "Thing not kept", "Each value needs a different label.", CLEARED], form
+        assert SENTINEL not in text(response)
+        assert store.list() == [] and saved == []
+    # nor can one be added to an item that has none
+    one = store.create(title="t", category="THING", tags=[], writer="op", fields=[
+        Field(id="", label="one", type="STRING", value="v0")])
+    before = snapshot(store)
+    response = post(page, f"/s/{one.id}/edit", {
+        **form_of(page, f"/s/{one.id}/edit"), "add1": "1", "label1": "version",
+        "value1": SENTINEL})
+    assert response.status == 200
+    assert error_lines(text(response)) == [
+        "Thing not kept", "Each value needs a different label.", CLEARED]
+    assert snapshot(store) == before and saved == []
+    # any other label is taken as before
+    assert post(page, "/add", {**form_of(page, "/add"), "name": "box", "label0": "versions",
+                               "value0": "v"}).status == 303
+
+
+def test_a_box_whose_label_is_kept_is_not_offered(store):
+    """A box the profile also keeps from the person is no box of theirs: neither form has a
+    control for it, and its name is one the form did not render."""
+    page = Page(store, dataclasses.replace(FIXED, kept=frozenset({"version", "seed"})))
+    body = text(get(page, "/add"))
+    assert names_of(body, "/add") == {"code", "name", "value0", "value1", "value2"}
+    assert "Seed" not in read(body)
+    response = post(page, "/add", {**form_of(page, "/add"), "name": "box",
+                                   "value0": "https://a.example", "value1": "me",
+                                   "value3": SENTINEL})
+    assert response.status == 400
+    assert store.list() == [] and saved == []
+    one = whole(store)  # address, user, pass, version: the seed is what it lacks
+    before = snapshot(store)
+    body = text(get(page, f"/s/{one.id}/edit"))
+    assert names_of(body, f"/s/{one.id}/edit") == {
+        "code", "stamp", "value0", "value1", "remove1", "value2", "remove2", "replace2"}
+    assert "Seed" not in read(body)
+    response = post(page, f"/s/{one.id}/edit", {**form_of(page, f"/s/{one.id}/edit"),
+                                                "value4": SENTINEL})
+    assert response.status == 400
     assert snapshot(store) == before and saved == []
 
 
 # -- the edit form ------------------------------------------------------------------
+
+def test_a_stored_field_that_is_no_box_has_no_control_and_is_carried(store, monkeypatch):
+    """With fixed boxes the edit form is made of the boxes alone. A value stored under any
+    other label keeps its card on the item's page, but no form can change or remove it; a save
+    carries it as it is stored, and the form's stamp still covers it."""
+    _freeze_the_store_s_clock(monkeypatch)
+    one = store.create(title="t", category="THING", tags=[], writer="op", fields=[
+        Field(id="", label="address", type="URL", value="https://a.example"),
+        Field(id="", label="rogue", type="STRING", value="rogue-plain-1"),
+        Field(id="", label="user", type="STRING", value="me"),
+        Field(id="", label="veiled", type="CONCEALED", value=SENTINEL),
+        Field(id="", label="version", type="STRING", value="1")])
+    page = Page(store, dataclasses.replace(
+        FIXED, is_hidden=lambda field: field.label in ("pass", "seed", "veiled")))
+    edit = f"/s/{one.id}/edit"
+    body = text(get(page, edit))
+    # the two stored boxes, then the two the item lacks; nothing for places 1, 3 and 4
+    assert names_of(body, edit) == {"code", "stamp", "value0", "value2", "remove2",
+                                    "value5", "value6"}
+    assert body.count('class="v-panel v-stack v-existing"') == 2
+    for word in ("rogue", "veiled", SENTINEL):
+        assert word not in body, word
+    before = snapshot(store)
+    for extra in ({"value1": "x"}, {"remove1": "1"}, {"value3": "x"}, {"remove3": "1"},
+                  {"replace3": "1", "value3": "x"}):
+        response = post(page, edit, {**form_of(page, edit), **extra})
+        assert response.status == 400, extra
+        assert SENTINEL not in text(response)
+    assert snapshot(store) == before and saved == []
+    # its card on the item's page stays, shown or hidden as the profile says
+    shown = text(get(page, f"/s/{one.id}"))
+    assert ('aria-label="The rogue"><h2>The rogue</h2><div class="v-value-row">'
+            '<pre class="v-value" data-plain>\nrogue-plain-1</pre>') in shown
+    assert "<h2>The veiled</h2>" in shown and SENTINEL not in shown
+    show = form_of(page, f"/s/{one.id}", f"/s/{one.id}/show")
+    assert show["field"] == "3"
+    answer = post(page, f"/s/{one.id}/show", show, accept="application/json")
+    assert answer.status == 200 and f'"value": "{SENTINEL}"' in text(answer)
+    # a form opened before such a value changed is not saved over it
+    form = form_of(page, edit)
+    changed = [dataclasses.replace(field, value="rogue-plain-2") if field.label == "rogue"
+               else field for field in one.fields]
+    store.replace(one.id, title=None, category=None, tags=None, fields=changed,
+                  writer=one.writer)
+    held = store.get(one.id)
+    assert (held.updated_at, held.writer) == (one.updated_at, one.writer)
+    assert post(page, edit, {**form, "value2": "you"}).status == 409
+    assert store.get(one.id) == held and saved == []
+    # a save of the boxes carries the others exactly as stored
+    response = post(page, edit, {**form_of(page, edit), "value2": "you",
+                                 "value5": "pw-new-2"})
+    assert response.status == 303
+    after = store.get(one.id)
+    assert after.fields == (
+        held.fields[0], held.fields[1], dataclasses.replace(held.fields[2], value="you"),
+        held.fields[3], dataclasses.replace(held.fields[4], value="2"),
+        dataclasses.replace(after.fields[5], label="pass", type="CONCEALED",
+                            value="pw-new-2"))
+    assert saved == [one.id]
+    # Under free slots every stored value a person sees has its card, as before.
+    free = Page(store, FREE)
+    assert names_of(text(get(free, edit)), edit) >= {
+        "value0", "remove0", "value1", "remove1", "value2", "remove2", "value3", "remove3"}
+
 
 def test_a_missing_box_is_offered_on_edit_with_its_fixed_label(store):
     one = whole(store)  # no seed
@@ -738,6 +895,7 @@ def test_a_value_s_heading_is_the_profile_s(store):
     for label in ("address", "user", "pass"):
         assert f'aria-label="The {label}"><h2>The {label}</h2>' in body
         assert f"<h2>{label}</h2>" not in body
+    assert "The only" not in body  # said of an item's one value, and this item has three
     body = text(get(page, f"/s/{one.id}/edit"))
     for label in ("address", "user", "pass"):
         assert (f'<section class="v-panel v-stack v-existing" aria-label="The {label}">'
@@ -772,7 +930,8 @@ def test_an_item_the_profile_does_not_let_edit_has_no_edit_form(store):
 def test_delete_calls_after_delete_once_and_removes_the_item(store):
     one = whole(store)
     other = whole(store, "other")
-    page = Page(store, FIXED)
+    profile, seen = telling(store)
+    page = Page(store, profile)
     # a form the page did not render deletes nothing and tells nobody
     assert post(page, f"/s/{one.id}/delete", {**form_of(page, f"/s/{one.id}/delete"),
                                               "surprise": "1"}).status == 400
@@ -782,6 +941,7 @@ def test_delete_calls_after_delete_once_and_removes_the_item(store):
     assert dict(response.headers)["Location"] == f"{PREFIX}/things/"
     assert [item.id for item in store.list()] == [other.id]
     assert deleted == [one.id] and saved == []
+    assert seen == [False]  # the store no longer held the item when the profile was told
 
 
 # -- words, texts and links -----------------------------------------------------------
