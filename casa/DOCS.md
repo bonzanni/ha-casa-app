@@ -668,7 +668,8 @@ cannot run, you still get the job's result, with a line saying the follow-up did
 not run. A job started in the specialist's own chat ends as before. While a
 specialist works on a task you started this way, the browsing specialist's progress
 messages arrive without a notification. Links, files, questions and cards that need
-you still notify, and every step that changes, pays or sends something is still asked.
+you still notify, and the browsing asks you what it asks on any other task (see
+[Browsing websites](#browsing-websites-fido-and-casa-browser)).
 
 **A scheduled job (v0.343.0).** A schedule can start a plugin job directly instead of
 asking the assistant to. In the assistant's `triggers.yaml`, a `cron`, `interval` or
@@ -1930,9 +1931,13 @@ Its repository: [bonzanni/casa-specialist-browser](https://github.com/bonzanni/c
 
 A browsing request starts straight away, with no Start button to tap, whoever asked
 for it. Its status line ("On it: …", with what it will do) arrives in the chat
-without a notification; to stop the browsing, ask. You are still asked before a
-payment, an order or a change to one of your accounts, before signing in to a site
-for the first time, and when a sign-in fails.
+without a notification; to stop the browsing, ask. Every payment and every order
+waits for your own yes. A change to one of your accounts is asked too, unless you
+already said yes to Fido's plan for that task: the changes that carry out that plan
+on its site then go ahead without another question. A new site Fido finds on the open
+web is set up for signing in only after you say yes. A site whose login is already
+linked signs in by itself; when a sign-in fails, the browsing tells you it needs you
+to sign in yourself.
 
 ## Plugin consumer infrastructure (v0.71.0)
 

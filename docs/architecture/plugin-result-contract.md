@@ -198,10 +198,14 @@ window is exactly what would stop this being a boundary.
 stored artifact that carries one is excluded from resolution; at session build the plugin
 is represented as not adopting and refused as above. Never a whole-role failure.
 
-**A deposit arrives with no matching call in flight, or with two and no `tool_use_id`.** It
-is refused with a code (`no_call_in_flight`, `ambiguous_call`; an id that is not a string,
-`bad_tool_use_id`) and no reference is minted; the producer's result then fails the structural check and
-is withheld. The same happens when a slot is deposited twice in one call.
+**A deposit finds no call, or two.** A deposit that names no call is refused
+`no_call_in_flight` when none of its client's calls in flight provides the slot and
+`ambiguous_call` when two or more do; one that names a call is refused `no_call_in_flight`
+when that call is not in flight or does not provide the slot, and `bad_tool_use_id` when the
+id is not a string. No reference is minted, and unless the producer deposits the slot again
+on its call, its result then fails the structural check and is withheld. **A slot is
+deposited twice in one call.** The second deposit is refused `slot_already_deposited`; the
+first keeps its reference, and a result carrying it passes.
 
 **A call outlives the in-flight cap.** The next sweep removes the call and every reference
 deposited under it; the result, if it ever arrives, finds no call and is withheld with

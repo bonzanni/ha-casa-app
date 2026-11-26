@@ -39,8 +39,9 @@ client and that call, or nothing: a miss answers `no_call_in_flight` and never f
 another record of the client. An empty string is an id like any other, so a plugin with no
 id leaves the member out. A value that is not a string answers `bad_tool_use_id`. With no
 member, or JSON `null`, the call is the client's only record: none answers
-`no_call_in_flight`, two answer `ambiguous_call`, the deposit route's rule for a deposit
-that names no call. The record is forgotten at
+`no_call_in_flight`, two answer `ambiguous_call`. A deposit that names no call is judged
+the same way among only the client's calls that provide the deposited slot
+([`plugin-result-contract.md`](plugin-result-contract.md)). The record is forgotten at
 the call's PostToolUse or PostToolUseFailure, or an hour after it opened. A call is
 recorded only for the operator as configured now (`operator_calls.is_configured_operator`,
 the Telegram channel's one operator rule): a turn with no grant identity — voice, a
@@ -75,13 +76,21 @@ the plugin wants to start — each with its spec digest, mode, task line and the
 opens, each site with its grant and the display name the plugin's own registry gives it.
 Casa admits every run of the request at once, whoever asked and whatever the turn
 (`run_admission._decide`): it answers `admitted`, with one `origin_ref` per spec digest, and
-nothing waits for the operator. Every change a run would make is asked per action by the
-action check below, and what a run needs him for later (a payment, an order, a first or a
-failed sign-in) is asked on its own path. Each request carries a `request_key` the plugin
+nothing waits for the operator. Each step a run would take is judged by the action check
+below, and Casa Browser lets through on its own only reading and local steps
+(`gate.go_allowed`): a step judged a payment or a commitment, an order among them, always
+waits for his own answer, and a change to his account waits for one unless it carries out a
+plan he approved in that run, on that plan's site, with no money in it
+(`rulebooks/scope_v1.txt`). Sign-in is Casa Browser's: a site reached on the open web is set
+up for sign-in only after he says yes (`Controller.ask_sign_in`), a site with a linked login
+signs in by itself (`Controller._login`), and a sign-in that fails is reported as needing
+him in a live view. Each request carries a `request_key` the plugin
 chooses; a key this plugin and operator used before on the same bot gets its first answer
 again — no second card — and requests with one key are decided one at a time, so a retry
 that overlaps the first waits for it and gets its answer. A call with no delivery, or whose
-delivery's bot has no id yet, is refused as `not_delivered` and nothing is stored. Every
+delivery's bot has no id yet, is refused as `not_delivered`: no admission is stored and no
+card is posted, though the turn's binding (`binding_for`) is minted before the bot is
+read. Every
 answer is kept in `/data/plugin-admissions.json` (`0600`) for thirty days after it was
 given and returned identically on every status read
 (`POST /internal/broker/run-admission-status`) and key replay, across restarts; a request an
@@ -165,8 +174,7 @@ Enforced by `OperatorCalls.find` (with an id, that client's record of that id or
 `_found` refusing an id that is not a string (`bad_tool_use_id`),
 by the admission hook deriving the identity through `authz_grants.resolve_grant_identity`
 and denying the call when there is none, by `BindingStore.get`,
-`Confirmations.get` and `DeliveryOutcomes.status` comparing plugin and operator, and by
-the resident-ask tap handler's actor check on the confirmation card. No request body names
+and `Confirmations.get` and `DeliveryOutcomes.status` comparing plugin and operator. No request body names
 an identity, a requester or a chain; Casa reads them from the record.
 
 What it does not cover: a plugin whose own code misuses what it is told — the plugin is
@@ -203,7 +211,8 @@ control whose text and DOM state nothing, where the picture alone can turn `look
 ## Failure behavior
 
 **The call has nowhere to post.** Admission answers `refused` with `not_delivered`,
-nothing is admitted or stored, and a later request with the key is decided afresh. **The
+no admission is stored and no card is posted, and a later request with the key is decided
+afresh. **The
 status card fails to post.** The failure is logged; the runs stay admitted and `stop_work`
 still stops them. **Casa restarts.** Call records, delivery outcomes and the words kept for
 the action check are lost; bindings and admission answers survive, and a request an earlier
