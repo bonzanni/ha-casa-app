@@ -1,8 +1,9 @@
-// The secrets page's script. It only makes the page quicker to use: everything it does, the page
-// also does through its plain forms and boxes, and it never decides what a form saves. A secret
-// value it fetches is put on the page as text, and taken off again after 30 seconds, on Hide, or
-// when the page goes out of sight; a Show or Copy not done 30 seconds after its tap is dropped.
-// It keeps no value anywhere else.
+// The page's script. It only makes the page quicker to use: everything it does, the page also
+// does through its plain forms and boxes, and it never decides what a form saves. A hidden value
+// it fetches is put on the page as text, and taken off again after 30 seconds, on Hide, or when
+// the page goes out of sight; a Show or Copy not done 30 seconds after its tap is dropped. It
+// keeps no value anywhere else. The sentences it shows that name the page's items come from the
+// page (attributes of <body>), and so does the shape of its form, so any app's page can run it.
 (() => {
   'use strict';
   const LIMIT = 30000;        // how long a Show or Copy may take, and how long a value stays shown
@@ -14,6 +15,8 @@
   const TOO_LONG = 'This took too long. Reload the page and try again.';
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+  // the page's own sentences: notSaved, noValueLeft, countOne and countMany ({} is a number)
+  const words = document.body.dataset;
 
   // A value block's line for what happened: copied, press and hold, or a failure.
   const say = (block, text) => {
@@ -262,7 +265,7 @@
     }
   };
 
-  // Copy on a secret value: fetch and copy in one go; where that cannot copy, show the value
+  // Copy on a hidden value: fetch and copy in one go; where that cannot copy, show the value
   // with the line on pressing and holding. The answer and the clipboard both count against the
   // operation's own deadline; once it has passed, a late answer of either shows nothing.
   const wireCopy = (button) => {
@@ -305,7 +308,7 @@
     });
   };
 
-  // the page that came back from a Show without this script links to the secret to hide it:
+  // the page that came back from a Show without this script links to the item to hide it:
   // that link becomes the same Show/Hide button as everywhere else
   for (const link of $$('.v-reveal a')) {
     const button = document.createElement('button');
@@ -349,7 +352,7 @@
       }
       list.hidden = left === 0;
       none.hidden = left > 0;
-      count.textContent = wanted ? `${left} ${left === 1 ? 'secret' : 'secrets'}` : '';
+      count.textContent = wanted ? (left === 1 ? words.countOne : words.countMany).replace('{}', String(left)) : '';
     };
     search.closest('.v-search').hidden = false;
     search.addEventListener('input', filter);
@@ -391,18 +394,20 @@
     mark();
     group.hidden = false;
   }
-  // a stored value: Remove turns off its box (Undo turns it on again), and a secret value's
-  // new-value box is on only while Replace is ticked; nothing typed is thrown away
+  // a stored value: Remove turns off its box (Undo turns it on again), and a hidden value's
+  // new-value box is on only while Replace is ticked; nothing typed is thrown away. The value of
+  // a box the item must keep has no Remove.
+  const removed = (card) => Boolean($('.v-remove-input', card) && $('.v-remove-input', card).checked);
   for (const card of $$('.v-existing')) {
     const remove = $('.v-remove-input', card);
     const replace = $('.v-replace-input', card);
     const box = $('textarea', card);
     const follow = (focus) => {
-      box.disabled = remove.checked || Boolean(replace && !replace.checked);
-      if (replace) replace.disabled = remove.checked;
+      box.disabled = removed(card) || Boolean(replace && !replace.checked);
+      if (replace) replace.disabled = removed(card);
       if (focus && !box.disabled) box.focus({preventScroll: true});
     };
-    remove.addEventListener('change', () => follow(false));
+    if (remove) remove.addEventListener('change', () => follow(false));
     if (replace) replace.addEventListener('change', () => follow(true));
     follow(false);
   }
@@ -426,7 +431,7 @@
     box.textContent = '';
     const title = document.createElement('p');
     const strong = document.createElement('strong');
-    strong.textContent = 'Secret not saved';
+    strong.textContent = words.notSaved;
     title.append(strong);
     const line = document.createElement('p');
     line.textContent = text;
@@ -448,7 +453,7 @@
     const labels = new Set();
     let left = 0;
     for (const card of $$('.v-existing', form)) {
-      if ($('.v-remove-input', card).checked) continue;
+      if (removed(card)) continue;
       left += 1;
       labels.add($('h2', card).textContent);
       const box = $('.v-replace-input', card) && $('textarea', card);
@@ -467,10 +472,17 @@
         return [open ? 'Enter a value, or remove this value card.' : 'Enter a value.', value];
       }
     }
-    if (!left) return ['Keep at least one value, or delete the secret instead.', null];
+    // a form of fixed boxes: a box left empty adds nothing, unless the item needs it
+    for (const box of $$('[data-fixed-value]', form)) {
+      if (box.value !== '') left += 1;
+      else if (box.hasAttribute('data-required')) return [box.dataset.required, box];
+    }
+    if (!left && name) return ['Enter a value.', $('[data-fixed-value]', form)];
+    if (!left) return [words.noValueLeft, null];
     return null;
   };
-  const form = $('#secret-form');
+  // the add or edit form: the page's one form that saves
+  const form = $('form.v-form');
   if (form && $('#form-error')) {
     form.addEventListener('submit', (event) => {
       const slip = check(form);

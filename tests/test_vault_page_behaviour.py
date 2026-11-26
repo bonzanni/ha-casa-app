@@ -194,3 +194,96 @@ def test_a_hidden_value_is_written_nowhere_and_the_next_code_arrives(outcomes, s
     assert scenario in lines, output
     verdict, why = lines[scenario]
     assert verdict == "ok", f"{scenario}: {why}"
+
+
+# -- what the script reads from the page: the form's shape and the sentences ----------------
+#
+# The same script serves pages of other profiles: fixed boxes instead of free slots, a stored
+# value of a required box without Remove, and words that name another item. The harness plays
+# those pages (its "shape" suite): a required box left empty is said before anything is sent, in
+# the box's own sentence; a box that may stay empty holds nothing back; a card without Remove
+# neither breaks the script's set-up nor its checks; and the sentences that name the item (the
+# refusal's heading, the last-value refusal, the search count) are the page's, for the test
+# profile's distinct words as for Casa's, which are checked against today's texts.
+
+SHAPE_SCENARIOS = [
+    "fixed boxes, add form: an empty required box holds the submit back with its sentence",
+    "fixed boxes, add form: empty boxes that are not required let it go, and so does a full form",
+    "fixed boxes, add form: a missing name is still said first",
+    "fixed boxes, edit form: a card without Remove sets up and a submit still runs the checks",
+    "fixed boxes, edit form: an offered required box left empty holds the submit back",
+    "fixed boxes, edit form: removing every value is refused in the page's words",
+    "free slots, edit form: removing every value is refused in the page's words",
+    "list of the fixed profile, the search count is in the page's words",
+    "list of the free profile, the search count is in the page's words",
+]
+# Casa's sentences as its page says them today, written out rather than read from its profile.
+CASA_WORDS = {"not_saved": "Secret not saved",
+              "no_value_left": "Keep at least one value, or delete the secret instead.",
+              "one": "{} secret", "many": "{} secrets"}
+
+
+@pytest.fixture(scope="module")
+def shape_outcomes(tmp_path_factory):
+    from test_vault_page_profile import ADDRESS_MISSING, FIXED, LOOSE, WORDS, thing, whole
+    from vault_page import Page as Engine
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH; the page script's behaviour test needs it")
+    tmp = tmp_path_factory.mktemp("vault-page-shape")
+    store = Store.open(tmp / "store", None)
+    full = whole(store, "alpha")
+    whole(store, "alps")
+    bare = thing(store, "beta", user="me")
+    casa_store = Store.open(tmp / "casa", None)
+    two = casa_store.create(title="alpha", category="PASSWORD", tags=[], writer="op", fields=[
+        Field(id="", label="note", type="STRING", value="plain"),
+        Field(id="", label="pw", type="CONCEALED", value="v")])
+    for title in ("alps", "beta"):
+        casa_store.create(title=title, category="PASSWORD", tags=[], writer="op", fields=[
+            Field(id="", label="pw", type="CONCEALED", value="v")])
+    fixed, loose, casa = Engine(store, FIXED), Engine(store, LOOSE), Page(casa_store)
+    get = {"x-ingress-path": "/p"}
+    pages = {}
+    for name, page, path in (
+            ("fixed add", fixed, "/add"),
+            ("fixed edit", fixed, f"/s/{full.id}/edit"),
+            ("fixed edit bare", fixed, f"/s/{bare.id}/edit"),
+            ("loose edit", loose, f"/s/{full.id}/edit"),
+            ("fixed list", fixed, "/"),
+            ("casa edit", casa, f"/s/{two.id}/edit"),
+            ("casa list", casa, "/")):
+        response = page.handle(Request("GET", path, get, b""))
+        assert response.status == 200, name
+        tree = _Tree()
+        tree.feed(response.body.decode("utf-8"))
+        pages[name] = tree.root
+    words = {"fixed": {"not_saved": WORDS["not_saved"], "no_value_left": WORDS["no_value_left"],
+                       "one": WORDS["count_one"], "many": WORDS["count_many"]},
+             "casa": CASA_WORDS, "required": ADDRESS_MISSING}
+    bundle = tmp / "bundle.json"
+    bundle.write_text(json.dumps({"suite": "shape", "secret": SECRET, "other": OTHER,
+                                  "values": {}, "words": words, "pages": pages}))
+    run = subprocess.run([node, str(HARNESS), str(SCRIPT), str(bundle)],
+                         capture_output=True, text=True, timeout=120)
+    print(run.stdout, run.stderr)
+    lines = {}
+    for line in run.stdout.splitlines():
+        verdict, _, rest = line.partition(" ")
+        name, _, why = rest.partition("\t") if verdict == "FAIL" else (rest, "", "")
+        lines[name] = (verdict, why)
+    return lines, run.stdout + run.stderr
+
+
+def test_the_harness_plays_every_shape_scenario(shape_outcomes):
+    lines, output = shape_outcomes
+    assert sorted(lines) == sorted(SHAPE_SCENARIOS), output
+
+
+@pytest.mark.parametrize("scenario", SHAPE_SCENARIOS)
+def test_the_script_takes_the_form_s_shape_and_its_words_from_the_page(shape_outcomes, scenario):
+    lines, output = shape_outcomes
+    assert scenario in lines, output
+    verdict, why = lines[scenario]
+    assert verdict == "ok", f"{scenario}: {why}"

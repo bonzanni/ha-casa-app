@@ -64,7 +64,12 @@ WORDS = {
     "read_once": "Looked at once",
     "read_many": "Looked at {} times",
     "delete_effect": "Whatever leans on it will fall.",
+    "count_one": "{} thing found",
+    "count_many": "{} things found",
 }
+# The words the page hands its script, by the attribute of `<body>` that carries each.
+CARRIED = {"not_saved": "data-not-saved", "no_value_left": "data-no-value-left",
+           "count_one": "data-count-one", "count_many": "data-count-many"}
 ADDRESS_MISSING = "Give at least one address."
 BOXES = (
     Box("address", "URL", "Where it lives", multiline=True, required=ADDRESS_MISSING),
@@ -203,6 +208,57 @@ def read(body):
     return "\n".join(_Read(body).parts)
 
 
+class _Carried(HTMLParser):
+    """The `data-` attributes of a page's `<body>`: the words it hands its script."""
+
+    def __init__(self, body):
+        super().__init__(convert_charrefs=True)
+        self.words = {}
+        self.feed(body)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "body":
+            self.words = {name: value for name, value in attrs if name.startswith("data-")}
+
+
+def carried(body):
+    return _Carried(body).words
+
+
+class _ErrorBox(HTMLParser):
+    """The lines of the `#form-error` box, or None when the page has none or hides it."""
+
+    def __init__(self, body):
+        super().__init__(convert_charrefs=True)
+        self.lines, self._depth, self._line = None, 0, None
+        self.feed(body)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if self._depth:
+            self._depth += 1
+            if tag == "p":
+                self._line = ""
+        elif attrs.get("id") == "form-error" and "hidden" not in attrs:
+            self._depth, self.lines = 1, []
+
+    def handle_endtag(self, tag):
+        if not self._depth:
+            return
+        self._depth -= 1
+        if tag == "p" and self._line is not None:
+            self.lines.append(self._line)
+            self._line = None
+
+    def handle_data(self, data):
+        if self._line is not None:
+            self._line += data
+
+
+def error_lines(body):
+    return _ErrorBox(body).lines
+
+
 def thing(store, title="t", *, tags=(), writer="op", version="1", **values):
     """An item of the test profile's shape: the given boxes in their order, then `version`.
 
@@ -304,6 +360,34 @@ def test_a_box_is_drawn_with_its_caption_and_its_height(store):
     assert "v-picks" not in body and "Reference label" not in body
     assert '<p class="v-help" id="name-help">A thing keeps its name for good.</p>' in body
     assert "<title>New thing · Shelf</title>" in body
+
+
+def _box_tags(body):
+    """Each text box of the form by its name: the attributes the script reads from it."""
+    return {name: tag for tag, name in re.findall(r'(<textarea[^>]*\sname="([a-z]+\d+)"[^>]*>)',
+                                                  body)}
+
+
+def test_a_fixed_box_tells_the_script_it_is_fixed_and_what_its_refusal_says(store):
+    """The script reads a form's shape from the page: a fixed box says so, and a required one
+    carries the sentence that refuses it; a free slot says it is one."""
+    for body in (text(get(Page(store, FIXED), "/add")),
+                 text(get(Page(store, FIXED), f"/s/{thing(store, 'bare', user='me').id}/edit"))):
+        tags = _box_tags(body)
+        offered = [name for name, tag in tags.items() if "data-fixed-value" in tag]
+        assert offered and all("data-new-value" not in tag for tag in tags.values())
+        for name in offered:
+            required = re.findall(r'\sdata-required="([^"]*)"', tags[name])
+            caption = re.search(rf'for="f-{name}">([^<]+)<', body).group(1)
+            assert required == ([ADDRESS_MISSING] if caption == "Where it lives" else []), name
+        assert "data-required" not in body.replace(f'data-required="{ADDRESS_MISSING}"', "")
+    # a stored value is not a box to fill: its card carries neither
+    one = whole(store, "whole")
+    edit = text(get(Page(store, FIXED), f"/s/{one.id}/edit"))
+    for name in ("value0", "value1", "value2"):
+        assert "data-fixed-value" not in _box_tags(edit)[name], name
+    assert "data-fixed-value" not in text(get(casa_page(store), "/add"))
+    assert text(get(casa_page(store), "/add")).count("data-new-value") == 3
 
 
 def test_a_required_box_left_empty_is_refused_with_its_sentence(store):
@@ -850,8 +934,15 @@ def _every_page(store):
 def test_every_word_a_person_reads_is_the_profile_s(store):
     """Each of the profile's words is on the page it belongs to, and no page says anything in
     Casa's words. What is read is the page's text, not its markup: the form's id and the
-    stylesheet's name hold words of their own."""
-    pages = {name: read(body) for name, body in _every_page(store).items()}
+    stylesheet's name hold words of their own. The words the page's script shows are read from
+    the attributes that carry them to it."""
+    bodies = _every_page(store)
+    pages = {name: read(body) for name, body in bodies.items()}
+    handed = {name: carried(body) for name, body in bodies.items()}
+    # every page that runs the script hands it the profile's words, and only those
+    for name, words in handed.items():
+        assert words == ({} if name == "no prefix"
+                         else {attribute: WORDS[key] for key, attribute in CARRIED.items()}), name
     where = {
         "product": "list", "open_through": "no prefix", "list": "list", "search": "list",
         "no_match": "list", "none_yet": "empty list", "none_yet_help": "empty list",
@@ -861,11 +952,15 @@ def test_every_word_a_person_reads_is_the_profile_s(store):
         "name_help": "add", "name_taken": "name taken", "no_value_left": "no value left",
         "too_many": "too many", "not_saved": "name missing", "changed": "changed",
         "reload": "changed", "read_once": "read once", "read_many": "read twice",
-        "delete_effect": "delete",
+        "delete_effect": "delete", "count_one": "list", "count_many": "list",
     }
     assert set(where) == set(WORDS)
+    shown_by_the_script = {"count_one", "count_many"}  # never in the page's own text
     filled = {"name_taken": "t", "too_many": str(vault_page.MAX_FIELDS), "read_many": "2"}
     for key, name in where.items():
+        if key in shown_by_the_script:
+            assert handed[name][CARRIED[key]] == WORDS[key], (key, name)
+            continue
         assert WORDS[key].format(filled.get(key, "")) in pages[name], (key, name)
     # the same words where else they stand
     assert "New thing" in pages["empty list"] and "Drop thing" in pages["item"]
@@ -875,6 +970,7 @@ def test_every_word_a_person_reads_is_the_profile_s(store):
     for name, seen in pages.items():
         for word in ("secret", "Secret", "Casa", "plugin", "Plugin", "SSH"):
             assert word not in seen, (name, word)
+            assert not any(word in said for said in handed[name].values()), (name, word)
 
 
 # -- free slots -----------------------------------------------------------------------
@@ -946,3 +1042,28 @@ def test_casa_s_page_shows_and_edits_a_field_called_version(store):
     assert post(page, "/add", {**form_of(page, "/add", root="vault"), "name": "other",
                                "label0": "version", "value0": "9"}).status == 303
     assert [(f.label, f.value) for f in store.get("other").fields] == [("version", "9")]
+
+
+def test_casa_s_refusals_are_said_in_the_box_a_person_sees(store):
+    """Casa's words now also travel to the script in attributes of the page, so finding one in
+    the answer proves nothing about the screen: these read the visible box above the form and
+    hold it to the texts Casa's page shows today."""
+    one = store.create(title="mail", category="PASSWORD", tags=[], writer="op", fields=[
+        Field(id="", label="username", type="STRING", value="me"),
+        Field(id="", label="password", type="CONCEALED", value=SENTINEL)])
+    page = casa_page(store)
+    edit = f"/s/{one.id}/edit"
+    assert error_lines(text(get(page, edit))) is None  # a fresh form's box is hidden
+    response = post(page, edit, {**form_of(page, edit, root="vault"),
+                                 "remove0": "1", "remove1": "1"})
+    assert response.status == 200
+    assert error_lines(text(response)) == [
+        "Secret not saved", "Keep at least one value, or delete the secret instead."]
+    response = post(page, "/add", {**form_of(page, "/add", root="vault"), "name": "x",
+                                   "label0": "token", "value0": "v\x0c"})
+    assert response.status == 200
+    assert error_lines(text(response)) == [
+        "Secret not saved",
+        "A value holds a character that cannot be saved, such as a form feed. "
+        "Remove it and try again.",
+        "The values you typed were cleared. Enter them again."]

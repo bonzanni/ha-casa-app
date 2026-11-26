@@ -64,6 +64,8 @@ WORDS = {
     "read_once": "Read once since Casa started",
     "read_many": "Read {} times since Casa started",
     "delete_effect": "Deleting it may stop the features that use it.",
+    "count_one": "{} secret",
+    "count_many": "{} secrets",
 }
 
 

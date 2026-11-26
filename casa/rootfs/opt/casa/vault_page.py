@@ -131,10 +131,10 @@ class Response:
 
 # -- the profile ------------------------------------------------------------------
 
-# Every sentence and title of the page that names the item, the app or who
-# uses an item, by the key a profile's `words` gives it under. `{}` marks
-# where the engine puts a name or a number. The words are fixed text, written
-# to the page as they are.
+# Every sentence and title of the page or its script that names the item, the
+# app or who uses an item, by the key a profile's `words` gives it under. `{}`
+# marks where the engine or the script puts a name or a number. The words are
+# fixed text, written to the page as they are.
 WORDS = {
     "product": "the app's name, after every page title",
     "open_through": "said to a request that did not come through the front proxy",
@@ -162,7 +162,13 @@ WORDS = {
     "read_once": "the line of an item read once since the service started",
     "read_many": "the same for more reads; {} is how many",
     "delete_effect": "the line under the delete screen's warning, or \"\" for none",
+    "count_one": "said by the script when a search leaves one row; {} is 1",
+    "count_many": "said by the script when a search leaves another number of rows; {} is it",
 }
+# The words the page's script shows itself. Every page hands them to it as
+# attributes of `<body>` (`data-not-saved`, ...), since the page's content
+# policy runs no script written into the page.
+_SCRIPT_WORDS = ("not_saved", "no_value_left", "count_one", "count_many")
 
 
 @dataclass(frozen=True)
@@ -343,6 +349,10 @@ class Page:
         self._store = store
         self._profile = profile
         self._words = profile.words
+        # The attributes of `<body>` that hand the script its words.
+        self._script_words = "".join(
+            f' data-{key.replace("_", "-")}="{_text(profile.words[key])}"'
+            for key in _SCRIPT_WORDS)
         self.codes = Codes(clock)
         # Keys the edit form's stamp, which covers the item's values: the
         # stamp tells whether the item changed, and nothing about them.
@@ -1030,14 +1040,19 @@ class Page:
         """The fixed boxes the form offers, each under its caption.
 
         A refused form comes back with what was typed into a plain box; a
-        box whose value the profile hides is always empty.
+        box whose value the profile hides is always empty. Each box tells the
+        page's script that it is fixed and, when it is required, the sentence
+        that refuses it empty.
         """
         parts = []
         for index, box in self._offered(item):
             name = f"value{index}"
             typed = "" if self._hides(box) else (draft or {}).get(name, "")
+            shape = " data-fixed-value" + (f' data-required="{_text(box.required)}"'
+                                           if box.required else "")
             parts.append(_field(_text(box.caption), name, typed, textarea=True,
-                                one_line=not box.multiline and "\n" not in _lf(typed)))
+                                one_line=not box.multiline and "\n" not in _lf(typed),
+                                extra=shape))
         if not parts:
             return ""
         return '<section class="v-panel v-stack">' + "".join(parts) + "</section>"
@@ -1137,7 +1152,7 @@ class Page:
             f'<link rel="stylesheet" href="{static}vault.css">'
             f'<script src="{static}theme.js" defer></script>'
             f'<script src="{static}page.js" defer></script>'
-            "</head><body>"
+            f"</head><body{self._script_words}>"
             f'<header class="v-header"><div class="v-bar"><a class="v-back" href="{back}" '
             f'aria-label="Back">{_BACK_ICON}</a><h1>{_text(title)}</h1>{action}</div></header>'
             f'<main class="{main}">{body}</main>'
@@ -1260,14 +1275,18 @@ def _feedback(text: str = "") -> str:
 
 
 def _field(label: str, name: str, value: str, *, textarea: bool = False,
-           one_line: bool = False) -> str:
-    """A labelled text box or text area; the label's text is fixed words, never data."""
+           one_line: bool = False, extra: str = "") -> str:
+    """A labelled text box or text area; the label's text is fixed words, never data.
+
+    `extra` is markup added to a text area's attributes.
+    """
     if textarea:
         # The newline after the opening tag is dropped by every HTML parser, so a
         # value that itself starts with a newline keeps it.
         kind = "v-textarea v-textarea--line" if one_line else "v-textarea"
         rows = ' rows="1"' if one_line else ""
-        box = (f'<textarea class="{kind}" id="f-{name}" name="{name}"{rows} {_NO_HELP}>\n'
+        box = (f'<textarea class="{kind}" id="f-{name}" name="{name}"{rows} {_NO_HELP}'
+               f'{extra}>\n'
                f"{_text(value)}</textarea>")
     else:
         box = (f'<input class="v-input" type="text" id="f-{name}" name="{name}" '
