@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import time
 from casa_browser.broker import BrokerError
+from casa_browser.broker.builtin import BuiltinVault
 from casa_browser.broker.guest import assess_guest
 from casa_browser.broker.items import EXTRA_FIELDS_WARNING, Vault
 from casa_browser.broker.journal import Journal
@@ -68,6 +69,47 @@ LIST_TITLE_CHARS = 300     # a longer title leaves its item out: a title is neve
 LIST_HOSTS = 10            # website hosts per listed item
 LIST_BYTES = 60_000        # a listing stays under one broker line (MAX_LINE, 64 KiB)
 
+#: where the app's own store keeps the logins, when no 1Password token is set
+VAULT_DIR = Path('/data/broker/vault')
+#: A site's link to a login, with the two marks that belong to that link. Each store has its
+#: own: 1Password's are in the site's registry record itself, where they always were, and the
+#: app's own store's are under the record's key ``builtin``.
+LINK_KEYS = ('item_id', 'unverified', 'rejected')
+
+
+def build_vault(options, directory: Path = VAULT_DIR):
+    """The vault for the store bootstrap chose. Only the word it wrote decides: the app's own
+    store is opened for ``builtin`` and for nothing else, so a token that does not work, or
+    options that are not valid, never reach it; they get the 1Password class as before."""
+    if options.login_store == 'builtin':
+        return BuiltinVault(directory, options.store_key or None)
+    return Vault(None, options.vault, options.op_token)
+
+
+def site_view(stored, builtin):
+    """A site as the broker works on it: what the registry holds about the site, and the link
+    of the store in use under ``item_id``, ``unverified`` and ``rejected``, whichever store
+    that is. The other store's link is not in it, so no flow can use it or change it."""
+    if not builtin:
+        return {key: value for key, value in stored.items() if key != 'builtin'}
+    link = stored.get('builtin') or {}
+    return {**{key: value for key, value in stored.items()
+               if key != 'builtin' and key not in LINK_KEYS},
+            'item_id': None, **{key: link[key] for key in LINK_KEYS if key in link}}
+
+
+def site_record(view, stored, builtin):
+    """A site as the registry file holds it: the view, with the other store's link put back
+    as the file had it (``stored``; None for a site the file does not hold yet). A record
+    that never had a ``builtin`` part is, under 1Password, exactly the view."""
+    stored = stored or {}
+    if not builtin:
+        return {**view, **({'builtin': stored['builtin']} if 'builtin' in stored else {})}
+    return {**{key: value for key, value in view.items() if key not in LINK_KEYS},
+            'item_id': None, **{key: stored[key] for key in LINK_KEYS if key in stored},
+            'builtin': {key: view[key] for key in LINK_KEYS if key in view}}
+
+
 @dataclass(repr=False)
 class _Capture:
     run_id: str
@@ -104,25 +146,39 @@ class Broker:
     _passkey_tries: set = field(default_factory=set, init=False, repr=False)
     # (run_id, site_id) -> the last look's binding: its mark and digest, until a sign-in on it
     _looks: dict = field(default_factory=dict, init=False, repr=False)
+    # the registry as the file holds it: each site's record with both stores' links, of which
+    # ``_registry`` holds the view for the store in use (``site_view``)
+    _stored: dict = field(default_factory=dict, init=False, repr=False)
+
+    @property
+    def builtin(self):
+        """Site logins are kept in the app's own store: there is no 1Password account, no
+        extension in the browser and no guest."""
+        return self.options.login_store == 'builtin'
 
     async def start(self):
         self.registry_path = Path(self.registry_path)
         self.registry_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.registry_path.exists():
             os.chmod(self.registry_path, 0o600)
-            self._registry = json.loads(self.registry_path.read_text(encoding='utf-8'))
+            self._stored = json.loads(self.registry_path.read_text(encoding='utf-8'))
+            self._registry = {site_id: site_view(stored, self.builtin)
+                              for site_id, stored in self._stored.items()}
         else:
             self._persist_registry()
         self.journal.recover()
 
     def _persist_registry(self):
+        records = {site_id: site_record(view, self._stored.get(site_id), self.builtin)
+                   for site_id, view in self._registry.items()}
         fd, temporary = tempfile.mkstemp(dir=self.registry_path.parent)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                json.dump(self._registry, stream, sort_keys=True)
+                json.dump(records, stream, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.registry_path)
+            self._stored = records
             directory = os.open(self.registry_path.parent, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.fsync(directory)
@@ -212,6 +268,9 @@ class Broker:
             return {'error': 'internal'}
 
     async def status(self):
+        if self.builtin:
+            # Nobody but this app has access to its store: there is no accessor to assess.
+            return {'configured': True, 'store': 'builtin', 'available': self.vault.available}
         sdk = 'unconfigured'
         role = assess_guest(None)
         if self.options.configured:
@@ -272,8 +331,10 @@ class Broker:
         self._registry[site_id] = dict(item_id=item_id, login_origins=origins, operator_ref=operator_ref)
         self._persist_registry()
         self.journal.record_control('register_item', site_id, operator_ref)
+        # The warning is about the 1Password extension, which sees its whole vault.
         return dict(site_id=site_id, roles_available=list(dict.fromkeys(roles)),
-                    extra_field_names=extras, warning=EXTRA_FIELDS_WARNING)
+                    extra_field_names=extras,
+                    warning='' if self.builtin else EXTRA_FIELDS_WARNING)
 
     async def register_capture(self, site_id, login_origins, operator_ref, title):
         self._registry[site_id] = dict(item_id=None, login_origins=self._origins(login_origins),
@@ -304,12 +365,20 @@ class Broker:
         (``no_form``/``page_moved`` otherwise), and after its first submit or passkey answer no
         guest, no passkey and no second password (``password_again``; ``password_sent``: this
         look sent one already). ``fields`` (R9): the check's mapping of the look's plain fields
-        to ``username``/``password``, by the ids the look gave them."""
+        to ``username``/``password``, by the ids the look gave them.
+
+        With the app's own store there is no guest to ask for and no passkey prompt of
+        1Password's to answer: a passkey marker stops nothing, and the form is filled. When that
+        store cannot be opened every sign-in is ``unavailable``, a site's without a login too."""
         site = self._account_site(run_id, site_id)
         deadline = self.clock() + 120
         try:
             async with asyncio.timeout(120):
                 look = self._looks.pop((run_id, site_id), None) if auto and code is None else None
+                if self.builtin and not self.vault.available:
+                    # Not even a site without a login is sent to the live view: what a person
+                    # typed there could not be saved.
+                    raise BrokerError('unavailable')
                 if site['item_id'] is None:
                     return {'status': 'needs_live_view', 'reason': 'not_found'}
                 mark, answered = None, False
@@ -324,10 +393,13 @@ class Broker:
                     # The sign-in goes on: whether it answered a passkey goes on with it (5v),
                     # and a look's sign-in keeps its limits (Astra r3).
                     mark, answered, auto, password_sent = held
+                # The app's own store: no key for a passkey try, so the flow never makes one.
+                tries_key = None if self.builtin else (run_id, site_id)
                 outcome = await self._login_flow(site, driver_session, deadline, code,
                                                  page_generation, mark, answered,
-                                                 tries_key=(run_id, site_id),
-                                                 guest_ask=guest_ask and code is None,
+                                                 tries_key=tries_key,
+                                                 guest_ask=(guest_ask and code is None
+                                                            and not self.builtin),
                                                  auto=auto, look=look,
                                                  password_sent=password_sent,
                                                  mapping=fields)
@@ -373,7 +445,9 @@ class Broker:
                 break
             else:
                 raise BrokerError('timeout')
-        passkey = bool(read.get('passkey_hint') or read.get('passkey_frame'))
+        # With the app's own store nothing answers a passkey: it is not a way to sign in.
+        passkey = not self.builtin and bool(read.get('passkey_hint')
+                                            or read.get('passkey_frame'))
         planned = [f for f in read.get('fields') or () if isinstance(f, dict)]
         # R9: any planned field on a login origin (a plain username included) is the check's
         found = bool(read.get('origin_ok') and (read.get('roles') or planned)) or passkey
@@ -695,6 +769,8 @@ class Broker:
         return {'status': 'needs_live_view', 'reason': 'step_limit'}
 
     async def unlock_guest(self, run_id, site_id, driver_session):
+        if self.builtin:
+            raise BrokerError('refused')      # no extension, so no guest to unlock
         self._account_site(run_id, site_id)
         try:
             async with asyncio.timeout(GUEST_FLOW_S):
@@ -1096,7 +1172,7 @@ class BrokerServer(UnixServer):
 async def run():
     options = BrokerOptions(**json.loads(Path('/run/casa-browser/broker/broker.json').read_text()))
     journal = Journal(Path('/data/broker/journal.db'))
-    broker = Broker(Vault(None, options.vault, options.op_token), DriverClient(), journal,
+    broker = Broker(build_vault(options), DriverClient(), journal,
                     Path('/data/broker/registry.json'), options)
     server = BrokerServer(broker, Path('/run/casa-browser/broker/rpc.sock'), socket_gid=1103)
     try:

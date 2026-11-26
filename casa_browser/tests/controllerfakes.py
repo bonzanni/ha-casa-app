@@ -624,9 +624,13 @@ class FakeProxy:
 
 
 class FakeBroker:
-    def __init__(self, log, store=None):
+    def __init__(self, log, store=None, login_store="onepassword"):
         self.log = log
         self.store = store
+        # What ``status`` answers: the real broker's reply for the store it runs on.
+        self.status_reply = ({"configured": True, "store": "builtin", "available": True}
+                             if login_store == "builtin" else
+                             {"configured": True, "sdk": "ok", "guest_role": "readonly"})
         self.login_reply = {"status": "logged_in", "reason": "completed"}
         self.unlock_reply = {"state": "unlocked", "reason": "completed"}
         self.capture_reply = {"capture_id": "cap1"}
@@ -702,7 +706,7 @@ class FakeBroker:
             self.log.append(("save_attempt", args.get("title")))
             return dict(self.save_attempt_reply)
         if op == "status":
-            return {"configured": True, "sdk": "ok", "guest_role": "readonly"}
+            return dict(self.status_reply)
         if op == "pending_notices":
             return {"notices": []}
         return {}
@@ -975,10 +979,11 @@ class FakeScreen:
 
 class Rig:
     """A ``RunController`` over the doubles above and the real store, registry and observer;
-    the pump is driven by hand (``pump()``)."""
+    the pump is driven by hand (``pump()``). ``login_store`` is where logins are kept, as the
+    app's start decides it; ``broker`` replaces the broker double (a client of a real one)."""
 
     def __init__(self, tmp_path, *, sites=(ACCOUNT, PUBLIC, OTHER, SEARCH), configured=True,
-                 locale=LOCALE):
+                 locale=LOCALE, login_store="onepassword", broker=None):
         from casa_browser import controller as ctl_mod
         from casa_browser.controller import Components, RunController
         from casa_browser.handles import HandleRegistry
@@ -987,16 +992,20 @@ class Rig:
         self.tmp = tmp_path
         self.log = Log()
         self.clock = Clock()
-        self.store = Store(tmp_path / "state.db")
+        self.store = Store(tmp_path / "state.db", login_store=login_store)
         for site in sites:
             self.store.put_site(site)
         self.registry = HandleRegistry()
         self.browser = FakeBrowserManager(self.log)
         self.proxy = FakeProxy(self.log)
-        self.broker = FakeBroker(self.log, self.store)
+        self.broker = broker if broker is not None else FakeBroker(self.log, self.store,
+                                                                   login_store)
         self.driver = FakeDriver(self.log, self.browser)
-        self.broker.page_generation = lambda: (self.browser.session.view_generation
-                                               if self.browser.session is not None else 0)
+        if broker is None:
+            self.broker.page_generation = lambda: (self.browser.session.view_generation
+                                                   if self.browser.session is not None else 0)
+        elif getattr(broker, "store", self.store) is None:
+            broker.store = self.store       # a client made before this rig's store existed
         (tmp_path / "files").mkdir(exist_ok=True)
         self.downloader = FakeDownloader(self.log, self.store, tmp_path / "files")
         self.observer = make_observer(self.registry, tmp_path / "artifacts", self.store)
@@ -1011,8 +1020,8 @@ class Rig:
             store=self.store, browser=self.browser, proxy=self.proxy, broker=self.broker,
             driver=self.driver, observer=self.observer, registry=self.registry,
             downloader=self.downloader, pacer=self._pacer,
-            locale=locale, configured=configured, clock=self.clock, grants=self.live,
-            ops=FakeOps(self.log)))
+            locale=locale, configured=configured, login_store=login_store, clock=self.clock,
+            grants=self.live, ops=FakeOps(self.log)))
         ctl_mod.PUMP_S = 3600   # tests drive the pump by hand
         self.mod = ctl_mod
 

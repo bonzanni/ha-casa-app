@@ -275,6 +275,15 @@ MIGRATIONS: tuple[str, ...] = (
         at TEXT NOT NULL
     );
     """,
+    # 11: which login of the app's own store a site signs in with. ``sites.vault_item_id`` is
+    # the site's 1Password item; each store has its own link, so a site keeps both and shows
+    # the one of the store in use.
+    """
+    CREATE TABLE builtin_links (
+        site_id TEXT PRIMARY KEY REFERENCES sites(site_id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL
+    );
+    """,
 )
 
 QUESTION_STATES = ("open", "confirming", "executed", "outcome_unknown", "lapsed", "declined",
@@ -328,9 +337,23 @@ class PairingState:
                 f" caller_label={self.caller_label!r})")
 
 
+# A site's row with its link in the app's own store in place of its 1Password item.
+SITES_WITH_BUILTIN_LINK = (
+    "SELECT sites.site_id, sites.display_name, sites.origins, sites.login_origins, "
+    "builtin_links.item_id AS vault_item_id, sites.provider_bindings, "
+    "sites.start_page_private, sites.revision FROM sites "
+    "LEFT JOIN builtin_links ON builtin_links.site_id = sites.site_id")
+
+
 class Store:
-    def __init__(self, path: Path | str):
+    def __init__(self, path: Path | str, *, login_store: str = "onepassword"):
+        """``login_store`` is where the app keeps site logins. With ``builtin`` (its own
+        store) a site's ``vault_item_id`` is read from and written to ``builtin_links``, and
+        the ``sites`` column, the 1Password item, is left as it is; with any other value the
+        column is the link and that table is never read."""
         self.path = Path(path)
+        self._builtin = login_store == "builtin"
+        self._select_sites = SITES_WITH_BUILTIN_LINK if self._builtin else "SELECT * FROM sites"
         self._lock = threading.RLock()
         self._depth = 0
         self._db = sqlite3.connect(str(self.path), isolation_level=None, check_same_thread=False)
@@ -390,17 +413,29 @@ class Store:
     # -- sites ---------------------------------------------------------------------------
 
     def put_site(self, site: Site) -> None:
+        # With the app's own store the 1Password column is not this store's to write: a new
+        # site gets none, a known site keeps what it has.
+        item = "" if self._builtin else "vault_item_id=excluded.vault_item_id, "
         with self.transaction() as db:
             db.execute(
                 "INSERT INTO sites VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(site_id) DO UPDATE SET "
                 "display_name=excluded.display_name, origins=excluded.origins, "
-                "login_origins=excluded.login_origins, vault_item_id=excluded.vault_item_id, "
+                f"login_origins=excluded.login_origins, {item}"
                 "provider_bindings=excluded.provider_bindings, "
                 "start_page_private=excluded.start_page_private, revision=excluded.revision",
                 (site.site_id, site.display_name, json.dumps(list(site.origins)),
-                 json.dumps(list(site.login_origins)), site.vault_item_id,
+                 json.dumps(list(site.login_origins)),
+                 None if self._builtin else site.vault_item_id,
                  json.dumps([b.__dict__ for b in site.provider_bindings]),
                  site.start_page_private, site.revision))
+            if not self._builtin:
+                return
+            if site.vault_item_id is None:
+                db.execute("DELETE FROM builtin_links WHERE site_id=?", (site.site_id,))
+            else:
+                db.execute("INSERT INTO builtin_links VALUES (?, ?) ON CONFLICT(site_id) "
+                           "DO UPDATE SET item_id=excluded.item_id",
+                           (site.site_id, site.vault_item_id))
 
     @staticmethod
     def _site(row: sqlite3.Row) -> Site:
@@ -414,12 +449,14 @@ class Store:
 
     def get_site(self, site_id: str) -> Site | None:
         with self._lock:
-            row = self._db.execute("SELECT * FROM sites WHERE site_id=?", (site_id,)).fetchone()
+            row = self._db.execute(f"{self._select_sites} WHERE sites.site_id=?",
+                                   (site_id,)).fetchone()
         return None if row is None else self._site(row)
 
     def list_sites(self) -> list[Site]:
         with self._lock:
-            rows = self._db.execute("SELECT * FROM sites ORDER BY display_name, site_id").fetchall()
+            rows = self._db.execute(f"{self._select_sites} ORDER BY sites.display_name, "
+                                    "sites.site_id").fetchall()
         return [self._site(r) for r in rows]
 
     # -- runs ------------------------------------------------------------------------

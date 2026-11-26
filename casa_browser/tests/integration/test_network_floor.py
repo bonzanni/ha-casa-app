@@ -23,6 +23,7 @@ TARGET_HOST, TARGET_PORT = os.environ.get("CASA_IT_PRIVATE_TARGET", "0.0.0.0:0")
 TARGET_PORT = int(TARGET_PORT)
 PUBLIC = ("1.1.1.1", 443)
 PUBLIC_SITE = "example.com"
+TEAM_HOST = "casa-it.1password.eu"   # the guest address in the lane's options: a made-up team
 API_PORT = 8098      # the controller's API port: its replies are the one admitted inbound flow
 LOCAL_PORT = 8090    # a root-owned local service no confined user may reach
 
@@ -129,6 +130,24 @@ def test_broker_uid_only_broker_listener(controls):
     for name, verdict in denials.items():
         assert verdict.startswith("refused"), (name, verdict)
     assert probe("broker", "tcp", "127.0.0.1", 3129) == "connected"
+
+
+def test_the_broker_listener_admits_the_team_host():
+    """The lane's options name a team address as the 1Password guest address, beside a token.
+    The proxy's broker listener then grants the broker user a tunnel to exactly that address
+    on port 443, and to no other. A tunnel is granted before anything is resolved or dialled,
+    so the address need not exist. The same request against an app started without a token is
+    refused (``test_builtin_mode.py``)."""
+    import json
+    options = json.loads(Path("/data/options.json").read_text())
+    assert options["guest_sign_in_address"] == TEAM_HOST
+    assert options["onepassword_service_account_token"]
+    via = {"PROBE_PROXY_PORT": "3129"}
+    assert probe("broker", "connect_via_proxy", TEAM_HOST, 443, env=via).startswith(
+        "proxy:HTTP/1.1 200")
+    for host, port in ((TEAM_HOST, 80), ("my.1password.eu", 443), (PUBLIC_SITE, 443)):
+        verdict = probe("broker", "connect_via_proxy", host, port, env=via)
+        assert verdict.startswith("proxy:HTTP/1.1 403"), (host, port, verdict)
 
 
 @pytest.mark.parametrize("user", ["vnc", "ingress"])

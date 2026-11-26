@@ -24,6 +24,10 @@ it is an ordinary request, decided by the session's rules like any other.
 
 ``ONEPASSWORD_REGION_HOSTS`` lists the fixed browser sign-in and extension hosts.
 The configured account host joins its region at runtime; exact names only, never wildcards.
+
+Three of the rules (``EXTENSION_RULES``) exist only so that Chrome can download the 1Password
+extension. ``rules(extension)`` gives the rules in force: all of them, or all but those three
+when no extension is installed.
 """
 
 import re
@@ -143,6 +147,20 @@ INFRA_RULES = (
     ),
 )
 
+# The rules that exist only so that Chrome can download the 1Password extension.
+EXTENSION_RULES = frozenset({"chrome_extension_update", "chrome_extension_download",
+                             "chrome_update_check"})
+
+
+def rules(extension: bool) -> tuple[InfraRule, ...]:
+    """The fixed rules in force: every one, or without ``EXTENSION_RULES`` when Chrome has no
+    1Password extension to download (logins kept in the app's own store). Their requests are
+    then decided like any other: Chrome's own are its background traffic."""
+    if extension:
+        return INFRA_RULES
+    return tuple(rule for rule in INFRA_RULES if rule.name not in EXTENSION_RULES)
+
+
 # Chrome's own background traffic (measured, Plan 1 S0 b/d/e and the image lane): the
 # variations seed, GCM, the browser's account checks, component/extension updates and their
 # download caches, the password leak check, Safe Browsing's relay, optimisation hints, static
@@ -156,9 +174,9 @@ INFRA_RULES = (
 # ``Sec-Fetch-Dest: empty`` but a real ``Sec-Fetch-Site``), to any host outside the run's site
 # set. A request with no ``Sec-Fetch-*`` header at all (plain http carries none, a page's
 # included) counts only to the hosts below (``chrome_background``). The exceptions above that
-# Chrome needs (extension and component updates) and the 1Password account's admitted hosts
-# are admitted before either check. Exact names, plus Google's per-cache download hosts by
-# their fixed shape.
+# Chrome needs (extension and component updates, while they are in force: ``rules``) and the
+# 1Password account's admitted hosts are admitted before either check. Exact names, plus
+# Google's per-cache download hosts by their fixed shape.
 CHROME_BACKGROUND_HOSTS: frozenset[str] = frozenset({
     "accounts.google.com", "android.clients.google.com", "clients2.google.com",
     "clients2.googleusercontent.com", "clientservices.googleapis.com",
@@ -246,7 +264,10 @@ def _form_ok(rule, request):
     return pairs is not None and all(k in rule.body_form_keys for k, _ in pairs)
 
 
-def infra_match(request, policy, extra_hosts: frozenset[str] = frozenset()) -> str | None:
+def infra_match(request, policy, extra_hosts: frozenset[str] = frozenset(), *,
+                extension: bool = True) -> str | None:
+    """The name of the fixed exception *request* falls under, or ``None``. ``extension``
+    selects the rules in force (``rules``)."""
     try:
         if policy is None or policy.mode != "account" or policy.active_session.kind != "account":
             return None
@@ -270,7 +291,7 @@ def infra_match(request, policy, extra_hosts: frozenset[str] = frozenset()) -> s
             if any(g.site_id == s.site_id for g in policy.site_grants)
             for o in (*s.origins, *s.login_origins)
         }
-        for rule in INFRA_RULES:
+        for rule in rules(extension):
             if request.method not in rule.methods or not rule.path_pattern.fullmatch(path):
                 continue
             if rule.scope == "fixed_host" and u.hostname != rule.host:

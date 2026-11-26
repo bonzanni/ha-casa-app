@@ -61,11 +61,18 @@ def test_option_translations_agree_with_the_schema():
             assert set(entry) == {"name", "description"} and entry["name"] and entry["description"], (f.name, key)
 
 
+@pytest.fixture
+def login_store():
+    """Where the ``localized`` rig keeps logins; a test parametrizes it to change that."""
+    return "onepassword"
+
+
 @pytest.fixture(params=[*LANGUAGES, "fr"])
-async def localized(request, tmp_path, aiohttp_client):
+async def localized(request, tmp_path, aiohttp_client, login_store):
     tag = {"en": "en-GB", "it": "it-IT", "nl": "nl-NL", "de": "de-DE", "fr": "fr-FR"}.get(
         request.param, request.param)
-    rig = Rig(tmp_path, locale=EffectiveLocale(tag, "Europe/Amsterdam", "home_assistant"))
+    rig = Rig(tmp_path, locale=EffectiveLocale(tag, "Europe/Amsterdam", "home_assistant"),
+              login_store=login_store)
     await rig.start()
     client = await aiohttp_client(make_ui(rig.ctl))
     yield rig, Operator(client), (request.param if request.param in LANGUAGES else BASE)
@@ -107,6 +114,39 @@ async def test_every_page_in_the_effective_language(localized):
     assert t("finish.done") in _text(closing)
     if language != BASE:      # the English copy is gone, not merely joined by a translation
         assert catalog(BASE)["finish.done"] not in _text(closing)
+
+
+@pytest.mark.parametrize("login_store", ["builtin"])
+async def test_builtin_pages_in_every_language_name_no_1password_extension_or_guest(
+        localized, login_store):
+    """With the app's own store, Setup (with the store opened, and with it unavailable), Sites
+    (with its extra-fields banner), a site's page and the new-site form say nothing of
+    1Password, its extension or a guest, in any language."""
+    rig, operator, language = localized
+    assert rig.ctl.c.login_store == "builtin"
+    t = Text(language)
+    words = ("1password", "extension", "extensie", "erweiterung", "estensione", "guest", "gast",
+             "ospite")
+    rows = {True: "setup.store_builtin", False: "setup.store_builtin_unavailable"}
+    pages = []
+    for available in (True, False):
+        rig.broker.status_reply = {"configured": True, "store": "builtin", "available": available}
+        status, page, _ = await operator.get("/setup")
+        assert status == 200, (available, page[:300])
+        assert t.html(rows[available]) in page and t.html(rows[not available]) not in page, (
+            language, available)
+        pages.append((f"/setup available={available}", page))
+    for path in ("/sites", "/sites?note=registered&fields=recovery%20codes",
+                 "/sites/sa", "/sites/new"):
+        status, page, _ = await operator.get(path)
+        assert status == 200, (path, page[:300])
+        pages.append((path, page))
+    for path, page in pages:
+        assert f'<html lang="{language}">' in page, path
+        # a form's nonce is random letters, not text of the page
+        low = re.sub(r'name="nonce" value="[^"]*"', "", page).lower()
+        for word in words:
+            assert word not in low, (language, path, word)
 
 
 async def test_a_page_value_is_escaped_in_every_language(localized):

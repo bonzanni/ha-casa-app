@@ -3,8 +3,8 @@ configuration:
     name: Token dell'account di servizio 1Password
     description: >-
       Token di un account di servizio 1Password che vede solo il vault di navigazione.
-      Il broker delle credenziali dell'app lo usa per leggere e salvare gli accessi ai siti;
-      nessun'altra parte dell'app può leggerlo. Necessario prima di qualsiasi accesso a un sito.
+      Lascialo vuoto per conservare gli accessi ai siti nell'archivio di Casa Browser
+      invece che in 1Password.
   onepassword_vault:
     name: Vault di navigazione
     description: >-
@@ -18,18 +18,19 @@ configuration:
       my.1password.eu non è accettato). L'estensione 1Password del browser vi accede come
       ospite con accesso in sola lettura al vault di navigazione, e il proxy dell'app
       ammette questo solo indirizzo per l'estensione e per il broker.
+      Non serve se il token è vuoto.
   guest_email:
     name: Email dell'ospite 1Password
     description: >-
-      Indirizzo email di quell'ospite 1Password.
+      Indirizzo email di quell'ospite 1Password. Non serve se il token è vuoto.
   guest_password:
     name: Password dell'ospite 1Password
     description: >-
-      Password di quell'ospite 1Password.
+      Password di quell'ospite 1Password. Non serve se il token è vuoto.
   guest_secret_key:
     name: Secret Key dell'ospite 1Password
     description: >-
-      Secret Key di quell'ospite 1Password.
+      Secret Key di quell'ospite 1Password. Non serve se il token è vuoto.
   language:
     name: Lingua del browser
     description: >-

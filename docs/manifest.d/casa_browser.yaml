@@ -83,7 +83,7 @@
     - casa_browser/rootfs/opt/casa_browser/browser.py
     - casa_browser/rootfs/opt/casa_browser/pacing.py
     - casa_browser/rootfs/opt/casa_browser/bin/chrome-launch
-    - casa_browser/rootfs/etc/opt/chrome/policies/managed/casa.json
+    - casa_browser/rootfs/opt/casa_browser/chrome_policy.json
     - casa_browser/rootfs/etc/s6-overlay/s6-rc.d/svc-browser-launcher/run
     - casa_browser/rootfs/etc/s6-overlay/s6-rc.d/svc-browser-xvfb/run
   tests:

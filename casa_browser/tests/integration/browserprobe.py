@@ -108,10 +108,15 @@ async def _scenario(steps: list[dict]) -> list:
                 if action == 'setup':
                     await client.begin_run('r1', ['s1'])
                     if arg.get('linked', True):
-                        await client.register_item('s1', 'item', arg['login_origins'], 'operator')
+                        # ``item_id``: the login to link, when it is not the fake vault's one
+                        reply = await client.register_item('s1', arg.get('item_id', 'item'),
+                                                           arg['login_origins'], 'operator')
                     else:   # slice 5: a site with no linked item (a live-view save creates one)
-                        await client.register_capture('s1', arg['login_origins'], 'operator', 'Site')
-                    out.append({'ready': True})
+                        reply = await client.register_capture('s1', arg['login_origins'],
+                                                              'operator', 'Site')
+                    # Ready only when the broker took the registration.
+                    out.append({'ready': False, 'error': reply['error']} if 'error' in reply
+                               else {'ready': True})
                 elif action in ('open_login', 'login', 'begin_capture'):
                     kind = 'capture' if action == 'begin_capture' else 'login'
                     if credential_session is None:

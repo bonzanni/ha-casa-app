@@ -10,6 +10,9 @@ last_reviewed: 2026-10-22
 
 The broker process, its registry and vault facade, the login flow over the controller's
 private driver RPC, and credential-operation metadata and notice delivery.
+This describes the 1Password store; with no token the same broker keeps logins in the app's
+own store, without guest or passkey prompt, as
+[`casa-browser-builtin-store.md`](casa-browser-builtin-store.md) describes.
 
 ## Process boundary
 

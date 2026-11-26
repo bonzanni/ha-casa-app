@@ -22,6 +22,8 @@ Slice 5 adds the **login question** (design §5.1 step 3): which 1Password item 
 Its view is fixed app copy filled from the browser's real host and the vault's titles; its buttons
 are [Yes] [No] for one candidate, the titles and [None of these] for several (no confirm, no
 live view). The item ids stay in controller memory (``LoginQuestion``); the view carries titles.
+When the logins are kept in the app's own store, the same copy says "saved login" where it says
+"1Password item" (``item_word``).
 """
 from __future__ import annotations
 
@@ -78,9 +80,15 @@ class LoginQuestion:
     pending: Any = None                      # (no action: nothing to execute or quarantine)
 
 
-LOGIN_ONE = "To sign in to {host} I'd use your 1Password item \"{title}\". OK?"
-LOGIN_MANY = "To sign in to {host}, which 1Password item?"
+LOGIN_ONE = "To sign in to {host} I'd use your {word} \"{title}\". OK?"
+LOGIN_MANY = "To sign in to {host}, which {word}?"
 MAX_LOGIN_CANDIDATES = 5
+
+
+def item_word(login_store: str) -> str:
+    """What the cards and the run's events call the login a site signs in with: a saved login
+    when the logins are kept in the app's own store, a 1Password item otherwise."""
+    return "saved login" if login_store == "builtin" else "1Password item"
 
 
 def login_candidates(items: list, order: list) -> list:
@@ -103,11 +111,11 @@ def login_candidates(items: list, order: list) -> list:
     return out[:MAX_LOGIN_CANDIDATES]
 
 
-def login_view(host: str, labels: list) -> dict:
+def login_view(host: str, labels: list, word: str) -> dict:
     """The login question's view (``kind: login_item``): no confirm button, no extra options,
-    no screenshot; ``options`` are the titles the buttons show."""
-    text = (LOGIN_ONE.format(host=host, title=labels[0]) if len(labels) == 1
-            else LOGIN_MANY.format(host=host))
+    no screenshot; ``options`` are the titles the buttons show. ``word``: ``item_word``."""
+    text = (LOGIN_ONE.format(host=host, word=word, title=labels[0]) if len(labels) == 1
+            else LOGIN_MANY.format(host=host, word=word))
     return {"kind": "login_item", "host": host, "options": list(labels), "text": text,
             "confirm_label": "", "extra_options": [], "highlight": [], "screenshot_id": None,
             "confirm_offered": False, "live_only_copy": None, "category": "login"}
@@ -146,15 +154,16 @@ class SiteQuestion:
 
 
 SITE_PLAIN = "Sign in to {host} ({name})?"
-SITE_ONE = "Sign in to {host} ({name}) with your 1Password item \"{title}\"?"
+SITE_ONE = "Sign in to {host} ({name}) with your {word} \"{title}\"?"
 SITE_SAVES = ("Yes, and next time I'll sign in here without asking. "
               "You can undo that in Casa Browser's Sites page.")
 
 
-def site_view(proposal: SignInProposal, item_title: str | None) -> dict:
+def site_view(proposal: SignInProposal, item_title: str | None, word: str) -> dict:
     """The sign-in card's view (``kind: site_signin``): the host from the browser, the label,
-    the one fitting item's whole title or none, the app's screenshot; Yes and No only."""
-    first = (SITE_ONE.format(host=proposal.host, name=proposal.name, title=item_title)
+    the one fitting item's whole title or none, the app's screenshot; Yes and No only.
+    ``word``: ``item_word``."""
+    first = (SITE_ONE.format(host=proposal.host, name=proposal.name, word=word, title=item_title)
              if item_title else SITE_PLAIN.format(host=proposal.host, name=proposal.name))
     return {"kind": "site_signin", "host": proposal.host, "name": proposal.name,
             "item": item_title, "text": first + "\n" + SITE_SAVES, "options": [],

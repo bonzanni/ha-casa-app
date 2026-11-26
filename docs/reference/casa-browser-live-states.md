@@ -24,7 +24,8 @@ takes the run's session (`_ensure_session`, which reopens one that is gone or st
 `begin_live` would) and, when the guest flow has not been started for it, runs it, so the
 operator's link goes out with 1Password unlocked for its own fill. A flow that does not complete,
 or a K1 under it, lets the request go on (on a new session whose guest has not
-run); an `assist` view runs no guest flow. A `login` view on `about:blank` first loads, with no
+run); an `assist` view runs no guest flow, and with the app's own login store no view does
+(`RunController._guest_due`; [`casa-browser-builtin-store.md`](casa-browser-builtin-store.md)). A `login` view on `about:blank` first loads, with no
 sign-in, the site's page the run was last on (`_Active.page_url`) or its start page
 (`_load_for_login`), at the request and again at the claim. `begin_live(run, expose)` — the ingress claim, before the
 operator's input is exposed — moves `waiting_live` → `live`; on an account session it begins the

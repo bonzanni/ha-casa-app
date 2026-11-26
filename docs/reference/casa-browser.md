@@ -43,10 +43,10 @@ a signed-in site is checked as a whole ([`casa-browser-actions.md`](casa-browser
 
 | Option | Default | Consumer |
 |---|---|---|
-| `onepassword_service_account_token` | empty | broker config only |
+| `onepassword_service_account_token` (`password?`) | empty: the app's own login store | broker config only |
 | `onepassword_vault` | `Casa Browser` | broker config only |
-| `guest_sign_in_address` | empty | broker config; the proxy, as the account host |
-| `guest_email`, `guest_password`, `guest_secret_key` | empty | broker config only |
+| `guest_sign_in_address` (`str?`) | empty | broker config; the proxy, as the account host |
+| `guest_email` (`str?`), `guest_password`, `guest_secret_key` (`password?`) | empty | broker config only; dropped without a token |
 | `language` (`str?`) | unset: follows Home Assistant | effective locale |
 | `timezone` (`str?`) | unset: follows Supervisor's `TZ` | effective locale |
 | `retention_days` (`int(1,3650)`) | 30 | retention sweep |
@@ -72,8 +72,13 @@ creates `/data/state`, `/data/artifacts` (controller), `/data/profiles` (browser
 empty credentials when the options did not validate; writes the account host validated from
 `guest_sign_in_address` (`options.account_host`: one `<team>.1password.<eu|com|ca>` host, never
 the generic `my.` address) to the proxy's `hosts.json`, `0600`; writes the secret-free options and the effective locale to controller state; and
-removes `SUPERVISOR_TOKEN` and `HASSIO_TOKEN` from `/run/s6/container_environment`, the only
-place `with-contenv` reads a service's environment from.
+removes `SUPERVISOR_TOKEN`, `HASSIO_TOKEN` and `CASA_BROWSER_VAULT_KEY` from
+`/run/s6/container_environment`, the only place `with-contenv` reads a service's environment
+from. Bootstrap also chooses the login store once (`options.py::parse_options`: `onepassword`
+for any token, `builtin` for none, `none` when the options do not validate) and writes that
+word to `broker.json`, `hosts.json` and the public options; before those three files it writes
+Chrome's managed policy for that store ([`casa-browser-browser.md`](casa-browser-browser.md)).
+What each store means is [`casa-browser-builtin-store.md`](casa-browser-builtin-store.md).
 
 **INV-BRW-001**: Root bootstrap removes the Supervisor token from the s6 container environment on every start, also when bootstrap fails, and writes it to no file or log.
 
@@ -100,6 +105,10 @@ proxy binding key each site's provider binding was learned under (by its id, nev
 
 - A run is idempotent on `request_id`: the same members return the existing run, different
   members are `conflict`.
+- `builtin_links` (migration 11) holds each site's link to a login of the app's own store.
+  `Store(path, login_store=…)` with `builtin` reads and writes a site's `vault_item_id` there
+  (`store.py::SITES_WITH_BUILTIN_LINK`); with any other store the table is never read or
+  written, so each store's link stays its own.
 - `cancelled_requests` (migration 10) holds the request ids the operator's Stop stopped: a
   run later created for such an id is created `cancelled` and gets only its `run_cancelled`
   event, and `lease_next_run` never leases a queued run whose id is recorded, so no browser
@@ -191,7 +200,8 @@ allowed — at most `content-type`, only where a body is declared — resource c
 The fixed 1Password extension and broker SDK host lists in `infra.py` are empty: the
 account's own host, from the options, and its region's service hosts join the extension list
 at runtime through `decide`'s `extra_hosts`, and `infra.py` also holds the rules for Chrome's
-own extension updates (see [`casa-browser-runtime.md`](casa-browser-runtime.md)).
+own extension updates (see [`casa-browser-runtime.md`](casa-browser-runtime.md)). With the app's own
+login store `decide(…, extension=False)` leaves those three rules out (`infra.py::rules`).
 
 ## Known limits
 

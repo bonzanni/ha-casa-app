@@ -140,5 +140,11 @@
   "sites.forget_body": "De in de browser bewaarde inlog voor deze site wordt gewist en het 1Password-item is niet meer gekoppeld; de volgende inlog vraagt opnieuw. Een taak op deze site stopt. Het item zelf blijft in 1Password.",
   "pair.again_ask": "Opnieuw koppelen?",
   "app.cancel": "Annuleren",
-  "app.back": "Terug"
+  "app.back": "Terug",
+  "sites.item.builtin": "Id van de opgeslagen inloggegevens (optioneel: leeg betekent dat de eerste live login ze aanmaakt)",
+  "sites.extra_fields.builtin": "Die opgeslagen inloggegevens bevatten ook de velden {fields}.",
+  "sites.forget_body.builtin": "De in de browser bewaarde inlog voor deze site wordt gewist en de opgeslagen inloggegevens zijn niet meer gekoppeld; de volgende inlog vraagt opnieuw. Een taak op deze site stopt. De opgeslagen inloggegevens zelf blijven bewaard.",
+  "setup.store_builtin": "Inloggegevens: bewaard door Casa Browser zelf",
+  "setup.store_builtin_unavailable": "Inloggegevens: de opgeslagen inloggegevens konden niet worden geopend. Zie het logboek van de app.",
+  "setup.store_builtin_scope": "Opgeslagen inloggegevens worden in webpagina's getypt door een browser die een assistent bestuurt. Sla alleen de inloggegevens op die Casa Browser moet gebruiken."
 }

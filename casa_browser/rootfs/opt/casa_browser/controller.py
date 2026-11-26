@@ -151,6 +151,9 @@ class Components:
     pacer: Callable         # page -> pacing.Pacer
     locale: Any = None      # EffectiveLocale | None (None: needs_locale)
     configured: bool = True
+    # Where site logins are kept, as the app's start wrote it: ``onepassword``, ``builtin``
+    # (the app's own store: no extension, no guest) or ``none`` (invalid options).
+    login_store: str = "onepassword"
     language_source: str | None = None
     clock: Callable[[], datetime] = _utcnow
     grants: Any = None      # liveview.LiveView (made here when not given)
@@ -344,6 +347,18 @@ class RunController:
         if run is None:
             raise ProtocolError("not_found")
         return run
+
+    @property
+    def _item_word(self) -> str:
+        """What cards and event texts call the login a site signs in with."""
+        return conf.item_word(self.c.login_store)
+
+    def _guest_due(self, active: _Active, session) -> bool:
+        """Whether the 1Password guest flow has yet to run in this browser session. Never
+        with the app's own store: it has no extension and no guest to unlock."""
+        if self.c.login_store == "builtin":
+            return False
+        return active.guest_for is not session
 
     @staticmethod
     def _refuse(run: Run, allowed: tuple[str, ...]) -> None:
@@ -926,7 +941,7 @@ class RunController:
         active.code_wait = None              # a new sign-in replaces a code report (S6-2)
         session = active.session
         if guest_ask is None:
-            guest_ask = active.guest_for is not session
+            guest_ask = self._guest_due(active, session)
         sid = await self._driver_session(active, "login", site)
         reply: dict = {}
         try:
@@ -1141,7 +1156,8 @@ class RunController:
         successor returned; nothing reloaded is ever filled on the old verdict."""
         active.code_wait = None              # a new sign-in replaces a code report (S6-2)
         session = active.session
-        guest_ask = look.guest_ask if look.guest_ask is not None else active.guest_for is not session
+        guest_ask = (look.guest_ask if look.guest_ask is not None
+                     else self._guest_due(active, session))
         sid = await self._driver_session(active, "login", site)
         reply: dict = {}
         try:
@@ -1300,7 +1316,7 @@ class RunController:
         self._freeze_app(active, "login_item", packet, site_id=site.site_id, host=host,
                          items=list(items))
         self._event(active.run_id, "login_item_judgement", "pending",
-                    f"Casa checks which 1Password item signs in to {site.display_name}.")
+                    f"Casa checks which {self._item_word} signs in to {site.display_name}.")
         return True
 
     async def pending_judgements(self, run_id: str) -> dict:
@@ -2187,7 +2203,7 @@ class RunController:
         site = self.store.get_site(app.site_id) if app.site_id else None
         name = (app.proposal.name if app.proposal is not None
                 else site.display_name if site is not None else app.site_id)
-        what = (f"the 1Password items for {name}" if app.kind == "login_item"
+        what = (f"the {self._item_word}s for {name}" if app.kind == "login_item"
                 else f"the live-view sign-in on {name}")
         if verdict is None:
             self._event(active.run_id, "judgement", "no_verdict", f"Check of {what}: no verdict.")
@@ -2219,7 +2235,7 @@ class RunController:
             self._login_needed(active, "not_found")
             return {"outcome": "login_needed", "generation": gen}
         labels = [label for _i, label in cands]
-        view = conf.login_view(app.host or "", labels)
+        view = conf.login_view(app.host or "", labels, self._item_word)
         qid = "q" + self.c.token().replace("=", "")
         run_id = active.run_id
         with self.store.transaction():
@@ -2229,7 +2245,8 @@ class RunController:
         active.question = conf.LoginQuestion(qid, 1, app.digest, app.site_id,
                                              [app.items[i]["item_id"] for i, _ in cands], labels)
         self._event(run_id, "question", "asked",
-                    f"The operator is asked which 1Password item signs in to {site.display_name}.")
+                    f"The operator is asked which {self._item_word} signs in to "
+                    f"{site.display_name}.")
         return {"outcome": "asked", "generation": gen, "question_id": qid}
 
     async def _answer_login(self, active: _Active, q, frozen, body: dict) -> dict:
@@ -2242,7 +2259,8 @@ class RunController:
         if choice == "not_now" or site is None:
             response = {"outcome": "declined", "generation": gen}
             self._settle_question(active, q, "declined", response, ref,
-                                  text="The operator chose no 1Password item; nothing was linked.")
+                                  text=f"The operator chose no {self._item_word}; nothing was "
+                                       "linked.")
             active.vault_asked.add(frozen.site_id)
             self._login_needed(active, "not_found")
             return response
@@ -2255,14 +2273,14 @@ class RunController:
         if "error" in reply:
             response = {"outcome": "not_linked", "generation": gen}
             self._settle_question(active, q, "answered", response, ref, outcome="not_linked",
-                                  text="The chosen 1Password item could not be linked.")
+                                  text=f"The chosen {self._item_word} could not be linked.")
             active.vault_asked.add(frozen.site_id)
             self._login_needed(active, "not_found")
             return response
         self.store.put_site(replace(site, vault_item_id=frozen.item_ids[i]))
         response = {"outcome": "linked", "generation": gen, "label": frozen.titles[i]}
         self._settle_question(active, q, "answered", response, ref, outcome="linked",
-                              text=f"The operator chose the 1Password item for "
+                              text=f"The operator chose the {self._item_word} for "
                                    f"{site.display_name}; signing in with it.")
         try:
             await self._navigate(active, self._start_url(site))
@@ -2328,7 +2346,7 @@ class RunController:
                     self._freeze_app(active, "login_item", packet, site_id="", host=host,
                                      items=list(items), proposal=proposal)
                     self._event(run_id, "login_item_judgement", "pending",
-                                f"Casa checks which 1Password item signs in to {host}.")
+                                f"Casa checks which {self._item_word} signs in to {host}.")
                     return no("judging")
             asked = self._site_question(active, proposal, None, None, 0)
             return ActionResult(asked["outcome"], asked["generation"],
@@ -2353,7 +2371,7 @@ class RunController:
 
     def _site_question(self, active: _Active, proposal, item_id, title, candidates: int) -> dict:
         gen = self._generation(active)
-        view = conf.site_view(proposal, title)
+        view = conf.site_view(proposal, title, self._item_word)
         digest = gate.digest(gate.canonical({
             "kind": "site_signin", "origin": proposal.origin, "host": proposal.host,
             "start_page": proposal.start_page, "name": proposal.name, "item": title,
@@ -2510,8 +2528,8 @@ class RunController:
             return {"outcome": "credential_saved", "generation": gen, "site": name}
         if reply.get("reason") == "item_kept":
             self._event(run_id, "credential_not_saved", "item_kept",
-                        "The operator signed in with a different password than the 1Password "
-                        "item holds; the item was left as it is.")
+                        "The operator signed in with a different password than the "
+                        f"{self._item_word} holds; the item was left as it is.")
             return {"outcome": "credential_not_saved", "generation": gen, "site": name}
         return {"outcome": "not_saved", "generation": gen}
 
@@ -3567,9 +3585,10 @@ class RunController:
                 # A sign-in view gets the guest unlocked before its link goes out (the operator
                 # may use 1Password's own fill there): on the run's live session, reopened when
                 # gone or stale as begin_live would, once per browser session. Not completed,
-                # or K1 under it: the request goes on.
+                # or K1 under it: the request goes on. With the app's own store there is no
+                # guest: the view's page is loaded and nothing else.
                 session = await self._ensure_session(active)
-                if active.guest_for is not session:
+                if self._guest_due(active, session):
                     active.guest_for = session
                     await self._guest(active, site)
                 if purpose == "login":
@@ -4300,7 +4319,9 @@ async def serve_forever() -> None:  # pragma: no cover — exercised by the imag
     except (OSError, ValueError):
         public = {}
     locale = read_locale_record(paths)
-    store = Store(paths.database)
+    # Written by the app's start beside ``configured``; a file without it is 1Password's.
+    login_store = str(public.get("login_store") or "onepassword")
+    store = Store(paths.database, login_store=login_store)
     registry = HandleRegistry()
     browser = BrowserManager(placeholder_dir=RUN_DIR / "placeholder")
     days = public.get("retention_days", 30)
@@ -4309,7 +4330,7 @@ async def serve_forever() -> None:  # pragma: no cover — exercised by the imag
         driver=DriverServer(browser, DRIVER_SOCKET), observer=Observer(registry, paths.artifacts, store),
         registry=registry, downloader=Downloader(store, registry, paths.artifacts),
         pacer=Pacer, locale=locale,
-        configured=bool(public.get("configured")),
+        configured=bool(public.get("configured")), login_store=login_store,
         retention=lambda s, now: retention.sweep(s, now, days, paths.artifacts)))
     await controller.start()
     runner = await api.serve(api.make_app(controller), "0.0.0.0", API_PORT)

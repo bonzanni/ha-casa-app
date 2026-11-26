@@ -160,7 +160,9 @@ jobs:
   # time grows with every test it gains; it is split in two parts, each on its own runner with
   # its own container, at about half an hour each. The second part runs every file the first
   # does not name, so a new test file always runs; move a file between the parts when one of
-  # them nears the job cap. It runs only on the nightly schedule and on a manual dispatch,
+  # them nears the job cap. Both start the app with a made-up 1Password token; a third entry
+  # starts it with none (`CASA_IT_STORE=builtin`), so that it keeps logins in its own store,
+  # and runs the one file about that. It runs only on the nightly schedule and on a manual dispatch,
   # never on a push or a pull request; a red night wakes `nightly-alarm`. The script exits
   # nonzero on any failure and pytest prints the counts; a run that collects no test fails.
   browser-integration:
@@ -183,6 +185,10 @@ jobs:
               --ignore=tests/integration/test_action_gate.py
               --ignore=tests/integration/test_run_lifecycle.py
             viewer: false
+          - part: the app's own store
+            tests: ''
+            store: builtin
+            viewer: false
     steps:
       - uses: actions/checkout@v7
       - name: Is the app in this tree?
@@ -199,6 +205,8 @@ jobs:
         env:
           DOCKER_PULL: --pull
           CASA_IT_TAG: ci-${{ github.run_id }}
+          # empty for the two entries that name no store: the script then takes its default
+          CASA_IT_STORE: ${{ matrix.store }}
         run: bash casa_browser/test/run-integration.sh ${{ matrix.tests }}
       - name: The live view's viewer in WebKit and Chromium with touch (Playwright's image)
         if: steps.present.outputs.present == 'true' && matrix.viewer

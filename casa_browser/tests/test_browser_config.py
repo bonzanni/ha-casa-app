@@ -24,7 +24,7 @@ from casa_browser.protocol import EffectiveLocale
 
 from conftest import APP_DIR
 
-POLICY = json.loads((APP_DIR / "rootfs/etc/opt/chrome/policies/managed/casa.json").read_text())
+POLICY = json.loads((APP_DIR / "rootfs/opt/casa_browser/chrome_policy.json").read_text())
 ONEPASSWORD_EXTENSION = "aeblfdkhhhdcdjpifhhbdiojplfjncoa"
 LOCALE = EffectiveLocale("de-DE", "Europe/Amsterdam", "home_assistant")
 

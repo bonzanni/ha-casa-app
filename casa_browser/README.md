@@ -1,9 +1,9 @@
 # Casa Browser
 
 An optional companion app for [Casa](../casa): a sandboxed browser that Casa's browsing
-specialist, Fido, drives on the websites you register — signing in with logins and
-passkeys from a dedicated 1Password vault, downloading invoices and statements, filling
-in forms — and on the open web.
+specialist, Fido, drives on the websites you register — signing in with logins from a
+dedicated 1Password vault, or from a store of its own when you have none, downloading
+invoices and statements, filling in forms — and on the open web.
 
 - The browser can reach only public internet addresses, never your home network, Home
   Assistant or Casa.

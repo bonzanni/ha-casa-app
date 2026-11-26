@@ -62,6 +62,13 @@ save tap's nonce is its `consent_id` for the broker. Pages are escaped, never ca
 | `/sites/new` | registration (posts to `/sites`; a 1Password item, or none: the first login live view's save creates it; the item's extra field names, never contents, are shown back on `/sites` with the whole-vault warning) |
 | `/setup`, `/pair` | readiness (1Password, the effective language and time zone), the guest's state from the vault's users (read-only, can edit items, or unknown) with their counts — a warning, nothing to tick, when no vault user is read-only: "The browser's 1Password guest account can edit items. Casa Browser only needs to read them; consider making it read-only." (design §5.2; logins never wait on it) — pairing: "first caller within two minutes"; a window that closed unclaimed says that pairing needs the browsing specialist (Fido) installed in Casa and asked to pair; after a claim the caller's self-reported name (escaped, marked as reported by the caller) and the address the claim came from. Re-pairing (`Pairing.arm`) ends every run and live view of the old pairing |
 
+With the app's own login store (`Ui.builtin`) the Sites texts speak of a saved login instead
+of a 1Password item (`Ui._login_key` picks each text's `.builtin` key, which names neither
+1Password nor its extension), and `/setup` shows one row saying where logins are kept, or that
+they could not be opened when the broker does not report its store available
+(`Ui._builtin_store_row`), the language row, a line on what saved logins are used for, and
+pairing: no guest state, counts or warning.
+
 **Look.** The pages take Home Assistant's look: its card, row, button and tab sizes and its Material Design icons (inline SVG), in `static/style.css` alone — the CSP admits no inline style, so no page carries a `style` attribute (`test_ui.py`). The colours are Home Assistant's theme values under their own names (`--primary-color`, `--card-background-color`, …): `static/theme.js`, loaded first in every page's head and the viewer's, reads the values Home Assistant's page resolved — the panel is a frame on Home Assistant's own origin — and sets them, again when that theme changes; it only reads. Opened outside that frame, the stylesheet's copies of Home Assistant's default light and dark values apply. The tabs (Home, Sites, Setup) sit at the bottom under 871 px, as Home Assistant's own settings pages do, and at the top above it; a sub-page (a run, a site, Add site, pairing) has a back arrow. A form that ends something asks first: `data-confirm` on the form, a dialog from `static/app.js`.
 
 **Language.** Every string the pages and the viewer show comes from one catalog per language,

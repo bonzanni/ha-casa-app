@@ -46,6 +46,10 @@
   doc: reference/casa-browser.md
 - item: casa_browser/rootfs/opt/casa_browser/store.py
   doc: reference/casa-browser.md
+- item: casa_browser/rootfs/opt/casa_browser/vault_store.py
+  doc: reference/casa-browser-builtin-store.md
+- item: casa_browser/rootfs/opt/casa_browser/broker/builtin.py
+  doc: reference/casa-browser-builtin-store.md
 - item: option:casa_browser:guest_email
   doc: reference/casa-browser.md
 - item: option:casa_browser:guest_password

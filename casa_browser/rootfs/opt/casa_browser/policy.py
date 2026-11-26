@@ -171,9 +171,11 @@ def _unclassified(request: RequestMeta) -> bool:
 
 def decide(request: RequestMeta, policy: RunPolicy | None,
            extra_hosts: frozenset[str] = frozenset(), *, tagger=None,
-           hop: bool = False) -> Decision:
+           hop: bool = False, extension: bool = True) -> Decision:
     """``extra_hosts`` joins ``infra.ONEPASSWORD_EXTENSION_HOSTS`` at runtime: the 1Password
     account's own host, which comes from the app options and is never a literal here.
+    ``extension`` is whether Chrome has a 1Password extension to download: without one the
+    three rules for that download are not in force (``infra.rules``).
 
     Design §4 (action model, slice 4). Every session: the floor, the infrastructure rules and
     Chrome's background refusals. A public session (any run mode) then admits any origin. An
@@ -209,7 +211,8 @@ def decide(request: RequestMeta, policy: RunPolicy | None,
     login = _lease(policy.login_lease, 'login', policy)
     manual = _lease(policy.manual_lease, 'manual', policy)
     authorization = _authorization_query(request)
-    if infra_match(request, policy, extra_hosts) and not (login and authorization[3] and not manual):
+    if infra_match(request, policy, extra_hosts, extension=extension) and not (
+            login and authorization[3] and not manual):
         return _yes("infrastructure")
     if chrome_background(request):
         # Chrome's own telemetry and background checks: refused.

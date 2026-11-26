@@ -139,6 +139,16 @@ class Ui:
         locale = getattr(self.ctl.c, "locale", None)
         return Text(getattr(locale, "language", None))
 
+    @property
+    def builtin(self) -> bool:
+        """The logins are kept in the app's own store: no 1Password, extension or guest."""
+        return self.ctl.c.login_store == "builtin"
+
+    def _login_key(self, key: str) -> str:
+        """The catalog key of a text about a site's login: with the app's own store, the
+        variant that speaks of a saved login."""
+        return key + ".builtin" if self.builtin else key
+
     def page(self, request: web.Request, title: str, body: str, *, status: int = 200,
              tab: str = "", back: str | None = None) -> web.Response:
         """A page in Home Assistant's look (static/style.css, theme.js). ``tab`` is the tab it
@@ -544,7 +554,7 @@ class Ui:
         extra = ""
         if warning:
             extra = (f'<div class="banner warn">{icon("alert")}'
-                     f'<p>{e(t("sites.extra_fields", fields=warning))}</p></div>')
+                     f'<p>{e(t(self._login_key("sites.extra_fields"), fields=warning))}</p></div>')
         fab = (f'<a class="fab" href="{e(self.url(request, "/sites/new"))}">{icon("plus")}'
                f'{e(t("sites.add"))}</a>')
         return self.page(request, t("sites.title"), notice + extra + listing + fab, tab="sites")
@@ -571,7 +581,8 @@ class Ui:
                 '<input type="hidden" name="confirm" value="yes">'
                 f'<div class="end"><button class="danger">{e(t("sites.forget"))}</button></div>',
                 confirm=t("sites.forget_ask", name=site.display_name),
-                extra={"confirm-body": t("sites.forget_body"), "ok": t("sites.forget"),
+                extra={"confirm-body": t(self._login_key("sites.forget_body")),
+                       "ok": t("sites.forget"),
                        "cancel": t("app.cancel"), "danger": ""})
         body = (status + f"<h2>{e(t('sites.addresses_heading'))}</h2>"
                 + f'<div class="card pad">{addresses}</div>' + forget)
@@ -589,7 +600,7 @@ class Ui:
             '<details><summary class="row"><span class="txt"><span class="l1 more">'
             f'{e(t("sites.more"))}</span></span>{icon("down", "i chev")}</summary>'
             '<div class="stack">'
-            f'<label class="field"><span>{e(t("sites.item"))}</span>'
+            f'<label class="field"><span>{e(t(self._login_key("sites.item")))}</span>'
             '<input name="vault_item_id" maxlength="64"></label>'
             f'<label class="field"><span>{e(t("sites.start"))}</span>'
             '<input name="start_page" maxlength="2048"></label></div></details>'
@@ -638,9 +649,12 @@ class Ui:
         c = self.ctl.c
         locale = c.locale
         parts = [f"<h2>{e(t('setup.ready_heading'))}</h2>", '<div class="card">']
-        parts.append(row(lead("ok", "ok") if c.configured else lead("alert", "err"),
-                         e(t("setup.onepassword_configured") if c.configured
-                           else t("setup.onepassword_missing")), wrap=True))
+        if self.builtin:
+            parts.append(await self._builtin_store_row())
+        else:
+            parts.append(row(lead("ok", "ok") if c.configured else lead("alert", "err"),
+                             e(t("setup.onepassword_configured") if c.configured
+                               else t("setup.onepassword_missing")), wrap=True))
         if locale is None:
             parts.append(row(lead("alert", "wait"), e(t("setup.language_unknown")), wrap=True))
         else:
@@ -648,6 +662,12 @@ class Ui:
             parts.append(row(lead("web", "ok"), e(t("setup.language", language=locale.language, source=source,
                                                          timezone=locale.timezone)), wrap=True))
         parts.append("</div>")
+        if self.builtin:
+            # No guest, no extension: one line on what keeping logins in the app means.
+            parts.append(f'<div class="card pad"><p class="small">{e(t("setup.store_builtin_scope"))}'
+                         "</p></div>")
+            parts.append(self._pairing_section(request))
+            return self.page(request, t("setup.title"), "".join(parts), tab="setup")
         try:
             status = await self.ctl.broker.status()
         except Exception:  # noqa: BLE001
@@ -670,6 +690,18 @@ class Ui:
         parts.append(f"<p class=\"small\">{e(t('setup.guest_scope'))}</p></div>")
         parts.append(self._pairing_section(request))
         return self.page(request, t("setup.title"), "".join(parts), tab="setup")
+
+    async def _builtin_store_row(self) -> str:
+        """Setup's first row with the app's own store: where the logins are kept, or that
+        they could not be opened when the broker says so or does not answer."""
+        t = self.t
+        try:
+            status = await self.ctl.broker.status()
+        except Exception:  # noqa: BLE001
+            status = {"error": "unavailable"}
+        if "error" not in status and status.get("available") is True:
+            return row(lead("ok", "ok"), e(t("setup.store_builtin")), wrap=True)
+        return row(lead("alert", "err"), e(t("setup.store_builtin_unavailable")), wrap=True)
 
     def _pairing_section(self, request, heading: bool = True) -> str:
         t = self.t

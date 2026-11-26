@@ -140,5 +140,11 @@
   "sites.forget_body": "L'accesso salvato nel browser per questo sito viene cancellato e il suo elemento di 1Password non è più collegato: il prossimo accesso lo chiederà di nuovo. Un'attività su questo sito si ferma. L'elemento resta in 1Password.",
   "pair.again_ask": "Associare di nuovo?",
   "app.cancel": "Annulla",
-  "app.back": "Indietro"
+  "app.back": "Indietro",
+  "sites.item.builtin": "ID delle credenziali salvate (facoltativo: se vuoto, le crea il primo accesso dal vivo)",
+  "sites.extra_fields.builtin": "Quelle credenziali salvate contengono anche i campi {fields}.",
+  "sites.forget_body.builtin": "L'accesso salvato nel browser per questo sito viene cancellato e le sue credenziali salvate non sono più collegate: il prossimo accesso lo chiederà di nuovo. Un'attività su questo sito si ferma. Le credenziali salvate restano conservate.",
+  "setup.store_builtin": "Credenziali: conservate da Casa Browser stesso",
+  "setup.store_builtin_unavailable": "Credenziali: non è stato possibile aprire le credenziali salvate. Vedi il registro dell'app.",
+  "setup.store_builtin_scope": "Le credenziali salvate vengono digitate nelle pagine web da un browser guidato da un assistente. Salva solo le credenziali che Casa Browser deve usare."
 }

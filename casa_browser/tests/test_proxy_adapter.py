@@ -1893,3 +1893,153 @@ def test_an_install_that_only_adds_a_binding_cuts_nothing(tmp_path, change):
             else:
                 assert statuses == [200, None] and scripts == 2
     run(scenario)
+
+
+# --------------------------------------------------------------------------- where logins are kept
+# Root bootstrap writes one word beside the account host (``hosts.json``): where site logins
+# are kept. The proxy builds its addon from that file. With the app's own store 1Password gets
+# no special access: no host for the broker, none for the extension, and the three rules that
+# let Chrome download the extension admit nothing.
+
+from casa_browser import infra, proxy_main  # noqa: E402
+from casa_browser.options import Owners, Paths, bootstrap  # noqa: E402
+
+TEAM_HOST = "casa-it.1password.eu"
+EXTENSION_DOWNLOAD_HOSTS = ("clients2.google.com", "clients2.googleusercontent.com",
+                            "update.googleapis.com")
+# as Chrome sends its own background requests
+CHROME_OWN = {"sec-fetch-site": "none", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "empty"}
+
+
+def _hosts_file(tmp_path, **members):
+    path = tmp_path / "hosts.json"
+    path.write_text(json.dumps(members))
+    return path
+
+
+def _built(hosts_file):
+    """The addon as the proxy's own start code builds it, from *hosts_file*."""
+    return proxy_main.build_addon(resolver=h.fixed_resolver({TEAM_HOST: [h.FIXTURE_IP]}),
+                                  hosts_file=hosts_file, binding_key_path=None)
+
+
+def test_build_addon_in_built_in_mode_has_no_host_and_no_extension_rule(tmp_path):
+    a = _built(_hosts_file(tmp_path, onepassword_account_host=None, login_store="builtin"))
+    assert a.broker_hosts == a.extension_hosts == frozenset()
+    assert a.extension is False
+    # the word decides: a host beside it is not used
+    a = _built(_hosts_file(tmp_path, onepassword_account_host="acct.1password.eu",
+                           login_store="builtin"))
+    assert a.broker_hosts == a.extension_hosts == frozenset()
+    assert a.extension is False
+
+
+def test_build_addon_in_1password_mode_is_todays(tmp_path):
+    region = infra.onepassword_extension_hosts("acct.1password.eu")
+    assert region > {"acct.1password.eu", "my.1password.eu", "b5n.1password.eu"}
+    # the second file has no word at all: it reads as 1Password
+    for word in ({"login_store": "onepassword"}, {}):
+        a = _built(_hosts_file(tmp_path, onepassword_account_host="acct.1password.eu", **word))
+        assert a.broker_hosts == frozenset({"acct.1password.eu"})
+        assert a.extension_hosts == region
+        assert a.extension is True
+    # invalid options: no host was written, and the rules are what they were
+    a = _built(_hosts_file(tmp_path, onepassword_account_host=None, login_store="none"))
+    assert a.broker_hosts == a.extension_hosts == frozenset()
+    assert a.extension is True
+    # a file that cannot be read, is not an object, or holds a word nobody writes
+    assert proxy_main.load_login_store(tmp_path / "absent.json") == "onepassword"
+    for content in ("not json", "[]", '{"login_store": "elsewhere"}', '{"login_store": 7}'):
+        (tmp_path / "hosts.json").write_text(content)
+        assert proxy_main.load_login_store(tmp_path / "hosts.json") == "onepassword", content
+    assert _built(tmp_path / "absent.json").extension is True
+    for word in ("builtin", "none", "onepassword"):
+        assert proxy_main.load_login_store(_hosts_file(tmp_path, login_store=word)) == word
+
+
+def _started(tmp_path, name, options):
+    """The addon after a real start: root bootstrap on *options*, then the proxy's own start
+    code on the file bootstrap wrote for it."""
+    root = tmp_path / name
+    paths = Paths(data=root / "data", run=root / "run", container_env=root / "s6env",
+                  chrome_policy=root / "etc" / "casa.json")
+    paths.data.mkdir(parents=True)
+    paths.container_env.mkdir()
+    paths.options.write_text(json.dumps(options))
+    bootstrap({"TZ": "UTC"}, paths, Owners(), log=lambda _line: None)
+    return _built(paths.proxy_private / "hosts.json")
+
+
+def test_the_broker_listener_admits_the_team_host_only_under_1password(tmp_path):
+    """The same team address as the guest address of two installs, one with a 1Password token
+    and one without. A ``CONNECT`` to exactly that address on port 443 at the broker listener
+    is judged where the proxy judges it, before anything is resolved or dialled: admitted with
+    the token, refused without it."""
+    guest = {"guest_sign_in_address": TEAM_HOST}
+    with_token = _started(tmp_path, "token", {
+        **guest, "onepassword_service_account_token": "any-token-at-all"})
+    without = _started(tmp_path, "no-token", guest)
+    assert with_token.broker_hosts == frozenset({TEAM_HOST}) and with_token.extension is True
+    assert without.broker_hosts == frozenset() and without.extension is False
+
+    def connect(a):
+        flow = _flow(method="CONNECT", host=TEAM_HOST, path="", listener=a.broker_port, sni=None)
+        a.http_connect(flow)
+        return flow
+
+    assert connect(with_token).response is None
+    assert not with_token.events
+    refused = connect(without)
+    assert refused.response is not None and refused.response.status_code == 403
+    assert [(e.listener, e.method, e.allow, e.reason) for e in without.events] == [
+        ("broker", "CONNECT", False, "broker_host")]
+    assert with_token.resolver.calls == without.resolver.calls == []
+
+
+def test_an_extension_download_host_is_not_a_known_origin_without_the_extension():
+    """While request values are withheld an event names an origin only if the run or a fixed
+    rule names it. Without the extension its three download hosts belong to no rule; the host
+    of a rule that stays, and the run's own site, are named as before."""
+    downloads = ["https://" + host for host in EXTENSION_DOWNLOAD_HOSTS]
+    with_extension, without = _addon(), _addon(extension=False)
+    for a in (with_extension, without):
+        a.install(account_policy())
+        assert a._known_origin("https://api.hcaptcha.com")
+        assert a._known_origin("https://site.example")
+        assert not a._known_origin("https://outside.example")
+    assert all(with_extension._known_origin(origin) for origin in downloads)
+    assert not any(without._known_origin(origin) for origin in downloads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extension", [True, False], ids=["with", "without"])
+async def test_chromes_own_update_requests_are_refused_quietly_without_the_extension(extension):
+    """Chrome asks for its extension and component updates on its own, whichever store is in
+    use (its launch is the same). Without the extension the three requests have no rule and
+    are Chrome's background traffic: refused with the quiet reason, not the ordinary off-site
+    refusal, and never a sign-in candidate. With the extension they are admitted as before."""
+    async def resolver(host, port):
+        return [h.FIXTURE_IP]
+    a = _addon(resolver, extension=extension)
+    a.install(account_policy())
+    requests = [
+        ("GET", "/service/update2/crx?" + CRX_Q, b"", {}),
+        ("GET", "/crx/blobs/AbC-123_x/abc.crx", b"", {}),
+        ("POST", "/service/update2/json?" + CUP_Q, b"{}", {"content-type": "application/json"}),
+    ]
+    for host, (method, path, body, extra) in zip(EXTENSION_DOWNLOAD_HOSTS, requests):
+        flow = _flow(method=method, host=host, sni=host, path=path, content=body,
+                     headers={**CHROME_OWN, **extra})
+        event = await _record_flow(a, flow)
+        assert event.binding is None, host
+        if extension:
+            assert (event.allow, event.reason) == (True, "infrastructure"), host
+            assert flow.response is None and event.origin == "https://" + host
+        else:
+            assert (event.allow, event.reason, event.event_kind) == (
+                False, "browser_background", "request_refused"), host
+            assert flow.response.status_code == 403 and event.origin is None
+    assert len(a.events) == 3 and a._candidates == []
+    # a refused request leaves no address the proxy could dial
+    for host in EXTENSION_DOWNLOAD_HOSTS:
+        assert (a.pins.fresh(host, 443) is None) is (not extension), host

@@ -213,7 +213,7 @@ def test_binding_keys_upgrade_from_task13_schema(tmp_path):
     db.close()
     s = store_mod.Store(tmp_path / "state.db")
     try:
-        assert s.schema_version() == 10 == len(store_mod.MIGRATIONS)
+        assert s.schema_version() == 11 == len(store_mod.MIGRATIONS)
         s.put_site(site())
         s.put_binding_key("site-a", "k1")
         s.put_binding_key("site-a", "k2")
@@ -286,7 +286,7 @@ def test_migration_9_drops_the_approval_model_and_keeps_everything_else(tmp_path
 
     s = store_mod.Store(path)
     try:
-        assert s.schema_version() == 10 == len(store_mod.MIGRATIONS)
+        assert s.schema_version() == 11 == len(store_mod.MIGRATIONS)
         tables = {r[0] for r in s._db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert not tables & {"approvals", "bundles", "hints"}
         columns = [r[1] for r in s._db.execute("PRAGMA table_info(events)")]
@@ -311,7 +311,7 @@ def test_migration_9_drops_the_approval_model_and_keeps_everything_else(tmp_path
     assert [r for r in _rows(path, "events")][:2] == events_before
     s = store_mod.Store(path)          # a second start applies nothing again
     try:
-        assert s.schema_version() == 10 and len(s.events_after("run0", 0)) == 3
+        assert s.schema_version() == 11 and len(s.events_after("run0", 0)) == 3
     finally:
         s.close()
 
@@ -347,3 +347,47 @@ def test_a_queued_run_whose_request_was_stopped_is_never_leased(store):
     store.create_run(spec("req-b"), "run_b", now=T0 + timedelta(seconds=1))
     store.cancel_request_id("req-a", now=T0)
     assert store.lease_next_run().run_id == "run_b"
+
+
+def test_a_sites_link_belongs_to_its_store(tmp_path):
+    """One database opened in turn for 1Password and for the app's own store: each shows and
+    changes only its own link of a site, never the other's; the site's other facts are one."""
+    from dataclasses import replace
+    path = tmp_path / "state.db"
+
+    def read(s, site_id="site-a"):
+        got = s.get_site(site_id)
+        (listed,) = [x for x in s.list_sites() if x.site_id == site_id]
+        assert listed == got and listed.vault_item_id == got.vault_item_id
+        return got.vault_item_id, got.display_name
+
+    s = Store(path, login_store="onepassword")
+    s.put_site(replace(site(), vault_item_id="item"))
+    assert read(s) == ("item", "Site A")
+    s.close()
+
+    s = Store(path, login_store="builtin")
+    assert read(s) == (None, "Site A")
+    s.put_site(replace(s.get_site("site-a"), vault_item_id="saved-1"))
+    s.put_site(replace(s.get_site("site-a"), display_name="Renamed"))
+    assert read(s) == ("saved-1", "Renamed")
+    s.put_site(replace(site("site-b"), vault_item_id="saved-2"))      # a site made in this mode
+    assert read(s, "site-b") == ("saved-2", "Site A")
+    s.close()
+
+    s = Store(path, login_store="onepassword")
+    assert read(s) == ("item", "Renamed")
+    assert read(s, "site-b") == (None, "Site A")
+    s.put_site(replace(s.get_site("site-a"), vault_item_id="item-2"))   # its 1Password link changes
+    assert read(s) == ("item-2", "Renamed")
+    s.close()
+
+    s = Store(path, login_store="builtin")
+    assert read(s) == ("saved-1", "Renamed")
+    s.put_site(replace(s.get_site("site-a"), vault_item_id=None))
+    assert read(s) == (None, "Renamed")
+    s.close()
+
+    s = Store(path)                                   # 1Password is the store's default
+    assert read(s) == ("item-2", "Renamed")
+    s.close()
