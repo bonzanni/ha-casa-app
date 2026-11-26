@@ -13,7 +13,8 @@ from urllib.parse import urlencode
 
 import pytest
 
-from vault_page import Page, Request
+from vault_page import Request
+from vault_page_casa import casa_page as Page
 from vault_store import Field, Store
 
 REPO = Path(__file__).resolve().parents[1]

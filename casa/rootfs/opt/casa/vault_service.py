@@ -13,9 +13,10 @@ sockets, each answered by a thread per connection:
   the output `op` would have given.
 
 - The page socket, when one is asked for: plain HTTP/1.0 for the front proxy
-  (nginx), one request per connection, answered by `vault_page`. Its
-  directory and the socket are open to one group, the proxy's, and to nobody
-  else. A body is read only up to the page's own limit.
+  (nginx), one request per connection, answered by `vault_page`, the page
+  engine, under Casa's profile (`vault_page_casa`). Its directory and the
+  socket are open to one group, the proxy's, and to nobody else. A body is
+  read only up to the page's own limit.
 
 The log names each `op` command and how it ended, and nothing else of it:
 arguments and standard input carry the secrets. For the page it names the
@@ -37,9 +38,9 @@ import time
 from pathlib import Path
 
 import vault_op
-import vault_page
 from vault_op_client import SOCKET_PATH
 from vault_page_server import _PageConnection, _PageServer  # noqa: F401 - reachable under this name too
+from vault_page_casa import casa_page
 from vault_page_server import listening as _page_listening
 from vault_store import Store, StoreError
 
@@ -89,7 +90,7 @@ def serve(directory: Path, socket_path: Path, vault_name: str, env_key: str | No
         # what it read, so only the kind of failure is named.
         why = type(exc).__name__ + (f": {exc}" if isinstance(exc, StoreError) else "")
         logger.error("the built-in store is not served: %s", why)
-        page = vault_page.Page(None)
+        page = casa_page(None)
     with contextlib.ExitStack() as listeners:
         # Leaving the block stops the page first, then waits for the `op`
         # requests still being answered.
@@ -100,7 +101,7 @@ def serve(directory: Path, socket_path: Path, vault_name: str, env_key: str | No
         if page_socket is not None:
             try:
                 listeners.enter_context(_page_listening(
-                    Path(page_socket), page_group, page or vault_page.Page(store),
+                    Path(page_socket), page_group, page or casa_page(store),
                     logger=logger))
                 page_served = True
             except Exception as exc:  # noqa: BLE001 - a page that cannot start costs the page only
