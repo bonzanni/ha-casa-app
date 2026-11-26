@@ -480,8 +480,9 @@ IDENTITY_SITE_HITS = {
         "_withdraw": 2, "assemble_input": 2,
     },
     "operator_calls.py": {
-        "OperatorCall": 3, "OperatorCalls.__init__": 1, "OperatorCalls._sweep_locked": 2,
-        "OperatorCalls.close": 1, "OperatorCalls.find": 1, "OperatorCalls.open": 2,
+        "OperatorCall": 3, "OperatorCalls.__init__": 1, "OperatorCalls._close_where": 2,
+        "OperatorCalls._sweep_locked": 2,
+        "OperatorCalls.close": 1, "OperatorCalls.find": 2, "OperatorCalls.open": 2,
         "is_configured_operator": 1, "post_question": 1,
         "post_question._finish_factory._finish": 2,
         "post_question._post": 1,
@@ -552,8 +553,9 @@ IDENTITY_SITE_HITS = {
     "result_broker.py": {
         "DeliveryOutcomes.__init__": 1, "DeliveryOutcomes.record": 2,
         "DeliveryOutcomes.status": 2, "PostEvent": 1, "PostRecord": 3, "ReferenceStore.__init__": 2,
-        "ReferenceStore._sweep_locked": 5, "ReferenceStore.arm": 1,
-        "ReferenceStore.close_call": 1, "ReferenceStore.deposit": 2,
+        "ReferenceStore._drop_locked": 2, "ReferenceStore._drop_where": 1,
+        "ReferenceStore._sweep_locked": 3, "ReferenceStore.arm": 1,
+        "ReferenceStore.close_call": 1, "ReferenceStore.deposit": 3,
         "ReferenceStore.drop_call_deposits": 1, "ReferenceStore.is_escrowed": 1,
         "ReferenceStore.open_call": 1, "ReferenceStore.purge_artifact": 4,
         "ReferenceStore.purge_role": 4, "ReferenceStore.redeem": 3,

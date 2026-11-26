@@ -114,6 +114,31 @@ def test_ambiguous_deposit_is_refused():
     assert store.reference_count() == 0
 
 
+def test_two_open_calls_that_provide_one_slot_each_take_their_own_deposit():
+    store, _ = _store()
+    _open(store, call="a")
+    _open(store, call="b")
+    ref_b, err = store.deposit(client_id="c1", slot="link", value="for b", tool_use_id="b")
+    assert err is None
+    ref_a, err = store.deposit(client_id="c1", slot="link", value="for a", tool_use_id="a")
+    assert err is None and ref_a != ref_b
+    assert (store._refs[ref_a].value, store._refs[ref_b].value) == ("for a", "for b")
+    assert store.deposit(client_id="c1", slot="link", value="again", tool_use_id="b") == (
+        None, "slot_already_deposited")
+    assert store.close_call("c1", "a").deposits == {"link": ref_a}
+    assert store.close_call("c1", "b").deposits == {"link": ref_b}
+
+
+def test_a_deposit_names_a_call_that_does_not_provide_the_slot():
+    store, _ = _store()
+    _open(store, call="a")
+    _open(store, call="b", provides=("code",))
+    for client, call in (("c1", "b"), ("c1", "nope"), ("c2", "a")):
+        assert store.deposit(client_id=client, slot="link", value=SENTINEL,
+                             tool_use_id=call) == (None, "no_call_in_flight")
+    assert store.reference_count() == 0
+
+
 def test_deposit_needs_an_identity_on_the_call():
     store, _ = _store()
     store.open_call(client_id="c1", artifact_id=ARTIFACT, tool_name=FETCH,
@@ -303,6 +328,56 @@ def test_reference_expires_after_ttl_and_calls_after_cap():
     assert store.inflight_count() == 0
 
 
+def test_an_in_flight_call_that_is_not_capped_outlives_the_cap():
+    store, clock = _store()
+    store.open_call(client_id="c1", artifact_id=ARTIFACT, tool_name=FETCH, tool_use_id="kept",
+                    identity=_identity(), provides=("link",), capped=False)
+    _open(store, call="swept")
+    kept, _ = store.deposit(client_id="c1", slot="link", value="v1", tool_use_id="kept")
+    swept, _ = store.deposit(client_id="c1", slot="link", value="v2", tool_use_id="swept")
+    clock.t += rb.INFLIGHT_CAP_S + 1
+    assert store.inflight_count() == 1
+    assert sorted(store._inflight) == [("c1", "kept")]
+    assert kept in store._refs and swept not in store._refs
+
+
+def _three_calls(store):
+    """Client c1's calls by worker a1, by worker a2 and by the session itself,
+    each with a deposit, and one call of client c2's worker a1."""
+    refs = {}
+    for call, agent in (("t1", "a1"), ("t2", "a2"), ("t3", None)):
+        store.open_call(client_id="c1", artifact_id=ARTIFACT, tool_name=FETCH,
+                        tool_use_id=call, identity=_identity(), provides=("link",),
+                        agent_id=agent)
+        refs[call], _ = store.deposit(client_id="c1", slot="link", value=call,
+                                      tool_use_id=call)
+    store.open_call(client_id="c2", artifact_id=ARTIFACT, tool_name=FETCH, tool_use_id="t4",
+                    identity=_identity(), provides=("link",), agent_id="a1")
+    return refs
+
+
+def test_close_agent_closes_only_that_workers_calls():
+    store, _ = _store()
+    refs = _three_calls(store)
+    assert store.close_agent("c1", "a1") == 1
+    assert sorted(store._inflight) == [("c1", "t2"), ("c1", "t3"), ("c2", "t4")]
+    # a closed call's deposit goes with it; the others keep theirs
+    assert sorted(store._refs) == sorted([refs["t2"], refs["t3"]])
+    # no worker id: the calls the session made itself
+    assert store.close_agent("c1", None) == 1
+    assert sorted(store._inflight) == [("c1", "t2"), ("c2", "t4")]
+    assert list(store._refs) == [refs["t2"]]
+
+
+def test_close_client_closes_every_call_of_that_client():
+    store, _ = _store()
+    _three_calls(store)
+    assert store.close_client("c1") == 3
+    assert sorted(store._inflight) == [("c2", "t4")]
+    assert store._refs == {}
+    assert store.close_client("c1") == 0
+
+
 def test_two_racing_redemptions_release_exactly_one_value():
     store, _ = _store()
     ref = _minted(store)
@@ -401,6 +476,26 @@ async def test_admission_branches():
     with _Origin(DM):
         assert await hook(_pre(FETCH), "call-1", {}) == {}
     assert store.inflight_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_admission_opens_a_call_with_the_worker_that_made_it():
+    """A call a worker of the session makes carries the worker's id in the hook
+    input; the session's own call carries none. Both are capped."""
+    store, _ = _store()
+    hook = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)
+    with _Origin(DM):
+        assert await hook({**_pre(FETCH), "agent_id": "a1"}, "call-1", {}) == {}
+        assert await hook(_pre(FETCH), "call-2", {}) == {}
+        ref, _ = store.deposit(client_id="c1", slot="link", value=SENTINEL,
+                               tool_use_id="call-2")
+        store.close_call("c1", "call-2")
+        # a consumer's redemption window is opened the same way
+        assert "updatedInput" in (await hook(
+            {**_pre(DONE, {"l": ref}), "agent_id": "a2"}, "call-3", {}))["hookSpecificOutput"]
+    got = {call: (c.agent_id, c.capped) for (_, call), c in store._inflight.items()}
+    assert got == {"call-1": ("a1", True), "call-3": ("a2", True)}
+    assert store.close_agent("c1", "a2") == 1
 
 
 def test_a_call_is_quiet_only_when_it_is_opened_quiet():
@@ -703,6 +798,24 @@ async def test_deposit_and_redeem_routes():
     assert await _call(red, {"client": "c1", "reference": ref, "ticket": ticket}) == (200, {"error": "wrong_client"})
     assert await _call(red, {"client": "c9", "reference": ref, "ticket": ticket}) == (200, {"value": SENTINEL})
     assert await _call(red, {"client": "c9", "reference": ref, "ticket": ticket}) == (200, {"error": "unknown_or_used"})
+
+
+@pytest.mark.asyncio
+async def test_deposit_route_reaches_the_call_the_body_names():
+    store, _ = _store()
+    dep = rb.build_broker_deposit_handler(store)
+    _open(store, call="a")
+    _open(store, call="b")
+    base = {"client": "c1", "slot": "link", "value": SENTINEL}
+    assert await _call(dep, base) == (200, {"error": "ambiguous_call"})
+    assert await _call(dep, {**base, "tool_use_id": 7}) == (200, {"error": "bad_tool_use_id"})
+    assert await _call(dep, {**base, "tool_use_id": "nope"}) == (
+        200, {"error": "no_call_in_flight"})
+    assert store.reference_count() == 0
+    status, body = await _call(dep, {**base, "tool_use_id": "b"})
+    assert status == 200 and rb.is_reference(body["reference"])
+    assert store._inflight[("c1", "b")].deposits == {"link": body["reference"]}
+    assert store._inflight[("c1", "a")].deposits == {}
 
 
 @pytest.mark.asyncio

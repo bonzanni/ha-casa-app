@@ -86,10 +86,10 @@ def _identity(operator_id=100):
                          delivery=TgAddress(111, 42))
 
 
-def _open(origin=FIDO_RUN, client="c1", tu="tu"):
+def _open(origin=FIDO_RUN, client="c1", tu="tu", plugin="browser", **record):
     return operator_calls.CALLS.open(client_id=client, tool_use_id=tu, tool_name=START,
-                                     role="browser", plugin="browser",
-                                     identity=_identity(), origin=dict(origin))
+                                     role="browser", plugin=plugin,
+                                     identity=_identity(), origin=dict(origin), **record)
 
 
 # -- the declaration ----------------------------------------------------------
@@ -135,6 +135,21 @@ async def test_admission_records_the_call_with_the_turns_facts():
     await result({"hook_event_name": "PostToolUse", "tool_name": START,
                   "tool_input": {}, "tool_response": "ok"}, "tu-1", {})
     assert operator_calls.CALLS.find("c1") == (None, "no_call_in_flight")
+
+
+@pytest.mark.asyncio
+async def test_admission_records_the_worker_that_made_the_call():
+    """A call a worker of the session makes carries the worker's id in the hook
+    input; the session's own call carries none."""
+    hook = rb.make_plugin_admission_hook("browser", _map(), client_id="c1",
+                                         store=rb.ReferenceStore())
+    with _Origin(FIDO_RUN):
+        assert await hook({**_pre(START), "agent_id": "a1"}, "tu-1", {}) == {}
+        assert await hook(_pre(START), "tu-2", {}) == {}
+    by_worker, _ = operator_calls.CALLS.find("c1", "tu-1")
+    own, _ = operator_calls.CALLS.find("c1", "tu-2")
+    assert (by_worker.agent_id, by_worker.capped) == ("a1", True)
+    assert (own.agent_id, own.capped) == (None, True)
 
 
 # An interactive engagement's turns run under the ambient origin of the
@@ -299,6 +314,63 @@ def test_a_call_expires_after_the_cap():
     assert calls.find("c1") == (None, "no_call_in_flight")
 
 
+def test_two_calls_in_flight_are_each_found_by_their_id():
+    _open(tu="t1")
+    _open(tu="t2")
+    assert operator_calls.CALLS.find("c1", "t2")[0].tool_use_id == "t2"
+    assert operator_calls.CALLS.find("c1", "t1")[0].tool_use_id == "t1"
+
+
+def test_an_id_that_is_not_an_open_call_of_that_client_is_refused():
+    _open(tu="t1")
+    assert operator_calls.CALLS.find("c1", "nope") == (None, "no_call_in_flight")
+    assert operator_calls.CALLS.find("c2", "t1") == (None, "no_call_in_flight")
+
+
+def test_without_an_id_the_one_open_call_is_found_as_before():
+    call = _open(tu="t1")
+    assert operator_calls.CALLS.find("c1") == (call, None)
+    assert operator_calls.CALLS.find("c1", None) == (call, None)
+
+
+def test_a_record_that_is_not_capped_outlives_the_cap():
+    now = [0.0]
+    calls = operator_calls.OperatorCalls(now=lambda: now[0])
+    for tu, capped in (("kept", False), ("swept", True)):
+        calls.open(client_id="c1", tool_use_id=tu, tool_name=START, role="browser",
+                   plugin="browser", identity=_identity(), origin=FIDO_RUN, capped=capped)
+    now[0] = operator_calls.OPERATOR_CALL_CAP_S * 10
+    assert calls.find("c1", "kept")[0].tool_use_id == "kept"
+    assert calls.find("c1", "swept") == (None, "no_call_in_flight")
+    call, err = calls.find("c1")                # the one record left
+    assert err is None and call.capped is False
+
+
+def test_close_agent_closes_only_that_workers_records():
+    for tu, agent in (("t1", "a1"), ("t2", "a2"), ("t3", None)):
+        _open(tu=tu, agent_id=agent)
+    _open(client="c2", tu="t4", agent_id="a1")
+    assert operator_calls.CALLS.close_agent("c1", "a1") == 1
+    assert operator_calls.CALLS.find("c1", "t1") == (None, "no_call_in_flight")
+    assert operator_calls.CALLS.find("c1", "t2")[0].agent_id == "a2"
+    assert operator_calls.CALLS.find("c1", "t3")[0].agent_id is None
+    assert operator_calls.CALLS.find("c2", "t4")[0].agent_id == "a1"
+    # no worker id: the calls the session made itself
+    assert operator_calls.CALLS.close_agent("c1", None) == 1
+    assert operator_calls.CALLS.find("c1", "t3") == (None, "no_call_in_flight")
+    assert operator_calls.CALLS.find("c1")[0].tool_use_id == "t2"
+
+
+def test_close_client_closes_every_record_of_that_client():
+    _open(tu="t1", agent_id="a1")
+    _open(tu="t2")
+    _open(client="c2", tu="t3")
+    assert operator_calls.CALLS.close_client("c1") == 2
+    assert operator_calls.CALLS.find("c1") == (None, "no_call_in_flight")
+    assert operator_calls.CALLS.find("c2", "t3")[0].tool_use_id == "t3"
+    assert operator_calls.CALLS.close_client("c1") == 0
+
+
 # -- bindings (C1) -----------------------------------------------------------------
 
 def test_a_binding_names_a_specialist_requester_whatever_the_chains_length(tmp_path,
@@ -378,6 +450,69 @@ async def test_requester_route_reads_the_call_never_the_body():
         "error": "no_call_in_flight"}
 
 
+@pytest.mark.asyncio
+async def test_requester_route_reaches_the_call_the_body_names():
+    _open(tu="t1")
+    _open({**FIDO_RUN, "_handoff_chain": ("assistant", "finance", "browser"),
+           "_delegation_id": "d-2"}, tu="t2")
+    h = operator_calls.build_requester_handler()
+    assert await _post(h, {"client": "c1"}) == {"error": "ambiguous_call"}
+    assert (await _post(h, {"client": "c1", "tool_use_id": "t2"}))["requester_id"] == "finance"
+    assert (await _post(h, {"client": "c1", "tool_use_id": "t1"}))["requester_id"] == "assistant"
+    assert await _post(h, {"client": "c1", "tool_use_id": "nope"}) == {
+        "error": "no_call_in_flight"}
+    assert await _post(h, {"client": "c1", "tool_use_id": 7}) == {"error": "bad_tool_use_id"}
+
+
+# -- run admission (C2, C3): which call the route hands on -----------------------------
+
+RUN = {"spec_digest": "sha256:aa", "mode": "open_web", "task_kind": "read", "task_text": "t",
+       "sites": [{"site_id": "example", "access": "public", "name": "Example"}]}
+
+
+@pytest.mark.asyncio
+async def test_run_admission_route_reaches_the_call_the_body_names(monkeypatch):
+    import run_admission
+    served: list = []
+
+    async def _admit(call, runs, key):
+        served.append((call.tool_use_id, len(runs), key))
+        return {"status": "admitted", "request_key": key}
+
+    monkeypatch.setattr(run_admission, "request_admission", _admit)
+    _open(tu="t1")
+    _open(tu="t2")
+    h = operator_calls.build_run_admission_handler()
+    body = {"client": "c1", "request_key": "k", "runs": [RUN]}
+    assert await _post(h, body) == {"error": "ambiguous_call"}
+    assert await _post(h, {**body, "tool_use_id": "t2"}) == {
+        "status": "admitted", "request_key": "k"}
+    assert await _post(h, {**body, "tool_use_id": {"id": "t2"}}) == {
+        "error": "bad_tool_use_id"}
+    assert served == [("t2", 1, "k")]
+
+
+@pytest.mark.asyncio
+async def test_run_admission_status_route_reaches_the_call_the_body_names(monkeypatch):
+    import run_admission
+    served: list = []
+
+    def _status(call, cid):
+        served.append((call.tool_use_id, cid))
+        return {"status": "pending", "confirmation_id": cid}
+
+    monkeypatch.setattr(run_admission, "confirmation_status", _status)
+    _open(tu="t1")
+    _open(tu="t2")
+    h = operator_calls.build_run_admission_status_handler()
+    body = {"client": "c1", "confirmation_id": "conf-1"}
+    assert await _post(h, body) == {"error": "ambiguous_call"}
+    assert await _post(h, {**body, "tool_use_id": "t2"}) == {
+        "status": "pending", "confirmation_id": "conf-1"}
+    assert await _post(h, {**body, "tool_use_id": 2.5}) == {"error": "bad_tool_use_id"}
+    assert served == [("t2", "conf-1")]
+
+
 # -- continue (C8) -------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -406,7 +541,53 @@ async def test_continue_queues_once_per_run_for_the_bindings_own_plugin(monkeypa
         "error": "unknown_binding"}
 
 
+@pytest.mark.asyncio
+async def test_continue_route_reaches_the_call_the_body_names(monkeypatch):
+    """Two calls of one session, each of another plugin: the binding of the
+    second is continued only through the second."""
+    queued: list = []
+
+    class _Q:
+        def request(self, binding, run_ref, reason):
+            queued.append((binding.plugin, run_ref))
+            return "queued"
+
+    monkeypatch.setattr(plugin_continuations, "CONTINUATIONS", _Q())
+    _open(tu="t1")
+    _open(tu="t2", plugin="bank")
+    facts = await _post(operator_calls.build_requester_handler(),
+                        {"client": "c1", "tool_use_id": "t2"})
+    h = operator_calls.build_continue_handler()
+    body = {"client": "c1", "binding_ref": facts["binding_ref"], "run_ref": "r-1",
+            "reason": "next_run"}
+    assert await _post(h, body) == {"error": "ambiguous_call"}
+    assert await _post(h, {**body, "tool_use_id": "t1"}) == {"error": "unknown_binding"}
+    assert await _post(h, {**body, "tool_use_id": ["t2"]}) == {"error": "bad_tool_use_id"}
+    assert queued == []
+    assert await _post(h, {**body, "tool_use_id": "t2"}) == {"status": "queued"}
+    assert queued == [("bank", "r-1")]
+
+
 # -- delivery status (C9) -------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_delivery_status_route_reaches_the_call_the_body_names(monkeypatch):
+    outcomes = rb.DeliveryOutcomes()
+    monkeypatch.setattr(rb, "DELIVERY_OUTCOMES", outcomes)
+    ref = rb.new_reference()
+    outcomes.record(ref, plugin="bank", operator_id=100, artifact_id=ARTIFACT,
+                    delivered=True, repeat=False)
+    _open(tu="t1")
+    _open(tu="t2", plugin="bank")
+    h = operator_calls.build_delivery_status_handler()
+    body = {"client": "c1", "reference": ref}
+    assert await _post(h, body) == {"error": "ambiguous_call"}
+    assert await _post(h, {**body, "tool_use_id": "t2"}) == {
+        "status": "delivered", "repeat": False}
+    assert await _post(h, {**body, "tool_use_id": "t1"}) == {
+        "status": "unknown", "repeat": False}
+    assert await _post(h, {**body, "tool_use_id": True}) == {"error": "bad_tool_use_id"}
+
 
 def test_delivery_status_only_for_the_plugin_and_operator_it_was_posted_for():
     outcomes = rb.DeliveryOutcomes()

@@ -89,6 +89,20 @@ async def test_the_route_reaches_only_that_clients_pad(pads):  # noqa: F811
     assert _body((await _call(model, op="read", section="page"))[0]) == "mine"
 
 
+async def test_the_route_answers_the_call_the_body_names(pads):  # noqa: F811
+    _attached("S1", "c1")
+    _open("c1", "t1")
+    _open("c1", "t2")
+    write = {"client": "c1", "op": "write", "section": "page", "text": "row"}
+    assert _refused(await _post(write), "ambiguous_call")
+    assert _refused(await _post({**write, "tool_use_id": 7}), "bad_tool_use_id")
+    assert _refused(await _post({**write, "tool_use_id": "closed"}), "no_call_in_flight")
+    assert pads.lines("S1") is None
+    assert await _post({**write, "tool_use_id": "t2"}) == {"lines": 1, "bytes": 3}
+    assert await _post({"client": "c1", "op": "read", "section": "page",
+                        "tool_use_id": "t1"}) == {"text": "row", "next": None}
+
+
 async def test_a_call_in_flight_without_a_pad_reaches_none(pads):  # noqa: F811
     attach(ClaudeAgentOptions(env=rb.broker_env("denied"), disallowed_tools=[GRANT]), "S1")
     _open("denied")
