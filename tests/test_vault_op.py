@@ -696,3 +696,23 @@ def test_a_store_failure_reports_the_class_name_only(exception, shown, args, std
     code, out, err = vault_op.run(FailingStore(exception), VAULT, args, stdin)
     assert (code, out) == (1, "")
     assert after_stamp(err) == f"built-in store failure: {shown}\n"
+
+
+def test_a_read_and_an_item_get_count_as_reads(tmp_path):
+    store = Store.open(tmp_path, None)
+    item = store.create(title="counted", category="PASSWORD", tags=["t"], writer="op",
+                        fields=[Field("", "password", "CONCEALED", "hunter2")])
+
+    assert op(store, "read", f"op://Casa/{item.id}/password") == (0, "hunter2\n", "")
+    assert op(store, "item", "get", item.id, "--format", "json")[0] == 0
+    assert store.reads(item.id) == 2
+
+    assert op(store, "read", f"op://Casa/{item.id}/missing")[0] == 1
+    assert op(store, "item", "get", item.id, "--vault", "Casa", "--fields",
+              "label=missing", "--reveal")[0] == 1
+    assert op(store, "item", "list", "--format", "json")[0] == 0
+    assert store.reads(item.id) == 2
+
+    assert op(store, "item", "get", item.id, "--vault", "Casa", "--fields",
+              "label=password", "--reveal") == (0, "hunter2\n", "")
+    assert store.reads(item.id) == 3

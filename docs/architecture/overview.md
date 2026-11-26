@@ -26,7 +26,7 @@ Four services run under s6, each with a single job:
 | `svc-casa` | the main async application — channels, agents, HTTP surface |
 | `svc-nginx` | the front door — two listeners: HA ingress (Supervisor-source-restricted) and the published external API port, which has no source restriction and relies on route-level refusals |
 | `svc-ttyd` | an optional terminal, off unless enabled — an unauthenticated root shell, so it binds a root-restricted UNIX socket (not TCP loopback) that only the nginx worker and root can reach |
-| `svc-vault` | the built-in secrets store, served on a root-only UNIX socket when no 1Password token is set; on 1Password it reports ready and idles ([`builtin-secrets-store.md`](builtin-secrets-store.md)) |
+| `svc-vault` | the built-in secrets store, served on a root-only UNIX socket when no 1Password token is set, with the secrets page on a second socket only root and the nginx worker can reach; on 1Password it reports ready and idles ([`builtin-secrets-store.md`](builtin-secrets-store.md)) |
 
 Two environment switches shape the process family broadly: `LOG_FORMAT` selects the log output shape (the format
 itself belongs to `architecture/observability.md`), and the `CASA_*` path/version variables

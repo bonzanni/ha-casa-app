@@ -381,6 +381,7 @@ _STATUS_PAGE = """\
   <div class="actions">
     <a class="btn {terminal_class}" href="{ingress_path}/terminal/">Terminal</a>
     <a class="btn primary" href="{ingress_path}/healthz">Health Check</a>
+    {secrets_link}
   </div>
 
   <div class="footer">Casa v{version}</div>
@@ -391,6 +392,38 @@ _STATUS_PAGE = """\
 def _row(label: str, value: str, css: str = "") -> str:
     cls = f' class="value {css}"' if css else ' class="value"'
     return f'<div class="row"><span class="label">{label}</span><span{cls}>{value}</span></div>'
+
+
+# Where this install keeps its secrets, written once at container start
+# (scripts/secrets-backend.sh). `builtin` means Casa keeps them itself, and
+# then nginx serves the secrets page under /vault/.
+SECRETS_BACKEND_FILE = "/run/casa-vault/backend"
+
+
+def _keeps_its_own_secrets() -> bool:
+    """Whether the backend file's first line is exactly `builtin`, read as
+    secrets-backend-lib.sh reads it. A file that cannot be read means no."""
+    try:
+        with open(SECRETS_BACKEND_FILE, encoding="utf-8", newline="") as f:
+            first = f.readline()
+    except Exception:  # noqa: BLE001 — no link is the answer to any doubt
+        return False
+    return first.removesuffix("\n") == "builtin"
+
+
+def _status_page(*, agent_rows: str, channel_rows: str, system_rows: str,
+                 terminal_enabled: bool, ingress_path: str, version: str) -> str:
+    secrets_link = (f'<a class="btn primary" href="{ingress_path}/vault/">Secrets</a>'
+                    if _keeps_its_own_secrets() else "")
+    return _STATUS_PAGE.format(
+        agent_rows=agent_rows,
+        channel_rows=channel_rows,
+        system_rows=system_rows,
+        terminal_class="primary" if terminal_enabled else "disabled",
+        ingress_path=ingress_path,
+        secrets_link=secrets_link,
+        version=version,
+    )
 
 
 # ------------------------------------------------------------------
@@ -3450,11 +3483,11 @@ async def main() -> None:
         system_rows += _row("Terminal", "enabled" if terminal_enabled else "disabled",
                             "on" if terminal_enabled else "off")
 
-        html = _STATUS_PAGE.format(
+        html = _status_page(
             agent_rows=agent_rows,
             channel_rows=channel_rows,
             system_rows=system_rows,
-            terminal_class="primary" if terminal_enabled else "disabled",
+            terminal_enabled=terminal_enabled,
             ingress_path=ingress_path,
             version=version,
         )

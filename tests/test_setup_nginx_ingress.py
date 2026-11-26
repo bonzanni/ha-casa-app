@@ -7,6 +7,9 @@ Static-source test: parse the emitted heredoc in setup-nginx.sh rather than
 booting bashio/nginx, so it runs in the pure-unit tier.
 """
 
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -182,3 +185,123 @@ def test_phone_webhook_is_refused_on_ingress_only():
     assert block[:block.index("}")].strip().endswith("return 404;")
     external = text[text.index("# --- External API server"):]
     assert "/phone/incoming" not in external
+
+
+# ---------------------------------------------------------------------------
+# The secrets page: served on ingress only when the install keeps its secrets
+# in Casa's built-in store, and never on the external listener. The script
+# runs here for real, under bash with stand-ins for the bashio functions it
+# calls, writing to a fixture path instead of /etc/nginx/nginx.conf and
+# reading a fixture backend file through a copy of the shipped helper.
+# ---------------------------------------------------------------------------
+
+_LIB = _SCRIPT.parents[3] / "opt/casa/scripts/secrets-backend-lib.sh"
+_LIB_IMAGE_PATH = "/opt/casa/scripts/secrets-backend-lib.sh"
+_BACKEND_FILE = "/run/casa-vault/backend"
+_CONF = "/etc/nginx/nginx.conf"
+
+_STATIC = (
+    'location /vault/static/ { alias /opt/casa/vault_static/; '
+    'types { text/css css; application/javascript js; } '
+    'default_type application/octet-stream; '
+    'add_header Cache-Control "no-store" always; '
+    'add_header X-Content-Type-Options "nosniff" always; }')
+_PROXY = (
+    'location /vault/ { proxy_pass http://unix:/run/casa-vault-page/page.sock:/; '
+    'proxy_set_header Host $host; '
+    'proxy_set_header X-Ingress-Path $http_x_ingress_path; '
+    'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto; '
+    'proxy_set_header X-Forwarded-Host $http_x_forwarded_host; '
+    'proxy_read_timeout 75; client_max_body_size 300k; }')
+_NOT_SERVED = "location /vault/ { return 404; }"
+
+# The options set the real bashio puts the script under.
+_BASHIO = """set -o errexit -o nounset -o pipefail
+bashio::app.ingress_port() { echo 8099; }
+bashio::config.true() { [ "${K_TERMINAL:-false}" = true ]; }
+bashio::config() { echo "${K_TERMINAL:-false}"; }
+bashio::log.info() { printf '%s\\n' "$*" >> "$K_LOG"; }
+"""
+
+needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+
+
+def _render(tmp_path, backend: bytes | None, *, terminal: bool = False) -> str:
+    """The nginx.conf setup-nginx.sh writes when the backend file holds BACKEND
+    (None: no file at all)."""
+    backend_file = tmp_path / "backend"
+    if backend is not None:
+        backend_file.write_bytes(backend)
+    lib_text = _LIB.read_text()
+    assert lib_text.count(_BACKEND_FILE) == 2
+    lib = tmp_path / "secrets-backend-lib.sh"
+    lib.write_text(lib_text.replace(_BACKEND_FILE, str(backend_file)))
+    conf = tmp_path / "nginx.conf"
+    text = _SCRIPT.read_text()
+    assert text.count(_LIB_IMAGE_PATH) == 1
+    script = tmp_path / "setup-nginx.sh"
+    script.write_text(_BASHIO + text.replace(_LIB_IMAGE_PATH, str(lib))
+                      .replace(_CONF, str(conf)))
+    log = tmp_path / "log"
+    r = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                       env={"PATH": "/usr/bin:/bin", "K_LOG": str(log),
+                            "K_TERMINAL": "true" if terminal else "false"},
+                       timeout=30)
+    assert (r.returncode, r.stderr) == (0, ""), r.stderr
+    return conf.read_text()
+
+
+def _flat(text: str) -> str:
+    return re.sub(r"\s+", " ", text)
+
+
+def _servers(conf: str) -> tuple[str, str]:
+    """The rendered ingress server and external server, whitespace collapsed."""
+    ingress_at = conf.index("# --- Ingress server")
+    external_at = conf.index("# --- External API server")
+    return _flat(conf[ingress_at:external_at]), _flat(conf[external_at:])
+
+
+@needs_bash
+@pytest.mark.parametrize("terminal", [False, True], ids=["terminal-off", "terminal-on"])
+def test_the_secrets_page_is_served_on_ingress_for_the_built_in_store(tmp_path, terminal):
+    conf = _render(tmp_path, b"builtin\n", terminal=terminal)
+    ingress, external = _servers(conf)
+    assert _STATIC in ingress
+    assert _PROXY in ingress
+    assert _NOT_SERVED not in ingress
+    assert ingress.count("location /vault/ {") == 1
+    # never on the listener outside Home Assistant
+    assert external.count("location /vault/") == 1
+    assert _NOT_SERVED in external
+    assert "casa-vault-page" not in external and "vault_static" not in external
+
+
+@needs_bash
+def test_the_static_files_are_served_with_their_two_types_only(tmp_path):
+    # Casa's nginx.conf includes no mime.types: without this block the files
+    # go out as text/plain, and under nosniff browsers refuse both.
+    ingress, _ = _servers(_render(tmp_path, b"builtin\n"))
+    static = ingress[ingress.index("location /vault/static/ {"):]
+    types = re.search(r"types \{ ([^}]*)\}", static).group(1)
+    assert sorted(entry.strip() for entry in types.split(";") if entry.strip()) == \
+        ["application/javascript js", "text/css css"]
+
+
+@needs_bash
+@pytest.mark.parametrize("backend", [b"1password\n", None, b"builtin \n"],
+                         ids=["1password", "no-file", "not-the-word"])
+def test_the_secrets_page_answers_404_everywhere_otherwise(tmp_path, backend):
+    conf = _render(tmp_path, backend)
+    ingress, external = _servers(conf)
+    assert _NOT_SERVED in ingress and _NOT_SERVED in external
+    assert ingress.count("location /vault/") == external.count("location /vault/") == 1
+    assert "casa-vault-page" not in conf
+    assert "vault_static" not in conf
+
+
+@needs_bash
+def test_the_log_line_says_whether_the_page_is_served(tmp_path):
+    _render(tmp_path, b"builtin\n")
+    assert (tmp_path / "log").read_text() == \
+        "Nginx configured (terminal: false, secrets page: served)\n"

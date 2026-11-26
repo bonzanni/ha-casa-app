@@ -23,8 +23,11 @@ fi
 # container environment. The store runs on the PATH this script was given,
 # without the plugin tools directory.
 _vault="$(bashio::config 'onepassword_default_vault')"
+# The second socket serves the secrets page to nginx, which runs as www-data.
 exec /opt/casa/venv/bin/python3 /opt/casa/vault_service.py \
     --dir /data/vault \
     --socket /run/casa-vault/store.sock \
     --vault-name "$(casa_op_vault "$_vault")" \
+    --page-socket /run/casa-vault-page/page.sock \
+    --page-group www-data \
     --ready-fd 3

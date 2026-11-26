@@ -1962,10 +1962,59 @@ that opens them, in the app's data and so inside its backups. That is weaker tha
 1Password: whoever has a copy of the app's data or of a backup has the secrets
 too. Restoring a backup of the app restores them.
 
-There is no page to manage the secrets yet. Items are created by Casa itself (your
-agents' bot tokens, for example), by drop-offs and by plugins. `op://` references
-in the options work as they do with 1Password; the vault is the one named in
+Secrets are created by Casa itself (your agents' bot tokens, for example), by
+drop-offs and by plugins, and by you on the secrets page. `op://` references in
+the options work as they do with 1Password; the vault is the one named in
 `onepassword_default_vault`, `Casa` when that is empty.
+
+### The secrets page
+
+Open Casa's page in Home Assistant and tap **Secrets**. The button is there only
+while Casa keeps its own secrets; with a 1Password token set there is no secrets
+page, and the page is never reachable from outside Home Assistant.
+
+The page lists every secret by name, with who keeps it (Casa, a plugin you handed it
+to, an agent's bot token, an SSH key, or you once you have added or changed it here) or,
+for a secret with several values, their labels. Type in the search box to find a secret
+by name. A secret with a single value (and not an SSH key) has **Copy** right on its
+row, the others **Open**; tap the name to see a secret. Plain values are shown as they
+are; hidden values show the same dots, empty or not, until you tap **Show**, and
+**Copy** copies one without showing it. Where the browser does not allow copying (Home
+Assistant opened over plain `http`, for example), the value is shown instead so you can
+press and hold it. A shown value is hidden again after 30 seconds, and a value that takes
+longer than 30 seconds to arrive is not shown or copied. Under **References**
+you find each value's name, such as `Mail/username`; a reference puts `op://` and the
+vault in front of it (`op://Casa/Mail/username`). An SSH key has none. A name containing
+`/` or `?` cannot be used in a reference: for such a secret **References** shows its
+id in place of the name (26 letters and digits), and the reference is
+`op://Casa/<id>/<label>`. Once a secret has
+been read, the page says how often since Casa started.
+
+To add a secret, tap **Add**, give it a name and paste its value. Its label is
+`credential` unless you open **Reference label** and choose another. **Add another
+value** opens a second and a third value, each with its own label (one tap on
+**username**, **password** or **certificate**, or type your own). Every value you add
+here is kept hidden, a username too. **Edit** lets you change a plain value, replace a
+hidden one, remove values (**Undo** brings one back before you save) and add up to
+three more. A secret's name cannot be changed, the page will not let you add a second
+secret with a name already in use, and an SSH key can only be deleted. **Delete
+secret** asks once more and then deletes the secret for good; for a secret handed to a
+plugin, or one Casa made that you have not changed here since, it warns that what uses it
+may stop working.
+
+If the page refuses a save, it says why and keeps the name, the labels, what you ticked
+and the plain values you changed, but clears new and replacement values: enter those
+again. A plain value you ticked for removal is normally not sent, and a refused save then
+brings it back as it was stored, not as you changed it. A slip the page can spot before sending (a missing name, label or value) is
+said before anything is sent, and then everything you typed stays. If Casa changed the secret
+while you had it open for editing, nothing is overwritten; reload it and redo the
+change. A form left open for more than an hour, or across a restart of the app, has
+expired: nothing is saved, and you reload the page and start again.
+
+Anyone who can open Casa's page in Home Assistant can read the secrets there.
+Home Assistant shows Casa in the sidebar of administrators only. Deleting or
+changing a secret that Casa stored can stop whatever uses it from working until
+it is stored again.
 
 ## Contacts
 
@@ -1992,7 +2041,7 @@ which item was chosen is ever damaged, Casa uses no item at all, not even that
 one, and tells you to ask the assistant to connect the login again; the same
 holds for the phone line. Casa reads the same items
 from the [built-in store](#secrets-without-1password) when you have no
-1Password token, but that store has no page for adding items yet.
+1Password token; add the item there on [the secrets page](#the-secrets-page).
 If some numbers in your contacts are written without a country code, set
 `contacts_default_region` to your country (for example `NL`); otherwise those
 numbers are skipped.
@@ -2114,7 +2163,7 @@ sent, you also have to ask it yourself, in your own chat with it.
    `OpenAI Voice` is used without asking as long as no other item has been
    chosen. Casa reads the same items from the
    [built-in store](#secrets-without-1password) when you have no 1Password
-   token, but that store has no page for adding items yet.
+   token; add the item there on [the secrets page](#the-secrets-page).
 5. **Set the options** and restart: `phone_enabled` on, `phone_transfer_number`
    (your mobile, for example), `phone_line_number` (the number of the line
    itself), and optionally `phone_owner_name`, `live_voices` and

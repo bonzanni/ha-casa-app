@@ -602,7 +602,9 @@ def test_svc_vault_run_starts_the_service_on_builtin(start, option, name):
     record = json.loads(service_out.read_text())
     assert record["argv"] == ["/opt/casa/vault_service.py", "--dir", "/data/vault",
                               "--socket", "/run/casa-vault/store.sock",
-                              "--vault-name", name, "--ready-fd", "3"]
+                              "--vault-name", name,
+                              "--page-socket", "/run/casa-vault-page/page.sock",
+                              "--page-group", "www-data", "--ready-fd", "3"]
     # The service says when it is ready, on the descriptor it was left.
     assert record["fd3"] is True and ready.read_bytes() == b""
     env = _environ(record)

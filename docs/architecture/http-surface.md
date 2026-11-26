@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-24
+last_reviewed: 2026-11-25
 ---
 
 # The HTTP surface
@@ -59,6 +59,14 @@ performs — and several routes perform none.
 performing no check inherits no protection from anything around it; it inherits only its own
 absence of a check. The external nginx listener 404s the `/mcp/` and `/hooks/` prefixes as
 defense in depth; no backend route serves either.
+
+**Not every ingress path reaches the main process.** When Casa keeps its own secrets, the
+ingress listener routes `/vault/` to the secrets page, which the store's own service answers
+over a UNIX socket only nginx's workers may open; on 1Password that path is a 404 on ingress
+too, and the external listener 404s `/vault/` always (INV-VAULT-005). The page performs no
+authentication of its own: reaching the ingress listener is what admits a person, so
+everyone Home Assistant lets open Casa's page can read the secrets there
+([`builtin-secrets-store.md`](builtin-secrets-store.md)).
 
 ## Contracts & invariants
 
