@@ -206,7 +206,7 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "_post_task_start"): "admitted",               # a task's quoted request, admitted on the task's scope
     ("own_voice_lifecycle.py", "post_card"): "casa_text",       # an own-chat card in the resident's chat
     ("own_voice_lifecycle.py", "_post"): "casa_text",           # the own-chat question naming a new bot
-    ("vault_service.py", "_write"): "not_channel",              # the standard library's HTTP `send_response` on the secrets page's socket, not a chat
+    ("vault_page_server.py", "_write"): "not_channel",          # the standard library's HTTP `send_response` on the secrets page's socket, not a chat
 }
 _NON_CHANNEL_RECEIVERS = {"bot", "_bot", "bus", "_bus", "self_bus"}
 
