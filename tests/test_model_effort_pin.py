@@ -18,13 +18,13 @@ import pytest
 
 try:
     from tests.test_cross_session_tools import (
-        APP_ROOT, _admission_launches, _call_name, _classifier_launches,
+        APP_ROOT, _call_name, _classifier_launches,
         _judgement_launches, _memory_writer_launches, _sites,
         _synthesis_launches,
     )
 except ImportError:
     from test_cross_session_tools import (
-        APP_ROOT, _admission_launches, _call_name, _classifier_launches,
+        APP_ROOT, _call_name, _classifier_launches,
         _judgement_launches, _memory_writer_launches, _sites,
         _synthesis_launches,
     )
@@ -93,7 +93,7 @@ def test_every_options_site_passes_effort_for_its_own_model():
                     or len(effort.args) != 1
                     or ast.unparse(effort.args[0]) != ast.unparse(model)):
                 problems.append(f"{where}: effort is not effort_for(<model>)")
-    assert count == 12, count
+    assert count == 11, count
     assert fixed_seen == set(FIXED_EFFORT), fixed_seen
     assert not problems, problems
 
@@ -109,11 +109,6 @@ async def test_memory_writer_runs_opus_at_medium(monkeypatch):
     launches = await _memory_writer_launches(monkeypatch)
     assert [(o.model, o.effort) for o in launches] == [
         ("claude-opus-5-5", "medium")]
-
-
-async def test_run_admission_runs_haiku_at_low(monkeypatch):
-    launches = await _admission_launches(monkeypatch)
-    assert [(o.model, o.effort) for o in launches] == [("claude-haiku-5-5", "low")]
 
 
 async def test_action_judgement_runs_opus_at_high(monkeypatch):

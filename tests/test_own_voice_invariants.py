@@ -1386,9 +1386,7 @@ SURFACE_POSTS = {
     ("result_broker.py", "_post_operator_page", "deliver_operator_page"): A,
     ("result_broker.py", "_post_operator_proposal", "deliver_operator_proposal"): A,
     ("result_broker.py", "_post_operator_file", "deliver_operator_file"): A,
-    # a plugin call that asks Casa (admitted at A): its question and run card
-    ("operator_calls.py", "post_question._post", "deliver_operator_question"): A,
-    ("run_admission.py", "_decide", "post_question"): A,
+    # a plugin call that asks Casa (admitted at A): its run card
     ("run_admission.py", "_spawn_status_card._post", "deliver_run_card"): A,
     # a job's lines and question, at the delivery its launch recorded
     ("channels/telegram_transport.py", "TelegramTransport.post_job_question",
@@ -1405,8 +1403,9 @@ SURFACE_POSTS = {
     ("channels/telegram_transport.py", "TelegramTransport.send_media", "send_media"): B,
     # the Stop's lines, a reply to the card they answer (a card admitted at A)
     ("plugin_stop.py", "post_line", "send_reply_line"): A,
-    # the configurator's Restart now button: Casa's own, on Casa's endpoint
+    # the configurator's Restart now button: Casa's own question, on Casa's endpoint
     ("configurator_run.py", "offer_restart", "post_question"): CASA,
+    ("operator_calls.py", "post_question._post", "deliver_operator_question"): CASA,
 }
 
 
@@ -1487,8 +1486,8 @@ POST_RECORDS = {
         "the agent sending the file; posted at the task's delivery, or in its "
         "own turn's chat when that chat is the agent's own (send_media's rule)",
     ("run_admission.py", "_card_post"):
-        "the call's executing agent; its question and status card are posted at "
-        "the call's delivery, as every capability post of the call",
+        "the call's executing agent; its status card is posted at the call's "
+        "delivery, as every capability post of the call",
     ("plugin_stop.py", "post_line"):
         "no agent: Casa's own Stop line, in the chat of the card it answers; the "
         "record only files the line under that card's task",
@@ -1638,7 +1637,6 @@ TASK_POST_KINDS = {
     "plugin proposal": "deliver_operator_proposal",
     "plugin file": "deliver_operator_file",
     "send_media": "send_media",
-    "run admission question": "deliver_operator_question",
     "run status card": "deliver_run_card",
     "Stop line": "send_reply_line",
     "job start line": "post_job_start_line",
@@ -1684,12 +1682,6 @@ async def _task_surfaces(world, monkeypatch, outbox) -> tuple:
     path = os.path.join(outbox._root_realpath, "rows.txt")
     with open(path, "w") as fh:
         fh.write("12 rows\n")
-    named: list = []
-
-    async def sites_named(_words):
-        return named
-
-    monkeypatch.setattr(run_admission, "sites_named", sites_named)
     page_card = ("card", json.dumps({"text": "Keep this?", "pages": ["The October rows."],
                                      "buttons": [{"label": "Close", "close": True}]}), {})
 
@@ -1705,9 +1697,6 @@ async def _task_surfaces(world, monkeypatch, outbox) -> tuple:
         await _landed(world, landed, "plugin file", call_tool(
             "finance", FILE, tu="t4", deposit=("export", path, {"kind": "text"})))
         await _landed(world, landed, "send_media", _send_media())
-        await _landed(world, landed, "run admission question", run_admission.request_admission(
-            _operator_call("finance", tu="t5"), [dict(RUN)], "k-question"))
-        named.append("runpod")
         before = len(world.alex.recorder.sends())
         await run_admission.request_admission(
             _operator_call("finance", words="get my RunPod invoice", tu="t6"),
@@ -1757,7 +1746,7 @@ async def test_every_post_a_task_makes_is_filed_under_it(world, monkeypatch, out
     it landed is filed under its task: a reply to it reaches the task."""
     surface_methods = {m for (_f, _fn, m), site in SURFACE_POSTS.items() if site != CASA}
     driven = set(TASK_POST_KINDS.values())
-    assert surface_methods - {"post_question"} <= driven, surface_methods - driven
+    assert surface_methods <= driven, surface_methods - driven
 
     found: dict = {}
     # a delegation
@@ -1796,9 +1785,8 @@ async def test_every_post_a_task_makes_is_filed_under_it(world, monkeypatch, out
     assert _ellen_texts(world) == []
 
 
-@pytest.mark.parametrize("kind", ["send_media", "run admission question",
-                                  "run status card", "Stop line"])
-async def test_a_reply_to_a_tasks_file_question_card_or_stop_line_reaches_the_task(
+@pytest.mark.parametrize("kind", ["send_media", "run status card", "Stop line"])
+async def test_a_reply_to_a_tasks_file_card_or_stop_line_reaches_the_task(
         world, monkeypatch, outbox, kind):
     call, did, landed = await _task_surfaces(world, monkeypatch, outbox)
     [mid] = landed[kind]

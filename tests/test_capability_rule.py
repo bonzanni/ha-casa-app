@@ -366,6 +366,13 @@ RUN = {"spec_digest": "sha256:aa", "mode": "account", "task_kind": "invoice", "t
        "sites": [{"site_id": "runpod", "access": "account", "name": "RunPod"}]}
 
 
+async def _cards_settle():
+    for _ in range(200):
+        if not run_admission._CARD_TASKS:
+            return
+        await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 async def test_the_run_card_and_its_stop_line_follow_the_tasks_delivery(world, monkeypatch):
     monkeypatch.setattr(pc, "CONTINUATIONS", SimpleNamespace(request=lambda *a: "queued"))
@@ -374,34 +381,16 @@ async def test_the_run_card_and_its_stop_line_follow_the_tasks_delivery(world, m
     call, err = operator_calls.CALLS.find("c1")
     assert err is None
     out = await run_admission.request_admission(call, [RUN], "k1")
-    assert out["status"] == "confirmation_pending"
+    await _cards_settle()
+    assert out["status"] == "admitted"
     c = run_admission.CONFIRMATIONS.peek(out["confirmation_id"])
     assert c.bot_id == FINANCE_BOT              # a Stop on Alex's bot finds it
     [(name, (chat, text))] = sends(world.alex)
-    assert (name, chat) == ("deliver_operator_question", OPERATOR)
+    assert (name, chat) == ("deliver_run_card", OPERATOR)
     assert not text.startswith("\U0001F4CA")    # his own chat: no label
     await plugin_stop.tell_line(c.bot_id, OPERATOR, "finance", "stopped", reply_to=None)
     assert sends(world.alex)[-1] == ("send_reply_line", (OPERATOR, "Stopped."))
     assert sends(world.casa) == []
-
-
-@pytest.mark.asyncio
-async def test_a_plugin_question_records_its_agent_and_where_it_was_delivered(world,
-                                                                             monkeypatch):
-    """The callback ingress reads a card's executing agent from its record: a run
-    admission's question records Alex and his chat, like every card of his."""
-    import verdict_broker
-    monkeypatch.setattr(pc, "CONTINUATIONS", SimpleNamespace(request=lambda *a: "queued"))
-    assert (await call_tool("finance", ellen_delegates("finance", ALEX_CHAT), RUNS))[0] == \
-        "admitted"
-    call, _ = operator_calls.CALLS.find("c1")
-    await run_admission.request_admission(call, [RUN], "k1")
-    scope = f"ask:{FINANCE_BOT}:{OPERATOR}"
-    [rid] = verdict_broker.BROKER.pending(namespace="resident_ask", scope=scope)
-    meta = verdict_broker.BROKER.get_meta(namespace="resident_ask", scope=scope,
-                                          request_id=rid)
-    assert meta["kind"] == "casa_question"
-    assert (meta["role"], meta["delivery"]) == ("finance", ALEX_CHAT)
 
 
 @pytest.mark.asyncio
@@ -481,30 +470,22 @@ async def test_a_helpers_link_and_question_notify_as_before(world, message_posts
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("turn,silent", TURNS[:2])
-async def test_a_helpers_run_status_card_does_not_notify_under_the_operators_task(
-        world, monkeypatch, turn, silent):
+@pytest.mark.parametrize("turn", [t.values[0] for t in TURNS],
+                         ids=[t.id for t in TURNS])
+async def test_a_run_status_card_never_notifies(world, monkeypatch, turn):
     """The call is recorded by the real admission hook, with the facts of its
-    turn; the status card of the runs it starts reads them."""
+    turn; whatever they are, the runs it starts are admitted and their status
+    card is sent without a notification."""
     monkeypatch.setattr(pc, "CONTINUATIONS", SimpleNamespace(request=lambda *a: "queued"))
     assert (await call_tool("finance", turn(), RUNS))[0] == "admitted"
     call, err = operator_calls.CALLS.find("c1")
     assert err is None
     out = await run_admission.request_admission(call, [RUN], "k1")
-    for _ in range(200):
-        if not run_admission._CARD_TASKS:
-            break
-        await asyncio.sleep(0)
-    if silent:
-        assert out["status"] == "admitted"
-        [(name, (chat, _text))] = sends(world.alex)
-        assert (name, chat) == ("deliver_run_card", OPERATOR)
-        assert world.alex.options == [("deliver_run_card", {"silent": True})]
-    else:
-        # outside his task a colleague's request is still put to the operator
-        assert out["status"] == "confirmation_pending"
-        [(name, _args)] = sends(world.alex)
-        assert name == "deliver_operator_question" and world.alex.options == []
+    await _cards_settle()
+    assert out["status"] == "admitted"
+    [(name, (chat, _text))] = sends(world.alex)
+    assert (name, chat) == ("deliver_run_card", OPERATOR)
+    assert world.alex.options == [("deliver_run_card", {"silent": True})]
     assert sends(world.casa) == []
 
 

@@ -572,7 +572,7 @@ IDENTITY_SITE_HITS = {
         "Confirmations.clear_card": 1,
         "Confirmations.get": 1, "Confirmations.open_cards": 1,
         "Confirmations.peek": 1, "Confirmations.set_card": 1,
-        "Confirmations.settle": 1, "_spawn_status_card": 1, "_spawn_status_card._post": 1,
+        "_spawn_status_card": 1, "_spawn_status_card._post": 1,
         "confirmation_status": 1,
         "request_admission": 3,
     },

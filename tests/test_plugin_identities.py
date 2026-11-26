@@ -61,10 +61,6 @@ class _Endpoint(FakeEndpoint):
         self._record("deliver_operator_message", chat_id, text)
         return DeliveryOutcome.DELIVERED if self.is_ready else DeliveryOutcome.NOT_DELIVERED
 
-    async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None, entities=None):
-        self._record("deliver_operator_question", chat_id, text, rid)
-        return self._mid()
-
     async def deliver_run_card(self, chat_id, text, *, post=None, silent=False, entities=None):
         self._record("deliver_run_card", chat_id, text)
         return self._mid()
@@ -153,10 +149,11 @@ def _call(route, *, client, words=None, bot=None):
         plugin=PLUGIN, identity=_identity(bot if bot is not None else route), origin=origin)
 
 
-def _reading(reply):
-    async def _ask(words):
-        return reply
-    return _ask
+async def _cards_settle():
+    for _ in range(200):
+        if not run_admission._CARD_TASKS:
+            return
+        await asyncio.sleep(0)
 
 
 async def _continue(client, binding_ref, run_ref="run-x"):
@@ -172,25 +169,26 @@ async def _continue(client, binding_ref, run_ref="run-x"):
 
 # -- run admission ----------------------------------------------------------------
 
-async def test_an_equal_request_key_on_two_bots_is_two_requests(two, monkeypatch):
-    monkeypatch.setattr(run_admission, "_ask_model", _reading('{"runs": []}'))
+async def test_an_equal_request_key_on_two_bots_is_two_requests(two):
     a = await run_admission.request_admission(
         _call(CASA_BOT, client="c1", words="yes"), [RUN], "k1")
     b = await run_admission.request_admission(
         _call(FINANCE_BOT, client="c2", words="yes"), [RUN], "k1")
-    assert a["status"] == b["status"] == "confirmation_pending"
+    await _cards_settle()
+    assert a["status"] == b["status"] == "admitted"
     assert a["confirmation_id"] != b["confirmation_id"]
     for bot, answer in ((CASA_BOT, a), (FINANCE_BOT, b)):
         c = run_admission.CONFIRMATIONS.by_key(plugin=PLUGIN, bot_id=bot, operator_id=OPERATOR,
                                                request_key="k1")
         assert c.cid == answer["confirmation_id"] and c.bot_id == bot
         # each card went out through its own bot, once
-        assert len(_named(two.ep[bot], "deliver_operator_question")) == 1
+        assert len(_named(two.ep[bot], "deliver_run_card")) == 1
     # a replay on one bot is that bot's request again, never the other's
     again = await run_admission.request_admission(
         _call(FINANCE_BOT, client="c3", words="yes"), [RUN], "k1")
+    await _cards_settle()
     assert again == b
-    assert len(_named(two.finance, "deliver_operator_question")) == 1
+    assert len(_named(two.finance, "deliver_run_card")) == 1
 
 
 def _admitted(bot, client, key="k1"):
@@ -314,9 +312,9 @@ async def test_an_equal_run_ref_on_two_bots_is_queued_twice_and_dropped_apart(tw
 # -- the operator's words ---------------------------------------------------------
 
 async def test_words_recorded_on_one_bot_are_not_read_for_the_other(two, monkeypatch):
-    monkeypatch.setattr(run_admission, "_ask_model", _reading('{"runs": [{"site": "RunPod"}]}'))
     out = await run_admission.request_admission(
         _call(CASA_BOT, client="c1", words="get my RunPod invoice"), [RUN], "k1")
+    await _cards_settle()
     assert out["status"] == "admitted"
     bodies: list = []
 
@@ -427,8 +425,7 @@ def test_delivery_keys_keep_their_bot_and_an_entry_without_one_is_refused(stores
 
 # -- before Casa's bot has an id ----------------------------------------------------------
 
-async def test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted(window, monkeypatch):
-    monkeypatch.setattr(run_admission, "_ask_model", _reading('{"runs": []}'))
+async def test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted(window):
     casa = window.casa
     call = _call(CASA, client="c1", words="yes", bot=CASA_BOT)
     # an admission stores no confirmation and posts no card
@@ -451,10 +448,11 @@ async def test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted(wind
     # Casa's bot verifies its id: the same three now key on it
     assert casa.initialize(CASA_BOT)
     out = await run_admission.request_admission(call, [RUN], "k1")
-    assert out["status"] == "confirmation_pending"
+    await _cards_settle()
+    assert out["status"] == "admitted"
     c = run_admission.CONFIRMATIONS.peek(out["confirmation_id"])
     assert c.bot_id == CASA_BOT
-    assert len(_named(casa, "deliver_operator_question")) == 1
+    assert len(_named(casa, "deliver_run_card")) == 1
     receipt = await _deliver(CASA_BOT, "call-2")
     assert receipt["casa_delivery"]["status"] == "delivered"
     assert list(delivery_keys.KEYS._entries) == [json.dumps([PLUGIN, CASA_BOT, OPERATOR, "k"])]

@@ -17,8 +17,9 @@ that does not send one) is served the client's only recorded call, and refused
 when there are two (the deposit route's rule):
 
 * ``POST /internal/broker/requester``            (C1) — whom the call serves.
-* ``POST /internal/broker/run-admission``        (C2) — run admission.
-* ``POST /internal/broker/run-admission-status`` (C3) — a confirmation's state.
+* ``POST /internal/broker/run-admission``        (C2) — run admission (every
+  request is admitted at once, ``run_admission``).
+* ``POST /internal/broker/run-admission-status`` (C3) — a request's state.
 * ``POST /internal/broker/continue``             (C8) — queue a continuation turn.
 * ``POST /internal/broker/delivery-status``      (C9) — a delivered slot's outcome.
 * ``POST /internal/broker/action-judgement``     — the check of one browsing
@@ -27,9 +28,9 @@ when there are two (the deposit route's rule):
   pad, or read it back, with no model in between (``scratchpad``).
 
 The record is forgotten at the call's PostToolUse / PostToolUseFailure, or
-after ``OPERATOR_CALL_CAP_S``. The operator question Casa itself posts for run
-admission (``post_question``) is Casa's keyboard, answered by a tap that runs no
-turn."""
+after ``OPERATOR_CALL_CAP_S``. The operator question Casa itself posts
+(``post_question``, the configurator's restart card) is Casa's keyboard,
+answered by a tap that runs no turn."""
 from __future__ import annotations
 
 import dataclasses
@@ -204,7 +205,7 @@ def requester_facts(call: OperatorCall) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Casa's own operator question (run admission's confirmation card)
+# Casa's own operator question (the configurator's restart card)
 # ---------------------------------------------------------------------------
 
 async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
@@ -212,9 +213,9 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
                         on_settle: Callable[[dict], Awaitable[None]],
                         chat_id: "int | None" = None, post: Any = None) -> bool:
     """Post *text* under *role*'s name with one button per option, through
-    the Telegram *endpoint* the caller resolved (the call's delivery for a run
-    admission, Casa's own for its restart card), to the operator *identity*
-    names, in *chat_id* (the identity's chat when not given). In *role*'s own
+    the Telegram *endpoint* the caller resolved (Casa's own for its restart
+    card), to the operator *identity* names, in *chat_id* (the identity's
+    chat when not given). In *role*'s own
     chat the name is left out: the chat is the agent. The question's record
     keeps *role*, the agent it is asked for, and the address it was delivered
     at, as every card's does. ``on_settle`` runs
@@ -229,8 +230,7 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
     and returns False, as a failed post does.
 
     The settled card keeps no buttons. An answered outcome is also given the
-    card's ``message_id``, its ``address`` and its settled ``text`` (the run
-    admission's start card, which a Stop marks later).
+    card's ``message_id``, its ``address`` and its settled ``text``.
 
     ``post``: the post record the landed question is filed under (a task's
     question is filed under that task, so a reply to it reaches the task).
@@ -325,8 +325,9 @@ async def _call_and_body(request) -> "tuple[OperatorCall | None, dict, Any]":
 
 
 def build_requester_handler():
-    """C1 ``{"client"}`` ⇒ ``{"binding_ref", "requester_id", "requester_kind",
-    "chain"}``. Nothing in the body names a requester; Casa reads the call."""
+    """C1 ``{"client", "tool_use_id"?}`` ⇒ ``{"binding_ref", "requester_id",
+    "requester_kind", "chain"}``. Nothing in the body names a requester; Casa
+    reads the call."""
     async def handler(request):
         call, _body, bad = await _call_and_body(request)
         if call is None:
@@ -336,11 +337,11 @@ def build_requester_handler():
 
 
 def build_run_admission_handler():
-    """C2 ``{"client", "request_key", "runs"}`` ⇒ ``{"status": "admitted",
-    "admissions", …}`` | ``{"status": "confirmation_pending", "confirmation_id",
-    …}`` | ``{"status": "declined"|"expired", …}`` (a replayed key) |
-    ``{"status": "refused", "reason"}`` | ``{"error"}``; every answer carries
-    ``request_key``. A replayed key returns its first answer."""
+    """C2 ``{"client", "tool_use_id"?, "request_key", "runs"}`` ⇒ ``{"status":
+    "admitted", "admissions", …}`` | ``{"status": "refused", "reason"}`` (nowhere
+    to post) | ``{"error"}``; every answer carries ``request_key``. A replayed key
+    returns its first answer, which for a request an earlier Casa stored can also
+    be ``confirmation_pending``, ``declined`` or ``expired``."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
@@ -358,7 +359,7 @@ def build_run_admission_handler():
 
 
 def build_run_admission_status_handler():
-    """C3 ``{"client", "confirmation_id"}`` ⇒ the confirmation's state."""
+    """C3 ``{"client", "tool_use_id"?, "confirmation_id"}`` ⇒ the request's state."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
@@ -369,7 +370,7 @@ def build_run_admission_status_handler():
 
 
 def build_continue_handler():
-    """C8 ``{"client", "binding_ref", "run_ref", "reason"}`` ⇒
+    """C8 ``{"client", "tool_use_id"?, "binding_ref", "run_ref", "reason"}`` ⇒
     ``{"status": "queued"|"already_queued"}`` | ``{"error"}``
     (``channel_unavailable`` while the binding's bot has no id yet)."""
     async def handler(request):
@@ -400,7 +401,7 @@ def build_continue_handler():
 
 
 def build_delivery_status_handler():
-    """C9 ``{"client", "reference"}`` ⇒ ``{"status", "repeat"}``."""
+    """C9 ``{"client", "tool_use_id"?, "reference"}`` ⇒ ``{"status", "repeat"}``."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
@@ -414,8 +415,8 @@ def build_delivery_status_handler():
 
 
 def build_action_judgement_handler():
-    """``{"client", "kind", "packet", "spec_digest", "picture"?}`` ⇒ ``{"verdict",
-    "packet_sha256", "latency_ms"}`` | ``{"error"}`` (``bad_kind``,
+    """``{"client", "tool_use_id"?, "kind", "packet", "spec_digest", "picture"?}`` ⇒
+    ``{"verdict", "packet_sha256", "latency_ms"}`` | ``{"error"}`` (``bad_kind``,
     ``bad_packet``, ``bad_digest``, ``check_unavailable``). The packet is the
     app's JSON text as a string; the picture, base64 PNG, is outside its digest; the
     words come from the call's plugin and operator, never the body."""
@@ -440,10 +441,12 @@ _PAD_REFUSALS = {
 
 
 def build_pad_handler():
-    """``{"client", "op": "write"|"append"|"read", "section", "text"?, "offset"?}`` ⇒
-    ``{"lines", "bytes"}`` (the section after a write or append) | ``{"text", "next"}`` (at
-    most ``scratchpad.ROUTE_READ_CHARS`` from ``offset``) | ``{"error", "message"}``. The pad is
-    the one the client's own tool reaches, found by the client alone."""
+    """``{"client", "tool_use_id"?, "op": "write"|"append"|"read", "section", "text"?,
+    "offset"?}`` ⇒ ``{"lines", "bytes"}`` (the section after a write or append) | ``{"text",
+    "next"}`` (at most ``scratchpad.ROUTE_READ_CHARS`` from ``offset``) | ``{"error",
+    "message"}``. The pad is the one the client's own tool reaches; the request is served
+    only during a call of that client, found as every route finds it (the client and,
+    when the body names one, the call's ``tool_use_id``)."""
     async def handler(request):
         call, body, err = await _found(request)
         if call is None:
