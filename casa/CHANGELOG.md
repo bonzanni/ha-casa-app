@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.388.1] - 2026-11-28
+
+### Changed
+
+- Internal restructuring of the secrets page; no change in behaviour.
+
 ## [0.388.0] - 2026-11-27
 
 ### Changed
