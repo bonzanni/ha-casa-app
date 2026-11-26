@@ -16,6 +16,7 @@ every save; a save the profile's rules refuse writes nothing; and what a
 person reads and where each link leads are the profile's.
 """
 import dataclasses
+import html
 import re
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -1166,6 +1167,18 @@ def test_free_slots_are_as_many_and_start_as_the_profile_says(store):
     body = text(get(page, f"/s/{used.id}/edit"))
     assert [re.search(rf'name="label{index}" value="([^"]*)"', body).group(1)
             for index in (1, 2)] == ["beta", "value3"]
+
+
+def test_a_suggestion_with_a_quote_in_it_is_offered_whole(store):
+    """A suggested label reaches the script through an attribute and the person as the
+    button's words: both carry all of it, whatever characters it holds."""
+    quoted = dataclasses.replace(FREE, slots=Slots(defaults=("first",),
+                                                   suggestions=('Account "ID" <1>',)))
+    body = text(get(Page(store, quoted), "/add"))
+    button = re.search(r'<button class="v-button" type="button" data-label="([^"]*)" '
+                       r'aria-pressed="false">([^<]*)</button>', body)
+    assert button is not None
+    assert [html.unescape(part) for part in button.groups()] == ['Account "ID" <1>'] * 2
 
 
 # -- Casa's own page ------------------------------------------------------------------

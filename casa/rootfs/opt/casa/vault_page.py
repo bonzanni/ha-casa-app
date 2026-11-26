@@ -1102,7 +1102,7 @@ class Page:
                        + '<div class="v-picks" role="group" aria-label="Label suggestions" hidden>'
                        + "".join(f'<button class="v-button" type="button" data-label="{word}" '
                                  f'aria-pressed="false">{word}</button>'
-                                 for word in self._profile.slots.suggestions)
+                                 for word in map(_text, self._profile.slots.suggestions))
                        + '</div><p class="v-help">Labels identify values in references, like '
                          '<span class="v-reference">Mail/username</span>.</p>')
             if add_form and offset == 0:
