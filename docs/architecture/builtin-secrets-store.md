@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-25
+last_reviewed: 2026-11-26
 ---
 
 # Built-in secrets store
@@ -111,11 +111,19 @@ nothing. Items are made through `op` by Casa, drop-offs and plugins, and by a pe
 
 ### The page
 
+**An engine and a profile.** `vault_page.py` is the engine: requests, forms, one-time codes,
+the stamp and layout. `vault_page.Page` is a pure function of a request and the store that
+imports nothing outside the standard library and `vault_store`, and holds no words or rules
+of its own: it takes a `vault_page.Profile`. `vault_page_casa.py` is Casa's profile, the only
+one in this repository — `PROFILE`, served as `casa_page(store)`: the page's words, which
+values are hidden (`is_hidden`), who keeps a secret (`purpose`), an SSH key's facts and the
+add form's labels. The script reads the sentences that name a secret from `data-` attributes
+on `<body>`, and the form's shape from its controls.
+
 **Who serves it, and who reaches it.** `vault_service.py` listens, besides the `op` socket,
 on `/run/casa-vault-page/page.sock` (`--page-socket`, `--page-group www-data` in
-`svc-vault/run`): plain HTTP/1.0, one request and one thread per connection,
-answered by `vault_page.Page`, a pure function of a request and the store that imports
-nothing outside the standard library and `vault_store`. The socket's directory is `0710` and
+`svc-vault/run`), through `vault_page_server.listening`, the page's listener: plain HTTP/1.0,
+one request and one thread per connection, answered by Casa's page. The socket's directory is `0710` and
 the socket `0660`, owned by root and given to `www-data`, the group nginx's workers run as;
 the `op` socket stays root's alone. nginx routes to the page socket only from the Home
 Assistant ingress listener, and only on the built-in store
@@ -244,7 +252,7 @@ is the listener's own source restriction ([`http-surface.md`](http-surface.md)).
 
 **INV-VAULT-006**: No GET response contains a hidden field's value.
 
-A field is hidden unless its type is exactly `STRING`. HEAD answers as GET does, without a
+A field is hidden unless its type is exactly `STRING` (`vault_page_casa.is_hidden`). HEAD answers as GET does, without a
 body. What it does not cover: a plain field's value is on the page by design, and a hidden
 value does leave in the answer to a checked POST (INV-VAULT-007).
 
@@ -333,6 +341,8 @@ gets an empty token on the built-in store and skips its `op` calls.
 - `casa/rootfs/opt/casa/vault_service.py`
 - `casa/rootfs/opt/casa/vault_op_client.py`
 - `casa/rootfs/opt/casa/vault_page.py`
+- `casa/rootfs/opt/casa/vault_page_casa.py`
+- `casa/rootfs/opt/casa/vault_page_server.py`
 - `casa/rootfs/opt/casa/vault_static/page.js`
 - `casa/rootfs/opt/casa/vault_static/theme.js`
 - `casa/rootfs/opt/casa/vault_static/ha.css`
@@ -351,6 +361,8 @@ gets an empty token on the built-in store and skips its `op` calls.
 - `tests/test_vault_page.py`
 - `tests/test_vault_page_static.py`
 - `tests/test_vault_page_behaviour.py`
+- `tests/test_vault_page_profile.py`
+- `tests/test_vault_page_server.py`
 - `tests/test_setup_nginx_ingress.py`
 - `tests/test_casa_status_page.py`
 - `tests/test_vault_real_callers.py`

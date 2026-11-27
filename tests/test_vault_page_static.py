@@ -13,7 +13,8 @@ from urllib.parse import urlencode
 
 import pytest
 
-from vault_page import Page, Request
+from vault_page import Request
+from vault_page_casa import casa_page as Page
 from vault_store import Field, Store
 
 REPO = Path(__file__).resolve().parents[1]
@@ -255,3 +256,11 @@ def test_every_toggle_keeps_a_checkbox_the_keyboard_reaches():
                     (selector, declarations)
     assert {".v-slot-enable", ".v-choice input"} <= seen
     assert "tabindex" not in (STATIC / "page.js").read_text()
+
+
+def test_the_script_names_no_item_and_no_app():
+    """Another app's page runs this same script: every sentence it shows that names the item or
+    the app comes from the page, and it finds the page's parts without Casa's words."""
+    text = (STATIC / "page.js").read_text()
+    for word in ("secret", "Secret", "Casa", "/vault/"):
+        assert word not in text, word

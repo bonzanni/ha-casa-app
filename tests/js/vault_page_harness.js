@@ -13,9 +13,13 @@
 // suggestions, Replace and Remove/Undo, the list's Copy and the shown page's Hide. Plain Node,
 // no dependencies; tests/test_vault_page_behaviour.py runs it.
 //
+// A bundle with "suite": "shape" plays instead what the script reads from the page: a form of
+// fixed boxes, a stored value without Remove, and the sentences a profile gives the page.
+//
 // usage: node vault_page_harness.js <page.js> <bundle.json>
 // bundle.json: {secret, other, values: {"<show url>#<field>": value}, pages: {name: tree}}, a
-// tree being the page Page.handle rendered, as [tag, {attrs}, ...children | "text"].
+// tree being the page Page.handle rendered, as [tag, {attrs}, ...children | "text"]; the shape
+// suite's bundle adds {suite: "shape", words: {fixed: {...}, casa: {...}, required}}.
 // Prints one line per scenario, "ok <name>" or "FAIL <name><tab><why>"; exits 1 on any failure.
 'use strict';
 const fs = require('fs');
@@ -34,7 +38,7 @@ const SCRIPT = SOURCE.replace(HOOK, `${HOOK} __ops.push(op);`);
 // -- a selector engine for the selectors page.js uses: tag, #id, .class, [a], [a="v"], [a^="v"],
 // descendants, and comma lists
 const compound = (text) => {
-  const m = /^([a-z]*)(?:#([\w-]+))?((?:\.[\w-]+)*)((?:\[[^\]]+\])*)$/.exec(text);
+  const m = /^([a-z][a-z0-9]*|)(?:#([\w-]+))?((?:\.[\w-]+)*)((?:\[[^\]]+\])*)$/.exec(text);
   if (!m) throw new Error('selector not supported: ' + text);
   const classes = m[3].split('.').filter(Boolean);
   const attrs = [...m[4].matchAll(/\[([\w-]+)(?:(\^?=)"([^"]*)")?\]/g)];
@@ -859,6 +863,96 @@ const PAGE_SCENARIOS = {
   'shown page loaded out of sight: the value is gone at once': [{page: 'shown', visibility: 'hidden'}, async (w) => nothingKept(w, null)],
 };
 
+// -- the form's shape and the sentences, as the page hands them to the script. These pages come
+// from a bundle of their own ("suite": "shape"): fixed boxes, a stored card without Remove, and
+// two profiles' words. WORDS holds, by page kind, the sentences the page should show.
+const WORDS = BUNDLE.words || {};
+// the lines of the box above the form, or null while it is hidden
+const errorLines = (w) => {
+  const box = w.root.querySelector('#form-error');
+  return box.hidden ? null : box.querySelectorAll('p').map((p) => p.textContent);
+};
+const submit = (w) => w.root.querySelector('#secret-form').dispatch('submit');
+const box = (w, n) => w.root.querySelector(`textarea[name="value${n}"]`);
+// a submit that must be held back with LINES said and TARGET pointed at (null: the box itself)
+const heldBack = (w, lines, target) => {
+  const why = [];
+  if (!submit(w).defaultPrevented) why.push('the form was sent');
+  const said = errorLines(w);
+  if (JSON.stringify(said) !== JSON.stringify(lines)) why.push(`the box says ${JSON.stringify(said)}`);
+  const pointed = target || w.root.querySelector('#form-error');
+  if (w.doc.activeElement !== pointed) why.push('the focus is not on the slip');
+  if (target && target.getAttribute('aria-invalid') !== 'true') why.push('the slip is not marked');
+  return why;
+};
+const goesThrough = (w, what) => (submit(w).defaultPrevented
+  ? [`${what} was held back: ${JSON.stringify(errorLines(w))}`] : []);
+const searchCount = (words) => async (w) => {
+  const why = [];
+  const search = w.root.querySelector('#search');
+  const count = w.root.querySelector('#search-count');
+  for (const [typed, want] of [['al', words.many.replace('{}', '2')], ['bet', words.one.replace('{}', '1')],
+    ['zzz', words.many.replace('{}', '0')], ['', '']]) {
+    search.value = typed;
+    search.dispatch('input');
+    if (count.textContent !== want) why.push(`for "${typed}" it says "${count.textContent}", not "${want}"`);
+  }
+  return sent(w, why);
+};
+const SHAPE_SCENARIOS = {
+  'fixed boxes, add form: an empty required box holds the submit back with its sentence': [{page: 'fixed add'}, async (w) => {
+    w.root.querySelector('input[name="name"]').value = 'box';
+    for (const n of [1, 2, 3]) box(w, n).value = `typed-${n}`;
+    const why = heldBack(w, [WORDS.fixed.not_saved, WORDS.required], box(w, 0));
+    if ([1, 2, 3].some((n) => box(w, n).value !== `typed-${n}`)) why.push('a typed box was emptied');
+    return sent(w, why);
+  }],
+  'fixed boxes, add form: empty boxes that are not required let it go, and so does a full form': [{page: 'fixed add'}, async (w) => {
+    w.root.querySelector('input[name="name"]').value = 'box';
+    box(w, 0).value = 'https://a.example';
+    const why = goesThrough(w, 'a form with only the required box filled');
+    for (const n of [1, 2, 3]) box(w, n).value = `typed-${n}`;
+    why.push(...goesThrough(w, 'a full form'));
+    if (errorLines(w)) why.push('the box above the form is shown');
+    return sent(w, why);
+  }],
+  'fixed boxes, add form: a missing name is still said first': [{page: 'fixed add'}, async (w) => heldBack(w, [WORDS.fixed.not_saved, 'Enter a name.'], w.root.querySelector('input[name="name"]'))],
+  'fixed boxes, edit form: a card without Remove sets up and a submit still runs the checks': [{page: 'fixed edit'}, async (w) => {
+    const why = [];
+    const cards = w.root.querySelectorAll('.v-existing');
+    if (cards[0].querySelector('.v-remove-input')) why.push('the required value has a Remove');
+    // the cards after it are wired: Remove turns the user's box off
+    const remove = cards[1].querySelector('.v-remove-input');
+    toggle(remove, true);
+    if (!cards[1].querySelector('textarea').disabled) why.push('Remove on the next card does nothing');
+    toggle(remove, false);
+    // the hidden value's Replace, ticked and left empty, is the slip the page would refuse
+    const replace = cards[2].querySelector('.v-replace-input');
+    toggle(replace, true);
+    why.push(...heldBack(w, [WORDS.fixed.not_saved, 'Enter a value or turn off Replace.'], cards[2].querySelector('textarea')));
+    cards[2].querySelector('textarea').value = 'pw-new';
+    why.push(...goesThrough(w, 'a filled Replace'));
+    return sent(w, why);
+  }],
+  'fixed boxes, edit form: an offered required box left empty holds the submit back': [{page: 'fixed edit bare'}, async (w) => {
+    const offered = w.root.querySelector('textarea[data-required]');
+    if (!offered) return ['no offered box is required'];
+    const why = heldBack(w, [WORDS.fixed.not_saved, WORDS.required], offered);
+    offered.value = 'https://a.example';
+    return sent(w, why.concat(goesThrough(w, 'the filled required box')));
+  }],
+  'fixed boxes, edit form: removing every value is refused in the page\'s words': [{page: 'loose edit'}, async (w) => {
+    for (const remove of w.root.querySelectorAll('.v-remove-input')) toggle(remove, true);
+    return sent(w, heldBack(w, [WORDS.fixed.not_saved, WORDS.fixed.no_value_left], null));
+  }],
+  'free slots, edit form: removing every value is refused in the page\'s words': [{page: 'casa edit'}, async (w) => {
+    for (const remove of w.root.querySelectorAll('.v-remove-input')) toggle(remove, true);
+    return sent(w, heldBack(w, [WORDS.casa.not_saved, WORDS.casa.no_value_left], null));
+  }],
+  'list of the fixed profile, the search count is in the page\'s words': [{page: 'fixed list'}, searchCount(WORDS.fixed || {})],
+  'list of the free profile, the search count is in the page\'s words': [{page: 'casa list'}, searchCount(WORDS.casa || {})],
+};
+
 const CLIPBOARD = {
   'copy pending on ClipboardItem, Hide, clipboard refuses': 'ClipboardItem',
   'copy pending on the answer (no clipboard), page hidden and back, answer': 'none',
@@ -879,10 +973,12 @@ process.on('uncaughtException', (err) => thrown.push(String(err)));
 
 (async () => {
   let failed = 0;
-  const all = [
-    ...Object.entries(SCENARIOS).map(([name, play]) => [name, {clipboard: CLIPBOARD[name], page: play.page, block: play.block}, play]),
-    ...Object.entries(PAGE_SCENARIOS).map(([name, [options, play]]) => [name, options, play]),
-  ];
+  const all = BUNDLE.suite === 'shape'
+    ? Object.entries(SHAPE_SCENARIOS).map(([name, [options, play]]) => [name, options, play])
+    : [
+      ...Object.entries(SCENARIOS).map(([name, play]) => [name, {clipboard: CLIPBOARD[name], page: play.page, block: play.block}, play]),
+      ...Object.entries(PAGE_SCENARIOS).map(([name, [options, play]]) => [name, options, play]),
+    ];
   for (const [name, options, play] of all) {
     let why;
     thrown = [];

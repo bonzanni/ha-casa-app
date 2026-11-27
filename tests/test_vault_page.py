@@ -26,7 +26,9 @@ import own_voice_lifecycle
 import vault_drop_off
 import vault_op
 import vault_page
-from vault_page import Page, Request
+import vault_page_casa
+from vault_page import Request
+from vault_page_casa import casa_page as Page
 from vault_store import Field, Item, Store
 
 PREFIX = "/api/hassio_ingress/abc"
@@ -171,15 +173,15 @@ def test_an_empty_list_says_so_and_offers_to_add(store):
     (item(own_voice_lifecycle.item_title("alex")), "Added by Casa"),  # no tag, no claim
 ])
 def test_purpose_lines(given, expected):
-    assert vault_page.purpose(given) == expected
+    assert vault_page_casa.purpose(given) == expected
 
 
 def test_the_copied_tags_and_titles_match_the_modules_that_make_them():
-    assert vault_page.BOT_TOKEN_TAG == own_voice_lifecycle.TOKEN_TAG
-    assert vault_page.BOT_TOKEN_TITLE == own_voice_lifecycle.item_title("")
-    assert vault_page.DROP_OFF_TAG == vault_drop_off.TAG
+    assert vault_page_casa.BOT_TOKEN_TAG == own_voice_lifecycle.TOKEN_TAG
+    assert vault_page_casa.BOT_TOKEN_TITLE == own_voice_lifecycle.item_title("")
+    assert vault_page_casa.DROP_OFF_TAG == vault_drop_off.TAG
     assert (vault_drop_off.item_title("plugin", "name")
-            == vault_page.DROP_OFF_TITLE + "plugin name")
+            == vault_page_casa.DROP_OFF_TITLE + "plugin name")
 
 
 # -- one secret -------------------------------------------------------------------
@@ -591,7 +593,7 @@ def test_a_hidden_box_is_no_longer_a_name_either_form_takes(store):
         assert response.status == 400, extra
         assert snapshot(store) == before
     assert not any(name.startswith("hidden")
-                   for form in ("add", "edit") for name in vault_page._form_names(form, one))
+                   for form in ("add", "edit") for name in page._form_names(form, one))
 
 
 @pytest.mark.parametrize("submitted, stored", [
@@ -1538,7 +1540,7 @@ def test_the_names_a_form_takes_are_the_names_it_renders(store, route):
     [form] = re.findall(r'<form[^>]*action="' + re.escape(target) + r'"[^>]*>(.*?)</form>',
                         body, re.DOTALL)[:1]
     rendered = set(re.findall(r'\sname="([^"]+)"', form))
-    expected = vault_page._form_names(route.split("-")[0], one)
+    expected = page._form_names(route.split("-")[0], one)
     assert rendered == expected
     # Sent together, no name comes twice: every box and checkbox has a name of its own, and
     # the one submit button a tap activates shares none with them.
