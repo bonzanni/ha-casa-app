@@ -2,6 +2,10 @@
 # The broker reads credentials only from its private runtime config.
 set -euo pipefail
 chmod 0711 /run/casa-browser/broker
+# The saved-logins page's socket directory, made in both modes (empty with a 1Password token):
+# the broker owns it, and nginx's group may only pass through it to the socket. Without it the
+# page does not start and the broker serves on.
+install -d -o casa-broker -g casa-ingress -m 2710 /run/casa-browser/logins || true
 while [ ! -s /run/casa-browser/ca/ca.pem ]; do sleep 0.1; done
 exec env -i PATH=/command:/usr/bin:/bin LANG=C.UTF-8 TZ="${TZ:-UTC}" \
   HOME=/run/casa-browser/broker PYTHONPATH=/opt \

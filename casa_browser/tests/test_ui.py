@@ -489,7 +489,8 @@ async def test_builtin_setup_page_has_one_store_row_and_the_risk_line(builtin):
     status, page, _ = await operator.get("/setup")
     assert status == 200
     en = catalog("en")
-    store_row = ui.row(ui.lead("ok", "ok"), ui.e(en["setup.store_builtin"]), wrap=True)
+    store_row = ui.row(ui.lead("ok", "ok"), ui.e(en["setup.store_builtin"]),
+                       href=PREFIX + "/logins/", wrap=True)
     risk = f'<div class="card pad"><p class="small">{ui.e(en["setup.store_builtin_scope"])}</p></div>'
     assert page.count(store_row) == 1 and page.count(risk) == 1
     assert (page.index(store_row) < page.index(_fixed_part(en["setup.language"]))
@@ -531,39 +532,100 @@ async def test_builtin_setup_page_says_when_the_store_cannot_be_opened(builtin, 
 
 
 async def test_builtin_site_pages_use_the_saved_login_texts(builtin):
-    """The new-site form's id field, a site's forget dialog and the extra-fields banner each
-    use the text for a saved login, and none of them the 1Password one."""
+    """The new-site form has no login id field (nobody can know a saved login's id: a site's
+    first sign-in asks which saved login it uses) and a posted one is ignored; a site's forget
+    dialog and the extra-fields banner each use the text for a saved login, and none of them
+    the 1Password one."""
     from casa_browser import ui
     from casa_browser.i18n import Text, catalog
     rig, operator = builtin
     t = Text("en")
-    real = rig.broker.call
-
-    async def call(op, **args):
-        if op == "register_item":
-            return {"site_id": args["site_id"], "roles_available": ["username", "password"],
-                    "extra_field_names": ["recovery codes"], "warning": ""}
-        return await real(op, **args)
-    rig.broker.call = call
     status, form, _ = await operator.get("/sites/new")
     assert status == 200
-    assert f'<span>{ui.e(t("sites.item.builtin"))}</span><input name="vault_item_id"' in form
+    assert 'name="vault_item_id"' not in form
     assert t("sites.item") not in _shown(form)
     status, _, resp = await operator.post("/sites", {
         "display_name": "Shop", "origins": "https://shop.example", "login_origins":
         "https://login.shop.example", "vault_item_id": "saved_shop", "start_page": "",
         "confirm": "yes"})
     assert status == 303, operator.html
-    status, listing, _ = await operator.follow(resp)
+    assert rig.broker.registered == []          # registered as a site with no login yet
+    assert [c[1] for c in rig.broker.captured] == [("https://login.shop.example",)]
+    site = next(s for s in rig.store.list_sites() if s.display_name == "Shop")
+    assert site.vault_item_id is None
+    status, listing, _ = await operator.get("/sites?note=registered&fields=recovery%20codes")
     assert status == 200
     banner = t("sites.extra_fields.builtin", fields="recovery codes")
     assert f"<p>{ui.e(banner)}</p>" in listing
     assert _fixed_part(catalog("en")["sites.extra_fields"]) not in _shown(listing)
-    site = next(s for s in rig.store.list_sites() if s.display_name == "Shop")
-    assert site.vault_item_id == "saved_shop"
     status, page, _ = await operator.get(f"/sites/{site.site_id}")
     assert status == 200
     assert f'data-confirm-body="{ui.e(t("sites.forget_body.builtin"))}"' in page
     assert t("sites.forget_body") not in _shown(page)
     for html in (form, listing, page):
         assert "1Password" not in html and "extension" not in html
+
+
+def _broker_links(rig, links):
+    rig.broker.status_reply = {"configured": True, "store": "builtin", "available": True,
+                               "links": dict(links)}
+
+
+async def test_builtin_pages_lead_to_the_saved_logins(builtin):
+    """Setup's store row, and the page of a site that signs in, lead to the saved logins;
+    a public site's page does not."""
+    from casa_browser import ui
+    from casa_browser.i18n import Text
+    rig, operator = builtin
+    t = Text("en")
+    _broker_links(rig, {"sa": "item-a"})
+    link = ui.row(ui.lead("key", "mute"), ui.e(t("sites.saved_logins")),
+                  href=PREFIX + "/logins/")
+    status, page, _ = await operator.get("/sites/sa")
+    assert status == 200 and page.count(link) == 1
+    status, page, _ = await operator.get("/sites/sp")
+    assert status == 200 and "/logins/" not in page
+    status, page, _ = await operator.get("/setup")
+    assert status == 200 and page.count(f'href="{PREFIX}/logins/"') == 1
+
+
+async def test_the_sites_list_refreshes_before_it_draws(builtin):
+    from casa_browser.i18n import Text
+    rig, operator = builtin
+    t = Text("en")
+    _broker_links(rig, {})
+    status, page, _ = await operator.get("/sites")
+    assert status == 200
+    assert t("sites.item_set.builtin") not in _shown(page)
+    assert t("sites.first_login") in _shown(page)
+    assert rig.store.get_site("sa").vault_item_id is None
+
+
+async def test_a_site_s_page_refreshes_before_it_draws(builtin):
+    from casa_browser.i18n import Text
+    rig, operator = builtin
+    t = Text("en")
+    _broker_links(rig, {})
+    status, page, _ = await operator.get("/sites/sa")
+    assert status == 200
+    assert t("sites.item_set.builtin") not in _shown(page)
+    assert t("sites.first_login") in _shown(page)
+    assert rig.store.get_site("sa").vault_item_id is None
+
+
+async def test_with_1password_there_is_no_saved_logins_page(rig, operator):
+    """With a 1Password token the pages lead nowhere new: no link to saved logins, the new-site
+    form keeps its item id field, a set item reads as today, and the path is not found."""
+    from casa_browser.i18n import Text
+    t = Text("en")
+    pages = {}
+    for path in ("/setup", "/sites", "/sites/sa", "/sites/new"):
+        status, page, _ = await operator.get(path)
+        assert status == 200, path
+        pages[path] = page
+        assert "/logins/" not in page, path
+    assert 'name="vault_item_id"' in pages["/sites/new"]
+    assert t("sites.item_set") in _shown(pages["/sites/sa"])
+    assert t("sites.saved_logins") not in _shown(pages["/sites/sa"])
+    status, _, _ = await operator.get("/logins/")
+    assert status == 404

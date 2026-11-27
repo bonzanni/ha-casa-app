@@ -191,9 +191,59 @@ async def test_no_delete_interface(tmp_path):
                 assert not any(n.split('.')[0] == 'importlib' for n in modules), (path, node.lineno)
                 assert not any(n.split('.')[-1] in dynamic for n in modules), (path, node.lineno)
             assert not any(n in banned or n.startswith(('revoke_', 'grant_')) for n in names)
+    # The one removal of a login: the person's own, on the saved-logins page. In the page's
+    # engine, exactly one call removes anything, and it is its store's delete.
+    removals = []
+    for node in ast.walk(ast.parse((root / 'vault_page.py').read_text())):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, 'id', '')
+            if name in REMOVALS:
+                removals.append(ast.unparse(func))
+    assert removals == ['self._store.delete']
     r = await Rig(tmp_path).setup()
     await r.call('login', run_id='run', site_id='site', driver_session='driver')
     assert not any(c[0] in FORBIDDEN_SDK_METHODS for c in ALL_SDK_CALLS)
+
+
+# What a call that removes something is called, in the page's engine.
+REMOVALS = {'delete', 'delete_all', 'archive', 'remove', 'purge', 'trash', 'unlink', 'rmtree',
+            'rmdir', 'removedirs'}
+PAGE_MODULES = {'logins_page', 'vault_page', 'vault_page_server'}
+
+
+async def test_no_rpc_operation_reaches_the_page():
+    """No operation of the broker's RPC is the page's or answers with it: each operation's
+    handler is the broker's method of that name, none of them the page's two calls into the
+    broker, and the page's modules are named in the function that starts the page and
+    nowhere else in the broker's module, so no handler can reach them."""
+    for op in BROKER_OPS:
+        assert 'page' not in op and op not in ('login_changed', 'login_deleted'), op
+    path = Path(__file__).parents[1] / 'rootfs/opt/casa_browser/broker/main.py'
+    tree = ast.parse(path.read_text())
+    broker = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Broker')
+    dispatch = next(n for n in broker.body if getattr(n, 'name', None) == 'dispatch')
+    (table,) = [n.value for n in ast.walk(dispatch) if isinstance(n, ast.Assign)
+                and [ast.unparse(t) for t in n.targets] == ['handlers']]
+    handlers = {key.value: ast.unparse(value) for key, value in zip(table.keys, table.values)}
+    assert handlers == {op: f'self.{op}' for op in BROKER_OPS}
+    run = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'run')
+    inside = {id(n) for n in ast.walk(run)}
+
+    def named(node):
+        if isinstance(node, ast.Name):
+            return {node.id}
+        if isinstance(node, ast.Attribute):
+            return {node.attr}
+        if isinstance(node, ast.alias):
+            return set(node.name.split('.'))
+        if isinstance(node, ast.ImportFrom) and node.module:
+            return set(node.module.split('.'))
+        return set()
+    outside = [(node.lineno, named(node) & PAGE_MODULES) for node in ast.walk(tree)
+               if id(node) not in inside and named(node) & PAGE_MODULES]
+    assert outside == []
+    assert {'logins_page', 'vault_page_server'} <= set().union(*(named(n) for n in ast.walk(run)))
 
 
 async def test_forget_keeps_vault_item(tmp_path):

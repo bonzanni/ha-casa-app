@@ -8,5 +8,10 @@ install -d -o casa-ingress -g casa-ingress -m 0700 /run/casa-browser/nginx
 PYTHONPATH=/opt /opt/venv/bin/python -m casa_browser.ui ingress-peer > /run/casa-browser/nginx/ingress-peer.conf.tmp
 chmod 0644 /run/casa-browser/nginx/ingress-peer.conf.tmp
 mv /run/casa-browser/nginx/ingress-peer.conf.tmp /run/casa-browser/nginx/ingress-peer.conf
+# The saved-logins page is served only when the app keeps the logins itself; the controller's
+# options file says which store this start chose.
+PYTHONPATH=/opt /opt/venv/bin/python -m casa_browser.ui logins-conf > /run/casa-browser/nginx/logins.conf.tmp
+chmod 0644 /run/casa-browser/nginx/logins.conf.tmp
+mv /run/casa-browser/nginx/logins.conf.tmp /run/casa-browser/nginx/logins.conf
 exec env -i PATH=/command:/usr/sbin:/usr/bin:/bin \
   s6-setuidgid casa-ingress nginx -c /etc/nginx/casa_browser.conf -e stderr

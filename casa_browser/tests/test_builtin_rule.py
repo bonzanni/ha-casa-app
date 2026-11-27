@@ -3,7 +3,8 @@
 One scenario over the app's own pieces, wired as a start wires them: root bootstrap on an
 options file, the broker built from the file bootstrap wrote for it and served on a socket,
 the controller with a client of that broker, the pages and the ``/v1`` API over that
-controller, and the proxy's rules built from the file bootstrap wrote for the proxy. Doubles
+controller, the saved-logins pages on the broker's store, and the proxy's rules built from
+the file bootstrap wrote for the proxy. Doubles
 stand only where a browser or a network would be: the page a sign-in reads and fills, the
 browser manager, the proxy's control client, and 1Password's SDK, whose sign-in is counted.
 
@@ -14,6 +15,7 @@ this start produced. Every one of them is zero.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -34,14 +36,17 @@ from uihelpers import Operator
 from casa_browser import proxy_main
 from casa_browser.api import make_app
 from casa_browser.broker.journal import Journal
+from casa_browser.broker import logins_page
 from casa_browser.broker.main import Broker, BrokerServer, build_vault
 from casa_browser.broker_client import BrokerClient
 from casa_browser.i18n import catalog
 from casa_browser.options import BrokerOptions, Owners, Paths, bootstrap, read_locale_record
 from casa_browser.protocol import spec_digest
 from casa_browser.ui import make_ui
+from casa_browser.vault_page import Request
 
 TEAM_HOST = "casa-it.1password.eu"
+PREFIX = "/api/hassio_ingress/abc"
 SITE, SIGN_IN = "https://shop.example", "https://login.shop.example"
 # What no text of an install without 1Password may say.
 WORDS = ("1password", "extension", "guest")
@@ -178,13 +183,20 @@ async def test_nothing_made_for_1password_runs_in_built_in_mode(app, tmp_path):
         return reply.status, json.loads(text)
 
     try:
-        # The Setup page, a login in the store, and a site registered with it on the Sites form.
+        # The Setup page, a login in the store and the pages that show it, and a site
+        # registered on the Sites form (which has no field for a login).
         setup = await page("/setup", "the Setup page")
         login = await app.vault.create_login("Shop", username, password, [SIGN_IN])
+        logins = logins_page.page(app.vault, lambda _id: None, lambda _id: None)
+        for path in ("/", "/add", f"/s/{login.id}", f"/s/{login.id}/edit",
+                     f"/s/{login.id}/delete"):
+            shown_page = logins.handle(Request("GET", path, {"x-ingress-path": PREFIX}, b""))
+            assert shown_page.status == 200, path
+            texts.append((f"the saved-logins page {path}", shown(shown_page.body.decode())))
         await page("/sites/new", "the form for a new site")
         status, _, reply = await operator.post("/sites", {
             "display_name": "Shop", "origins": SITE, "login_origins": SIGN_IN,
-            "vault_item_id": login.id, "start_page": SITE + "/account", "confirm": "yes"})
+            "start_page": SITE + "/account", "confirm": "yes"})
         assert status == 303, status
         status, listing, _ = await operator.follow(reply)
         assert status == 200
@@ -192,7 +204,8 @@ async def test_nothing_made_for_1password_runs_in_built_in_mode(app, tmp_path):
         site = next(s for s in rig.store.list_sites() if s.display_name == "Shop")
         await page(f"/sites/{site.site_id}", "the site's page")
 
-        # An account run on that site: its start page signs in on its own.
+        # An account run on that site: its start page's sign-in finds no login linked and
+        # asks which saved login signs in; the answer links the login and signs in with it.
         rig.ctl.pairing.arm()
         secret = headers(rig.ctl.pairing.claim("Casa", "peer"))
         members = {"request_id": "rule-1", "requester_id": "finance", "mode": "account",
@@ -208,6 +221,23 @@ async def test_nothing_made_for_1password_runs_in_built_in_mode(app, tmp_path):
             await rig.settle()
             if rig.state(run_id) == "running":
                 break
+        assert rig.state(run_id) == "running"
+        control = f"/v1/control/runs/{run_id}"
+        status, pending = await asked("get", control + "/judgements/pending",
+                                      "the judgements to relay")
+        (judgement,) = pending["judgements"]
+        assert judgement["kind"] == "login_item", judgement
+        status, verdict = await asked(
+            "post", f"{control}/judgements/{judgement['id']}", "the check's verdict",
+            json={"packet_sha256": hashlib.sha256(judgement["packet"].encode()).hexdigest(),
+                  "verdict": {"items": [0], "reason": "the shop's login"}})
+        assert verdict["outcome"] == "asked", verdict
+        question_path = f"{control}/questions/{verdict['question_id']}"
+        status, question = await asked("get", question_path, "the question")
+        status, answered = await asked("post", question_path + "/answer", "the answer", json={
+            "revision": question["revision"], "digest": question["digest"],
+            "choice": {"item": 0}, "operator_ref": "tap:1"})
+        assert answered["outcome"] == "linked", answered
         assert rig.state(run_id) == "running"
         sign_ins = [reply for op, reply in app.broker_replies if op == "login"]
 
@@ -242,7 +272,10 @@ async def test_nothing_made_for_1password_runs_in_built_in_mode(app, tmp_path):
     # The scenario was the built-in one from its first page, and it did sign in: the form with
     # the passkey beside it was filled with the stored login's two values and sent.
     assert catalog("en")["setup.store_builtin"] in shown(setup)
-    assert sign_ins == [{"status": "logged_in", "reason": "completed"}]
+    assert sign_ins == [{"status": "needs_live_view", "reason": "not_found"},
+                        {"status": "logged_in", "reason": "completed"}]
+    assert rig.store.get_site(site.site_id).vault_item_id == login.id
     assert app.driver.fills == [(0, "username", username), (0, "password", password)]
-    # thirteen pages and API replies were read, and every reply of the broker
-    assert len(texts) == 13 + len(app.broker_replies) and app.broker_replies
+    # twenty-two pages and API replies were read (five of them saved-logins pages, four the
+    # question's relay and answer), and every reply of the broker
+    assert len(texts) == 22 + len(app.broker_replies) and app.broker_replies

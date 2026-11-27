@@ -63,6 +63,44 @@ def ingress_peer_conf() -> str:
     return f"allow {ingress_peer()};\ndeny all;\n"
 
 
+# The saved-logins page, which the broker serves on its own socket when the app keeps the
+# logins itself. nginx passes ``/logins/`` there and serves the page's static files; the
+# header names are the ones the page checks a form's origin and builds its addresses from.
+LOGINS_PATH = "/logins/"
+LOGINS_CONF = """location /logins/static/ {
+    alias /opt/casa_browser/vault_static/;
+    types {
+        text/css css;
+        application/javascript js;
+    }
+    default_type application/octet-stream;
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+}
+location /logins/ {
+    proxy_pass http://unix:/run/casa-browser/logins/page.sock:/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Ingress-Path $http_x_ingress_path;
+    proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+    proxy_set_header X-Forwarded-Host $http_x_forwarded_host;
+    proxy_read_timeout 75;
+    client_max_body_size 300k;
+}
+"""
+
+
+def logins_conf(public_options: Path) -> str:
+    """nginx's locations of the saved-logins page, from the options file the app's start
+    wrote for the controller: with the app's own store the two locations, otherwise none,
+    so ``/logins/`` reaches these pages, which have no such path."""
+    try:
+        public = json.loads(public_options.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    builtin = isinstance(public, dict) and public.get("login_store") == "builtin"
+    return LOGINS_CONF if builtin else ""
+
+
 def e(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -522,7 +560,7 @@ class Ui:
             binding = t("sites.not_bound")
         else:
             binding = t("sites.no_sign_in")
-        login = t("sites.item_set") if site.vault_item_id else (
+        login = t(self._login_key("sites.item_set")) if site.vault_item_id else (
             t("sites.first_login") if site.login_origins else t("sites.public"))
         if site.provider_bindings and site.site_id in lost:
             look = ("alert", "err")
@@ -536,6 +574,7 @@ class Ui:
 
     async def sites(self, request: web.Request) -> web.Response:
         t = self.t
+        await self.ctl.refresh_links()
         rows = []
         lost = self.ctl.bindings_lost()
         for site in self.store.list_sites():
@@ -562,15 +601,22 @@ class Ui:
     async def site_page(self, request: web.Request) -> web.Response:
         t = self.t
         site_id = request.match_info["site"]
-        site = self.store.get_site(site_id) if _ID.fullmatch(site_id or "") else None
+        if not _ID.fullmatch(site_id or ""):
+            raise web.HTTPNotFound()
+        await self.ctl.refresh_links()
+        site = self.store.get_site(site_id)
         if site is None:
             raise web.HTTPNotFound()
         login, binding, ico, tint = self._site_status(site, self.ctl.bindings_lost())
+        # With the app's own store, the logins this site can sign in with are on that page.
+        saved = (row(lead("key", "mute"), e(t("sites.saved_logins")),
+                     href=self.url(request, LOGINS_PATH))
+                 if self.builtin and site.login_origins else "")
         status = ('<div class="card">'
                   + row(lead(ico, tint), e(t("sites.sign_in")), e(login), wrap=True)
                   + row(lead("link", "ok" if site.provider_bindings and tint != "err" else "mute"),
                         e(t("sites.provider")), e(binding), wrap=True)
-                  + "</div>")
+                  + saved + "</div>")
         groups = [(t("sites.site"), site.origins), (t("sites.sign_in"), site.login_origins)]
         addresses = "".join(
             f'<div><p class="small">{e(label)}</p><div class="copies">'
@@ -590,6 +636,11 @@ class Ui:
 
     async def site_new(self, request: web.Request) -> web.Response:
         t = self.t
+        # With the app's own store nobody can know a login's id: the site's first sign-in
+        # asks which saved login it uses.
+        item = ("" if self.builtin else
+                f'<label class="field"><span>{e(t("sites.item"))}</span>'
+                '<input name="vault_item_id" maxlength="64"></label>')
         register = self.form(request, "/sites", (
             f'<label class="field"><span>{e(t("sites.name"))}</span>'
             '<input name="display_name" maxlength="80" required></label>'
@@ -599,9 +650,7 @@ class Ui:
             '<textarea name="login_origins" rows="2"></textarea></label>'
             '<details><summary class="row"><span class="txt"><span class="l1 more">'
             f'{e(t("sites.more"))}</span></span>{icon("down", "i chev")}</summary>'
-            '<div class="stack">'
-            f'<label class="field"><span>{e(t(self._login_key("sites.item")))}</span>'
-            '<input name="vault_item_id" maxlength="64"></label>'
+            f'<div class="stack">{item}'
             f'<label class="field"><span>{e(t("sites.start"))}</span>'
             '<input name="start_page" maxlength="2048"></label></div></details>'
             '<label class="check"><input type="checkbox" name="confirm" value="yes" required>'
@@ -616,7 +665,7 @@ class Ui:
                    "origins": _lines(form.get("origins", "")),
                    "login_origins": _lines(form.get("login_origins", "")),
                    "operator_ref": self.operator_ref(request)}
-        if form.get("vault_item_id", "").strip():
+        if not self.builtin and form.get("vault_item_id", "").strip():
             payload["vault_item_id"] = form["vault_item_id"].strip()
         if form.get("start_page", "").strip():
             payload["start_page"] = form["start_page"].strip()
@@ -650,7 +699,7 @@ class Ui:
         locale = c.locale
         parts = [f"<h2>{e(t('setup.ready_heading'))}</h2>", '<div class="card">']
         if self.builtin:
-            parts.append(await self._builtin_store_row())
+            parts.append(await self._builtin_store_row(request))
         else:
             parts.append(row(lead("ok", "ok") if c.configured else lead("alert", "err"),
                              e(t("setup.onepassword_configured") if c.configured
@@ -691,16 +740,18 @@ class Ui:
         parts.append(self._pairing_section(request))
         return self.page(request, t("setup.title"), "".join(parts), tab="setup")
 
-    async def _builtin_store_row(self) -> str:
-        """Setup's first row with the app's own store: where the logins are kept, or that
-        they could not be opened when the broker says so or does not answer."""
+    async def _builtin_store_row(self, request: web.Request) -> str:
+        """Setup's first row with the app's own store: where the logins are kept, leading to
+        the page that shows them, or that they could not be opened when the broker says so or
+        does not answer."""
         t = self.t
         try:
             status = await self.ctl.broker.status()
         except Exception:  # noqa: BLE001
             status = {"error": "unavailable"}
         if "error" not in status and status.get("available") is True:
-            return row(lead("ok", "ok"), e(t("setup.store_builtin")), wrap=True)
+            return row(lead("ok", "ok"), e(t("setup.store_builtin")),
+                       href=self.url(request, LOGINS_PATH), wrap=True)
         return row(lead("alert", "err"), e(t("setup.store_builtin_unavailable")), wrap=True)
 
     def _pairing_section(self, request, heading: bool = True) -> str:
@@ -1032,7 +1083,11 @@ def main(argv: list[str]) -> int:  # pragma: no cover — run by the nginx unit 
     if argv[1:] == ["ingress-peer"]:
         sys.stdout.write(ingress_peer_conf())
         return 0
-    sys.stderr.write("usage: python -m casa_browser.ui ingress-peer\n")
+    if argv[1:] == ["logins-conf"]:
+        from casa_browser import options
+        sys.stdout.write(logins_conf(options.Paths().public_options))
+        return 0
+    sys.stderr.write("usage: python -m casa_browser.ui ingress-peer | logins-conf\n")
     return 2
 
 
