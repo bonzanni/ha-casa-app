@@ -113,9 +113,9 @@ deletes every transcript older than `cleanupPeriodDays` (30 days unless
 set), a transcript INV-MEM-031 keeps included. The pinned CLI enables it
 only when the user settings source is loaded or a loaded source sets
 `cleanupPeriodDays`. Residents, specialists, the configurator, plugin
-jobs and the restricted webhook pin their sources without the user source; the five
+jobs and the restricted webhook pin their sources without the user source; the four
 utility one-shots (the tier classifier, `query_engager`'s
-synthesis, run admission's reading, the browsing step check's `_ask_check` and the memory writer's model call) pin none, since they have no project of their own and a project
+synthesis, the browsing step check's `_ask_check` and the memory writer's model call) pin none, since they have no project of their own and a project
 file could carry the key. `cleanupPeriodDays` is never put in the shared
 settings flag: there it would enable the cleanup for every launch.
 

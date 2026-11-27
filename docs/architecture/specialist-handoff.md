@@ -38,8 +38,8 @@ or approval continuation, a stored-call tap, a setup turn, a narration, a contin
 scheduled, webhook, voice or engagement turn (a tapped suggested reply's dispatch will be
 the second stamper). A child origin copies its parent's, so the words of the turn that
 started the chain reach every run in it. `handoff.operator_words` reads that key only, on
-an `_operator_turn` Telegram origin, and run admission reads nothing else
-([`plugin-operator-calls.md`](plugin-operator-calls.md)).
+an `_operator_turn` Telegram origin, and run admission keeps nothing else for the action
+check ([`plugin-operator-calls.md`](plugin-operator-calls.md)).
 
 **A task the operator started is marked as his along its whole path.** Two reserved origin
 keys (`provenance.OPERATOR_TASK_KEY`, `_operator_task`, and `OWNER_PASS_KEY`, `_owner_pass`)
@@ -78,8 +78,8 @@ runs under no delegation, so a hand-off made there starts a chain whose first re
 that specialist: the operator's words of that turn travel down it, the helper's answer is
 the tool result, and a helper whose work continues across turns answers that specialist's
 conversation, as it would a resident's
-([`plugin-continuations.md`](plugin-continuations.md)). Run admission treats such a request
-as it treats a resident's direct one ([`plugin-operator-calls.md`](plugin-operator-calls.md)).
+([`plugin-continuations.md`](plugin-continuations.md)). Run admission admits such a request
+at once, as it admits every other ([`plugin-operator-calls.md`](plugin-operator-calls.md)).
 
 **One chain, one global slot.** The chain's root delegation holds a global concurrency
 slot for as long as the chain runs, so a hand-off inside it takes only its per-scope permit

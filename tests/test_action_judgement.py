@@ -89,11 +89,11 @@ def wired(monkeypatch):
     return seen, replies
 
 
-def _call(plugin="browser", operator_id=100, client="c1"):
+def _call(plugin="browser", operator_id=100, client="c1", tu=None):
     ident = GrantIdentity(operator_id=operator_id, chat_id=42, enforcement_role="browser",
                           artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT)
     return operator_calls.CALLS.open(
-        client_id=client, tool_use_id="tu-" + client, tool_name="x", role="browser",
+        client_id=client, tool_use_id=tu or "tu-" + client, tool_name="x", role="browser",
         plugin=plugin, identity=ident, origin={**ORIGIN, "_operator_words": WORDS})
 
 
@@ -354,6 +354,26 @@ async def test_route_serves_only_the_in_flight_call(wired):
     assert await _post({**body}) == {"error": "bad_client"}
     assert await _post(["not", "an", "object"]) == {"error": "bad_json"}
     assert seen == []
+
+
+async def test_route_reaches_the_call_the_body_names(wired):
+    """Two calls of one session, each of another plugin: the words the check
+    is given are those kept for the plugin of the call the body names."""
+    seen, _ = wired
+    aj.WORDS.record(plugin="bank", bot_id=CASA_BOT, operator_id=100, spec_digest=DIGEST,
+                    words=WORDS)
+    _call(tu="t1")
+    _call(plugin="bank", tu="t2")
+    body = {"client": "c1", "kind": "action", "packet": _canonical(_packet()),
+            "spec_digest": DIGEST}
+    assert await _post(body) == {"error": "ambiguous_call"}
+    assert await _post({**body, "tool_use_id": 7}) == {"error": "bad_tool_use_id"}
+    assert seen == []
+    assert (await _post({**body, "tool_use_id": "t2"}))["verdict"] == GO
+    assert json.loads(seen[-1][1])["context"]["operator_words"] == WORDS
+    assert (await _post({**body, "tool_use_id": "t1"}))["verdict"] == GO
+    assert json.loads(seen[-1][1])["context"]["operator_words"] is None
+    assert len(seen) == 2
 
 
 async def test_route_validates_the_request_before_any_model_call(wired):

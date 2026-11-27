@@ -442,38 +442,6 @@ async def test_a_tap_and_ellen_at_once_tell_him_once(env):
     assert "already stopped and the person has been told" in typed
 
 
-async def test_a_tapped_start_card_carries_no_stop_and_posts_no_line(env, monkeypatch):
-    """His Start edits the card to its settled text with no buttons, then settles the
-    Confirmation — admitted, saved with its card's message id. Nothing else is sent: the
-    card has no Stop of any kind, and he stops the runs by asking the agent."""
-    order: list = []
-    sent_lines: list = []
-    ch = types.SimpleNamespace(default_agent="assistant", bot_id=BOT, has_bot_id=True)
-
-    async def deliver_operator_question(chat_id, text, labels, rid, *, post=None, entities=None):
-        return CARD_MID
-
-    async def edit_dm_message(chat_id, message_id, text, buttons=None, **kw):
-        c = run_admission.CONFIRMATIONS.peek(cid_box[0])
-        order.append(("edit", c.status, list(buttons or []), kw))
-        return True
-
-    async def send_reply_line(chat_id, text, reply_to, *, post=None, entities=None):
-        sent_lines.append(text)
-        return True
-    ch.deliver_operator_question, ch.edit_dm_message = deliver_operator_question, edit_dm_message
-    ch.send_reply_line = send_reply_line
-    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(ch), raising=False)
-    cid_box = await _pending_card(env, monkeypatch)
-    await _answer_card(0)
-    assert order == [("edit", "pending", [], {})]
-    assert not order[-1][2] and not sent_lines
-    c = run_admission.CONFIRMATIONS.peek(cid_box[0])
-    reread = run_admission.Confirmations(str(env.tmp / "admissions.json")).peek(cid_box[0])
-    assert reread.card_address() == TgAddress(BOT, OPERATOR, CARD_MID)
-    assert reread.status == "admitted" == c.status
-
-
 @pytest.mark.parametrize("outcome, mark, line", [
     ("stopped", "☑ Stopped", "Stopped."),
     ("ended", "☑ Ended", "It had already ended."),
@@ -1041,45 +1009,6 @@ async def test_an_old_stop_key_press_is_an_ordinary_message():
     turns = await _drain_bus(bus)
     assert len(turns) == 1
     assert turns[0].content == "⏹ Stop «news summary»" and deleted == []
-
-
-# -- helpers for the start card (run_admission) ------------------------------------------------
-
-async def _pending_card(env, monkeypatch):
-    import operator_calls
-    monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
-    ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
-                          delivery=TgAddress(BOT, OPERATOR))
-    origin = {**ORIGIN, "execution_role": "browser", "_delegation_id": "d-1",
-              "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
-              "synthetic": "continuation", "user_text": ""}
-    call = operator_calls.CALLS.open(client_id="c1", tool_use_id="tu", tool_name="x",
-                                     role="browser", plugin="browser", identity=ident,
-                                     origin=origin)
-    monkeypatch.setattr(pc, "CONTINUATIONS", types.SimpleNamespace(request=lambda *a: "queued"))
-    run = {"spec_digest": "sha256:aa", "mode": "account", "task_kind": "invoice",
-           "task_text": "t", "sites": [{"site_id": "runpod", "access": "account",
-                                        "name": "RunPod"}]}
-    out = await run_admission.request_admission(call, [run], "k1")
-    assert out["status"] == "confirmation_pending"
-    return [out["confirmation_id"]]
-
-
-async def _answer_card(index):
-    for _ in range(200):
-        reqs = vb.BROKER.pending(namespace="resident_ask", scope=f"ask:{BOT}:{OPERATOR}")
-        if reqs:
-            break
-        await asyncio.sleep(0)
-    (rid,) = reqs
-    claim = vb.BROKER.claim(namespace="resident_ask", scope=f"ask:{BOT}:{OPERATOR}",
-                            request_id=getattr(rid, "request_id", rid), option_index=index,
-                            actor_id=OPERATOR)
-    assert not isinstance(claim, str), claim
-    assert vb.BROKER.commit(claim)
-    for _ in range(200):
-        await asyncio.sleep(0)
 
 
 # -- a request that ended on its own: its card loses its Stop (the driver sweep's ``ended``) ----

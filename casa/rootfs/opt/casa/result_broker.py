@@ -221,6 +221,11 @@ class _InFlight:
     # The call was made by a helper working on a task the operator started
     # with someone else: the messages it delivers do not notify.
     quiet: bool = False
+    # The worker (a sub-agent of the session) that made the call, by the hook
+    # input's ``agent_id``; None: the session itself.
+    agent_id: "str | None" = None
+    # Dropped after INFLIGHT_CAP_S when no terminal hook event closed it.
+    capped: bool = True
 
 
 @dataclasses.dataclass
@@ -720,13 +725,16 @@ class ReferenceStore:
             if r.used or r.expires_at <= now:
                 del self._refs[ref]
         for key, call in list(self._inflight.items()):
-            if call.opened_at + INFLIGHT_CAP_S <= now:
-                # A swept call's result, if it ever arrives, is withheld
-                # (no call in flight): its deposits go with it, exactly as
-                # `drop_call_deposits` drops them on any withholding.
-                for ref in call.deposits.values():
-                    self._refs.pop(ref, None)
-                del self._inflight[key]
+            if call.capped and call.opened_at + INFLIGHT_CAP_S <= now:
+                self._drop_locked(key)
+
+    def _drop_locked(self, key: tuple[str, str]) -> None:
+        """Forget the in-flight call *key* without a result. Its result, if it
+        ever arrives, is withheld (no call in flight): its deposits go with
+        it, exactly as `drop_call_deposits` drops them on any withholding."""
+        call = self._inflight.pop(key)
+        for ref in call.deposits.values():
+            self._refs.pop(ref, None)
 
     def sweep(self) -> None:
         with self._lock:
@@ -737,13 +745,16 @@ class ReferenceStore:
                   tool_use_id: str, identity, provides: tuple,
                   delivers: dict | None = None, contract_map: Any = None,
                   protected: Any = None, entry: Any = None,
-                  quiet: bool = False) -> None:
+                  quiet: bool = False, agent_id: "str | None" = None,
+                  capped: bool = True) -> None:
         """Register a ``capability`` call at admission. The identity is stored
         HERE, atomically with the call, so a deposit can bind it: the plugin's
         deposit request carries no identity and asserts none. ``delivers``
         (#1015) is the contract's ``{slot: kind}`` — the slot whose deposit
         the result hook delivers instead of passing. ``quiet`` marks a call
-        whose delivered messages are sent without a notification."""
+        whose delivered messages are sent without a notification. ``agent_id``
+        is the worker of the session that made the call (``None``: the session
+        itself); a call that is not ``capped`` stays until it is closed."""
         with self._lock:
             self._sweep_locked()
             self._inflight[(client_id, tool_use_id)] = _InFlight(
@@ -752,7 +763,7 @@ class ReferenceStore:
                 identity=identity, provides=tuple(provides),
                 opened_at=self._now(), delivers=dict(delivers or {}),
                 contract_map=contract_map, protected=protected, entry=entry,
-                quiet=quiet)
+                quiet=quiet, agent_id=agent_id, capped=capped)
 
     def close_call(self, client_id: str, tool_use_id: str):
         """Close a call (PostToolUse / PostToolUseFailure). Returns the record
@@ -760,16 +771,38 @@ class ReferenceStore:
         with self._lock:
             return self._inflight.pop((client_id, tool_use_id), None)
 
+    def close_agent(self, client_id: str, agent_id: "str | None") -> int:
+        """Forget every in-flight call of *client_id* that the worker
+        *agent_id* made (``None``: the calls the session made itself), with
+        their deposits. Returns how many."""
+        return self._drop_where(
+            lambda call: call.client_id == client_id and call.agent_id == agent_id)
+
+    def close_client(self, client_id: str) -> int:
+        """Forget every in-flight call of *client_id*, with their deposits.
+        Returns how many."""
+        return self._drop_where(lambda call: call.client_id == client_id)
+
+    def _drop_where(self, drops: Callable[[_InFlight], bool]) -> int:
+        with self._lock:
+            keys = [key for key, call in self._inflight.items() if drops(call)]
+            for key in keys:
+                self._drop_locked(key)
+        return len(keys)
+
     # -- deposit ----------------------------------------------------------
     def deposit(self, *, client_id: str, slot: str, value: str,
                 caption: str | None = None,
                 label: str | None = None,
                 kind: Any = None,
                 filename: Any = None,
-                key: Any = None) -> tuple[str | None, str | None]:
-        """Bind ``value`` to the UNIQUE in-flight capability call of
-        ``client_id`` whose contract provides ``slot``; mint and return a
-        reference. Zero or more than one such call ⇒ refused (fail closed).
+                key: Any = None,
+                tool_use_id: str | None = None) -> tuple[str | None, str | None]:
+        """Bind ``value`` to the in-flight capability call ``tool_use_id`` of
+        ``client_id``, whose contract must provide ``slot``; mint and return a
+        reference. With no ``tool_use_id`` the call is the UNIQUE in-flight
+        one of ``client_id`` whose contract provides ``slot``: zero or more
+        than one such call ⇒ refused (fail closed).
         Returns ``(reference, None)`` or ``(None, error_code)``.
 
         For a slot the call DELIVERS the deposit is judged by the declared
@@ -790,13 +823,18 @@ class ReferenceStore:
         producer library can send them uniformly."""
         with self._lock:
             self._sweep_locked()
-            matches = [c for c in self._inflight.values()
-                       if c.client_id == client_id and slot in c.provides]
-            if not matches:
-                return None, "no_call_in_flight"
-            if len(matches) > 1:
-                return None, "ambiguous_call"
-            call = matches[0]
+            if tool_use_id is not None:
+                call = self._inflight.get((client_id, tool_use_id))
+                if call is None or slot not in call.provides:
+                    return None, "no_call_in_flight"
+            else:
+                matches = [c for c in self._inflight.values()
+                           if c.client_id == client_id and slot in c.provides]
+                if not matches:
+                    return None, "no_call_in_flight"
+                if len(matches) > 1:
+                    return None, "ambiguous_call"
+                call = matches[0]
             if call.identity is None:
                 return None, "no_identity"
             if slot in call.deposits:
@@ -1276,6 +1314,9 @@ def make_plugin_admission_hook(
         if guest_tools is not None and tool_name not in guest_tools:
             # a guest run: the list is judged before anything is recorded
             return _deny(f"not executed: {tool_name} is not offered to guests")
+        # the worker (a sub-agent of this session) that makes the call; a hook
+        # input from the session itself carries none
+        agent_id = (input_data or {}).get("agent_id")
         recorded = False
         opened = False
 
@@ -1401,7 +1442,8 @@ def make_plugin_admission_hook(
                     return _deny(_DENY_NOT_OPERATOR_CALL)
                 CALLS.open(client_id=client_id, tool_use_id=str(tool_use_id or ""),
                            tool_name=tool_name, role=role, plugin=seg, identity=identity,
-                           origin=dict(agent_mod.origin_var.get(None) or {}))
+                           origin=dict(agent_mod.origin_var.get(None) or {}),
+                           agent_id=agent_id, capped=True)
                 recorded = True
             # A helper working on a task the operator started with someone
             # else: what this call posts for reading does not notify.
@@ -1416,7 +1458,7 @@ def make_plugin_admission_hook(
                     # S5 §2: a proposal's buttons are judged against the
                     # session's own maps and this tool's server
                     contract_map=contract_map, protected=protected, entry=entry,
-                    quiet=quiet)
+                    quiet=quiet, agent_id=agent_id, capped=True)
                 opened = True
             if entry.consumes:
                 updated = dict(tool_input)
@@ -1442,7 +1484,8 @@ def make_plugin_admission_hook(
                             client_id=client_id, artifact_id=entry.artifact_id,
                             tool_name=tool_name,
                             tool_use_id=str(tool_use_id or ""),
-                            identity=identity, provides=(), quiet=quiet)
+                            identity=identity, provides=(), quiet=quiet,
+                            agent_id=agent_id, capped=True)
                     return {"hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "updatedInput": updated,
@@ -2509,7 +2552,8 @@ def _bad(code: str, status: int = 200) -> web.Response:
 
 def build_broker_deposit_handler(store: ReferenceStore | None = None):
     """``POST /internal/broker/deposit`` ``{"client", "slot", "value"}`` plus
-    the optional ``"caption"``/``"label"`` strings a delivered slot may carry
+    the optional ``"tool_use_id"`` of the call the deposit is for, the optional
+    ``"caption"``/``"label"`` strings a delivered slot may carry
     (#1015) and the ``"kind"`` an ``operator_file`` slot requires (S3) ⇒
     ``{"reference"}`` or ``{"error"}``. Write-only: nothing here reads a
     value back, and no error echoes one."""
@@ -2533,6 +2577,9 @@ def build_broker_deposit_handler(store: ReferenceStore | None = None):
             return _bad("bad_value")
         if len(value.encode("utf-8")) > MAX_VALUE_BYTES:
             return _bad("value_too_large")
+        tool_use_id = body.get("tool_use_id")
+        if tool_use_id is not None and not isinstance(tool_use_id, str):
+            return _bad("bad_tool_use_id")
         # Passed through as they are: the store judges them only for a
         # delivered slot (#1015); for any other slot they are ignored, so a
         # producer library can send them uniformly and the base's behaviour
@@ -2542,7 +2589,8 @@ def build_broker_deposit_handler(store: ReferenceStore | None = None):
                                  label=body.get("label"),
                                  kind=body.get("kind"),
                                  filename=body.get("filename"),
-                                 key=body.get("key"))
+                                 key=body.get("key"),
+                                 tool_use_id=tool_use_id)
         if err:
             return _bad(err)
         return web.json_response({"reference": ref})

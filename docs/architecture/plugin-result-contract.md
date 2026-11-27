@@ -173,9 +173,11 @@ the consumer plugin once redeemed.
 **INV-PLUG-019**: A capability result passes to the model only when every slot the tool declares carries the reference of a deposit bound to that very call; a result missing a slot, carrying a foreign reference, or not parseable as an object is replaced and its deposits dropped.
 
 This is a structural check on what the producer returned, and it is all Casa checks. A
-deposit binds to the unique in-flight capability call of its client that provides the
-slot — zero or several such calls refuse the deposit — so a value can never attach to the
-wrong call, and the deposit request itself carries no identity: the identity was stored on
+deposit that names its call in the optional `tool_use_id` binds to that call of its client
+alone, refused when the call is not in flight or does not provide the slot; a deposit that
+names none binds to the unique in-flight capability call of its client that provides the
+slot — zero or several such calls refuse the deposit. Either way a value can never attach to
+the wrong call, and the deposit request itself carries no identity: the identity was stored on
 the in-flight record at admission, atomically. Scope line: this holds for a producer that
 keeps its declared contract; a producer that breaks it is the plugin-author trust boundary
 above, and Casa claims no detection of one.
@@ -196,9 +198,13 @@ window is exactly what would stop this being a boundary.
 stored artifact that carries one is excluded from resolution; at session build the plugin
 is represented as not adopting and refused as above. Never a whole-role failure.
 
-**A deposit arrives with no matching call in flight, or with two.** It is refused with a
-code and no reference is minted; the producer's result then fails the structural check and
-is withheld. The same happens when a slot is deposited twice in one call.
+**A deposit finds no call, or two.** A deposit that names no call is refused
+`no_call_in_flight` when none of its client's calls in flight provides the slot and
+`ambiguous_call` when two or more do; one that names a call is refused `no_call_in_flight`
+when that call is not in flight or does not provide the slot, and `bad_tool_use_id` when the
+id is not a string. No reference is minted. **A slot is
+deposited twice in one call.** The second deposit is refused `slot_already_deposited`; the
+first keeps its reference, and a result carrying it passes.
 
 **A call outlives the in-flight cap.** The next sweep removes the call and every reference
 deposited under it; the result, if it ever arrives, finds no call and is withheld with

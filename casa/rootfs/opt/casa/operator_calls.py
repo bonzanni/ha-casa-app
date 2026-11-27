@@ -10,12 +10,16 @@ it is a continuation. A turn with no grant identity — voice, a webhook, a
 schedule, a sender who is not the operator — has the call denied before it runs.
 
 During the call the plugin's code, never its model, presents its session's
-broker client id on the internal socket; the call is found by that id alone and
-must be the client's only recorded one (the deposit route's rule):
+broker client id on the internal socket, and names the call it serves in the
+body member ``"tool_use_id"`` (the id the tool call itself carries). The call is
+found by the two together. A body with no ``"tool_use_id"`` (a plugin version
+that does not send one) is served the client's only recorded call, and refused
+when there are two (the deposit route's rule):
 
 * ``POST /internal/broker/requester``            (C1) — whom the call serves.
-* ``POST /internal/broker/run-admission``        (C2) — run admission.
-* ``POST /internal/broker/run-admission-status`` (C3) — a confirmation's state.
+* ``POST /internal/broker/run-admission``        (C2) — run admission (every
+  request is admitted at once, ``run_admission``).
+* ``POST /internal/broker/run-admission-status`` (C3) — a request's state.
 * ``POST /internal/broker/continue``             (C8) — queue a continuation turn.
 * ``POST /internal/broker/delivery-status``      (C9) — a delivered slot's outcome.
 * ``POST /internal/broker/action-judgement``     — the check of one browsing
@@ -24,9 +28,9 @@ must be the client's only recorded one (the deposit route's rule):
   pad, or read it back, with no model in between (``scratchpad``).
 
 The record is forgotten at the call's PostToolUse / PostToolUseFailure, or
-after ``OPERATOR_CALL_CAP_S``. The operator question Casa itself posts for run
-admission (``post_question``) is Casa's keyboard, answered by a tap that runs no
-turn."""
+after ``OPERATOR_CALL_CAP_S``. The operator question Casa itself posts
+(``post_question``, the configurator's restart card) is Casa's keyboard,
+answered by a tap that runs no turn."""
 from __future__ import annotations
 
 import dataclasses
@@ -62,6 +66,10 @@ class OperatorCall:
     binding_ref: "str | None"           # set on a continuation turn
     origin: dict
     opened_at: float
+    # the worker (a sub-agent of the session) that made the call, by the hook
+    # input's ``agent_id``; None: the session itself
+    agent_id: "str | None" = None
+    capped: bool = True                 # forgotten after OPERATOR_CALL_CAP_S
 
 
 class OperatorCalls:
@@ -76,11 +84,12 @@ class OperatorCalls:
     def _sweep_locked(self) -> None:
         now = self._now()
         for key, call in list(self._calls.items()):
-            if call.opened_at + OPERATOR_CALL_CAP_S <= now:
+            if call.capped and call.opened_at + OPERATOR_CALL_CAP_S <= now:
                 del self._calls[key]
 
     def open(self, *, client_id: str, tool_use_id: str, tool_name: str, role: str,
-             plugin: str, identity: Any, origin: dict) -> OperatorCall:
+             plugin: str, identity: Any, origin: dict,
+             agent_id: "str | None" = None, capped: bool = True) -> OperatorCall:
         from handoff import child_chain, operator_words, requester_of
         # The chain ends with the agent making the call (``role``). A delegated
         # run's origin already carries it; an engagement turn's ambient origin
@@ -98,7 +107,7 @@ class OperatorCalls:
             binding_ref=binding if isinstance(binding, str) else None,
             origin={k: v for k, v in origin.items()
                     if isinstance(v, (str, int, float, bool, type(None)))},
-            opened_at=self._now())
+            opened_at=self._now(), agent_id=agent_id, capped=capped)
         with self._lock:
             self._sweep_locked()
             self._calls[(client_id, tool_use_id)] = call
@@ -108,9 +117,32 @@ class OperatorCalls:
         with self._lock:
             self._calls.pop((client_id, tool_use_id), None)
 
-    def find(self, client_id: str) -> "tuple[OperatorCall | None, str | None]":
+    def close_agent(self, client_id: str, agent_id: "str | None") -> int:
+        """Close every record of *client_id* that the worker *agent_id* opened
+        (``None``: the calls the session made itself). Returns how many."""
+        return self._close_where(
+            lambda call: call.client_id == client_id and call.agent_id == agent_id)
+
+    def close_client(self, client_id: str) -> int:
+        """Close every record of *client_id*. Returns how many."""
+        return self._close_where(lambda call: call.client_id == client_id)
+
+    def _close_where(self, closes: Callable[[OperatorCall], bool]) -> int:
+        with self._lock:
+            keys = [key for key, call in self._calls.items() if closes(call)]
+            for key in keys:
+                del self._calls[key]
+        return len(keys)
+
+    def find(self, client_id: str, tool_use_id: "str | None" = None
+             ) -> "tuple[OperatorCall | None, str | None]":
+        """The record of the call *tool_use_id* of *client_id*; with no id,
+        the client's only record (two are ``ambiguous_call``)."""
         with self._lock:
             self._sweep_locked()
+            if tool_use_id is not None:
+                call = self._calls.get((client_id, tool_use_id))
+                return (call, None) if call is not None else (None, "no_call_in_flight")
             matches = [c for (cid, _), c in self._calls.items() if cid == client_id]
         if not matches:
             return None, "no_call_in_flight"
@@ -173,7 +205,7 @@ def requester_facts(call: OperatorCall) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Casa's own operator question (run admission's confirmation card)
+# Casa's own operator question (the configurator's restart card)
 # ---------------------------------------------------------------------------
 
 async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
@@ -181,9 +213,9 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
                         on_settle: Callable[[dict], Awaitable[None]],
                         chat_id: "int | None" = None, post: Any = None) -> bool:
     """Post *text* under *role*'s name with one button per option, through
-    the Telegram *endpoint* the caller resolved (the call's delivery for a run
-    admission, Casa's own for its restart card), to the operator *identity*
-    names, in *chat_id* (the identity's chat when not given). In *role*'s own
+    the Telegram *endpoint* the caller resolved (Casa's own for its restart
+    card), to the operator *identity* names, in *chat_id* (the identity's
+    chat when not given). In *role*'s own
     chat the name is left out: the chat is the agent. The question's record
     keeps *role*, the agent it is asked for, and the address it was delivered
     at, as every card's does. ``on_settle`` runs
@@ -198,8 +230,7 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
     and returns False, as a failed post does.
 
     The settled card keeps no buttons. An answered outcome is also given the
-    card's ``message_id``, its ``address`` and its settled ``text`` (the run
-    admission's start card, which a Stop marks later).
+    card's ``message_id``, its ``address`` and its settled ``text``.
 
     ``post``: the post record the landed question is filed under (a task's
     question is filed under that task, so a reply to it reaches the task).
@@ -270,7 +301,8 @@ def _reply(payload: dict):
 
 
 async def _found(request) -> "tuple[OperatorCall | None, dict, str | None]":
-    """The call in flight for the body's client, the body, and the error code if none."""
+    """The call in flight the body names (its client and, when it sends one, its
+    ``tool_use_id``), the body, and the error code if none."""
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -280,7 +312,10 @@ async def _found(request) -> "tuple[OperatorCall | None, dict, str | None]":
     client = body.get("client")
     if not isinstance(client, str) or not client:
         return None, body, "bad_client"
-    call, err = CALLS.find(client)
+    tool_use_id = body.get("tool_use_id")
+    if tool_use_id is not None and not isinstance(tool_use_id, str):
+        return None, body, "bad_tool_use_id"
+    call, err = CALLS.find(client, tool_use_id)
     return call, body, err
 
 
@@ -290,8 +325,9 @@ async def _call_and_body(request) -> "tuple[OperatorCall | None, dict, Any]":
 
 
 def build_requester_handler():
-    """C1 ``{"client"}`` ⇒ ``{"binding_ref", "requester_id", "requester_kind",
-    "chain"}``. Nothing in the body names a requester; Casa reads the call."""
+    """C1 ``{"client", "tool_use_id"?}`` ⇒ ``{"binding_ref", "requester_id",
+    "requester_kind", "chain"}``. Nothing in the body names a requester; Casa
+    reads the call."""
     async def handler(request):
         call, _body, bad = await _call_and_body(request)
         if call is None:
@@ -301,11 +337,11 @@ def build_requester_handler():
 
 
 def build_run_admission_handler():
-    """C2 ``{"client", "request_key", "runs"}`` ⇒ ``{"status": "admitted",
-    "admissions", …}`` | ``{"status": "confirmation_pending", "confirmation_id",
-    …}`` | ``{"status": "declined"|"expired", …}`` (a replayed key) |
-    ``{"status": "refused", "reason"}`` | ``{"error"}``; every answer carries
-    ``request_key``. A replayed key returns its first answer."""
+    """C2 ``{"client", "tool_use_id"?, "request_key", "runs"}`` ⇒ ``{"status":
+    "admitted", "admissions", …}`` | ``{"status": "refused", "reason"}`` (nowhere
+    to post) | ``{"error"}``; every answer carries ``request_key``. A replayed key
+    returns its first answer, which for a request an earlier Casa stored can also
+    be ``confirmation_pending``, ``declined`` or ``expired``."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
@@ -323,7 +359,7 @@ def build_run_admission_handler():
 
 
 def build_run_admission_status_handler():
-    """C3 ``{"client", "confirmation_id"}`` ⇒ the confirmation's state."""
+    """C3 ``{"client", "tool_use_id"?, "confirmation_id"}`` ⇒ the request's state."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
@@ -334,7 +370,7 @@ def build_run_admission_status_handler():
 
 
 def build_continue_handler():
-    """C8 ``{"client", "binding_ref", "run_ref", "reason"}`` ⇒
+    """C8 ``{"client", "tool_use_id"?, "binding_ref", "run_ref", "reason"}`` ⇒
     ``{"status": "queued"|"already_queued"}`` | ``{"error"}``
     (``channel_unavailable`` while the binding's bot has no id yet)."""
     async def handler(request):
@@ -365,7 +401,7 @@ def build_continue_handler():
 
 
 def build_delivery_status_handler():
-    """C9 ``{"client", "reference"}`` ⇒ ``{"status", "repeat"}``."""
+    """C9 ``{"client", "tool_use_id"?, "reference"}`` ⇒ ``{"status", "repeat"}``."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
@@ -379,8 +415,8 @@ def build_delivery_status_handler():
 
 
 def build_action_judgement_handler():
-    """``{"client", "kind", "packet", "spec_digest", "picture"?}`` ⇒ ``{"verdict",
-    "packet_sha256", "latency_ms"}`` | ``{"error"}`` (``bad_kind``,
+    """``{"client", "tool_use_id"?, "kind", "packet", "spec_digest", "picture"?}`` ⇒
+    ``{"verdict", "packet_sha256", "latency_ms"}`` | ``{"error"}`` (``bad_kind``,
     ``bad_packet``, ``bad_digest``, ``check_unavailable``). The packet is the
     app's JSON text as a string; the picture, base64 PNG, is outside its digest; the
     words come from the call's plugin and operator, never the body."""
@@ -398,16 +434,19 @@ def build_action_judgement_handler():
 _PAD_REFUSALS = {
     "bad_json": "The body is one JSON object.",
     "bad_client": "client is the session's broker client id.",
+    "bad_tool_use_id": "tool_use_id is the id of the tool call this request serves, a string.",
     "no_call_in_flight": "The pad answers only during a call of this client's tool.",
     "ambiguous_call": "This client has two calls in flight; the pad answers one at a time.",
 }
 
 
 def build_pad_handler():
-    """``{"client", "op": "write"|"append"|"read", "section", "text"?, "offset"?}`` ⇒
-    ``{"lines", "bytes"}`` (the section after a write or append) | ``{"text", "next"}`` (at
-    most ``scratchpad.ROUTE_READ_CHARS`` from ``offset``) | ``{"error", "message"}``. The pad is
-    the one the client's own tool reaches, found by the client alone."""
+    """``{"client", "tool_use_id"?, "op": "write"|"append"|"read", "section", "text"?,
+    "offset"?}`` ⇒ ``{"lines", "bytes"}`` (the section after a write or append) | ``{"text",
+    "next"}`` (at most ``scratchpad.ROUTE_READ_CHARS`` from ``offset``) | ``{"error",
+    "message"}``. The pad is the one the client's own tool reaches; the request is served
+    only during a call of that client, found as every route finds it (the client and,
+    when the body names one, the call's ``tool_use_id``)."""
     async def handler(request):
         call, body, err = await _found(request)
         if call is None:

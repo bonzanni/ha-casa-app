@@ -76,7 +76,7 @@
   invariant_tests:
     INV-PLUG-017: [tests/test_result_broker_redcase.py::test_nonadopter_denied_before_execution, tests/test_result_broker_redcase.py::test_nonadopter_result_replaced, tests/test_result_broker_redcase.py::test_exact_setup_tool_exempt, tests/test_result_broker.py::test_authorization_runs_before_arming_and_its_deny_arms_nothing]
     INV-PLUG-018: [tests/test_result_broker.py::test_arm_requires_same_identity_and_slot, tests/test_result_broker.py::test_redeem_once_with_the_arming_call_in_flight, tests/test_result_broker.py::test_reference_expires_after_ttl_and_calls_after_cap, tests/test_result_broker.py::test_two_racing_redemptions_release_exactly_one_value, tests/test_result_broker.py::test_plugin_update_purges_the_old_artifact_references]
-    INV-PLUG-019: [tests/test_result_broker.py::test_capability_result_passes_only_with_its_own_references, tests/test_result_broker.py::test_ambiguous_deposit_is_refused]
+    INV-PLUG-019: [tests/test_result_broker.py::test_capability_result_passes_only_with_its_own_references, tests/test_result_broker.py::test_ambiguous_deposit_is_refused, tests/test_result_broker.py::test_two_open_calls_that_provide_one_slot_each_take_their_own_deposit, tests/test_result_broker.py::test_a_deposit_names_a_call_that_does_not_provide_the_slot]
 - doc: architecture/plugin-runtime.md
   summary: The environment a plugin's MCP servers need before an agent can use it, plus the env-conf and media side channels.
   when_changing: plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox

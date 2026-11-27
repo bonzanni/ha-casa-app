@@ -2849,7 +2849,8 @@ async def _f_restart_card(h, tmp_path):
 
 
 async def _f_operator_question(h, tmp_path):
-    """Run admission's confirmation card, asked through Casa's endpoint."""
+    """Casa's own operator question (``operator_calls.post_question``, which the
+    configurator's restart card uses), asked through Casa's endpoint."""
     import operator_calls
     from authz_grants import GrantIdentity
     identity = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR,

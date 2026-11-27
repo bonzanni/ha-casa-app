@@ -666,11 +666,9 @@ do, then starting the next job if needed — and only then is the assistant told
 with the specialist's answer in place of the bare result. If that follow-up
 cannot run, you still get the job's result, with a line saying the follow-up did
 not run. A job started in the specialist's own chat ends as before. While a
-specialist works on a task you started this way, its request to the browsing
-specialist starts without a start card: the status card still appears (to stop the
-browsing, ask), and the card and the browsing specialist's progress messages arrive without
-a notification. Links, files, questions and cards that need you still notify,
-and every step that changes, pays or sends something is still asked.
+specialist works on a task you started this way, the browsing specialist's progress
+messages arrive without a notification. Links, files, questions and cards that need
+you still notify.
 
 **A scheduled job (v0.343.0).** A schedule can start a plugin job directly instead of
 asking the assistant to. In the assistant's `triggers.yaml`, a `cron`, `interval` or
@@ -1929,6 +1927,10 @@ Fido needs Casa 0.376.0 or later and Casa Browser 0.1.12 or later. Installed wit
 Casa Browser, it says plainly that the app is not answering. Fido talks to you from its
 own Telegram chat (see [Agents with their own chat](#agents-with-their-own-chat-v03600)).
 Its repository: [bonzanni/casa-specialist-browser](https://github.com/bonzanni/casa-specialist-browser).
+
+A browsing request starts straight away, with no Start button to tap, whoever asked
+for it. Its status line ("On it: …", with what it will do) arrives in the chat
+without a notification; to stop the browsing, ask.
 
 ## Plugin consumer infrastructure (v0.71.0)
 

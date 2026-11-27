@@ -57,7 +57,7 @@ awaits the append, so every capture a turn made has returned by the time the tur
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
   behalf lands: a plugin's link, message, page, proposal or file, a file sent with
-  `send_media`, a run admission's question or status card, a task's answer and a stored-call
+  `send_media`, a run admission's status card, a task's answer and a stored-call
   receipt (the Stop's line is filed as the card it answers: the card's one event). The line is Casa's own words with the time, never anything of the post (INV-MEM-040): "Fido posted his answer to your chat."
   when the path that sent the post carries his answer — the message his own-chat task closed
   with (`result_broker.ANSWER_KINDS`, read from the post record's `kind`) — and "Fido posted to
