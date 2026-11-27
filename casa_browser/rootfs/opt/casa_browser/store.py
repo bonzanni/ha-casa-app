@@ -459,6 +459,19 @@ class Store:
                                     "sites.site_id").fetchall()
         return [self._site(r) for r in rows]
 
+    def builtin_links(self) -> list[tuple[str, str]]:
+        """Every site's link to a login of the app's own store, as (site id, login id)."""
+        with self._lock:
+            rows = self._db.execute("SELECT site_id, item_id FROM builtin_links").fetchall()
+        return [(row["site_id"], row["item_id"]) for row in rows]
+
+    def clear_builtin_link(self, site_id: str, item_id: str) -> None:
+        """Remove a site's link to a login of the app's own store, only while it names that
+        login: a link to another login, made since the caller read this one, stays."""
+        with self.transaction() as db:
+            db.execute("DELETE FROM builtin_links WHERE site_id=? AND item_id=?",
+                       (site_id, item_id))
+
     # -- runs ------------------------------------------------------------------------
 
     @staticmethod

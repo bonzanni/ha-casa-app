@@ -391,3 +391,27 @@ def test_a_sites_link_belongs_to_its_store(tmp_path):
     s = Store(path)                                   # 1Password is the store's default
     assert read(s) == ("item-2", "Renamed")
     s.close()
+
+
+def test_a_builtin_link_is_cleared_only_while_it_names_that_login(tmp_path):
+    """The links of the app's own store are listed as (site, login) pairs, and one is cleared
+    only while the site is still linked to the very login named: a link to another login,
+    made after the pair was read, stays."""
+    from dataclasses import replace
+    s = Store(tmp_path / "state.db", login_store="builtin")
+    try:
+        s.put_site(replace(site("site-a"), vault_item_id="login-1"))
+        s.put_site(replace(site("site-b"), vault_item_id="login-2"))
+        s.put_site(replace(site("site-c"), vault_item_id=None))
+        assert sorted(s.builtin_links()) == [("site-a", "login-1"), ("site-b", "login-2")]
+        s.put_site(replace(s.get_site("site-a"), vault_item_id="login-3"))
+        s.clear_builtin_link("site-a", "login-1")          # no longer that login: kept
+        assert s.get_site("site-a").vault_item_id == "login-3"
+        s.clear_builtin_link("site-b", "login-1")          # another site's login: kept
+        assert s.get_site("site-b").vault_item_id == "login-2"
+        s.clear_builtin_link("site-b", "login-2")
+        assert s.get_site("site-b").vault_item_id is None
+        assert s.get_site("site-b").display_name == "Site A"   # the site itself stays
+        assert s.builtin_links() == [("site-a", "login-3")]
+    finally:
+        s.close()

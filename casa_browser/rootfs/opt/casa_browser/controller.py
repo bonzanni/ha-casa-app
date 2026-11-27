@@ -603,7 +603,30 @@ class RunController:
         return {"configured": bool(self.c.configured), "needs_locale": locale is None,
                 "language_source": None if locale is None else locale.language_source}
 
+    async def refresh_links(self) -> None:
+        """With the app's own store, which login a site signs in with is the broker's to
+        know; ``builtin_links`` is a copy of it, and a person who deletes a login on the
+        saved-logins page changes the broker's registry alone. The copy's rows are read first
+        and the broker asked second, and a row is cleared only when the broker does not name
+        that site with that same login: a link made while the reply was on its way is newer
+        than the reply. A broker that does not answer, or answers without its links, changes
+        nothing. With 1Password the record is the link itself and nothing is asked."""
+        if self.c.login_store != "builtin":
+            return
+        rows = self.store.builtin_links()
+        try:
+            reply = await self.broker.status()
+        except Exception:  # noqa: BLE001 — the copy stays as it is until the broker answers
+            return
+        links = reply.get("links") if isinstance(reply, dict) else None
+        if not isinstance(links, dict):
+            return
+        for site_id, item_id in rows:
+            if links.get(site_id) != item_id:
+                self.store.clear_builtin_link(site_id, item_id)
+
     async def list_sites(self) -> list[SiteSummary]:
+        await self.refresh_links()
         out = []
         for s in self.store.list_sites():
             status = "ready" if (s.vault_item_id or not s.login_origins) else "needs_login"
@@ -939,6 +962,9 @@ class RunController:
         as it is for the look: Fido's next observe brings it to Casa's check, which names the
         fields."""
         active.code_wait = None              # a new sign-in replaces a code report (S6-2)
+        # The copy of the links first: a site whose login was deleted on the saved-logins page
+        # is a site with no login when the broker answers not_found below.
+        await self.refresh_links()
         session = active.session
         if guest_ask is None:
             guest_ask = self._guest_due(active, session)
@@ -1023,6 +1049,7 @@ class RunController:
         spec, ref = active.spec, active.ref
         if spec.mode != "account" or ref is None or ref.kind != "account":
             return None
+        await self.refresh_links()
         site = self.store.get_site(ref.site_id)
         if (site is None or self._access(spec, site.site_id) != "account"
                 or not site.login_origins or site.vault_item_id is None):
@@ -2322,6 +2349,7 @@ class RunController:
             if (session.view_generation != seen or session.page is not page
                     or _sign_in_address(page.url)[0] != origin):
                 return no("page_changed")
+            await self.refresh_links()
             covering = [s for s in self.store.list_sites()
                         if origin in (*s.origins, *s.login_origins)]
             exact = [s for s in covering if self._exactly(s, origin)]
