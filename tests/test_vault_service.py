@@ -977,19 +977,33 @@ def test_a_redirect_the_proxy_has_already_taken_is_not_logged_as_unanswered(
 
 def test_a_peer_gone_before_the_answer_is_written_is_still_logged(served, caplog, monkeypatch):
     caplog.set_level(logging.INFO, logger="vault_service")
+    answering = threading.Event()
     gone = threading.Event()
     real = vault_page.Page.handle
 
     def after_the_peer_left(page, request):
+        answering.set()
         assert gone.wait(30)
         time.sleep(0.2)
         return real(page, request)
 
     monkeypatch.setattr(vault_page.Page, "handle", after_the_peer_left)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-        peer.connect(str(served.page_socket))
-        peer.sendall(f"GET / HTTP/1.0\r\nX-Ingress-Path: {INGRESS}\r\n\r\n".encode())
-    gone.set()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.connect(str(served.page_socket))
+            peer.sendall(f"GET / HTTP/1.0\r\nX-Ingress-Path: {INGRESS}\r\n\r\n".encode())
+            # The stop waits only for a request that is already being answered.
+            assert answering.wait(30)
+    finally:
+        gone.set()  # on every path, so the handler never outlives the test
     served.stop()
-    assert [r.getMessage() for r in service_log(caplog) if r.levelno == logging.WARNING] == [
-        "page: a request was not answered (BrokenPipeError)"]
+
+    def warnings():
+        return [r.getMessage() for r in service_log(caplog) if r.levelno == logging.WARNING]
+
+    # The connection's own thread logs the failed write once the answer has
+    # left the count the stop waits on, so the line may follow the stop.
+    deadline = time.monotonic() + 30
+    while not warnings() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert warnings() == ["page: a request was not answered (BrokenPipeError)"]
