@@ -102,6 +102,15 @@ class BuiltinVault:
     def available(self) -> bool:
         return self._store is not None
 
+    @property
+    def store(self) -> Store | None:
+        """The store this object opened, or None when it could not be opened.
+
+        The page where a person changes the logins is built on this very object.
+        A second open copy of the same file would not see what this one writes.
+        """
+        return self._store
+
     async def resolve_vault_id(self) -> str:
         with self._calls():
             return VAULT_ID
@@ -258,6 +267,15 @@ def one_time_code(seed: str, at: float) -> str:
     # RFC 4226, 5.3: the last half-byte says where the 31-bit number starts.
     number = struct.unpack_from(">I", mac, mac[-1] & 0x0F)[0] & 0x7FFFFFFF
     return str(number % 10 ** digits).zfill(digits)
+
+
+def gives_a_code(seed: str) -> bool:
+    """Whether `seed` is one that `one_time_code` can make a code from."""
+    try:
+        one_time_code(seed, 0.0)
+    except (BrokerError, OverflowError):  # the second: a period no time can be divided by
+        return False
+    return True
 
 
 def _seed_parts(seed: str) -> tuple[str, int, int, str]:
