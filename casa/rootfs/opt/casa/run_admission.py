@@ -4,17 +4,14 @@ When a plugin asks to start runs (``POST /internal/broker/run-admission``
 during one of its ``callsCasa`` calls), Casa admits every requested run at
 once, whoever asked: it mints one admission per run (the browser app requires
 one for every run), stores the request as admitted, and posts one status card
-listing the runs, without a notification. Nothing waits for the operator: what
-a run needs him for later (a payment, an order, a first sign-in, a failed
-sign-in) is asked on its own path.
+listing the runs, without a notification. Nothing waits for the operator.
 
 No card carries a Stop: the operator stops the runs by asking the agent, which
 calls ``stop_work`` (``plugin_stop``).
 
 The operator's words, when the call has them, are kept for each requested
 run's spec digest (``action_judgement.WORDS``, memory-only), so the check of
-that run's actions reads them; every change a run would make is asked per
-action (the action check, ``action_judgement``). Site names come from the
+that run's actions (``action_judgement``) reads them. Site names come from the
 plugin's own code (the app's registered display names); checking that a run
 opens the sites it was admitted for is the plugin's and the app's.
 
@@ -25,7 +22,8 @@ is identified by its plugin, the Telegram bot of that delivery, the operator
 and the plugin's request key: one plugin can serve agents on two bots, and its
 request keys may be equal on both. The bot is read from that endpoint when the
 request is decided; before it has verified its id the request is refused as
-not delivered and nothing is stored. A request stored pending by an earlier
+not delivered: no admission is stored and no card is posted. A request stored
+pending by an earlier
 Casa (which put a Start question first) reads ``pending`` in the process that
 stored it and ``expired`` in any later one."""
 from __future__ import annotations
@@ -204,10 +202,10 @@ _PROCESS = uuid.uuid4().hex     # a request pending in another process is dead
 
 
 class Confirmations:
-    """Durable (``CONFIRMATIONS_PATH``, ``0600``): an answered request is kept
-    ``ANSWER_KEEP_S`` after its answer and read back identically however often,
-    across restarts; a pending one stored by an earlier process reads
-    ``expired``."""
+    """Durable (``CONFIRMATIONS_PATH``, ``0600``): an answered request is read
+    back identically however often, across restarts, until a save drops it
+    (``ANSWER_KEEP_S`` after its answer, or beyond ``MAX_CONFIRMATIONS``); a
+    pending one stored by an earlier process reads ``expired``."""
 
     def __init__(self, path: str = "", *, now=time.time) -> None:
         self._path = path or CONFIRMATIONS_PATH
@@ -383,8 +381,9 @@ _KEY_LOCKS: dict[tuple, asyncio.Lock] = {}
 
 
 def _not_delivered(request_key: str) -> dict:
-    """The answer of a request with nowhere to post, when nothing was stored for it: no
-    delivery, or its bot has no id yet, so a later request with the key is decided afresh."""
+    """The answer of a request with nowhere to post, when no admission was stored for it:
+    no delivery, or its bot has no id yet, so a later request with the key is decided
+    afresh."""
     return {"status": "refused", "reason": "not_delivered", "request_key": request_key,
             "confirmation_id": "conf-" + uuid.uuid4().hex}
 

@@ -1930,8 +1930,7 @@ Its repository: [bonzanni/casa-specialist-browser](https://github.com/bonzanni/c
 
 A browsing request starts straight away, with no Start button to tap, whoever asked
 for it. Its status line ("On it: …", with what it will do) arrives in the chat
-without a notification; to stop the browsing, ask. Starting without a tap does not
-change what Fido asks you while it browses.
+without a notification; to stop the browsing, ask.
 
 ## Plugin consumer infrastructure (v0.71.0)
 

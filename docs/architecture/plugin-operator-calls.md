@@ -86,10 +86,11 @@ again — no second card — and requests with one key are decided one at a time
 that overlaps the first waits for it and gets its answer. A call with no delivery, or whose
 delivery's bot has no id yet, is refused as `not_delivered`: no admission is stored and no
 card is posted. An admitted request is stored (`Confirmations.add`) in
-`/data/plugin-admissions.json` (`0600`) and kept for thirty days after it was admitted (at most `MAX_CONFIRMATIONS`, the oldest
-dropped first); every
-status read (`POST /internal/broker/run-admission-status`) and every replay of its key returns
-its stored answer, across restarts; a request an
+`/data/plugin-admissions.json` (`0600`). A later save of that file drops an answer thirty days
+old or older, and the oldest entries beyond `MAX_CONFIRMATIONS`
+(`Confirmations._save_locked`); while it is stored, every status read
+(`POST /internal/broker/run-admission-status`) and every replay of its key returns its stored
+answer, across restarts; a request an
 earlier version stored `pending` reads `expired`, and one it stored `declined` still reads
 `declined`.
 When the call carries his words, admission keeps them for each requested run's spec digest
