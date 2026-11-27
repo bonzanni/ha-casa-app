@@ -133,16 +133,17 @@ def _stored(item: Item | None, fields: list[Field]) -> list[Field]:
     A new login gets the fields in the order a live-view save writes them, a
     username even when none was typed (that save stores an empty one), and
     version 1. A changed login keeps its fields where they are and gets the next
-    version.
+    version; one whose username was removed gets the empty one back, first.
     """
     fields = [dataclasses.replace(field, value="\n".join(_addresses(field.value)))
               if field.label == _WEBSITES else field for field in fields]
-    if item is not None:
-        return [dataclasses.replace(field, value=str(int(field.value) + 1))
-                if field.label == _VERSION else field for field in fields]
     typed = {field.label: field for field in fields}
     username = typed.get(_USERNAME) or Field(id="", label=_USERNAME,
                                              type=_STORED_TYPE[_USERNAME], value="")
+    if item is not None:
+        return [*([] if _USERNAME in typed else [username]),
+                *(dataclasses.replace(field, value=str(int(field.value) + 1))
+                  if field.label == _VERSION else field for field in fields)]
     return [username,
             *(typed[label] for label in (_PASSWORD, _WEBSITES, _SEED) if label in typed),
             Field(id="", label=_VERSION, type="STRING", value="1")]

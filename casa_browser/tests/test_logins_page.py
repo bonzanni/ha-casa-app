@@ -438,13 +438,16 @@ async def test_a_login_needs_a_username_or_a_password(vault, page, told):
     assert refused(post(page, edit, {**form_of(page, edit), "remove1": "1"}), NEEDS_ONE)
     assert snapshot(vault) == before and told.changed == []
     # the username may go while there is a password, and the password while there is a username
-    for title, removed, left in (("Shop", "remove0", {"password": PASSWORD}),
+    # (a removed username is stored empty, as a live-view save without one stores it)
+    for title, removed, left in (("Shop", "remove0", {"username": "", "password": PASSWORD}),
                                  ("Mail", "remove1", {"username": "me"})):
         login = await vault.create_login(title, "me", PASSWORD, [A])
         edit = f"/s/{login.id}/edit"
         assert post(page, edit, {**form_of(page, edit), removed: "1"}).status == 303
         after = await vault.get(login.id)
         assert values(after) == left and after.version == 2
+        first = vault.store.get(login.id).fields[0]
+        assert (first.label, first.type) == ("username", "STRING")
     # then the other one cannot go too
     assert refused(post(page, edit, {**form_of(page, edit), "value0": ""}), NEEDS_ONE)
 
