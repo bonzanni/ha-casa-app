@@ -56,9 +56,11 @@ of its own; it then counts as set up with no other option.
   its own key file. A value of only spaces or other whitespace is refused: the saved logins then cannot be opened
   until it is fixed. Supplying a key later, to a store that already made its own key, leaves
   that key file in place and in backups.
-- There is no page yet to see, change or delete saved logins.
-- No authenticator codes from an app and no passkeys yet. A passkey offered on a sign-in
-  page does not stop a sign-in: the saved username and password are filled in as usual.
+- The **Saved logins** page shows the saved logins and lets you add, change and delete them
+  (see below).
+- A login with an authenticator seed answers a site's request for a code from an
+  authenticator app. No passkeys yet: a passkey offered on a sign-in page does not stop a
+  sign-in, and the saved username and password are filled in as usual.
 - The guest options are not used, and the browser has no 1Password extension. They are still
   checked: an invalid one (a sign-in address that is not an account address, say) leaves the
   app not set up until you correct or clear it.
@@ -67,6 +69,29 @@ of its own; it then counts as set up with no other option.
   never mix.
 - A known limit: the cards Fido sends in Telegram still say "1Password item" where the app's
   own pages say "saved login"; they mean the saved login.
+
+### Saved logins
+
+Open it from the Setup page (the row that says logins are kept by Casa Browser itself), or
+from the page of a site that has sign-in addresses, with **Saved logins**. The page is in English whatever the app's language.
+
+- The list shows each login by name, with the host it signs in on, and has a search box.
+  A login's own page shows its sign-in addresses and username; the password and the
+  authenticator seed stay hidden until you press **Show** (or **Copy**). The page counts how
+  often a login's values were shown or copied since the app started.
+- **Add login** takes a name (shown when Casa Browser asks which saved login signs in to a
+  site; it cannot be renamed later), the sign-in addresses, one per line, a username, a
+  password and, optionally, the authenticator seed: the setup key or the `otpauth://` address
+  the site shows. A login needs a username or a password, and a seed that gives no code is
+  refused.
+- **Edit** replaces or removes a value, or adds one the login lacks. A login you typed here
+  and one saved from a live view are used alike.
+- **Delete** removes the login. Every site that used it asks again at its next sign-in
+  which saved login to use, or sends you to the live view.
+- Anyone who can open the app's page in Home Assistant can read the saved logins there.
+
+With a 1Password token there is no Saved logins page: the logins are in your 1Password
+account.
 
 ## Pairing with Casa
 
@@ -190,7 +215,8 @@ theme, light or dark, and on a phone its three tabs sit at the bottom:
   learned (such as Google), its addresses (tap one to copy it), and **Forget sign-in**, which
   asks first (the 1Password item stays). You do not have to add a site here: the sign-in card
   above does it. You can still add one by hand with **Add site** (its addresses, and either a
-  1Password item or nothing: then your first login in the live view saves it).
+  1Password item or nothing: then your first login in the live view saves it; without
+  1Password there is no field for a login, and the site asks which saved login to use).
 - **Setup** shows whether the app is ready, what the vault's user list says about the
   guest (read-only when at least one user of the vault is read-only; a warning when none is;
   nothing to confirm), and pairs with Casa. Without 1Password it shows that logins are kept by
