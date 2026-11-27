@@ -202,8 +202,7 @@ is represented as not adopting and refused as above. Never a whole-role failure.
 `no_call_in_flight` when none of its client's calls in flight provides the slot and
 `ambiguous_call` when two or more do; one that names a call is refused `no_call_in_flight`
 when that call is not in flight or does not provide the slot, and `bad_tool_use_id` when the
-id is not a string. No reference is minted, and unless the producer deposits the slot again
-on its call, its result then fails the structural check and is withheld. **A slot is
+id is not a string. No reference is minted. **A slot is
 deposited twice in one call.** The second deposit is refused `slot_already_deposited`; the
 first keeps its reference, and a result carrying it passes.
 

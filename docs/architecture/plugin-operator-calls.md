@@ -76,24 +76,20 @@ the plugin wants to start — each with its spec digest, mode, task line and the
 opens, each site with its grant and the display name the plugin's own registry gives it.
 Casa admits every run of the request at once, whoever asked and whatever the turn
 (`run_admission._decide`): it answers `admitted`, with one `origin_ref` per spec digest, and
-nothing waits for the operator. Each step a run would take is judged by the action check
-below, and Casa Browser lets through on its own only reading and local steps
-(`gate.go_allowed`): a step judged a payment or a commitment, an order among them, always
-waits for his own answer, and a change to his account waits for one unless it carries out a
-plan he approved in that run, on that plan's site, with no money in it
-(`rulebooks/scope_v1.txt`). Sign-in is Casa Browser's: a site reached on the open web is set
-up for sign-in only after he says yes (`Controller.ask_sign_in`), a site with a linked login
-signs in by itself (`Controller._login`), and a sign-in that fails is reported as needing
-him in a live view. Each request carries a `request_key` the plugin
+nothing waits for the operator. Admission decides only whether the runs start; what a run
+may then do without asking him is decided step by step, outside admission, by Casa Browser
+with the action check below ([`casa-browser-actions.md`](../reference/casa-browser-actions.md)),
+and its sign-in is Casa Browser's own
+([`casa-browser-signin.md`](../reference/casa-browser-signin.md)). Each request carries a `request_key` the plugin
 chooses; a key this plugin and operator used before on the same bot gets its first answer
 again — no second card — and requests with one key are decided one at a time, so a retry
 that overlaps the first waits for it and gets its answer. A call with no delivery, or whose
 delivery's bot has no id yet, is refused as `not_delivered`: no admission is stored and no
-card is posted, though the turn's binding (`binding_for`) is minted before the bot is
-read. Every
-answer is kept in `/data/plugin-admissions.json` (`0600`) for thirty days after it was
-given and returned identically on every status read
-(`POST /internal/broker/run-admission-status`) and key replay, across restarts; a request an
+card is posted. An admitted request is stored (`Confirmations.add`) in
+`/data/plugin-admissions.json` (`0600`) and kept for thirty days after it was admitted (at most `MAX_CONFIRMATIONS`, the oldest
+dropped first); every
+status read (`POST /internal/broker/run-admission-status`) and every replay of its key returns
+its stored answer, across restarts; a request an
 earlier version stored `pending` reads `expired`, and one it stored `declined` still reads
 `declined`.
 When the call carries his words, admission keeps them for each requested run's spec digest
@@ -213,8 +209,7 @@ control whose text and DOM state nothing, where the picture alone can turn `look
 **The call has nowhere to post.** Admission answers `refused` with `not_delivered`,
 no admission is stored and no card is posted, and a later request with the key is decided
 afresh. **The
-status card fails to post.** The failure is logged; the runs stay admitted and `stop_work`
-still stops them. **Casa restarts.** Call records, delivery outcomes and the words kept for
+status card fails to post.** The failure is logged and the runs stay admitted. **Casa restarts.** Call records, delivery outcomes and the words kept for
 the action check are lost; bindings and admission answers survive, and a request an earlier
 version left `pending` reads `expired`.
 **The check cannot answer.** The route answers `check_unavailable`, never a verdict in its
