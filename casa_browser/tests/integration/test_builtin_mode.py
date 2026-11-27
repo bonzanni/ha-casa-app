@@ -99,7 +99,10 @@ def _broker_status() -> dict:
 def test_the_store_is_the_brokers_and_private():
     """The production broker opened its own store, and what it made on disk is its alone: the
     directory, the file of logins, and no key file beside it, since the key came from outside."""
-    assert _broker_status() == {"configured": True, "store": "builtin", "available": True}
+    status = _broker_status()
+    # The login each site is linked to: other tests' sites may be among them.
+    assert isinstance(status.pop("links"), dict)
+    assert status == {"configured": True, "store": "builtin", "available": True}
     broker = pwd.getpwnam(USERS["broker"])
     directory = VAULT.lstat()
     assert stat.S_ISDIR(directory.st_mode) and stat.S_IMODE(directory.st_mode) == 0o700

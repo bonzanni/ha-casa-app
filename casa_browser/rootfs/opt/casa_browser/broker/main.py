@@ -1,9 +1,12 @@
 """Credential broker process, registry and bounded login orchestration."""
 import asyncio
+import contextlib
 import json
+import logging
 import os
 import re
 import secrets
+import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -71,6 +74,10 @@ LIST_BYTES = 60_000        # a listing stays under one broker line (MAX_LINE, 64
 
 #: where the app's own store keeps the logins, when no 1Password token is set
 VAULT_DIR = Path('/data/broker/vault')
+#: where the saved-logins page listens, with that store. The service's start script makes the
+#: directory, for the front proxy's group; the broker only puts its socket in it.
+PAGE_SOCKET = Path('/run/casa-browser/logins/page.sock')
+PAGE_FAILED = 'casa-browser broker: the saved-logins page could not be started'
 #: A site's link to a login, with the two marks that belong to that link. Each store has its
 #: own: 1Password's are in the site's registry record itself, where they always were, and the
 #: app's own store's are under the record's key ``builtin``.
@@ -270,7 +277,17 @@ class Broker:
     async def status(self):
         if self.builtin:
             # Nobody but this app has access to its store: there is no accessor to assess.
-            return {'configured': True, 'store': 'builtin', 'available': self.vault.available}
+            reply = {'configured': True, 'store': 'builtin', 'available': self.vault.available}
+            # The login each site is linked to: the controller keeps a copy of the links, and
+            # a person can delete a login on the saved-logins page without it knowing. Links
+            # that do not fit one line are left out whole, and the rest is still answered.
+            links = {site_id: site['item_id'] for site_id, site in self._registry.items()
+                     if site['item_id'] is not None}
+            try:
+                encode({**reply, 'links': links})
+            except BrokerError:
+                return reply
+            return {**reply, 'links': links}
         sdk = 'unconfigured'
         role = assess_guest(None)
         if self.options.configured:
@@ -546,6 +563,17 @@ class Broker:
                 raise BrokerError('timeout')
             return reply
 
+        async def as_read():
+            """The login is still the one this sign-in read its password from. With the
+            app's own store a person may have changed or deleted it on the saved-logins
+            page since: a refusal then says nothing about what the login holds now."""
+            if not self.builtin:
+                return True
+            try:
+                return (await self.vault.get(site['item_id'])).version == item.version
+            except BrokerError:
+                return False
+
         async def held(generation):
             """The judged step's binding, just before each of its fills, its submit and its
             passkey answer (R7): False ends the sign-in with nothing more done."""
@@ -639,7 +667,7 @@ class Broker:
                 # (a username-only step or a code step says nothing about the password).
                 return {'status': 'failed', 'reason': 'rejected', '_password_rejected': bool(
                     previous_roles and 'password' in previous_roles
-                    and 'one_time_code' not in previous_roles)}
+                    and 'one_time_code' not in previous_roles) and await as_read()}
             if not roles:
                 if approved:
                     # The fields this step found went away without a submit of ours (slice
@@ -1073,7 +1101,9 @@ class Broker:
         self._drop_capture(capture_id, declined=True)
         return {}
 
-    async def forget_site(self, site_id, operator_ref):
+    def _unlink(self, site_id):
+        """The site without its link and marks, and without the captures held for it. Not
+        written to the file here."""
         for capture_id, capture in tuple(self._captures.items()):
             if capture.site_id == site_id:
                 self._drop_capture(capture_id)
@@ -1084,9 +1114,39 @@ class Broker:
             self._registry[site_id] = {k: v for k, v in site.items()
                                        if k in ('login_origins', 'operator_ref', 'title')}
             self._registry[site_id]['item_id'] = None
+
+    async def forget_site(self, site_id, operator_ref):
+        self._unlink(site_id)
         self._persist_registry()
         self.journal.record_control('forget_site', site_id, operator_ref)
         return {}
+
+    # -- the saved-logins page (the app's own store): what a person did to a login there ------
+
+    def login_changed(self, item_id):
+        """A person saved this login on the page. The two marks on a site's link to it were
+        made about what the login held before, so they go, on every site linked to it: what
+        a live view sends afterwards is not saved over what the person typed, unless a site
+        refuses that in its turn."""
+        marked = [site for site in self._registry.values()
+                  if site['item_id'] == item_id and ('unverified' in site or 'rejected' in site)]
+        for site in marked:
+            site.pop('unverified', None)
+            site.pop('rejected', None)
+        if marked:
+            self._persist_registry()
+
+    def login_deleted(self, item_id):
+        """A person deleted this login on the page. Every site linked to it is left as Forget
+        login leaves one, so its next sign-in asks which login to use. A sign-in typed in a
+        live view and still waiting for its verdict goes with the link: saved, it would
+        make the login again."""
+        linked = [site_id for site_id, site in self._registry.items()
+                  if site['item_id'] == item_id]
+        for site_id in linked:
+            self._unlink(site_id)
+        if linked:
+            self._persist_registry()
 
     async def pending_notices(self, after):
         notices = []
@@ -1169,29 +1229,72 @@ class BrokerServer(UnixServer):
         await self.serve(reader, writer, self.broker.dispatch)
 
 
-async def run():
+def deployed():
+    """The broker, its RPC server and the socket of the saved-logins page, as the app runs
+    them."""
     options = BrokerOptions(**json.loads(Path('/run/casa-browser/broker/broker.json').read_text()))
     journal = Journal(Path('/data/broker/journal.db'))
     broker = Broker(build_vault(options), DriverClient(), journal,
                     Path('/data/broker/registry.json'), options)
     server = BrokerServer(broker, Path('/run/casa-browser/broker/rpc.sock'), socket_gid=1103)
+    return broker, server, PAGE_SOCKET
+
+
+async def run(broker, server, page_socket):
+    """Serve the broker's RPC and, when the app keeps the logins itself, the saved-logins
+    page on ``page_socket``, until cancelled.
+
+    The page's listener takes each request in a thread of its own and hands it to this
+    loop, where it is answered: the page reads and writes the store only between two steps
+    of the loop, as every sign-in does, so no write of the page's falls between a version
+    check of the broker's and the write that follows it. The page and its listener are known
+    here and nowhere else: no RPC operation has a name for them. A page that cannot be
+    started costs the page alone."""
+    served = contextlib.ExitStack()
     try:
         await broker.start()
         await server.start()
+        if broker.builtin:
+            try:
+                # Imported here, not at the top: the page's module reads names of this one.
+                # Started as ``python -m``, this file is ``__main__``, so that import loads
+                # it once more under its own name; the page reads two limits and
+                # ``_hosts`` from that copy and nothing else.
+                from casa_browser import vault_page_server
+                from casa_browser.broker import logins_page
+                loop = asyncio.get_running_loop()
+
+                def on_loop(answer):
+                    async def answered():
+                        return answer()
+                    return asyncio.run_coroutine_threadsafe(answered(), loop).result()
+
+                served.enter_context(vault_page_server.listening(
+                    page_socket, None,
+                    logins_page.page(broker.vault, broker.login_changed, broker.login_deleted),
+                    prepared=True, run=on_loop,
+                    # The listener asks for a logger; this process runs with logging off.
+                    logger=logging.getLogger('casa_browser.broker.logins_page')))
+            except Exception:
+                # One fixed line: the reason may name a path.
+                print(PAGE_FAILED, file=sys.stderr, flush=True)
         await asyncio.Event().wait()
     finally:
+        if broker.builtin:
+            # From a worker thread, with this loop still running: closing waits for the
+            # requests the listener took in, and each of them waits for this loop.
+            await asyncio.to_thread(served.close)
         if server.path.exists():
             await server.close()
-        journal.close()
+        broker.journal.close()
 
 
 def main():
     # Library diagnostics can contain native SDK payloads; no broker diagnostic
     # includes exception text or credential-bearing objects.
-    import logging
     logging.disable(logging.CRITICAL)
     try:
-        asyncio.run(run())
+        asyncio.run(run(*deployed()))
     except KeyboardInterrupt:
         pass
     except Exception:
