@@ -11,6 +11,7 @@ started without: the script runs either this file or the others, never both.
 """
 from __future__ import annotations
 
+import grp
 import html
 import json
 import os
@@ -22,6 +23,7 @@ import subprocess
 import textwrap
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 
@@ -327,3 +329,196 @@ def test_the_broker_listener_refuses_the_team_host():
     verdict = probe("broker", "connect_via_proxy", TEAM_HOST, 443,
                     env={"PROBE_PROXY_PORT": "3129"})
     assert verdict.startswith("proxy:HTTP/1.1 403"), verdict
+
+
+# The saved-logins page: the production broker serves it on its own socket, and nginx passes
+# ``/logins/`` to that socket from Supervisor's address only.
+PAGE_SOCKET = Path("/run/casa-browser/logins/page.sock")
+PAGE_HEADERS = {"X-Ingress-Path": INGRESS_HEADERS["X-Ingress-Path"], "X-Forwarded-Host": "ha.test",
+                "X-Forwarded-Proto": "https"}
+FORM = "application/x-www-form-urlencoded"
+
+
+def _exchange(sock: socket.socket, method: str, path: str, headers: dict,
+              body: bytes = b"") -> tuple[int, dict, bytes]:
+    """One HTTP/1.1 request on a connected socket: the status, the headers (lower-case names)
+    and the body, a chunked one joined."""
+    head = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    if body:
+        head += f"Content-Length: {len(body)}\r\n"
+    sock.sendall(f"{method} {path} HTTP/1.1\r\nHost: ha.test\r\n{head}Connection: close\r\n\r\n"
+                 .encode() + body)
+    data = b""
+    while chunk := sock.recv(65536):
+        data += chunk
+    top, _, rest = data.partition(b"\r\n\r\n")
+    lines = top.decode("latin-1").split("\r\n")
+    named = {k.strip().lower(): v.strip()
+             for k, _, v in (line.partition(":") for line in lines[1:])}
+    if named.get("transfer-encoding") == "chunked":
+        joined = b""
+        while True:
+            size, _, rest = rest.partition(b"\r\n")
+            n = int(size.split(b";")[0], 16)
+            if n == 0:
+                break
+            joined, rest = joined + rest[:n], rest[n + 2:]
+        rest = joined
+    return int(lines[0].split(" ")[1]), named, rest
+
+
+def _through_nginx(method: str, path: str, headers: dict, body: bytes = b"", *,
+                   peer: str = INGRESS_PEER) -> tuple[int, dict, bytes]:
+    with socket.create_connection((peer, INGRESS_PORT), timeout=10,
+                                  source_address=(peer, 0)) as s:
+        return _exchange(s, method, path, headers, body)
+
+
+def _on_socket(path: Path, method: str, target: str, headers: dict,
+               body: bytes = b"") -> tuple[int, dict, bytes]:
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(10)
+        s.connect(str(path))
+        return _exchange(s, method, target, headers, body)
+
+
+def _add_login(ask, values: dict) -> str:
+    """Add a login with the page's add form, as a person's browser posts it: the form's own
+    hidden inputs, then the typed values. ``ask(method, path, headers, body)`` reaches the
+    page; paths are the page's own. Returns the new login's id, from the redirect."""
+    prefix = PAGE_HEADERS["X-Ingress-Path"]
+    status, _, body = ask("GET", "/logins/add", PAGE_HEADERS, b"")
+    assert status == 200, body[:300]
+    action = re.escape(f"{prefix}/logins/add")
+    form = re.search(r'<form[^>]*action="' + action + r'"[^>]*>(.*?)</form>', body.decode(),
+                     re.DOTALL).group(1)
+    hidden = dict(re.findall(r'<input type="hidden" name="([a-z0-9]+)" value="([^"]*)">', form))
+    sent = urlencode({**hidden, **values}).encode()
+    status, headers, body = ask("POST", "/logins/add",
+                                {**PAGE_HEADERS, "Origin": "https://ha.test",
+                                 "Content-Type": FORM}, sent)
+    assert status == 303, (status, body[:500])
+    found = re.fullmatch(re.escape(f"{prefix}/logins/s/") + r"([^/]+)", headers["location"])
+    assert found, headers["location"]
+    return found.group(1)
+
+
+def test_the_page_socket_is_the_brokers_and_nginx_may_only_reach_it():
+    """The production broker listens for the page on its socket: the broker owns it and the
+    directory it is in, nginx's group may write to the socket and only pass through the
+    directory, and nobody else may do either."""
+    broker = pwd.getpwnam(USERS["broker"])
+    ingress = grp.getgrnam(USERS["ingress"])
+    for _ in range(60):
+        if PAGE_SOCKET.exists():
+            break
+        time.sleep(1)                             # the broker may still be starting
+    directory = PAGE_SOCKET.parent.lstat()
+    assert stat.S_ISDIR(directory.st_mode) and stat.S_IMODE(directory.st_mode) == 0o2710
+    assert (directory.st_uid, directory.st_gid) == (broker.pw_uid, ingress.gr_gid)
+    sock = PAGE_SOCKET.lstat()
+    assert stat.S_ISSOCK(sock.st_mode) and stat.S_IMODE(sock.st_mode) == 0o660
+    assert (sock.st_uid, sock.st_gid) == (broker.pw_uid, ingress.gr_gid)
+
+
+def test_the_page_answers_supervisor_through_nginx_and_nobody_else(ingress_peer):
+    """``/logins/`` through nginx from Supervisor's address, with the headers Home Assistant
+    sets, is the list of saved logins, and a login added with the page's form is on it; the
+    same request from any other peer is refused by nginx before the page sees it. The page's
+    script and styles are served from the image with their types."""
+    status, _, body = _through_nginx("GET", "/logins/", PAGE_HEADERS)
+    assert status == 200, body[:300]
+    assert b"<title>Saved logins" in body, body[:300]
+    name = "Nginx login " + os.urandom(4).hex()
+    item_id = _add_login(lambda m, p, h, b: _through_nginx(m, p, h, b),
+                         {"name": name, "value0": "https://shop.example",
+                          "value1": "someone@example.com", "value2": "itsecret" + os.urandom(16).hex()})
+    status, _, body = _through_nginx("GET", "/logins/", PAGE_HEADERS)
+    assert status == 200 and html.escape(name).encode() in body
+    assert f"/logins/s/{item_id}".encode() in body
+    own = socket.gethostbyname(socket.gethostname())
+    for peer in ("127.0.0.1", own):
+        status, _, body = _through_nginx("GET", "/logins/", PAGE_HEADERS, peer=peer)
+        assert status == 403 and b"Saved logins" not in body, peer
+    for path, kind in (("/logins/static/page.js", "application/javascript"),
+                       ("/logins/static/vault.css", "text/css")):
+        status, headers, body = _through_nginx("GET", path, {})
+        assert status == 200 and body, path
+        assert headers["content-type"].split(";")[0] == kind, (path, headers)
+        assert headers["x-content-type-options"] == "nosniff"
+
+
+def test_a_login_added_on_the_page_signs_in_after_the_question(tmp_path):
+    """A login typed on the page (with an authenticator seed) signs in on the lane's test site:
+    the site is registered without a login, so the first sign-in finds none; the "which saved
+    login" question lists the login and the answer links it; the next sign-in fills the typed
+    username and password and the code the typed seed gives.
+
+    The broker is the image's test broker on the store the page writes to, served by the
+    production ``run()``, which also serves the page on a socket of the test's; the page is
+    asked on that socket directly, with the headers nginx passes."""
+    import base64
+    from urllib.parse import parse_qs
+
+    from brokerfakes import canary
+    from casa_browser.broker.builtin import one_time_code
+    from sitefixture import ChromeSites
+    login, account = "login.example", "site.example"
+    tmp_path.chmod(0o755)
+    for parent in tmp_path.parents:                  # the service users must reach the fixture
+        if str(parent).startswith("/tmp/"):
+            parent.chmod(0o755)
+    root, controller, pages = tmp_path / "broker", tmp_path / "controller", tmp_path / "logins"
+    for directory, owner in ((root, 1102), (controller, 1103), (pages, 1102)):
+        directory.mkdir(mode=0o711)
+        os.chown(directory, owner, owner)
+    times = [1_700_000_000, 1_700_000_045]
+    config = {"root": str(root), "driver_socket": str(controller / "driver.sock"),
+              "vault": "builtin", "vault_times": times, "page_socket": str(pages / "page.sock"),
+              "options": {"op_token": "", "login_store": "builtin"}}
+    seed = base64.b32encode(os.urandom(20)).decode()
+    username, password = canary(), canary()
+
+    def add():
+        _add_login(lambda m, p, h, b: _on_socket(pages / "page.sock", m, p.removeprefix("/logins"),
+                                                h, b),
+                   {"name": "Shop login", "value0": "https://" + login, "value1": username,
+                    "value2": password, "value3": seed})
+
+    def credential(action, **args):
+        return {"credential": {"action": action, "broker_socket": str(root / "rpc.sock"),
+                               "driver_socket": config["driver_socket"],
+                               "login_origins": ["https://" + login], **args}}
+
+    def form(role, action):
+        kind = "password" if "password" in role else "text"
+        return ("text/html", (f'<form method=post action="{action}"><input id=field name=value '
+                              f'type={kind} autocomplete={role}><button>Continue</button></form>')
+                .encode(), {})
+
+    with ChromeSites([login, account]) as sites:
+        site = h.site(origins=("https://" + account,), login=("https://" + login,))
+        sites.install(h.account_policy(sites=(site,)))
+        sites.call(setattr, sites.harness.proxy, "controller_uid", 1103)
+        sites.pages["/username"] = form("username", "/password")
+        sites.pages["/password"] = form("current-password", "/otp")
+        sites.pages["/otp"] = form("one-time-code", "/finish")
+        sites.pages["/finish"] = ("text/html", b"", {"Location": "https://" + account + "/done"})
+        sites.status["/finish"] = 303
+        sites.pages["/done"] = ("text/html", b"<p>Signed in</p>", {})
+        steps = [{"open": {"site_id": "s1"}}, credential("setup", linked=False)]
+        steps += [credential("open_login"), {"goto": "https://" + login + "/username"},
+                  credential("login")]
+        steps += [credential("which_login", title="Shop login")]
+        steps += [credential("open_login"), {"goto": "https://" + login + "/username"},
+                  credential("login")]
+        result = run_scenario(steps, broker_fixture=config, before=add)
+        posts = [r for r in sites.receipts.requests if r[0] == "POST"]
+    assert result[1] == {"ready": True}
+    replies = [r for r in result if isinstance(r, dict) and "status" in r]
+    assert [(r["status"], r.get("reason")) for r in replies] == [
+        ("needs_live_view", "not_found"), ("logged_in", "completed")], replies
+    assert {"titles": ["Shop login"], "linked": True} in result, result
+    assert [p[2] for p in posts] == ["/password", "/otp", "/finish"]
+    sent = [parse_qs(p[3].decode())["value"][0] for p in posts]
+    assert sent == [username, password, one_time_code(seed, times[0])]
