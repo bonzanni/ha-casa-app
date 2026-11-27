@@ -4,9 +4,9 @@
 
 ### Changed
 
-- A browsing request no longer waits for a Start tap. It starts straight away, whoever asked for it, and its status line arrives in the chat without a notification; to stop the browsing, ask. What a browsing run asks you for while it works is unchanged: every payment and every order waits for your own yes; a change to one of your accounts is asked too, unless it carries out a plan you already approved for that task on that site; a new site found on the open web is set up for signing in only after you say yes; and when a sign-in fails, the browsing tells you it needs you to sign in yourself.
+- A browsing request no longer waits for a Start tap. It starts straight away, whoever asked for it, and its status line arrives in the chat without a notification; to stop the browsing, ask. Starting without a tap does not change what Fido asks you while it browses.
 - A Start card that was still waiting when you upgrade no longer starts anything: tapping it answers that it has expired. Ask again and the browsing starts.
-- When a plugin asks Casa for something during one of its tool calls, Casa now matches the request to the exact call it belongs to, when the plugin says which one. The current versions of the Gmail, PDF editor, accounting, bank-feed and browsing plugins do. Before, two calls of the same plugin that were open at the same moment could not be told apart and the request was refused. Older plugin versions keep working as they did.
+- When a plugin asks Casa for something during one of its tool calls, Casa now matches the request to the exact call it belongs to, when the plugin says which one. The current versions of the Gmail, PDF editor, accounting, bank-feed and browsing plugins do. Before, a request that more than one open call of that plugin could match was refused. Older plugin versions keep working as they did.
 
 ## [0.387.0] - 2026-11-26
 
