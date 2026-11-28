@@ -12,7 +12,6 @@
 ### Changed
 
 - Without 1Password, the form for adding a site no longer has a field for a saved login id; the site asks which saved login to use instead.
-- With a 1Password token nothing changes.
 
 ## [0.1.20] - 2026-11-26
 
