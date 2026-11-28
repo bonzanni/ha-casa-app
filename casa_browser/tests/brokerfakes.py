@@ -708,7 +708,11 @@ async def serve_image_broker(config):
         vault = Vault(sdk, options.vault)
     broker = Broker(vault, SocketDriver(config['driver_socket']),
                     Journal(root / 'journal.db'), root / 'registry.json', options)
-    await broker.start()
+    # ``page_socket``: the broker is served by production's own ``run()``, which starts it and
+    # serves the saved-logins page on that socket as well; otherwise it is started here.
+    page_socket = Path(config['page_socket']) if config.get('page_socket') else None
+    if page_socket is None:
+        await broker.start()
     real_dispatch = broker.dispatch
 
     async def dispatch(request):
@@ -730,6 +734,18 @@ async def serve_image_broker(config):
         return await real_dispatch(request)
     broker.dispatch = dispatch
     server = BrokerServer(broker, root / 'rpc.sock', allowed_uid=1103)
+    if page_socket is not None:
+        from casa_browser.broker.main import run
+        served = asyncio.create_task(run(broker, server, page_socket))
+        while not (server.path.exists() and page_socket.exists()):
+            if served.done():
+                served.result()             # run() ended: its error is the test's failure
+                raise RuntimeError('run() ended before it served')
+            await asyncio.sleep(0.05)
+        os.chmod(root / 'rpc.sock', 0o666)
+        print('READY', flush=True)
+        await served
+        return
     await server.start()
     os.chmod(root / 'rpc.sock', 0o666)
     print('READY', flush=True)

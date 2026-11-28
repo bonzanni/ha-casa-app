@@ -117,6 +117,17 @@ async def _scenario(steps: list[dict]) -> list:
                     # Ready only when the broker took the registration.
                     out.append({'ready': False, 'error': reply['error']} if 'error' in reply
                                else {'ready': True})
+                elif action == 'which_login':
+                    # The "which saved login" question, answered with the login titled
+                    # ``title``: the store's logins as the controller lists them for it, then
+                    # the link the answer makes.
+                    listed = await client.list_login_items('r1', 's1')
+                    chosen = [i['item_id'] for i in listed.get('items', ())
+                              if i['title'] == arg['title']]
+                    reply = (await client.register_item('s1', chosen[0], arg['login_origins'],
+                                                        'operator') if chosen else {})
+                    out.append({'titles': [i['title'] for i in listed.get('items', ())],
+                                'linked': bool(chosen) and 'error' not in reply})
                 elif action in ('open_login', 'login', 'begin_capture'):
                     kind = 'capture' if action == 'begin_capture' else 'login'
                     if credential_session is None:
@@ -561,8 +572,10 @@ async def forced_close_action(driver, sid, manager, proxy, arg, locale):
         "() => localStorage.getItem('late-effect')", isolated_context=False)
     return dict(marker=marker, order=order)
 
-def run_scenario(steps: list[dict], timeout: int = 300, gpu: bool = False, broker_fixture=None) -> list:
-    """Run ``steps`` as casa-controller; returns the result list (raises with stderr on failure)."""
+def run_scenario(steps: list[dict], timeout: int = 300, gpu: bool = False, broker_fixture=None,
+                 before=None) -> list:
+    """Run ``steps`` as casa-controller; returns the result list (raises with stderr on failure).
+    ``before`` is called once the fixture's broker serves, before the first step."""
     home = Path("/tmp/casa-it-controller")
     home.mkdir(exist_ok=True)
     os.chown(home, 1103, 1103)
@@ -570,6 +583,8 @@ def run_scenario(steps: list[dict], timeout: int = 300, gpu: bool = False, broke
     if broker_fixture is not None:
         broker = _start_test_broker(broker_fixture)
     try:
+        if before is not None:
+            before()
         return _run_controller(steps, timeout, gpu, home)
     finally:
         if broker is not None:

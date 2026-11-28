@@ -94,6 +94,20 @@ def test_static_and_novnc_only(ingress_peer):
         assert status in (400, 403, 404), path
 
 
+def test_no_saved_logins_page_with_a_token(ingress_peer):
+    """Started with a 1Password token the app keeps no logins itself: nginx has no location for
+    the saved-logins page, so ``/logins/`` reaches the controller's UI, which has no such page,
+    and the broker listens on no page socket. The socket's directory is made in either mode,
+    and stays empty."""
+    headers = {"X-Ingress-Path": PREFIX, "X-Forwarded-Host": "ha.test", "X-Forwarded-Proto": "https"}
+    for path in ("/logins/", "/logins/add", "/logins/static/page.js"):
+        status, top, body = _http(PEER, path, headers, source=PEER)
+        assert status == 404, (path, top)
+        assert b"Saved logins" not in body, path
+    assert Path("/run/casa-browser/nginx/logins.conf").read_text() == ""
+    assert list(Path("/run/casa-browser/logins").iterdir()) == []
+
+
 def test_vnc_socket_reaches_only_the_controller():
     """x11vnc listens on no TCP port; its socket admits the controller (casa-vncview), not
     the browser, the broker or nginx; it runs as casa-vnc, view-only."""

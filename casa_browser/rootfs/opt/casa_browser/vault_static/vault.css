@@ -1,0 +1,128 @@
+/* The secrets page's own styles, loaded after ha.css (Casa Browser's, unchanged). Every colour
+   comes from ha.css's Home Assistant variables. Nothing is sticky or fixed: a phone's keyboard
+   cannot cover what scrolls with the page. */
+:root {
+  --vault-line: var(--divider-color);
+  --vault-accent: var(--primary-color);
+  --vault-danger: var(--error-color);
+  --vault-tint: color-mix(in srgb, var(--primary-color) 14%, transparent);
+  --vault-error-bg: color-mix(in srgb, var(--error-color) 14%, transparent);
+  --vault-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+[hidden] { display: none !important; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; font-size: 16px; line-height: 1.45; }
+button { font: inherit; }
+input, textarea { font-family: inherit; font-size: 16px; }
+a { color: var(--vault-accent); }
+:focus-visible { outline: 2px solid var(--vault-accent); outline-offset: 3px; }
+.v-header { background: var(--card-background-color); border-bottom: 1px solid var(--divider-color); }
+.v-bar { display: flex; align-items: center; gap: 8px; max-width: 680px; min-height: 64px; padding: 8px 16px; margin: auto; }
+.v-bar h1 { margin: 0; flex: 1; min-width: 0; font-size: 20px; line-height: 1.3; font-weight: 600; overflow-wrap: anywhere; }
+.v-back { display: inline-flex; align-items: center; justify-content: center; width: 44px; min-width: 44px; height: 44px; margin-left: -8px; color: var(--primary-text-color); border-radius: 8px; }
+.v-back svg { width: 24px; height: 24px; fill: currentColor; }
+main.v-main { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 680px; margin: auto; padding: 16px 16px calc(40px + env(safe-area-inset-bottom)); }
+/* A form's last box and its buttons can scroll well clear of a phone's keyboard. */
+main.v-form-page { padding-bottom: calc(240px + env(safe-area-inset-bottom)); }
+.v-main h2, .v-main h3 { margin: 0; color: var(--primary-text-color); font-size: 16px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.v-main h2.v-title { font-size: 24px; line-height: 1.25; }
+.v-subtitle, .v-help, .v-meta { color: var(--secondary-text-color); font-size: 14px; line-height: 1.45; }
+.v-name { overflow-wrap: anywhere; }
+.v-button { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 8px; min-width: 44px; min-height: 44px; height: auto; padding: 10px 16px; border: 1px solid transparent; border-radius: 10px; background: var(--vault-tint); color: var(--vault-accent); font: 600 16px/1.35 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; text-decoration: none; text-align: center; cursor: pointer; }
+.v-button:hover, .v-back:hover { background: color-mix(in srgb, var(--primary-color) 22%, transparent); }
+.v-button:active { transform: translateY(1px); }
+.v-button--primary { background: var(--vault-accent); color: var(--text-primary-color); border-color: var(--vault-accent); }
+.v-button--primary:hover { background: color-mix(in srgb, var(--vault-accent) 88%, var(--primary-text-color)); }
+.v-button--quiet { border-color: transparent; background: transparent; }
+.v-button--copy { background: var(--vault-tint); border-color: transparent; min-width: 80px; }
+.v-button--danger { color: var(--vault-danger); border-color: transparent; background: transparent; }
+.v-button--delete { color: var(--text-primary-color); background: var(--vault-danger); border-color: var(--vault-danger); }
+.v-button--delete:hover { background: var(--vault-danger); }
+.v-button:disabled { opacity: .55; cursor: wait; }
+.v-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.v-actions--end { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--divider-color); }
+.v-actions--end .v-button--primary { min-width: 112px; }
+.v-panel { min-width: 0; padding: 16px; border: 1px solid var(--divider-color); border-radius: 12px; background: var(--card-background-color); }
+.v-stack, .v-form { display: flex; flex-direction: column; gap: 16px; margin: 0; min-width: 0; }
+.v-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+.v-heading h2, .v-heading h3 { flex: 1; min-width: 0; }
+.v-heading .v-button { margin: -8px -8px -8px 0; }
+.v-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--primary-text-color); font-size: 14px; font-weight: 500; }
+.v-input, .v-textarea { width: 100%; min-width: 0; min-height: 48px; padding: 11px 12px; border: 1px solid var(--vault-line); border-bottom-color: var(--secondary-text-color); border-radius: 8px; background: var(--field-bg); color: var(--primary-text-color); font-size: 16px; font-weight: 400; line-height: 1.5; margin: 0; }
+.v-textarea { min-height: 120px; font-family: var(--vault-mono); resize: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* A stored plain value of one line is edited in a box one line high. */
+.v-textarea--line { min-height: 48px; }
+.v-input:focus, .v-textarea:focus { outline: 2px solid var(--vault-accent); outline-offset: -1px; border-color: var(--vault-accent); }
+.v-input[aria-invalid=true], .v-textarea[aria-invalid=true] { border-color: var(--vault-danger); }
+.v-field-error { font-size: 14px; color: var(--vault-danger); }
+.v-search { display: flex; align-items: center; gap: 8px; }
+.v-search .v-input { flex: 1; }
+.v-list { padding: 0; margin: 0; list-style: none; border: 1px solid var(--divider-color); border-radius: 12px; background: var(--card-background-color); overflow: hidden; }
+.v-list-item { padding: 8px 12px 8px 16px; }
+.v-list-item + .v-list-item { border-top: 1px solid var(--divider-color); }
+.v-list-row { display: flex; align-items: center; gap: 12px; min-height: 60px; }
+.v-list-link { flex: 1; min-width: 0; padding: 8px 0; text-decoration: none; color: var(--primary-text-color); }
+.v-list-link strong { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.v-list-link small { display: block; color: var(--secondary-text-color); font-size: 13px; margin-top: 2px; }
+.v-list-link:hover strong { color: var(--vault-accent); }
+.v-list-item .v-value, .v-list-item > .v-button { margin-top: 8px; }
+.v-reveal { flex-shrink: 0; }
+.v-value-card { display: flex; flex-direction: column; gap: 12px; }
+.v-value-row { display: flex; align-items: center; gap: 12px; justify-content: space-between; min-width: 0; }
+.v-dots { color: var(--secondary-text-color); font-family: var(--vault-mono); font-size: 18px; letter-spacing: 2px; white-space: nowrap; }
+.v-value { margin: 0; padding: 12px; border-radius: 8px; background: var(--field-bg); color: var(--primary-text-color); font: 400 16px/1.5 var(--vault-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; min-width: 0; }
+.v-value[data-empty] { color: var(--secondary-text-color); font-family: inherit; }
+.v-value-card:has(.v-revealed:not([hidden])) { border-color: var(--vault-accent); }
+.v-notice { padding: 12px 16px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--vault-tint); font-size: 14px; overflow-wrap: anywhere; }
+.v-notice--error { background: var(--vault-error-bg); border-color: var(--vault-danger); }
+.v-notice--warning { background: color-mix(in srgb, var(--warning-color) 14%, transparent); border-color: var(--warning-color); }
+.v-notice p + p { margin-top: 4px; }
+.v-feedback:empty { display: none; }
+.v-feedback { color: var(--secondary-text-color); font-size: 14px; margin-top: 8px; }
+.v-label-options { border-top: 1px solid var(--divider-color); padding-top: 4px; }
+.v-label-options > summary { display: flex; align-items: center; min-height: 44px; gap: 8px; font-size: 14px; color: var(--vault-accent); font-weight: 500; }
+.v-label-options > summary::before { content: '+'; font-size: 20px; width: 16px; text-align: center; }
+.v-label-options[open] > summary::before { content: '−'; }
+.v-label-options > .v-stack { margin-top: 8px; }
+.v-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.v-picks .v-button { padding: 10px 12px; font-size: 14px; font-weight: 500; }
+.v-picks [aria-pressed=true] { background: var(--vault-tint); border-color: var(--vault-accent); }
+.v-choice { position: relative; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; border: 1px solid var(--vault-line); border-radius: 10px; padding: 9px 12px; font-size: 16px; color: var(--vault-accent); }
+/* Replace and Remove are real checkboxes, kept for the keyboard and for the page without its
+   script but not drawn: the label is the button, and its colours and words show the state. */
+.v-choice input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; font-size: 16px; }
+.v-choice:has(input:focus-visible) { outline: 2px solid var(--vault-accent); outline-offset: 3px; }
+.v-choice:has(input:checked) { background: var(--vault-tint); border-color: var(--vault-accent); }
+.v-choice--remove { border-color: transparent; color: var(--vault-danger); font-size: 14px; }
+.v-choice--remove:has(input:checked) { border-color: var(--vault-danger); background: var(--vault-error-bg); }
+.v-remove-on, .v-replace-on, .v-removed-note { display: none; }
+.v-choice:has(input:checked) .v-remove-off, .v-choice:has(input:checked) .v-replace-off { display: none; }
+.v-choice:has(input:checked) .v-remove-on, .v-choice:has(input:checked) .v-replace-on { display: inline; }
+.v-existing:not(:has(.v-replace-input:checked)) .v-replacement { display: none; }
+.v-existing:has(.v-remove-input:checked) { border-color: var(--vault-danger); background: var(--vault-error-bg); }
+.v-existing:has(.v-remove-input:checked) .v-edit-body { display: none; }
+.v-existing:has(.v-remove-input:checked) .v-removed-note { display: block; color: var(--vault-danger); font-size: 14px; }
+.v-slot { position: relative; }
+.v-slot-enable { position: absolute; width: 1px; height: 1px; opacity: 0; font-size: 16px; }
+.v-slot-enable:focus-visible + .v-slot-switch { outline: 2px solid var(--vault-accent); outline-offset: 3px; }
+.v-slot-switch { width: 100%; justify-content: flex-start; }
+.v-slot-enable:not(:checked) ~ .v-slot-body { display: none; }
+.v-slot-enable:checked + .v-slot-switch { display: none; }
+/* Only the next closed slot offers "Add another value"; an open slot stays open wherever it is. */
+.v-slot:has(> .v-slot-enable:not(:checked)) ~ .v-slot:has(> .v-slot-enable:not(:checked)) { display: none; }
+.v-slot-body > .v-heading { margin-bottom: 16px; }
+.v-slot-body > .v-heading .v-button { font-size: 14px; }
+.v-slot-body .v-picks { margin-top: -8px; }
+.v-empty { padding: 32px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.v-empty h2 { font-size: 22px; }
+.v-danger-zone { border-top: 1px solid var(--divider-color); padding-top: 12px; }
+.v-facts { display: grid; gap: 12px; margin: 0; }
+.v-facts dt { font-size: 14px; color: var(--secondary-text-color); }
+.v-facts dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.v-reference { font-family: var(--vault-mono); font-size: 14px; overflow-wrap: anywhere; }
+.v-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+@media (min-width: 720px) { .v-bar { padding-inline: 24px; } main.v-main { padding-inline: 24px; padding-top: 24px; } }
+@media (prefers-reduced-motion: reduce) { .v-button:active { transform: none; } }
+.v-slot-enable:checked:focus-visible ~ .v-slot-body .v-heading label { outline: 2px solid var(--vault-accent); outline-offset: 3px; }
+.v-value-card > .v-value-row { flex-wrap: wrap; }
+.v-value-card > .v-value-row > .v-value { flex: 1 0 100%; }
+.v-value-card > .v-value-row > .v-actions { margin-left: auto; }

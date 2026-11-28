@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-26
+last_reviewed: 2026-11-28
 ---
 
 # Casa Browser — site logins without 1Password (the app's own store)
@@ -10,13 +10,14 @@ last_reviewed: 2026-11-26
 
 Where the Casa Browser app keeps site logins when its `onepassword_service_account_token`
 option is empty: the choice of login store at start, the store's files and key, the second
-vault class the broker uses for it, what does not run in that mode, and how a site's link to a
-login belongs to one store. The broker, its registry and the login flow themselves are
+vault class the broker uses for it, what does not run in that mode, how a site's link to a
+login belongs to one store, and the Saved logins page that runs only in that mode. The broker, its registry and the login flow themselves are
 [`casa-browser-credentials.md`](casa-browser-credentials.md); the live-view save that creates
 a login is [`casa-browser-signin.md`](casa-browser-signin.md). Casa itself has a store built
-on the same module for its own secrets,
-[`../architecture/builtin-secrets-store.md`](../architecture/builtin-secrets-store.md); the
-two apps share no file, key or process.
+on the same module for its own secrets, with a page on the same engine,
+[`../architecture/builtin-secrets-store.md`](../architecture/builtin-secrets-store.md) and
+[`../architecture/builtin-secrets-page.md`](../architecture/builtin-secrets-page.md); at run time
+the two apps share no file, key or process.
 
 ## Mental model
 
@@ -75,10 +76,14 @@ set but holds only whitespace is refused before the store is opened
 (`broker/builtin.py::_opened`): the store is then unavailable, and neither the key file nor a
 new key is used in its place.
 
-**The module is one file carried in both apps.**
-`casa_browser/rootfs/opt/casa_browser/vault_store.py` is a byte-identical copy of Casa's
-`casa/rootfs/opt/casa/vault_store.py` (INV-BRW-075): an item is a KeePass entry, its username
-and password the entry's own, so the file opens in any KeePass program with the key.
+**The shared files are carried in both apps.** `scripts/sync_shared_vault.py` names them
+(`SHARED_FILES`): the store module `vault_store.py`, the page's engine `vault_page.py`, its
+listener `vault_page_server.py` and the page's four static files under `vault_static/`. Each
+under `casa_browser/rootfs/opt/casa_browser/` is a byte-identical copy of Casa's under
+`casa/rootfs/opt/casa/` (INV-BRW-075); the script copies them from Casa's tree, and with
+`--check` copies nothing and names each copy that differs or is missing. An item is a KeePass
+entry, its username and password the entry's own, so the file opens in any KeePass program with
+the key.
 
 ## The second vault
 
@@ -93,7 +98,8 @@ item, and `test_no_delete_interface` scans it with the broker package (INV-BRW-0
 - **The version rule.** A login is created at version 1; `update_fields` changes it only when
   the version its caller read is the stored one, and writes the next number (INV-BRW-073).
   No method awaits between its check and its write, so on the broker's one event loop a second
-  update from the same version is a `conflict`.
+  update from the same version is a `conflict`. A save on the Saved logins page (below) writes
+  the next number too, on the same loop.
 - **Errors leave as the broker's fixed codes**, never the store's message: an unknown id or an
   id that is only another login's title is `not_found`, a failing write `refused` or
   `unavailable`, anything else `unavailable`.
@@ -145,15 +151,85 @@ again finds the 1Password item it had.
 
 ## How a login gets in
 
-Only through the live view: a person signs in there, the sign-in check judges it signed in,
-and the broker's automatic save writes what was typed
+Two ways. **Through the live view**: a person signs in there, the sign-in check judges it
+signed in, and the broker's automatic save writes what was typed
 (`broker/main.py::Broker.save_attempt`, [`casa-browser-signin.md`](casa-browser-signin.md)).
 A site with no linked login gets a new one, titled with the site's name and marked
 `unverified` until an automatic sign-in with it works. A linked login is replaced only when
 its own password was rejected in that run or it is still `unverified`; otherwise it is kept
-(`item_kept`), and values equal to the stored ones write nothing. The next sign-in uses it. A
-site can also be linked by id on the site form. There is no page to list, change or remove
-saved logins, nothing in the app stores an authenticator seed, and no passkey is kept.
+(`item_kept`), and values equal to the stored ones write nothing. The next sign-in uses it.
+**On the Saved logins page**, below, a person adds one. The site form has no box for a login's
+id in this mode, and the form ignores a `vault_item_id` posted to it. No passkey is kept.
+
+## The Saved logins page
+
+**Who serves it.** In built-in mode `broker/main.py::run` serves the page, besides the RPC
+socket, on `/run/casa-browser/logins/page.sock` (`PAGE_SOCKET`) through the shared listener
+`vault_page_server.listening`, with the directory used as found (`prepared`). `svc-browser-broker/run`
+makes that directory in both modes, `casa-broker:casa-ingress` `2710`: set-group-id, so the
+socket the broker binds there (`0660`) takes nginx's group, and nginx's group may pass through
+the directory but not list it. The listener takes each request in a thread of its own and
+hands it to the broker's event loop, where it is answered, so a page write never falls between
+a version check of the broker's and the write that follows it. The page is built on the store
+the broker's vault holds open (`BuiltinVault.store`), never on a second copy. A page that
+cannot start costs the page alone: the broker logs one fixed line, `casa-browser broker: the
+saved-logins page could not be started`, and serves on. No RPC operation names the page or
+answers with it (`test_no_rpc_operation_reaches_the_page`).
+
+**Who reaches it.** `casa_browser.conf` includes `/run/casa-browser/nginx/logins.conf` in the
+ingress server, after the peer rule. `svc-browser-nginx/run` writes that file at each start from
+`python -m casa_browser.ui logins-conf` (`ui.py::logins_conf`), which reads the controller's
+public options: with `login_store` `builtin` it holds two locations — `/logins/static/`, the
+page's static files (`/opt/casa_browser/vault_static/`) served by nginx with their two types
+named, and `/logins/`, proxied to the page socket with the `X-Ingress-Path` and forwarded host
+and scheme headers, `client_max_body_size 300k` and a 75-second read timeout; with any other
+word, or an options file it cannot read, it is empty and `/logins/` reaches the app's own pages,
+which have no such path. Setup's store row, while the store is open, and a site's page, for a
+site with sign-in addresses, link to `<prefix>/logins/` ([`casa-browser-ingress.md`](casa-browser-ingress.md)). The page's
+routes, codes, origin check, stamp, headers and log are the shared engine's, as on Casa's
+secrets page ([`../architecture/builtin-secrets-page.md`](../architecture/builtin-secrets-page.md)),
+in the login profile's words; the page is in English.
+
+**The login profile** (`broker/logins_page.py::profile`). A login has four boxes, in this order:
+sign-in addresses (one per line), username, password and authenticator seed (optional). Only
+the addresses and the username are shown as they are; the password, the seed and any value
+under a label the profile does not know are hidden until a Show. The `version` field is kept
+from the person: it has no box and no card, a save made here writes the next number and a new
+login gets 1. A login made here has the shape a live-view save gives one: category `LOGIN`, a
+`username` field even when none was typed (stored empty, as is a username removed on the edit
+form), and the addresses one per line without empty lines or surrounding spaces. A save is
+refused, with a sentence that repeats no value, when it has no sign-in address, an address the
+broker reads no host from, addresses on more than `LIST_HOSTS` (10) hosts, a username or a
+password over 1,024 bytes, neither a username nor a password, or a seed from which
+`broker/builtin.py::one_time_code` makes no code. A name is at most `LIST_TITLE_CHARS` (300)
+characters, so every login fits the broker's listing; a name cannot be changed. With the store
+unavailable every route says the saved logins could not be opened.
+
+**What a save and a delete do to the links.** The page tells the broker after the store has
+written the login or no longer holds it:
+
+- `Broker.login_changed` clears the `unverified` and `rejected` marks of every site linked to
+  that login, so a live view afterwards does not save over what the person typed unless a site
+  refuses it in its turn (INV-BRW-077). The marks were made about what the login held before.
+- `Broker.login_deleted` unlinks every site linked to it, as Forget login does: the link and its
+  marks go, and so do the captures held for those sites. Their next sign-in finds no linked
+  login (`not_found`).
+- A password refusal sets `rejected` only while the login is still at the version the sign-in
+  read; a login the person changed or deleted meanwhile is not marked.
+
+**The broker's registry is the truth; the controller keeps a copy.** In built-in mode
+`Broker.status` carries `links`, site id to login id for every linked site, left out whole when
+it would not fit one broker line. `RunController.refresh_links` reads the `builtin_links` rows
+(`Store.builtin_links`), then asks the broker, and clears a row only when the broker does not
+name that site with that same login (`Store.clear_builtin_link` deletes only while the row still
+names it, so a link made while the reply was on its way stays). A broker that does not answer,
+or answers without `links`, changes nothing. It runs before the controller acts on a link: in
+`RunController.list_sites`, `ask_sign_in`, `_look` and `_login`, and in the UI's Sites list
+and site page.
+
+**With a 1Password token none of this runs**: the broker serves no page (the directory stays
+empty), `logins.conf` is empty, `status` carries no `links`, `refresh_links` returns at once
+and asks nothing, and the site form keeps its 1Password item box.
 
 ## Contracts & invariants
 
@@ -180,9 +256,23 @@ before the switch, and the cards Casa's browsing plugin draws from its own text.
 
 **INV-BRW-074**: A store file whose key is missing or does not open it, or a supplied key of whitespace only, is never replaced or changed; the broker stays up and answers `unavailable`.
 
-**INV-BRW-075**: The two copies of the store module, Casa's and Casa Browser's, are identical.
+**INV-BRW-075**: Every file Casa Browser shares with Casa — the store module, the page's engine and listener, and each static file of the page — is a byte-identical copy of Casa's.
+
+`tests/test_vault_store_copies.py` compares each file `SHARED_FILES` names, one case per file,
+and checks that the static directory of each app holds exactly the static files named there, so
+a file added to one tree alone fails. It runs in Casa's suite, where both trees are present.
 
 **INV-BRW-076**: A site's link to a login, with its marks, belongs to the store it was made in: under the other store the site reads as having no link, and linking, saving or forgetting there leaves the first link as it was.
+
+**INV-BRW-077**: A login changed on the Saved logins page is not replaced by a live-view save made under a permission from before that change: the page's save clears the `unverified` and `rejected` marks of every site linked to the login, and a password refusal sets `rejected` only while the login is still at the version the sign-in read.
+
+Pinned on a real broker and store with the page engine driving the change: a login whose
+password a site refused is corrected on the page, and a live view afterwards is answered
+`item_kept`; and a sign-in that filled the old password, held at its submit while the person
+changes the login, ends rejected with no mark set. Clearing nothing in `login_changed` fails
+the first; dropping the version comparison fails the second. What it does not cover: a site
+that refuses the corrected password marks it again, and a live view after that replaces it, as
+for any login.
 
 ## Failure behavior
 
@@ -196,6 +286,10 @@ not be saved. A live-view sign-in made anyway is answered as not saved (`saved: 
 `reason: unknown`) and the file is not touched. Nothing is retried: putting the key back (or
 setting `CASA_BROWSER_VAULT_KEY` to it) and restarting the app is the repair.
 
+**The page cannot start** (no socket directory, a socket that cannot be bound). One fixed line
+in the log; the broker serves the RPC as before, and nginx's `/logins/` has no socket to reach
+until the next start.
+
 **A write fails.** The store forgets its copy in memory and reads the file again, so the next
 read shows the version and values from before; the write answers `refused` when the store
 refused it and `unavailable` when the file could not be written.
@@ -208,6 +302,21 @@ refused it and `unavailable` when the file could not be written.
 **Source**
 - `casa_browser/rootfs/opt/casa_browser/broker/builtin.py`
 - `casa_browser/rootfs/opt/casa_browser/vault_store.py`
+- `casa_browser/rootfs/opt/casa_browser/broker/logins_page.py`
+- `casa_browser/rootfs/opt/casa_browser/vault_page.py`
+- `casa_browser/rootfs/opt/casa_browser/vault_page_server.py`
+- `casa_browser/rootfs/opt/casa_browser/vault_static/page.js`
+- `casa_browser/rootfs/opt/casa_browser/vault_static/theme.js`
+- `casa_browser/rootfs/opt/casa_browser/vault_static/ha.css`
+- `casa_browser/rootfs/opt/casa_browser/vault_static/vault.css`
+- `scripts/sync_shared_vault.py`
+- `casa_browser/rootfs/opt/casa_browser/broker/main.py::run`
+- `casa_browser/rootfs/opt/casa_browser/broker/main.py::Broker.login_changed`
+- `casa_browser/rootfs/opt/casa_browser/broker/main.py::Broker.login_deleted`
+- `casa_browser/rootfs/opt/casa_browser/controller.py::RunController.refresh_links`
+- `casa_browser/rootfs/opt/casa_browser/store.py::Store.builtin_links`
+- `casa_browser/rootfs/opt/casa_browser/store.py::Store.clear_builtin_link`
+- `casa_browser/rootfs/opt/casa_browser/ui.py::logins_conf`
 - `casa_browser/rootfs/opt/casa_browser/broker/main.py::build_vault`
 - `casa_browser/rootfs/opt/casa_browser/broker/main.py::site_view`
 - `casa_browser/rootfs/opt/casa_browser/broker/main.py::site_record`
@@ -224,6 +333,8 @@ refused it and `unavailable` when the file could not be written.
 - `casa_browser/tests/test_builtin_rule.py`
 - `casa_browser/tests/integration/test_builtin_mode.py`
 - `tests/test_vault_store_copies.py`
+- `casa_browser/tests/test_logins_page.py`
+- `casa_browser/tests/test_broker_logins_page.py`
 
 **Related**
 - [`reference/casa-browser-credentials.md`](../reference/casa-browser-credentials.md)
@@ -233,4 +344,5 @@ refused it and `unavailable` when the file could not be written.
 - [`reference/casa-browser-browser.md`](../reference/casa-browser-browser.md)
 - [`reference/casa-browser-ingress.md`](../reference/casa-browser-ingress.md)
 - [`architecture/builtin-secrets-store.md`](../architecture/builtin-secrets-store.md)
+- [`architecture/builtin-secrets-page.md`](../architecture/builtin-secrets-page.md)
 <!-- END SOURCEMAP -->

@@ -1,10 +1,12 @@
-"""The store module's copy works with the packages and the Python of this app."""
+"""The copies of the store module and of its page work with the packages and the Python of
+this app."""
 from __future__ import annotations
 
 import stat
 
 import pytest
 
+from casa_browser import vault_page, vault_page_server, vault_store
 from casa_browser.vault_store import DATABASE_NAME, KEY_NAME, Field, KeyProblem, Store
 
 
@@ -59,3 +61,13 @@ def test_a_missing_key_leaves_the_file_alone(tmp_path):
     with pytest.raises(KeyProblem):
         Store.open(directory, None)
     assert database.read_bytes() == before
+
+
+def test_the_page_s_copies_import_each_other_inside_the_package():
+    """The shared files are written for Casa, whose modules sit at the top level. Here each
+    must take its siblings from this package, never from a module of that name found
+    elsewhere on the path: the page then holds this app's store types."""
+    assert vault_page.__name__ == "casa_browser.vault_page"
+    assert vault_page.Store is vault_store.Store
+    assert vault_page.Field is vault_store.Field
+    assert vault_page_server.vault_page is vault_page

@@ -376,11 +376,11 @@
 - item: casa/rootfs/opt/casa/vault_op_client.py
   doc: architecture/builtin-secrets-store.md
 - item: casa/rootfs/opt/casa/vault_page.py
-  doc: architecture/builtin-secrets-store.md
+  doc: architecture/builtin-secrets-page.md
 - item: casa/rootfs/opt/casa/vault_page_casa.py
-  doc: architecture/builtin-secrets-store.md
+  doc: architecture/builtin-secrets-page.md
 - item: casa/rootfs/opt/casa/vault_page_server.py
-  doc: architecture/builtin-secrets-store.md
+  doc: architecture/builtin-secrets-page.md
 - item: casa/rootfs/opt/casa/vault_service.py
   doc: architecture/builtin-secrets-store.md
 - item: casa/rootfs/opt/casa/vault_store.py

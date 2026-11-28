@@ -5952,3 +5952,152 @@ async def test_a_1password_linked_site_needs_a_login_in_built_in_mode(tmp_path):
         assert after.get_site("sa").vault_item_id == "item"
     finally:
         after.close()
+
+
+# -- the controller's copy of the links of the app's own store --------------------------------
+#
+# The broker's registry says which login a site signs in with; ``builtin_links`` is the
+# controller's copy. A person who deletes a login on the saved-logins page changes the first
+# and not the second, so the copy is brought back in step before it is read.
+
+CARD_SITE = Site("sx", "Login site", ("https://login.example.test",),
+                 ("https://login.example.test",), "item-x", (), CARD_PAGE, 1)
+
+
+def link_of(rig, site_id="sa"):
+    return rig.store.get_site(site_id).vault_item_id
+
+
+def broker_links(rig, links):
+    """The broker's built-in status, naming ``links`` as the logins its registry holds."""
+    rig.broker.status_reply = {"configured": True, "store": "builtin", "available": True,
+                               "links": dict(links)}
+
+
+def status_calls(rig):
+    return len([e for e in rig.log if e[:2] == ("broker", "status")])
+
+
+async def test_refresh_clears_a_link_the_broker_no_longer_has(builtin):
+    assert link_of(builtin) == "item-a"
+    broker_links(builtin, {})
+    await builtin.ctl.refresh_links()
+    assert link_of(builtin) is None
+
+
+async def test_refresh_keeps_a_link_the_broker_has(builtin):
+    broker_links(builtin, {"sa": "item-a"})
+    await builtin.ctl.refresh_links()
+    assert link_of(builtin) == "item-a" and status_calls(builtin) == 1
+
+
+async def test_refresh_clears_a_link_the_broker_holds_to_another_login(builtin):
+    broker_links(builtin, {"sa": "item-b"})
+    await builtin.ctl.refresh_links()
+    assert link_of(builtin) is None
+
+
+@pytest.mark.parametrize("silence", ["raises", "error"])
+async def test_refresh_changes_nothing_when_the_broker_does_not_answer(builtin, silence):
+    real = builtin.broker.call
+
+    async def call(op, **args):
+        if op == "status":
+            builtin.log.append(("broker", "status", None, None))
+            if silence == "raises":
+                raise OSError("no broker")
+            return {"error": "unavailable"}
+        return await real(op, **args)
+    builtin.broker.call = call
+    await builtin.ctl.refresh_links()
+    assert link_of(builtin) == "item-a" and status_calls(builtin) == 1
+
+
+async def test_refresh_changes_nothing_when_the_reply_has_no_links(builtin):
+    assert "links" not in builtin.broker.status_reply
+    await builtin.ctl.refresh_links()
+    assert link_of(builtin) == "item-a" and status_calls(builtin) == 1
+
+
+async def test_refresh_keeps_a_link_made_while_the_broker_was_answering(builtin):
+    """The rows are read before the broker is asked, and only those are compared: a link made
+    to another login meanwhile, or made for a site that had none, is newer than the reply."""
+    rig = builtin
+    real = rig.broker.call
+    broker_links(rig, {})
+
+    async def call(op, **args):
+        if op == "status":
+            rig.store.put_site(replace(rig.store.get_site("sa"), vault_item_id="item-new"))
+            rig.store.put_site(replace(rig.store.get_site("sc"), vault_item_id="item-c"))
+        return await real(op, **args)
+    rig.broker.call = call
+    await rig.ctl.refresh_links()
+    assert link_of(rig, "sa") == "item-new" and link_of(rig, "sc") == "item-c"
+    assert status_calls(rig) == 1
+
+
+async def test_refresh_does_nothing_with_1password(tmp_path):
+    rig = await started(tmp_path)
+    try:
+        rig.broker.status_reply = {**rig.broker.status_reply, "links": {}}
+        await rig.ctl.refresh_links()
+        assert status_calls(rig) == 0 and link_of(rig) == "item-a"
+    finally:
+        await rig.ctl.shutdown()
+        rig.close()
+
+
+async def test_the_api_s_site_list_refreshes(builtin):
+    broker_links(builtin, {})
+    sites = {s.site_id: s.status for s in await builtin.ctl.list_sites()}
+    assert sites["sa"] == "needs_login" and link_of(builtin) is None
+
+
+async def test_a_look_on_a_site_whose_login_was_deleted_is_not_spent(builtin):
+    """A look reads the site's link first: with the login gone, it reads nothing and leaves the
+    page unlooked, so a look after a new link still reads it."""
+    rig = builtin
+    run = await rig.run()
+    await scroll(rig, run.run_id)
+    session = rig.ctl.active.session
+    url = session.page.url
+    assert (session, url) not in rig.ctl.active.looked
+    broker_links(rig, {})
+    rig.broker.sign_in_read = LOOK_READ
+    result = await rig.ctl.observe(run.run_id, sign_in=True)
+    assert getattr(result, "outcome", None) != "judgement_required"
+    assert link_of(rig) is None
+    assert (session, url) not in rig.ctl.active.looked
+    assert not [e for e in rig.log if e[:2] == ("broker", "read_sign_in")]
+
+
+async def test_the_sign_in_card_offers_logins_again_after_a_delete(builtin):
+    """A site registered exactly at the card's address, whose login was deleted: the card asks
+    the check about the saved logins again, as for a site that has none."""
+    rig = builtin
+    rig.store.put_site(CARD_SITE)
+    run = await on_card_page(rig, "card")
+    broker_links(rig, {"sa": "item-a"})
+    rig.broker.items_reply = {"items": ITEMS, "truncated": False}
+    assert (await rig.ctl.ask_sign_in(run.run_id, "Login site")).outcome == "judging"
+    assert ("broker", "list_vault_logins", run.run_id, None) in rig.log
+    assert link_of(rig, "sx") is None and link_of(rig, "sa") == "item-a"
+
+
+async def test_a_start_page_sign_in_after_a_delete_asks_which_login(builtin):
+    rig = builtin
+    broker_links(rig, {})
+    rig.broker.login_reply = {"status": "needs_live_view", "reason": "not_found"}
+    rig.broker.items_reply = {"items": ITEMS, "truncated": False}
+    seen = []
+    judged = rig.ctl._vault_judgement
+
+    async def vault_judgement(active, site):
+        seen.append(link_of(rig, site.site_id))
+        return await judged(active, site)
+    rig.ctl._vault_judgement = vault_judgement
+    run = await rig.run()
+    assert seen == [None]
+    pending = (await rig.ctl.pending_judgements(run.run_id))["judgements"]
+    assert [j["kind"] for j in pending] == ["login_item"]

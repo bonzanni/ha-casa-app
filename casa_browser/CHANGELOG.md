@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.21] - 2026-11-28
+
+### Added
+
+- A Saved logins page, without a 1Password token. Setup now leads to it, and so does a site's page. There you see the logins Casa Browser keeps, and add, change and delete them. A password and an authenticator seed stay hidden until you press Show.
+- Authenticator seeds. Store a login's setup key (or the `otpauth://` address the site shows) and Casa Browser answers the site's request for a code from an authenticator app.
+- Deleting a login makes the sites that used it ask again at their next sign-in which saved login to use.
+- The page is in English for now, whatever the app's language.
+
+### Changed
+
+- Without 1Password, the form for adding a site no longer has a field for a saved login id; the site asks which saved login to use instead.
+
 ## [0.1.20] - 2026-11-26
 
 ### Added

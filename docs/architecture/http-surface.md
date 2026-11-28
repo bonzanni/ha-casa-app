@@ -66,7 +66,7 @@ over a UNIX socket only nginx's workers may open; on 1Password that path is a 40
 too, and the external listener 404s `/vault/` always (INV-VAULT-005). The page performs no
 authentication of its own: reaching the ingress listener is what admits a person, so
 everyone Home Assistant lets open Casa's page can read the secrets there
-([`builtin-secrets-store.md`](builtin-secrets-store.md)).
+([`builtin-secrets-page.md`](builtin-secrets-page.md)).
 
 ## Contracts & invariants
 

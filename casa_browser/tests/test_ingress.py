@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,3 +75,79 @@ async def test_prefix_http_and_websocket(rig, operator, prefix, monkeypatch, tmp
         assert not ws.closed                      # the 101 upgrade succeeded
         await ws.close()
     server.close()
+
+
+# -- the saved-logins page (the app's own store) -----------------------------------------------
+
+LOGINS_CONF = "/run/casa-browser/nginx/logins.conf"
+
+
+def _blocks(text: str) -> dict[str, list[str]]:
+    """Each ``location`` of an nginx fragment, by its path, with the directives inside it."""
+    out, current = {}, None
+    for line in _directives(text):
+        found = re.fullmatch(r"location\s+(\S+)\s*\{", line)
+        if found:
+            current = out.setdefault(found.group(1), [])
+        elif current is not None:
+            current.append(line)
+    return out
+
+
+def test_the_saved_logins_locations_are_included_after_the_peer_rule():
+    lines = _directives(CONF.read_text(encoding="utf-8"))
+    server = lines.index("server {")
+    peer = lines.index("include /run/casa-browser/nginx/ingress-peer.conf;")
+    logins = lines.index(f"include {LOGINS_CONF};")
+    first_location = next(i for i, l in enumerate(lines) if l.startswith("location"))
+    assert server < peer < logins < first_location
+
+
+def _public_options(tmp_path, login_store):
+    import json
+    path = tmp_path / "public_options.json"
+    if login_store is not None:
+        path.write_text(json.dumps({"language": None, "login_store": login_store}))
+    return path
+
+
+def test_the_saved_logins_locations_exist_only_with_the_app_s_own_store(tmp_path):
+    for store in ("onepassword", "none", None):
+        assert ui.logins_conf(_public_options(tmp_path, store)) == "", store
+    blocks = _blocks(ui.logins_conf(_public_options(tmp_path, "builtin")))
+    assert set(blocks) == {"/logins/static/", "/logins/"}
+    static, page = blocks["/logins/static/"], blocks["/logins/"]
+    assert "alias /opt/casa_browser/vault_static/;" in static
+    assert {"text/css css;", "application/javascript js;"} <= set(static)
+    assert 'add_header Cache-Control "no-store" always;' in static
+    assert 'add_header X-Content-Type-Options "nosniff" always;' in static
+    assert "proxy_pass http://unix:/run/casa-browser/logins/page.sock:/;" in page
+    for header in ("X-Ingress-Path $http_x_ingress_path", "X-Forwarded-Proto $http_x_forwarded_proto",
+                   "X-Forwarded-Host $http_x_forwarded_host"):
+        assert f"proxy_set_header {header};" in page, header
+    assert "client_max_body_size 300k;" in page
+
+
+def test_the_nginx_unit_writes_the_saved_logins_locations(tmp_path, monkeypatch, capsys):
+    """The unit writes the include file from the options bootstrap wrote for the controller,
+    the way it writes the peer rule, before nginx starts."""
+    run = (UNITS / "svc-browser-nginx" / "run").read_text(encoding="utf-8")
+    write = f"python -m casa_browser.ui logins-conf > {LOGINS_CONF}.tmp"
+    move = f"mv {LOGINS_CONF}.tmp {LOGINS_CONF}"
+    assert write in run and move in run
+    assert run.index(write) < run.index(move) < run.index("exec env -i")
+    from casa_browser import options
+    for store in ("builtin", "onepassword"):
+        path = _public_options(tmp_path, store)
+        monkeypatch.setattr(options, "Paths", lambda path=path: SimpleNamespace(public_options=path))
+        assert ui.main(["ui", "logins-conf"]) == 0
+        assert capsys.readouterr().out == ui.logins_conf(path), store
+
+
+def test_the_broker_unit_makes_the_page_s_directory_for_nginx():
+    """In both modes, before the broker drops to its own user: the directory nginx's group can
+    pass through and the broker owns, and a failure to make it does not stop the broker."""
+    run = (UNITS / "svc-browser-broker" / "run").read_text(encoding="utf-8")
+    make = "install -d -o casa-broker -g casa-ingress -m 2710 /run/casa-browser/logins || true"
+    assert make in run.splitlines()
+    assert run.index(make) < run.index("s6-setuidgid casa-broker")

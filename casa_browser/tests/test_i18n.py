@@ -149,6 +149,29 @@ async def test_builtin_pages_in_every_language_name_no_1password_extension_or_gu
             assert word not in low, (language, path, word)
 
 
+@pytest.mark.parametrize("login_store", ["builtin"])
+async def test_builtin_sites_speak_of_a_saved_login_in_every_language(localized, login_store):
+    """With the app's own store a site with a login says it has a saved login, on the Sites
+    list and on its own page, and that page and Setup lead to the saved logins, in every
+    language."""
+    rig, operator, language = localized
+    t = Text(language)
+    rig.broker.status_reply = {"configured": True, "store": "builtin", "available": True,
+                               "links": {"sa": "item-a"}}
+    for path in ("/sites", "/sites/sa"):
+        status, page, _ = await operator.get(path)
+        assert status == 200, path
+        assert t("sites.item_set.builtin") in _text(page), (language, path)
+        assert t("sites.item_set") not in _text(page), (language, path)
+        if language != BASE:
+            assert catalog(BASE)["sites.item_set.builtin"] not in _text(page), (language, path)
+    assert t("sites.saved_logins") in _text(page) and "/logins/" in page
+    status, page, _ = await operator.get("/setup")
+    assert status == 200 and "/logins/" in page
+    if language != BASE:
+        assert catalog(BASE)["sites.saved_logins"] != t("sites.saved_logins")
+
+
 async def test_a_page_value_is_escaped_in_every_language(localized):
     rig, operator, _ = localized
     from dataclasses import replace

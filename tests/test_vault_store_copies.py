@@ -1,11 +1,14 @@
-"""Casa Browser ships its own copy of the built-in store module.
+"""Casa Browser ships its own copies of the built-in store module and of its page.
 
 The browser suite runs in a tree without Casa's code, so the check that the two
-copies are the same file lives here, where both are always present. The script
-that copies the shared files is tested here too, on temporary trees.
+copies of each shared file are the same file lives here, where both are always
+present. The script that copies the shared files is tested here too, on
+temporary trees.
 """
 import importlib.util
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "sync_shared_vault.py"
@@ -14,11 +17,26 @@ _spec = importlib.util.spec_from_file_location("sync_shared_vault", SCRIPT)
 sync_shared_vault = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sync_shared_vault)
 
+STATIC = "vault_static"
 
-def test_the_two_copies_are_identical():
-    casa = REPO_ROOT / "casa/rootfs/opt/casa/vault_store.py"
-    browser = REPO_ROOT / "casa_browser/rootfs/opt/casa_browser/vault_store.py"
-    assert casa.read_bytes() == browser.read_bytes()
+
+@pytest.mark.parametrize("name", sync_shared_vault.SHARED_FILES)
+def test_the_two_copies_are_identical(name):
+    casa = sync_shared_vault.CASA_ROOT / name
+    browser = sync_shared_vault.BROWSER_ROOT / name
+    assert casa.is_file() and browser.is_file(), name
+    assert casa.read_bytes() == browser.read_bytes(), name
+
+
+def test_no_file_of_the_page_is_in_one_tree_only():
+    """Each app serves its whole static directory, so a file added to one of the two and
+    not named as shared would be served by that app alone and compared by nobody."""
+    listed = {name for name in sync_shared_vault.SHARED_FILES if name.startswith(STATIC + "/")}
+    assert listed
+    for root in (sync_shared_vault.CASA_ROOT, sync_shared_vault.BROWSER_ROOT):
+        found = {path.relative_to(root).as_posix()
+                 for path in (root / STATIC).rglob("*") if path.is_file()}
+        assert found == listed, root
 
 
 def _source_tree(root: Path) -> Path:
