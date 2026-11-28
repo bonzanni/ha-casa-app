@@ -20,10 +20,12 @@ page, and what that service does when the page cannot start are
 **An engine and a profile.** `vault_page.py` is the engine: requests, forms, one-time codes,
 the stamp and layout. `vault_page.Page` is a pure function of a request and the store that
 imports nothing outside the standard library and `vault_store`, and holds no words or rules
-of its own: it takes a `vault_page.Profile`. `vault_page_casa.py` is Casa's profile, the only
-one in this repository — `PROFILE`, served as `casa_page(store)`: the page's words, which
+of its own: it takes a `vault_page.Profile`. `vault_page_casa.py` is Casa's profile — `PROFILE`,
+served as `casa_page(store)`: the page's words, which
 values are hidden (`is_hidden`), who keeps a secret (`purpose`), an SSH key's facts and the
-add form's labels. The script reads the sentences that name a secret from `data-` attributes
+add form's labels. The Casa Browser app carries byte-identical copies of the engine, the
+listener and the static files, and serves them under a login profile of its own
+([`../reference/casa-browser-builtin-store.md`](../reference/casa-browser-builtin-store.md)). The script reads the sentences that name a secret from `data-` attributes
 on `<body>`, and the form's shape from its controls.
 
 **Who serves it, and who reaches it.** `vault_service.py` listens, besides the `op` socket,

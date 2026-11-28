@@ -159,7 +159,7 @@
   related: [reference/casa-browser.md, reference/casa-browser-runtime.md, reference/casa-browser-browser.md]
   defines_invariants: [INV-BRW-019, INV-BRW-050, INV-BRW-049, INV-BRW-022, INV-BRW-056, INV-BRW-057, INV-BRW-058, INV-BRW-023, INV-BRW-060]
   invariant_tests:
-    INV-BRW-019: [casa_browser/tests/test_broker.py::test_no_delete_interface, casa_browser/tests/test_broker.py::test_forget_keeps_vault_item]
+    INV-BRW-019: [casa_browser/tests/test_broker.py::test_no_delete_interface, casa_browser/tests/test_broker.py::test_forget_keeps_vault_item, casa_browser/tests/test_broker.py::test_no_rpc_operation_reaches_the_page]
     INV-BRW-050: [casa_browser/tests/test_broker.py::test_forget_login_keeps_the_site_and_asks_again, casa_browser/tests/test_credential_save.py::test_forget_login_then_the_next_task_asks_again]
     INV-BRW-049: [casa_browser/tests/test_broker.py::test_password_change_page_goes_to_live_view, casa_browser/tests/test_credential_save.py::test_automatic_save_is_journaled_before_the_write, casa_browser/tests/test_credential_save.py::test_save_requires_signed_in_verdict]
     INV-BRW-022: [casa_browser/tests/test_broker.py::test_secret_never_filled_off_login_origin, casa_browser/tests/integration/test_login.py::test_secret_never_filled_off_login_origin, casa_browser/tests/integration/test_login.py::test_fill_is_element_bound, casa_browser/tests/integration/test_login.py::test_driver_session_bound_to_page]

@@ -266,7 +266,7 @@ Signing in from a card for a site that is not set up, and saving a login typed i
 
 ## Invariants
 
-**INV-BRW-019**: No code path in the broker removes a vault item: the broker package uses only the vault facade's read, create and update calls of the 1Password SDK, has no removal, archive or password-generation call and no dynamic attribute access, and forgetting a site changes only the broker's registry.
+**INV-BRW-019**: The broker offers no operation that removes or archives a login: the broker package and `broker_client.py` use only the 1Password SDK's read, create and update calls, name no removal, archive or password-generation call and use no dynamic attribute access, and forgetting a site changes only the broker's registry; the one removal is the page engine's single call of the store's delete, made only when a person deletes a login on the Saved logins page, which no RPC operation reaches.
 
 **INV-BRW-050**: Forgetting a site's login removes only its item link: the site stays registered with its login origins, no vault call is made, and its next login asks the operator again.
 

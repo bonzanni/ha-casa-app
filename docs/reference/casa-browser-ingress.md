@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-13
+last_reviewed: 2026-11-28
 ---
 
 # Casa Browser — ingress UI and the live view
@@ -24,8 +24,8 @@ input and probe — is [`casa-browser-live-view.md`](casa-browser-live-view.md).
 admits only Supervisor's ingress address — `allow <peer>; deny all;`, rendered at start by
 `python -m casa_browser.ui ingress-peer` (a missing file stops nginx from starting). It serves
 the app's own `static/` files and noVNC's `core/` and `vendor/` modules (Debian's 1.6.0 files,
-nothing of noVNC's own app), and proxies everything else, WebSocket upgrades included, to the
-UI's Unix socket `/run/casa-browser/ui/ui.sock` (directory `0750` controller:casa-ingress). The
+nothing of noVNC's own app), and proxies everything else, WebSocket upgrades included (but the
+Saved logins page's two locations in built-in mode, below), to the UI's Unix socket `/run/casa-browser/ui/ui.sock` (directory `0750` controller:casa-ingress). The
 UI runs inside the controller process (uid 1103). x11vnc (user `casa-vnc`, uid 1104) serves
 display `:99` **view-only** on `/run/casa-browser/vnc/vnc.sock` (directory `0750`
 casa-vnc:casa-vncview; `casa-vncview` holds only the controller), with no TCP listener
@@ -67,7 +67,14 @@ of a 1Password item (`Ui._login_key` picks each text's `.builtin` key, which nam
 1Password nor its extension), and `/setup` shows one row saying where logins are kept, or that
 they could not be opened when the broker does not report its store available
 (`Ui._builtin_store_row`), the language row, a line on what saved logins are used for, and
-pairing: no guest state, counts or warning.
+pairing: no guest state, counts or warning. In that mode the store's row, while the store is
+open, and the page of a site with sign-in addresses (a **Saved logins** row) link to
+`<prefix>/logins/`, the Saved logins page the broker serves; `/sites/new` has no box for a
+login's id, and `/sites` ignores one posted. The Sites list and a site's page first refresh the
+controller's copy of the links (`RunController.refresh_links`). The page, nginx's
+`logins.conf` (included in the ingress server after the peer rule) and the `logins-conf`
+command that writes it are
+[`casa-browser-builtin-store.md`](casa-browser-builtin-store.md).
 
 **Look.** The pages take Home Assistant's look: its card, row, button and tab sizes and its Material Design icons (inline SVG), in `static/style.css` alone — the CSP admits no inline style, so no page carries a `style` attribute (`test_ui.py`). The colours are Home Assistant's theme values under their own names (`--primary-color`, `--card-background-color`, …): `static/theme.js`, loaded first in every page's head and the viewer's, reads the values Home Assistant's page resolved — the panel is a frame on Home Assistant's own origin — and sets them, again when that theme changes; it only reads. Opened outside that frame, the stylesheet's copies of Home Assistant's default light and dark values apply. The tabs (Home, Sites, Setup) sit at the bottom under 871 px, as Home Assistant's own settings pages do, and at the top above it; a sub-page (a run, a site, Add site, pairing) has a back arrow. A form that ends something asks first: `data-confirm` on the form, a dialog from `static/app.js`.
 
